@@ -3,14 +3,16 @@
 // tiny request that shows the real address, status and answer or raw error.
 
 import { useState } from "react";
-import { CheckCircle2, Loader2, MessageSquare, Plus, RefreshCw, X, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, Loader2, MessageSquare, Plus, RefreshCw, X, XCircle } from "lucide-react";
 import { formatDate, formatNumber, useT } from "../../i18n";
 import { ModelCombobox } from "../../components/ModelCombobox";
 import { cn } from "../../lib/utils";
 import { errorMessage } from "../../lib/llm/ipc";
 import { isEmbeddingModel, modelOptions, toInput } from "../../lib/llm/connection";
 import type { FetchModelsResult, LlmConnection, ResultHint, TestConnectionResult } from "../../lib/llm/types";
-import type { ModelInfo } from "../../lib/types";
+import type { ModelInfo, OpenRouterModel } from "../../lib/types";
+import { listOpenRouterModels } from "../../lib/ipc";
+import { OpenRouterModelCatalog } from "../openrouter/OpenRouterModelCatalog";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { endpointFingerprint, type ConnectionDraft } from "./draft";
 import type { ProviderTemplate } from "./providerTemplates";
@@ -223,6 +225,82 @@ export function ModelSection({
         {!fetched && cache?.error && <p className="text-xs text-warning">{t("editor.models.lastFetchFailed", { detail: cache.error })}</p>}
         {result && <TestResultView result={result} />}
       </div>
+
+      {isOpenRouter(c) && (
+        <OpenRouterBrowser
+          connectionId={saved && !draft.isNew ? saved.id : undefined}
+          selectedId={c.default_model ?? ""}
+          onSelect={(model) => update({ default_model: model })}
+        />
+      )}
+    </div>
+  );
+}
+
+/** An OpenRouter connection (by template, or by its address). */
+function isOpenRouter(connection: LlmConnection): boolean {
+  if (connection.template === "openrouter") return true;
+  try {
+    return new URL(connection.base_url.trim()).hostname.toLowerCase().endsWith("openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
+/** OpenRouter's catalog (prices, context, capabilities) to pick the default model from. */
+function OpenRouterBrowser({
+  connectionId,
+  selectedId,
+  onSelect,
+}: {
+  /** The saved connection whose key lists the models; the catalog is public, so a new one works too. */
+  connectionId?: string;
+  selectedId: string;
+  onSelect: (model: string) => void;
+}) {
+  const { t } = useT("llm");
+  const [open, setOpen] = useState(false);
+  const [models, setModels] = useState<OpenRouterModel[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (force: boolean) => {
+    setLoading(true);
+    setError(null);
+    try {
+      setModels(await listOpenRouterModels(force, connectionId));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !models && !loading) void load(false);
+  };
+
+  return (
+    <div className="border-t border-border/20 pt-3">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline cursor-pointer"
+      >
+        <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} aria-hidden />
+        {open ? t("openrouter.hide") : t("openrouter.browse")}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-muted-foreground">{t("openrouter.picked")}</p>
+          {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden />}
+          {error && <p className="break-words text-xs text-destructive">{t("openrouter.loadFailed", { detail: error })}</p>}
+          {models && <OpenRouterModelCatalog models={models} selectedId={selectedId} onSelect={onSelect} />}
+        </div>
+      )}
     </div>
   );
 }

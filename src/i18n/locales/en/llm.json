@@ -815,5 +815,65 @@
     "legacyInUse": "Using the earlier fallback setting: {{provider}}{{model}}. Pick a connection to replace it.",
     "effective": "Claude falls back to {{name}} / {{model}}.",
     "routingHint": "The same setting as Task routing → Claude fallback."
+  },
+  "openrouter": {
+    "browse": "Browse the OpenRouter catalog",
+    "hide": "Hide the catalog",
+    "loadFailed": "Couldn't load the OpenRouter catalog: {{detail}}",
+    "picked": "Picking a model makes it this connection's default model.",
+    "search": "Search models...",
+    "sort": {
+      "newest": "Newest first",
+      "priceAsc": "Price: low → high",
+      "priceDesc": "Price: high → low",
+      "contextDesc": "Context: high → low"
+    },
+    "filters": {
+      "free": "Free only",
+      "tools": "Tools",
+      "reasoning": "Reasoning",
+      "webSearch": "Web search"
+    },
+    "activeFilters": {
+      "free": "free",
+      "tools": "tools",
+      "reasoning": "reasoning",
+      "webSearch": "web search"
+    },
+    "listSeparator": ", ",
+    "badges": {
+      "new": "NEW",
+      "free": "FREE",
+      "goodForMeetings": "Good for meetings",
+      "tools": "tools",
+      "reasoning": "reasoning",
+      "web": "web"
+    },
+    "price": {
+      "free": "Free"
+    },
+    "stats": {
+      "perMillionIn": "/M in",
+      "perMillionOut": "/M out",
+      "context": " ctx",
+      "maxOutput": " max"
+    },
+    "meeting": {
+      "free": "Free / meeting",
+      "cost": "~${{cost}} / meeting"
+    },
+    "recent": {
+      "title": "Recently Used",
+      "clearAll": "Clear all",
+      "remove": "Remove {{name}} from recently used"
+    },
+    "favorites": "Favorites",
+    "allModels": "All Models",
+    "count_one": "{{count}} model",
+    "count_other": "{{count}} models",
+    "filteredBy": " · filtered: {{filters}}",
+    "noMatches": "No models match your filters",
+    "resetFilters": "Reset filters",
+    "showMore": "Show more ({{remaining}} remaining)"
   }
 }

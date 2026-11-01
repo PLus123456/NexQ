@@ -215,6 +215,38 @@ describe("LlmSettingsPage", () => {
     expect(screen.getByRole("button", { name: "Per AI action (1 set)" })).toBeInTheDocument();
   });
 
+  it("picks an OpenRouter model from its catalog", async () => {
+    const openrouter = mockConnection({
+      id: "c_0000a0a0",
+      name: "OpenRouter",
+      template: "openrouter",
+      base_url: "https://openrouter.ai/api/v1",
+      auth: { mode: "bearer", header_name: "", prefix: "" },
+    });
+    const { user, backend } = setup({ connections: [openrouter] });
+    const original = backend.invoke;
+    backend.invoke = async (cmd, args) => {
+      if (cmd !== "list_openrouter_models") return original(cmd, args);
+      backend.calls.push({ cmd, args });
+      const model = (id: string, name: string, free: boolean) => ({
+        id, name, provider_name: id.split("/")[0], description: `${name} model`, created: 1_790_000_000,
+        context_length: 1_000_000, max_completion_tokens: null,
+        pricing: free ? { prompt: 0, completion: 0 } : { prompt: 0.3, completion: 1.2 },
+        is_free: free, modality: "text->text", input_modalities: ["text"], output_modalities: ["text"],
+        tokenizer: "", supports_tools: true, supports_reasoning: !free, supports_web_search: false,
+      });
+      return JSON.stringify([model("deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", false), model("google/gemma-4-31b-it:free", "Gemma 4 31B", true)]);
+    };
+    await user.click(await screen.findByRole("button", { name: "Browse the OpenRouter catalog" }));
+    expect(await screen.findByText("DeepSeek V4.1 Flash")).toBeInTheDocument();
+    // The saved connection's key lists the catalog.
+    expect(backend.calls.find((c) => c.cmd === "list_openrouter_models")?.args).toMatchObject({ connectionId: openrouter.id });
+    await user.click(screen.getByText("DeepSeek V4.1 Flash"));
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(backend.view().connections[0].default_model).toBe("deepseek/deepseek-v4.1-flash"));
+  });
+
   it("follows a change made in the other window", async () => {
     const { backend } = setup({ connections: [deepseek] });
     expect(await screen.findByLabelText("Connection name")).toBeInTheDocument();

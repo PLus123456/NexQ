@@ -1,5 +1,6 @@
 import type { OpenRouterModel } from "../../lib/types";
 import { ModelCard } from "./ModelCard";
+import { useT } from "../../i18n";
 
 interface FavoritesSectionProps {
   favoriteIds: string[];
@@ -16,6 +17,7 @@ export function FavoritesSection({
   onSelect,
   onToggleFavorite,
 }: FavoritesSectionProps) {
+  const { t } = useT("llm");
   const favoriteModels = favoriteIds
     .map((id) => models.find((m) => m.id === id))
     .filter(Boolean) as OpenRouterModel[];
@@ -25,7 +27,7 @@ export function FavoritesSection({
   return (
     <div>
       <h4 className="text-[11px] uppercase tracking-wider text-muted-foreground/40 mb-2 pl-0.5">
-        ★ Favorites
+        ★ {t("openrouter.favorites")}
       </h4>
       <div className="flex flex-col gap-1.5">
         {favoriteModels.map((m) => (
