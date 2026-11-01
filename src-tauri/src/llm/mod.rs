@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod api;
 pub mod cli_agent;
 pub mod custom;
 pub mod gemini;

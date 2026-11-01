@@ -16,6 +16,11 @@ use self::macos_keychain as backend;
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 use self::fallback_cred as backend;
 
+/// Prefix of every credential's service / target name (`NexQPlus:{provider}`).
+/// Differs from the official app's `NexQ:` so the two never share keys.
+#[cfg_attr(all(not(target_os = "windows"), not(target_os = "macos")), allow(dead_code))]
+pub(crate) const SERVICE_PREFIX: &str = "NexQPlus:";
+
 /// Credential manager for secure API key storage.
 /// Delegates to the platform-specific credential backend
 /// (Windows Credential Manager, macOS Keychain, or a stub on other platforms).

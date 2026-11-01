@@ -526,6 +526,18 @@ export interface PartyAudioConfig {
   is_input_device: boolean;
   stt_provider: STTProviderType;
   local_model_id?: string;
+  /** Recognition language for this party: a language code or "auto". Unset = the global sttLanguage. */
+  language?: string;
+  /** Translation done by the STT engine itself (e.g. Soniox). Unset = off. */
+  native_translation?: NativeTranslationConfig;
+}
+
+/** Per-party engine-side translation. An empty target_language follows the translation settings. */
+export interface NativeTranslationConfig {
+  mode: "off" | "one_way" | "two_way";
+  target_language?: string;
+  language_a?: string;
+  language_b?: string;
 }
 
 export interface MeetingAudioConfig {

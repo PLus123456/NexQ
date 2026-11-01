@@ -1,6 +1,6 @@
 // Sub-PRD 3: Audio recording to WAV file
 // Writes PCM data to file in a background thread
-// Saves to %APPDATA%/com.nexq.app/recordings/{meeting_id}.wav
+// Saves to <app data dir>/recordings/{meeting_id}.wav
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs;
@@ -89,18 +89,11 @@ impl Drop for RecorderHandle {
     }
 }
 
-/// Get the recordings directory path.
+/// Get the recordings directory path (`<app data dir>/recordings`, which the
+/// asset protocol scope `$APPDATA/recordings/**` covers for playback).
 /// Creates it if it doesn't exist.
 fn get_recordings_dir() -> Result<PathBuf, String> {
-    let app_data = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|_| {
-            // Fallback for non-Windows or if APPDATA is not set
-            dirs_fallback()
-        })
-        .map_err(|e| format!("Failed to find app data directory: {}", e))?;
-
-    let recordings_dir = app_data.join("com.nexq.app").join("recordings");
+    let recordings_dir = crate::paths::recordings_dir()?;
 
     fs::create_dir_all(&recordings_dir)
         .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
@@ -108,21 +101,9 @@ fn get_recordings_dir() -> Result<PathBuf, String> {
     Ok(recordings_dir)
 }
 
-/// Fallback for getting a suitable data directory
-fn dirs_fallback() -> Result<PathBuf, String> {
-    // Try common locations
-    if let Ok(home) = std::env::var("HOME") {
-        Ok(PathBuf::from(home).join(".config"))
-    } else if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        Ok(PathBuf::from(local))
-    } else {
-        Err("Cannot determine data directory".to_string())
-    }
-}
-
 /// Start recording audio to a WAV file.
 ///
-/// Creates a new WAV file at `%APPDATA%/com.nexq.app/recordings/{meeting_id}.wav`
+/// Creates a new WAV file at `<app data dir>/recordings/{meeting_id}.wav`
 /// and spawns a background thread to write samples.
 ///
 /// Returns a RecorderHandle for writing samples and stopping.

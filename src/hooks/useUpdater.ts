@@ -6,6 +6,10 @@
 // The action functions below work from any window (Settings -> About can open
 // in the overlay); only the check loop is launcher-only. Preference changes are
 // broadcast so every window's store stays in sync.
+//
+// NexQ Plus: with UPDATER_ENABLED off (brand.ts) useUpdater() does nothing, so
+// the app never contacts an update server on its own; About shows a notice
+// instead of the update controls.
 
 import { useEffect } from "react";
 import { load } from "@tauri-apps/plugin-store";
@@ -14,6 +18,8 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
+import { RELEASES_URL, UPDATER_ENABLED } from "../lib/brand";
+import { t } from "../i18n";
 import { meetingEndRoute } from "../lib/windows";
 import {
   checkForUpdate,
@@ -43,7 +49,7 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const MEETING_WINDOWS = ["launcher", "overlay"];
 export const MEETING_END_TIMEOUT_MS = 60_000;
 
-export const RELEASES_URL = "https://github.com/naxhq/NexQ/releases";
+export { RELEASES_URL };
 
 export function releaseNotesUrl(version: string): string {
   return `${RELEASES_URL}/tag/v${version}`;
@@ -52,7 +58,7 @@ export function releaseNotesUrl(version: string): string {
 function errorMessage(err: unknown): string {
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
-  return "Unknown error";
+  return t("common:errors.unknown");
 }
 
 function settingsStore() {
@@ -211,19 +217,16 @@ export async function endMeetingFromThisWindow(): Promise<boolean> {
 export async function restartToUpdate(): Promise<void> {
   if (useMeetingStore.getState().activeMeeting) {
     const { confirm } = await import("@tauri-apps/plugin-dialog");
-    const ok = await confirm(
-      "Your meeting will be saved, then NexQ restarts on the new version.",
-      {
-        title: "End meeting and update?",
-        kind: "warning",
-        okLabel: "End & update",
-        cancelLabel: "Cancel",
-      },
-    );
+    const ok = await confirm(t("settings:updates.restartDialog.message"), {
+      title: t("settings:updates.restartDialog.title"),
+      kind: "warning",
+      okLabel: t("settings:updates.restartDialog.confirm"),
+      cancelLabel: t("common:actions.cancel"),
+    });
     if (!ok) return;
 
     if (!(await endMeetingInAllWindows())) {
-      showToast("Couldn't finish saving the meeting. Update postponed.", "error");
+      showToast(t("settings:updates.errors.meetingNotSaved"), "error");
       return;
     }
   }
@@ -231,7 +234,7 @@ export async function restartToUpdate(): Promise<void> {
   try {
     await installUpdateNow();
   } catch (err) {
-    showToast(`Update not installed: ${errorMessage(err)}`, "error");
+    showToast(t("settings:updates.errors.notInstalled", { detail: errorMessage(err) }), "error");
   }
 }
 
@@ -251,9 +254,15 @@ export async function skipVersion(version: string): Promise<void> {
   await broadcastPrefs();
 }
 
-/** Runs the update loop. Mount once at the app root; active only in the launcher window. */
+/**
+ * Runs the update loop. Mount once at the app root; active only in the launcher
+ * window, and not at all in builds with UPDATER_ENABLED off.
+ */
 export function useUpdater(): void {
   useEffect(() => {
+    // No startup check, no 4-hour interval, no hydration, no listeners.
+    if (!UPDATER_ENABLED) return;
+
     let label = "";
     try {
       label = getCurrentWebviewWindow().label;

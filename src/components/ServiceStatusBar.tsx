@@ -14,6 +14,10 @@ import { useSpeakerStore } from "../stores/speakerStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
 import { hasApiKey, listLocalSTTEngines, getApiKey } from "../lib/ipc";
 import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../lib/types";
+import {
+  STT_LABELS, STT_PROVIDER_OPTIONS, EXCLUSIVE_FALLBACK_ORDER, isExclusiveProvider,
+  LOCAL_MODEL_ENGINES, resolveLocalModelId, localModelIdOnSwitch, type SttIconKey,
+} from "../lib/stt/providerMeta";
 import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useAgentStore } from "../stores/agentStore";
@@ -35,54 +39,18 @@ const LLM_LABELS: Record<string, string> = {
   claude_cli: "Claude",
 };
 
-export const STT_LABELS: Record<string, string> = {
-  web_speech: "Web Speech",
-  whisper_cpp: "Whisper.cpp",
-  deepgram: "Deepgram",
-  whisper_api: "Whisper API",
-  azure_speech: "Azure",
-  groq_whisper: "Groq STT",
-  sherpa_onnx: "Sherpa-ONNX",
-  ort_streaming: "ORT Streaming",
-  parakeet_tdt: "Parakeet TDT",
-  windows_native: "Windows Speech",
+// STT labels, picker options and exclusion rules live in lib/stt/providerMeta.
+export { STT_LABELS } from "../lib/stt/providerMeta";
+
+// ── Icons for providerMeta's icon keys (STT quick-swap picker) ──
+const STT_ICONS: Record<SttIconKey, React.ComponentType<{ className?: string }>> = {
+  globe: Globe,
+  monitor: Monitor,
+  hardDrive: HardDrive,
+  zap: Zap,
+  cpu: Cpu,
+  cloud: Cloud,
 };
-
-// ── STT provider options for the quick-swap picker ──
-// Mirrors MeetingAudioSettings.tsx STT_OPTIONS — same availability rules apply.
-const STT_PROVIDER_OPTIONS: {
-  value: STTProviderType;
-  label: string;
-  IconComponent: React.ComponentType<{ className?: string }>;
-  requiresKey: boolean;
-  isCloud: boolean;
-  inputOnly?: boolean;
-  requiresDownload?: string;
-}[] = [
-  { value: "web_speech", label: "Web Speech", IconComponent: Globe, requiresKey: false, isCloud: false, inputOnly: true },
-  { value: "windows_native", label: "Windows Speech", IconComponent: Monitor, requiresKey: false, isCloud: false, inputOnly: true },
-  { value: "sherpa_onnx", label: "Sherpa-ONNX", IconComponent: HardDrive, requiresKey: false, isCloud: false, requiresDownload: "sherpa_onnx" },
-  { value: "ort_streaming", label: "ORT Streaming", IconComponent: Zap, requiresKey: false, isCloud: false, requiresDownload: "ort_streaming" },
-  { value: "parakeet_tdt", label: "Parakeet TDT", IconComponent: Cpu, requiresKey: false, isCloud: false, requiresDownload: "parakeet_tdt" },
-  { value: "deepgram", label: "Deepgram", IconComponent: Cloud, requiresKey: true, isCloud: true },
-  { value: "whisper_api", label: "Whisper API", IconComponent: Cloud, requiresKey: true, isCloud: true },
-  { value: "azure_speech", label: "Azure Speech", IconComponent: Cloud, requiresKey: true, isCloud: true },
-  { value: "groq_whisper", label: "Groq Whisper", IconComponent: Zap, requiresKey: true, isCloud: true },
-];
-
-// ── Web Speech / Windows Speech mutual exclusion ──
-// These providers capture from the OS default mic via a single SpeechRecognition instance.
-// Only one can be active across both parties at any time.
-const EXCLUSIVE_PROVIDERS: STTProviderType[] = ["web_speech", "windows_native"];
-
-const EXCLUSIVE_FALLBACK_ORDER: STTProviderType[] = [
-  "deepgram", "groq_whisper", "whisper_api", "azure_speech",
-  "sherpa_onnx", "ort_streaming", "parakeet_tdt",
-];
-
-function isExclusiveProvider(provider: string): boolean {
-  return EXCLUSIVE_PROVIDERS.includes(provider as STTProviderType);
-}
 
 // ── LLM provider options for quick-swap ──
 const LLM_PROVIDER_OPTIONS: {
@@ -121,8 +89,7 @@ function formatSttModel(modelId: string): string {
 
 function formatSttLabel(provider: string, localModelId?: string): { provider: string; model: string } {
   const providerLabel = STT_LABELS[provider] || provider;
-  const localProviders = ["whisper_cpp", "sherpa_onnx", "ort_streaming", "parakeet_tdt"];
-  if (localProviders.includes(provider) && localModelId) {
+  if (LOCAL_MODEL_ENGINES.includes(provider as STTProviderType) && localModelId) {
     return { provider: providerLabel, model: formatSttModel(localModelId) };
   }
   return { provider: providerLabel, model: "" };
@@ -175,26 +142,18 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   const llmProviderLabel = LLM_LABELS[shownProvider] || shownProvider;
   const llmModelLabel = formatModel(shownModel);
 
-  const DEFAULT_MODEL_PER_ENGINE: Record<string, string> = {
-    sherpa_onnx: "streaming-zipformer-en-20M",
-    ort_streaming: "zipformer-en-20M",
-    parakeet_tdt: "parakeet-tdt-0.6b-v3-int8",
-  };
-
   const youSttProvider = meetingAudioConfig?.you.stt_provider ?? "web_speech";
-  const youLocalModel = meetingAudioConfig?.you.local_model_id
-    || activeModelPerEngine[youSttProvider]
-    || DEFAULT_MODEL_PER_ENGINE[youSttProvider]
-    || (youSttProvider === "whisper_cpp" ? activeWhisperModel : undefined);
-  const youStt = formatSttLabel(youSttProvider, youLocalModel || undefined);
+  const youLocalModel = resolveLocalModelId(
+    youSttProvider, meetingAudioConfig?.you.local_model_id, activeModelPerEngine, activeWhisperModel,
+  );
+  const youStt = formatSttLabel(youSttProvider, youLocalModel);
   const youActive = isRecording && !mutedYou && micLevel > 0.02;
 
   const themSttProvider = meetingAudioConfig?.them.stt_provider ?? "—";
-  const themLocalModel = meetingAudioConfig?.them.local_model_id
-    || activeModelPerEngine[themSttProvider]
-    || DEFAULT_MODEL_PER_ENGINE[themSttProvider]
-    || (themSttProvider === "whisper_cpp" ? activeWhisperModel : undefined);
-  const themStt = formatSttLabel(themSttProvider, themLocalModel || undefined);
+  const themLocalModel = resolveLocalModelId(
+    themSttProvider, meetingAudioConfig?.them.local_model_id, activeModelPerEngine, activeWhisperModel,
+  );
+  const themStt = formatSttLabel(themSttProvider, themLocalModel);
   const themActive = isRecording && !mutedThem && systemLevel > 0.02;
 
   // ── Provider change handler ──
@@ -202,13 +161,9 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   const handleProviderChange = useCallback((party: "you" | "them", provider: STTProviderType) => {
     if (!meetingAudioConfig) return;
     const updates: Partial<typeof meetingAudioConfig.you> = { stt_provider: provider };
-    if (provider === "sherpa_onnx" || provider === "ort_streaming" || provider === "parakeet_tdt") {
-      const activeModelPerEngine = useConfigStore.getState().activeModelPerEngine;
-      const engineModel = activeModelPerEngine[provider]
-        ?? DEFAULT_MODEL_PER_ENGINE[provider]
-        ?? useConfigStore.getState().activeWhisperModel;
-      if (engineModel) updates.local_model_id = engineModel;
-    }
+    const state = useConfigStore.getState();
+    const engineModel = localModelIdOnSwitch(provider, state.activeModelPerEngine, state.activeWhisperModel);
+    if (engineModel) updates.local_model_id = engineModel;
     setMeetingAudioConfig({
       ...meetingAudioConfig,
       [party]: { ...meetingAudioConfig[party], ...updates },
@@ -657,10 +612,10 @@ function STTPickerDropdown({
     let cancelled = false;
     (async () => {
       try {
-        const cloudProviders = ["deepgram", "whisper_api", "azure_speech", "groq_whisper"];
+        const keyProviders = STT_PROVIDER_OPTIONS.filter((o) => o.requiresApiKey).map((o) => o.id);
         const [engines, ...keyResults] = await Promise.all([
           listLocalSTTEngines(),
-          ...cloudProviders.map(async (p) => {
+          ...keyProviders.map(async (p) => {
             try { return { p, ok: await hasApiKey(p) }; }
             catch { return { p, ok: false }; }
           }),
@@ -711,19 +666,19 @@ function STTPickerDropdown({
     if (opt.inputOnly && !isInput) return false;
     if (opt.requiresDownload) return isLocalEngineReady(opt.requiresDownload);
     // Assume available if key status hasn't loaded yet — prevents false fallbacks
-    if (opt.requiresKey) return apiKeyStatus[opt.value] ?? true;
+    if (opt.requiresApiKey) return apiKeyStatus[opt.id] ?? true;
     return true;
   }
 
   function isExclusiveLocked(opt: (typeof STT_PROVIDER_OPTIONS)[0]): boolean {
-    if (!isExclusiveProvider(opt.value)) return false;
+    if (!isExclusiveProvider(opt.id)) return false;
     if (!otherPartyProvider) return false;
     return isExclusiveProvider(otherPartyProvider);
   }
 
   function findExclusiveFallback(): STTProviderType | null {
     for (const provider of EXCLUSIVE_FALLBACK_ORDER) {
-      const opt = STT_PROVIDER_OPTIONS.find((o) => o.value === provider);
+      const opt = STT_PROVIDER_OPTIONS.find((o) => o.id === provider);
       if (opt && isAvailable(opt)) return provider;
     }
     return null;
@@ -765,8 +720,8 @@ function STTPickerDropdown({
     };
     useConfigStore.getState().setMeetingAudioConfig(updatedConfig);
 
-    const stealLabel = STT_PROVIDER_OPTIONS.find((o) => o.value === stealTarget)?.label ?? stealTarget;
-    const fallbackLabel = STT_PROVIDER_OPTIONS.find((o) => o.value === fallback)?.label ?? fallback;
+    const stealLabel = STT_PROVIDER_OPTIONS.find((o) => o.id === stealTarget)?.pickerLabel ?? stealTarget;
+    const fallbackLabel = STT_PROVIDER_OPTIONS.find((o) => o.id === fallback)?.pickerLabel ?? fallback;
     showToast(
       `${stealLabel} moved to ${thisRole === "you" ? "You" : "Them"}. ${otherRole === "you" ? "You" : "Them"} fell back to ${fallbackLabel}.`,
       "info"
@@ -797,17 +752,17 @@ function STTPickerDropdown({
                 </span>
               </div>
               {localOpts.map((opt) => {
-                const Icon = opt.IconComponent;
-                const selected = currentProvider === opt.value;
+                const Icon = STT_ICONS[opt.icon];
+                const selected = currentProvider === opt.id;
                 const locked = isExclusiveLocked(opt);
                 return (
                   <button
-                    key={opt.value}
+                    key={opt.id}
                     onClick={() => {
                       if (locked) {
-                        setStealTarget(opt.value);
+                        setStealTarget(opt.id);
                       } else {
-                        onSelect(opt.value);
+                        onSelect(opt.id);
                       }
                     }}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs transition-colors cursor-pointer ${
@@ -818,7 +773,7 @@ function STTPickerDropdown({
                   >
                     <Icon className={`h-3.5 w-3.5 shrink-0 ${selected ? "text-primary" : "text-emerald-400"}`} />
                     <span className="flex-1 text-left font-medium">
-                      {opt.label}
+                      {opt.pickerLabel}
                       {locked && (
                         <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
                       )}
@@ -839,17 +794,17 @@ function STTPickerDropdown({
                 </span>
               </div>
               {cloudOpts.map((opt) => {
-                const Icon = opt.IconComponent;
-                const selected = currentProvider === opt.value;
+                const Icon = STT_ICONS[opt.icon];
+                const selected = currentProvider === opt.id;
                 const locked = isExclusiveLocked(opt);
                 return (
                   <button
-                    key={opt.value}
+                    key={opt.id}
                     onClick={() => {
                       if (locked) {
-                        setStealTarget(opt.value);
+                        setStealTarget(opt.id);
                       } else {
-                        onSelect(opt.value);
+                        onSelect(opt.id);
                       }
                     }}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs transition-colors cursor-pointer ${
@@ -860,7 +815,7 @@ function STTPickerDropdown({
                   >
                     <Icon className={`h-3.5 w-3.5 shrink-0 ${selected ? "text-primary" : "text-blue-400"}`} />
                     <span className="flex-1 text-left font-medium">
-                      {opt.label}
+                      {opt.pickerLabel}
                       {locked && (
                         <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
                       )}
@@ -882,14 +837,14 @@ function STTPickerDropdown({
             <div className="border-t border-border/20 bg-amber-500/5 px-3 py-2.5">
               <p className="text-meta leading-relaxed text-amber-200/80 mb-2">
                 <span className="font-semibold text-amber-400">
-                  {STT_PROVIDER_OPTIONS.find((o) => o.value === stealTarget)?.label}
+                  {STT_PROVIDER_OPTIONS.find((o) => o.id === stealTarget)?.pickerLabel}
                 </span>{" "}
                 can only run on one source at a time. Switch to this party?
                 The other party will fall back to{" "}
                 <span className="font-medium">
                   {(() => {
                     const fb = findExclusiveFallback();
-                    return fb ? (STT_PROVIDER_OPTIONS.find((o) => o.value === fb)?.label ?? fb) : "no available engine";
+                    return fb ? (STT_PROVIDER_OPTIONS.find((o) => o.id === fb)?.pickerLabel ?? fb) : "no available engine";
                   })()}
                 </span>.
               </p>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, X } from "lucide-react";
 import { open } from "@tauri-apps/plugin-shell";
+import { useT } from "../i18n";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { releaseNotesUrl } from "../hooks/useUpdater";
 
@@ -12,6 +13,7 @@ const AUTO_DISMISS_MS = 12_000;
  * version, with a link to the release notes.
  */
 export function UpdateReadyToast() {
+  const { t } = useT(["settings", "common"]);
   const phase = useUpdaterStore((s) => s.phase);
   const version = useUpdaterStore((s) => s.version);
   const autoUpdate = useUpdaterStore((s) => s.autoUpdate);
@@ -43,23 +45,21 @@ export function UpdateReadyToast() {
         <ArrowUpCircle className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground/90">
-            NexQ v{visibleVersion} is ready
+            {t("updates.toast.ready", { version: visibleVersion })}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {autoUpdate
-              ? "Restart from the footer, or it installs when you quit."
-              : "Restart from the footer to install."}
+            {autoUpdate ? t("updates.toast.restartOrQuit") : t("updates.toast.restartToInstall")}
           </p>
           <button
             onClick={() => open(releaseNotesUrl(visibleVersion)).catch(() => {})}
             className="mt-1.5 text-xs font-medium text-primary hover:underline"
           >
-            What's new
+            {t("updates.toast.whatsNew")}
           </button>
         </div>
         <button
           onClick={() => setVisibleVersion(null)}
-          aria-label="Dismiss"
+          aria-label={t("common:actions.dismiss")}
           className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
         >
           <X className="h-3.5 w-3.5" />

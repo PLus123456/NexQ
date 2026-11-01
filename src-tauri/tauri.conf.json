@@ -1,8 +1,9 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "NexQ",
+  "productName": "NexQ Plus",
+  "mainBinaryName": "nexq-plus",
   "version": "2.29.1",
-  "identifier": "com.nexq.app",
+  "identifier": "com.plus.nexq",
   "build": {
     "beforeDevCommand": "node scripts/fetch-onnxruntime.mjs && npm run dev",
     "devUrl": "http://localhost:5173",
@@ -15,7 +16,7 @@
     "windows": [
       {
         "label": "launcher",
-        "title": "NexQ",
+        "title": "NexQ Plus",
         "width": 900,
         "height": 650,
         "minWidth": 700,
@@ -27,7 +28,7 @@
       },
       {
         "label": "overlay",
-        "title": "NexQ Overlay",
+        "title": "NexQ Plus 悬浮窗",
         "width": 500,
         "height": 700,
         "minWidth": 400,
@@ -46,7 +47,7 @@
       "id": "main",
       "iconPath": "icons/icon.png",
       "iconAsTemplate": false,
-      "tooltip": "NexQ — AI Meeting Assistant",
+      "tooltip": "NexQ Plus",
       "menuOnLeftClick": false
     },
     "security": {
@@ -83,7 +84,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMzM0VGQzk0QTQwN0UyOUEKUldTYTRnZWtsUHcrTXcxenlTdlRkZGVtWEgwVUZlMmZxOWRzNktwWGZFeWxCVGY5R2Jycml2bFIK",
       "endpoints": [
-        "https://github.com/naxhq/NexQ/releases/latest/download/latest.json"
+        "https://github.com/PLus123456/NexQ/releases/latest/download/latest.json"
       ]
     }
   }

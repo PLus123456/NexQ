@@ -1,7 +1,7 @@
 {
   "bundle": {
     "targets": ["nsis"],
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "resources": {
       "ort/onnxruntime.dll": "onnxruntime.dll",
       "ort/msvcp140.dll": "msvcp140.dll",

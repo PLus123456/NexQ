@@ -2,7 +2,7 @@
 //!
 //! Uses the Security framework directly (generic-password items), so secrets
 //! never appear on a command line. Key naming matches the Windows backend:
-//! service `NexQ:{provider}`, account `{provider}`.
+//! service `NexQPlus:{provider}` (see `SERVICE_PREFIX`), account `{provider}`.
 
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -12,7 +12,7 @@ use security_framework::passwords::{
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 fn service_name(provider: &str) -> String {
-    format!("NexQ:{}", provider)
+    format!("{}{}", super::SERVICE_PREFIX, provider)
 }
 
 /// Write (or update) a credential.

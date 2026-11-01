@@ -13,6 +13,10 @@ pub mod state;
 pub mod stt;
 pub mod translation;
 pub mod tray;
+// == PLUS MODULES ==
+pub mod i18n;
+pub mod net;
+pub mod paths;
 
 use state::AppState;
 use std::sync::{Arc, Mutex};
@@ -152,6 +156,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data directory");
+            paths::init(app_data_dir.clone());
             match db::DatabaseManager::new(app_data_dir.clone()) {
                 Ok(db_mgr) => {
                     app_state.database = Some(Arc::new(Mutex::new(db_mgr)));
@@ -174,7 +179,7 @@ pub fn run() {
             log::info!("Credential manager initialized");
 
             // -- Initialize ContextManager --
-            let ctx_mgr = context::ContextManager::new();
+            let ctx_mgr = context::ContextManager::new(paths::context_dir(&app_data_dir));
             app_state.context = Some(Arc::new(Mutex::new(ctx_mgr)));
             log::info!("Context manager initialized");
 
@@ -183,6 +188,7 @@ pub fn run() {
             let rag_mgr = rag::RagManager::new(rag_config);
             app_state.rag = Some(Arc::new(Mutex::new(rag_mgr)));
             log::info!("RAG manager initialized");
+            // == PLUS INIT: p4-rag ==
 
             // -- Restore persisted context resources from DB --
             // Load stored metadata first (while holding DB lock), then restore into
@@ -244,6 +250,7 @@ pub fn run() {
             stt_router.set_app_handle(app.handle().clone());
             app_state.stt = Some(Arc::new(Mutex::new(stt_router)));
             log::info!("STT router initialized");
+            // == PLUS INIT: p2-stt ==
 
             // -- Initialize LLMRouter with auto-detected provider --
             let mut llm_router = llm::LLMRouter::new();
@@ -268,6 +275,7 @@ pub fn run() {
 
             app_state.llm = Some(Arc::new(Mutex::new(llm_router)));
             log::info!("LLM router initialized");
+            // == PLUS INIT: p1-llm ==
 
             // -- Initialize IntelligenceEngine --
             let intel_engine = intelligence::IntelligenceEngine::new();
@@ -361,6 +369,9 @@ pub fn run() {
                 }
             });
 
+            // -- UI language for the tray: the stored choice, before the menu is built --
+            i18n::load_from_config(app.handle());
+
             // -- Initialize TrayManager (non-fatal — app works without enhanced tray) --
             match tray::IconSet::new(include_bytes!("../icons/icon.png")) {
                 Ok(icon_set) => {
@@ -368,10 +379,12 @@ pub fn run() {
                     let state = app.state::<AppState>();
                     *state.tray_manager.lock().unwrap() = Some(manager);
 
-                    // Build initial idle menu (best-effort)
+                    // Build initial idle menu and tooltip (best-effort)
                     if let Ok(menu) = tray::menu::build_idle_menu(app.handle()) {
                         if let Some(tray_icon) = app.tray_by_id("main") {
                             let _ = tray_icon.set_menu(Some(menu));
+                            let tooltip = tray::tooltip::build_tooltip(tray::TrayState::Idle, None, false, None);
+                            let _ = tray_icon.set_tooltip(Some(&tooltip));
                         }
                     }
                     log::info!("TrayManager initialized successfully");
@@ -536,6 +549,7 @@ pub fn run() {
             stt_commands::update_groq_config,
             stt_commands::set_pause_threshold,
             stt_commands::get_pause_threshold,
+            // == PLUS COMMANDS: p2-stt ==
             // == COMMANDS: llm ==
             llm_commands::set_llm_provider,
             llm_commands::list_models,
@@ -543,6 +557,7 @@ pub fn run() {
             llm_commands::test_llm_connection,
             llm_commands::get_llm_providers,
             llm_commands::list_openrouter_models,
+            // == PLUS COMMANDS: p1-llm ==
             // == COMMANDS: intelligence ==
             intelligence_commands::generate_assist,
             intelligence_commands::cancel_generation,
@@ -616,6 +631,9 @@ pub fn run() {
             tray_commands::set_tray_tooltip,
             tray_commands::set_meeting_start_time,
             tray_commands::rebuild_tray_menu,
+            // == PLUS COMMANDS: p0-ui ==
+            commands::ui_commands::set_ui_language,
+            // == PLUS COMMANDS: p5-onboarding ==
             // == COMMANDS: gemini cache ==
             gemini_cache_commands::create_gemini_context_cache,
             gemini_cache_commands::delete_gemini_context_cache,
@@ -632,6 +650,7 @@ pub fn run() {
             rag_commands::pull_embedding_model,
             rag_commands::test_rag_answer,
             rag_commands::remove_file_rag_index,
+            // == PLUS COMMANDS: p4-rag ==
             // == COMMANDS: recording ==
             recording_commands::get_recording_info,
             recording_commands::get_recording_file_url,

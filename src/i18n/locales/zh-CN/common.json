@@ -1,0 +1,180 @@
+{
+  "actions": {
+    "add": "添加",
+    "apply": "应用",
+    "back": "返回",
+    "cancel": "取消",
+    "change": "更改",
+    "clear": "清除",
+    "close": "关闭",
+    "confirm": "确认",
+    "copy": "复制",
+    "delete": "删除",
+    "disable": "停用",
+    "dismiss": "关闭",
+    "done": "完成",
+    "edit": "编辑",
+    "enable": "启用",
+    "export": "导出",
+    "finish": "完成",
+    "import": "导入",
+    "next": "下一步",
+    "open": "打开",
+    "openSettings": "去设置里配置",
+    "previous": "上一步",
+    "refresh": "刷新",
+    "remove": "移除",
+    "resetDefaults": "恢复默认",
+    "retry": "重试",
+    "save": "保存",
+    "search": "搜索",
+    "skip": "跳过",
+    "testConnection": "测试连接"
+  },
+  "status": {
+    "connected": "已连接",
+    "copied": "已复制",
+    "disabled": "已停用",
+    "enabled": "已启用",
+    "error": "出错",
+    "failed": "失败",
+    "loading": "加载中…",
+    "notConfigured": "未配置",
+    "ready": "就绪",
+    "saved": "已保存",
+    "saving": "保存中…",
+    "success": "成功",
+    "testing": "测试中…"
+  },
+  "labels": {
+    "advanced": "高级",
+    "autoDetect": "自动检测",
+    "custom": "自定义",
+    "default": "默认",
+    "none": "无",
+    "off": "关",
+    "on": "开",
+    "optional": "可选",
+    "required": "必填",
+    "room": "现场",
+    "them": "对方",
+    "unknown": "未知",
+    "you": "我"
+  },
+  "errors": {
+    "loadFailed": "加载失败：{{detail}}",
+    "operationFailed": "操作失败：{{detail}}",
+    "saveFailed": "保存失败：{{detail}}",
+    "testFailed": "测试失败：{{detail}}",
+    "unknown": "未知错误"
+  },
+  "units": {
+    "milliseconds": "{{count}} 毫秒",
+    "minutes_other": "{{count}} 分钟",
+    "seconds_other": "{{count}} 秒"
+  },
+  "quickSetup": {
+    "llm": {
+      "title": "AI 模型",
+      "hint": "这里暂时还不能快速配置 AI 模型，请先到“设置 → AI 模型”里添加连接。"
+    },
+    "stt": {
+      "title": "语音识别",
+      "hint": "这里暂时还不能快速配置语音识别，请先到“设置 → 语音识别”里选择识别引擎。"
+    },
+    "translation": {
+      "title": "翻译",
+      "hint": "这里暂时还不能快速配置翻译，请先到“设置 → 翻译”里配置。"
+    }
+  },
+  "components": {
+    "endpointFields": {
+      "baseUrl": {
+        "label": "接口地址（Base URL）",
+        "placeholder": "例如 https://api.example.com/v1"
+      },
+      "preview": {
+        "label": "实际请求地址"
+      },
+      "notices": {
+        "alreadyFull": "已识别为完整地址，不再追加 {{path}}。",
+        "trimmed": "已识别为完整地址，已去掉末尾的 {{path}}。",
+        "versionHint": "大多数 OpenAI 兼容服务需要 /v1 之类的版本前缀。",
+        "addVersionPrefix": "补上 /v1"
+      },
+      "errors": {
+        "missingScheme": "地址需要以 http:// 或 https:// 开头。",
+        "useSuggestion": "改用 {{suggestion}}",
+        "unsupportedScheme": "不支持 {{scheme}}://，请使用 http:// 或 https://。",
+        "invalidUrl": "地址格式不正确。"
+      },
+      "auth": {
+        "label": "认证方式",
+        "modes": {
+          "none": "无",
+          "bearer": "Bearer Token",
+          "header": "自定义请求头"
+        },
+        "headerName": {
+          "label": "请求头名称",
+          "placeholder": "例如 api-key"
+        },
+        "prefix": {
+          "label": "值前缀（可选）",
+          "placeholder": "例如 Token"
+        },
+        "sentAs": "发送为",
+        "keyPlaceholder": "<API Key>",
+        "errors": {
+          "nameRequired": "请填写请求头名称。",
+          "invalidName": "请求头名称无效：不能包含空格、冒号等分隔符。"
+        }
+      },
+      "secret": {
+        "label": "API Key",
+        "placeholder": "输入 API Key",
+        "saved": "已保存",
+        "savedWithHint": "已保存 …{{hint}}",
+        "hint": "安全保存在本机，保存后不再显示。",
+        "show": "显示 API Key",
+        "hide": "隐藏 API Key"
+      },
+      "headers": {
+        "label": "自定义请求头",
+        "hint": "每次请求都会带上。不要在这里填密钥，密钥请填在 API Key 里。",
+        "namePlaceholder": "名称",
+        "valuePlaceholder": "值",
+        "add": "添加请求头",
+        "remove": "删除请求头",
+        "removeNamed": "删除请求头 {{name}}",
+        "invalidName": "请求头名称无效。",
+        "invalidValue": "值里不能有换行或控制字符。"
+      }
+    },
+    "languageCombobox": {
+      "placeholder": "选择或输入语言代码",
+      "toggle": "显示语言列表",
+      "commonGroup": "常用语言",
+      "moreGroup": "更多语言",
+      "useAsTyped": "按原样使用“{{value}}”",
+      "noMatches": "没有匹配的语言"
+    },
+    "modelCombobox": {
+      "placeholder": "选择或输入模型 ID",
+      "toggle": "显示模型列表",
+      "refresh": "刷新模型列表",
+      "loading": "正在拉取模型…",
+      "fetchFailed": "拉取模型列表失败：{{detail}}",
+      "empty": "还没有模型，可直接输入模型 ID",
+      "fetchList": "拉取列表",
+      "noMatches": "没有匹配的模型，按回车直接使用“{{value}}”",
+      "notInList": "不在列表中，将按原样发送。",
+      "groups": {
+        "manual": "手动添加",
+        "fetched": "已拉取",
+        "suggested": "推荐",
+        "other": "其他"
+      }
+    }
+  }
+}
