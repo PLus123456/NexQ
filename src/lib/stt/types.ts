@@ -57,6 +57,10 @@ export interface SonioxConfig {
   model: string;
   /** 500–3000 ms. */
   max_endpoint_delay_ms: number;
+  /** -1.0–1.0, higher = sentences end sooner. null = server default (not sent; only stt-rt-v5 takes it). */
+  endpoint_sensitivity: number | null;
+  /** 0–3, higher = less wait before a sentence ends. null = server default (not sent; only stt-rt-v5 takes it). */
+  endpoint_latency_adjustment_level: number | null;
   language_hints_strict: boolean;
   /** Tell remote speakers apart ("Them" only). */
   enable_speaker_diarization: boolean;
@@ -72,6 +76,8 @@ export const DEFAULT_SONIOX_CONFIG: SonioxConfig = {
   region: "us",
   model: "stt-rt-v5",
   max_endpoint_delay_ms: 1500,
+  endpoint_sensitivity: null,
+  endpoint_latency_adjustment_level: null,
   language_hints_strict: false,
   enable_speaker_diarization: true,
   ws_url: "",

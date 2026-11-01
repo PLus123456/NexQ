@@ -23,7 +23,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   stopAudioTest: async () => false,
 }));
 
-import { MeetingAudioSettings } from "./MeetingAudioSettings";
+import { MeetingAudioSettings, sonioxPairProblem } from "./MeetingAudioSettings";
 import { AudioSetupStep } from "../components/wizard/AudioSetupStep";
 import { useConfigStore } from "../stores/configStore";
 import { DEFAULT_OPENAI_COMPAT_STT_CONFIG } from "../lib/stt/types";
@@ -163,19 +163,54 @@ describe("MeetingAudioSettings engines and languages", () => {
     expect(screen.getByRole("button", { name: "Windows Speech" })).toBeInTheDocument();
   });
 
-  it("turns Soniox's own translation on and off for a Soniox party", async () => {
+  it("switches Soniox's own translation between off, one-way and two-way, keeping each mode's fields", async () => {
     const user = userEvent.setup();
     useConfigStore.setState({
       meetingAudioConfig: { ...initialConfig, them: { ...initialConfig.them, stt_provider: "soniox" } },
     });
     render(<MeetingAudioSettings />);
-    const toggle = await screen.findByRole("switch", { name: "Translate Them with Soniox" });
-    expect(screen.queryByRole("switch", { name: "Translate You with Soniox" })).toBeNull();
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-    await user.click(toggle);
-    expect(useConfigStore.getState().meetingAudioConfig?.them.native_translation).toEqual({ mode: "one_way" });
+    const native = () => useConfigStore.getState().meetingAudioConfig?.them.native_translation;
+    const mode = await screen.findByRole("combobox", { name: "Translate Them with Soniox" });
+    expect(screen.queryByRole("combobox", { name: "Translate You with Soniox" })).toBeNull();
+    expect(mode).toHaveValue("off");
+
+    await user.selectOptions(mode, "One-way");
+    expect(native()).toEqual({ mode: "one_way" });
     expect(screen.getByText("Empty: uses the target language of the Translation settings.")).toBeInTheDocument();
-    await user.click(screen.getByRole("switch", { name: "Translate Them with Soniox" }));
-    expect(useConfigStore.getState().meetingAudioConfig?.them.native_translation).toEqual({ mode: "off" });
+    await user.click(screen.getByRole("combobox", { name: "Translate into" }));
+    await user.keyboard("ja{Enter}");
+    expect(native()).toEqual({ mode: "one_way", target_language: "ja" });
+
+    await user.selectOptions(mode, "Two-way");
+    expect(native()).toEqual({ mode: "two_way", target_language: "ja" });
+    expect(screen.queryByRole("combobox", { name: "Translate into" })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("Pick both languages to turn two-way translation on.");
+    await user.click(screen.getByRole("combobox", { name: "Two-way language A for Them" }));
+    await user.keyboard("zh-CN{Enter}");
+    await user.click(screen.getByRole("combobox", { name: "Two-way language B for Them" }));
+    await user.keyboard("zh-TW{Enter}");
+    expect(screen.getByRole("status")).toHaveTextContent("Pick two different languages.");
+    await user.click(screen.getByRole("combobox", { name: "Two-way language B for Them" }));
+    await user.keyboard("en{Enter}");
+    expect(native()).toEqual({ mode: "two_way", target_language: "ja", language_a: "zh-CN", language_b: "en" });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText(/any other language is only transcribed/)).toBeInTheDocument();
+
+    // Off and back: nothing is lost on the way.
+    await user.selectOptions(mode, "Off");
+    expect(native()).toEqual({ mode: "off", target_language: "ja", language_a: "zh-CN", language_b: "en" });
+    expect(screen.queryByRole("combobox", { name: "Two-way language A for Them" })).toBeNull();
+    await user.selectOptions(mode, "One-way");
+    expect(native()).toEqual({ mode: "one_way", target_language: "ja", language_a: "zh-CN", language_b: "en" });
+  });
+});
+
+describe("sonioxPairProblem", () => {
+  it("wants two different languages with two-letter codes", () => {
+    expect(sonioxPairProblem("", "en")).toBe("incomplete");
+    expect(sonioxPairProblem("zh-CN", "  ")).toBe("incomplete");
+    expect(sonioxPairProblem("yue", "en")).toBe("unsupported");
+    expect(sonioxPairProblem("zh-CN", "zh-TW")).toBe("same");
+    expect(sonioxPairProblem("zh-CN", "en-US")).toBeNull();
   });
 });

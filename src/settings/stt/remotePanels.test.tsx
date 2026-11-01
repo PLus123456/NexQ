@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as IPC from "../../lib/ipc";
@@ -37,7 +37,7 @@ vi.mock("../../lib/stt/ipc", () => ({
 }));
 
 import { OpenAICompatSttSettings } from "./OpenAICompatSttSettings";
-import { SonioxSettings, checkExtraStartParams } from "./SonioxSettings";
+import { SonioxSettings, checkExtraStartParams, roundSensitivity } from "./SonioxSettings";
 import { useConfigStore } from "../../stores/configStore";
 import { DEFAULT_OPENAI_COMPAT_STT_CONFIG, DEFAULT_SONIOX_CONFIG } from "../../lib/stt/types";
 
@@ -76,6 +76,16 @@ describe("checkExtraStartParams", () => {
   });
 });
 
+describe("roundSensitivity", () => {
+  it("keeps -1.0–1.0 with one decimal", () => {
+    expect(roundSensitivity(0.30000000000000004)).toBe(0.3);
+    expect(roundSensitivity(-0.04)).toBe(0);
+    expect(Object.is(roundSensitivity(-0.04), -0)).toBe(false);
+    expect(roundSensitivity(1.7)).toBe(1);
+    expect(roundSensitivity(-3)).toBe(-1);
+  });
+});
+
 describe("SonioxSettings", () => {
   it("saves the key without ever reading it back, and keeps it when a test fails", async () => {
     ipc.probeSoniox.mockImplementation(async () => probe({ code: "unauthorized", status: 401 }));
@@ -104,6 +114,39 @@ describe("SonioxSettings", () => {
     await user.click(screen.getByRole("button", { name: "Test key" }));
     expect(await screen.findByText("The key works — 1 real-time model available.")).toBeInTheDocument();
     expect(useConfigStore.getState().verifiedCloudProviders).toContain("soniox");
+  });
+
+  it("sends the v5 sentence-end settings only once they are set", async () => {
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.getByText(/Only stt-rt-v5 accepts these two/)).toBeInTheDocument();
+    const saved = () => useConfigStore.getState().sonioxConfig;
+
+    const level = screen.getByLabelText("Endpoint latency adjustment");
+    expect(level).toHaveValue("");
+    await user.selectOptions(level, "Level 2");
+    expect(saved().endpoint_latency_adjustment_level).toBe(2);
+    await user.selectOptions(level, "Server default");
+    expect(saved().endpoint_latency_adjustment_level).toBeNull();
+
+    const useDefault = screen.getByRole("checkbox", { name: "Use the server default" });
+    const slider = screen.getByLabelText("Endpoint sensitivity");
+    expect(useDefault).toBeChecked();
+    expect(slider).toBeDisabled();
+    await user.click(useDefault);
+    expect(saved().endpoint_sensitivity).toBe(0);
+    expect(slider).toBeEnabled();
+    fireEvent.change(slider, { target: { value: "0.3" } });
+    // Saved when the slider is let go, not while it moves.
+    expect(saved().endpoint_sensitivity).toBe(0);
+    fireEvent.mouseUp(slider);
+    expect(saved().endpoint_sensitivity).toBe(0.3);
+    expect(screen.getByText("0.3")).toBeInTheDocument();
+    await user.click(useDefault);
+    expect(saved().endpoint_sensitivity).toBeNull();
+    expect(slider).toBeDisabled();
+    expect(saved()).toEqual(DEFAULT_SONIOX_CONFIG);
   });
 
   it("refuses extra start parameters with api_key", async () => {

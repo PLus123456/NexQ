@@ -1765,9 +1765,6 @@ async fn create_stt_provider_for_party(
             use crate::stt::plus_config::{SttPlusState, SONIOX_KEY_SLOT};
             let key = get_credential_key(state, SONIOX_KEY_SLOT);
             let cfg = app.state::<SttPlusState>().soniox_snapshot();
-            let translation_target = soniox_translation_target(config, state);
-            let translation_target_code = translation_target.as_ref().map(|(code, _)| code.clone());
-            let translation_target = translation_target.map(|(_, soniox)| soniox);
             let meeting_ref = state
                 .live_meeting
                 .lock()
@@ -1778,15 +1775,14 @@ async fn create_stt_provider_for_party(
                 party: party_role.to_string(),
                 language: stt_language.clone(),
                 other_language: Some(party_lang(other, state)),
-                translation_target: translation_target.clone(),
-                translation_target_code,
+                translation: soniox_translation(config, state),
                 segment_id_prefix: party.segment_prefix(session_prefix),
                 client_reference_id: Some(format!("nexq:{}:{}", meeting_ref, party_role.to_lowercase())),
                 diarize: party == Party::Them && cfg.enable_speaker_diarization,
             };
             crate::stt::emit_stt_debug(app, "info", "soniox",
                 &format!("[{}] model={}, region={}, translation={}", party_role, cfg.model, cfg.region,
-                    translation_target.as_deref().unwrap_or("off")));
+                    options.translation));
             let mut p = crate::stt::soniox::SonioxSTT::new(cfg, key, options);
             p.set_app_handle(app.clone());
             Ok(Some(Box::new(p)))
@@ -1874,25 +1870,52 @@ fn party_lang(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Stri
     crate::stt::language::party_language(config.language.as_deref(), &get_stt_language(state))
 }
 
-/// Soniox one-way translation target of a party when its `native_translation`
-/// is on: its own target, else the translation settings'. Returns the code as
-/// the settings name it ("zh-CN", used for the translations it produces) and
-/// the two-letter code Soniox takes ("zh").
-fn soniox_translation_target(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Option<(String, String)> {
-    let translation = config.native_translation.as_ref().filter(|t| t.is_one_way())?;
-    let target = translation
-        .target_language
-        .clone()
-        .filter(|t| !t.trim().is_empty())
-        .or_else(|| {
-            state
-                .translation
-                .as_ref()
-                .and_then(|tr| tr.lock().ok().map(|router| router.default_target_lang().to_string()))
-        })?;
-    let target = target.trim().to_string();
-    let soniox = crate::stt::language::base_code(&target)?;
-    Some((target, soniox))
+/// What Soniox translates a party into, per its `native_translation`:
+/// one-way into its own target, else the translation settings'; two-way
+/// between its languages A and B (both set, two different two-letter codes;
+/// else nothing). Codes come as the settings name them ("zh-CN", used for the
+/// translations it produces) and as Soniox takes them ("zh").
+fn soniox_translation(
+    config: &crate::audio::PartyAudioConfig,
+    state: &AppState,
+) -> crate::stt::soniox::SonioxTranslation {
+    use crate::stt::language::base_code;
+    use crate::stt::soniox::SonioxTranslation;
+    let Some(translation) = config.native_translation.as_ref() else {
+        return SonioxTranslation::Off;
+    };
+    let chosen = match translation.mode.as_str() {
+        "one_way" => translation
+            .target_language
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| {
+                state
+                    .translation
+                    .as_ref()
+                    .and_then(|tr| tr.lock().ok().map(|router| router.default_target_lang().to_string()))
+            })
+            .and_then(|target| {
+                let code = target.trim().to_string();
+                let soniox = base_code(&code)?;
+                Some(SonioxTranslation::OneWay { code, soniox })
+            }),
+        "two_way" => {
+            let side = |code: Option<&String>| {
+                let code = code?.trim();
+                let soniox = base_code(code).filter(|c| c.len() == 2)?;
+                Some((code.to_string(), soniox))
+            };
+            match (side(translation.language_a.as_ref()), side(translation.language_b.as_ref())) {
+                (Some((a_code, a)), Some((b_code, b))) if a != b => {
+                    Some(SonioxTranslation::TwoWay { a_code, a, b_code, b })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    chosen.unwrap_or_default()
 }
 
 /// Read an API key directly from the credential store (Windows Credential Manager).
@@ -2085,6 +2108,7 @@ pub async fn get_mute_status(app: AppHandle) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::audio::{NativeTranslationConfig, PartyAudioConfig, PartyRole};
+    use crate::stt::soniox::SonioxTranslation;
     use std::sync::{Arc, Mutex};
 
     fn party(provider: &str, language: Option<&str>) -> PartyAudioConfig {
@@ -2134,29 +2158,65 @@ mod tests {
         assert!(cfg.native_translation.unwrap().is_one_way());
     }
 
+    fn one_way(code: &str, soniox: &str) -> SonioxTranslation {
+        SonioxTranslation::OneWay { code: code.into(), soniox: soniox.into() }
+    }
+
     #[test]
     fn soniox_translates_only_when_on_and_follows_the_translation_target() {
         let state = state("en-US", Some("zh-CN"));
         let mut them = party("soniox", Some("en-US"));
-        assert_eq!(soniox_translation_target(&them, &state), None);
+        assert_eq!(soniox_translation(&them, &state), SonioxTranslation::Off);
 
         them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
-        assert_eq!(soniox_translation_target(&them, &state), Some(("zh-CN".to_string(), "zh".to_string())));
+        assert_eq!(soniox_translation(&them, &state), one_way("zh-CN", "zh"));
 
         them.native_translation = Some(NativeTranslationConfig {
             mode: "one_way".into(),
             target_language: Some("ja".into()),
             ..Default::default()
         });
-        assert_eq!(soniox_translation_target(&them, &state), Some(("ja".to_string(), "ja".to_string())));
+        assert_eq!(soniox_translation(&them, &state), one_way("ja", "ja"));
 
         them.native_translation = Some(NativeTranslationConfig { mode: "off".into(), target_language: Some("ja".into()), ..Default::default() });
-        assert_eq!(soniox_translation_target(&them, &state), None);
+        assert_eq!(soniox_translation(&them, &state), SonioxTranslation::Off);
 
         // No translation router and no target of its own: nothing to translate into.
         let bare = super::tests::state("en-US", None);
         them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
-        assert_eq!(soniox_translation_target(&them, &bare), None);
+        assert_eq!(soniox_translation(&them, &bare), SonioxTranslation::Off);
+    }
+
+    #[test]
+    fn soniox_two_way_needs_two_different_languages() {
+        let state = state("en-US", Some("ja"));
+        let mut them = party("soniox", Some("auto"));
+        let pair = |a: Option<&str>, b: Option<&str>| {
+            Some(NativeTranslationConfig {
+                mode: "two_way".into(),
+                // The one-way target stays saved while two-way is on; it plays no part.
+                target_language: Some("ja".into()),
+                language_a: a.map(str::to_string),
+                language_b: b.map(str::to_string),
+            })
+        };
+        them.native_translation = pair(Some("zh-CN"), Some(" en-US "));
+        assert_eq!(
+            soniox_translation(&them, &state),
+            SonioxTranslation::TwoWay { a_code: "zh-CN".into(), a: "zh".into(), b_code: "en-US".into(), b: "en".into() }
+        );
+        // A side missing, the same language twice, or a code Soniox can't take: no translation.
+        for (a, b) in [
+            (Some("zh-CN"), None),
+            (None, Some("en")),
+            (Some("zh-CN"), Some("  ")),
+            (Some("zh-CN"), Some("zh-TW")),
+            (Some("yue"), Some("en")),
+            (Some("auto"), Some("en")),
+        ] {
+            them.native_translation = pair(a, b);
+            assert_eq!(soniox_translation(&them, &state), SonioxTranslation::Off, "{a:?} {b:?}");
+        }
     }
 
     #[test]

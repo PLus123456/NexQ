@@ -160,13 +160,28 @@
       "label": "Translate with Soniox",
       "hint": "Soniox translates while it transcribes, in the same stream.",
       "ariaLabel": "Translate {{party}} with Soniox",
+      "modes": {
+        "off": "Off",
+        "one_way": "One-way",
+        "two_way": "Two-way"
+      },
       "target": {
         "label": "Translate into",
         "followPlaceholder": "Same as the Translation settings",
         "follow": "Use the Translation settings target",
         "followHint": "Empty: uses the target language of the Translation settings."
       },
-      "twoWay": "Two-way translation is set in the Translation settings."
+      "pair": {
+        "languageA": "Language A",
+        "languageB": "Language B",
+        "ariaLabelA": "Two-way language A for {{party}}",
+        "ariaLabelB": "Two-way language B for {{party}}",
+        "placeholder": "Pick a language",
+        "hint": "Speech in either language is translated into the other; any other language is only transcribed. Made for in-person meetings.",
+        "incomplete": "Pick both languages to turn two-way translation on.",
+        "unsupported": "Soniox only takes languages with a two-letter code (zh, en…).",
+        "same": "Pick two different languages."
+      }
     },
     "diarization": {
       "label": "Speaker Diarization",
@@ -553,6 +568,23 @@
       "min": "500 ms (faster)",
       "max": "3000 ms (fewer splits)",
       "hint": "How long Soniox waits after speech stops before it ends the sentence. Subtitles work best around 1000–1500 ms."
+    },
+    "endpointTuning": {
+      "title": "Sentence-end tuning (stt-rt-v5 only)",
+      "note": "Only stt-rt-v5 accepts these two. Other models reject the whole session (error 400) when either is set, so keep both on the server default with any other model.",
+      "serverDefault": "Server default"
+    },
+    "endpointSensitivity": {
+      "label": "Endpoint sensitivity",
+      "useDefault": "Use the server default",
+      "min": "-1.0 (waits longer)",
+      "max": "1.0 (ends sooner)",
+      "hint": "How readily Soniox decides a sentence is over. Higher ends sentences sooner (more, shorter lines); lower waits longer before finalizing. The server default is 0.0."
+    },
+    "latencyAdjustment": {
+      "label": "Endpoint latency adjustment",
+      "level": "Level {{level}}",
+      "hint": "Cuts the wait before a sentence ends: a higher level is faster and gives more sentence ends, with slightly lower accuracy. Level 0 is no adjustment (the server default)."
     },
     "diarization": {
       "label": "Tell remote speakers apart",
