@@ -7,7 +7,7 @@ import { useT } from "../../i18n";
 import { useTranslationStore, errorMessage } from "../../stores/translationStore";
 import { testTranslationProvider } from "../../lib/translation/ipc";
 import { LLM_PROMPT_DEFAULTS } from "../../lib/translation/defaults";
-import { openSettingsTab } from "./openSettingsTab";
+import { useMeetingStore } from "../../stores/meetingStore";
 
 type TestState =
   | { state: "idle" }
@@ -100,7 +100,7 @@ export function LlmTranslationPanel() {
           <p>{t("llm.modelNote")}</p>
           <button
             type="button"
-            onClick={() => openSettingsTab("llm")}
+            onClick={() => useMeetingStore.getState().openSettings("llm")}
             className="mt-1 font-medium text-primary/80 underline-offset-2 hover:text-primary hover:underline"
           >
             {t("llm.openModelSettings")}

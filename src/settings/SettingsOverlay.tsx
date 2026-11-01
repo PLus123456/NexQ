@@ -105,10 +105,14 @@ export function SettingsOverlay({ isModal = false }: SettingsOverlayProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     () => (useMeetingStore.getState().settingsTab as SettingsTab | null) ?? "meeting_audio",
   );
-  // The requested tab applies to this opening only.
+  // A requested tab applies once: at opening, or when openSettings(tab) is
+  // called while the page is already open (a link to another tab).
+  const requestedTab = useMeetingStore((s) => s.settingsTab);
   useEffect(() => {
+    if (!requestedTab) return;
+    setActiveTab(requestedTab as SettingsTab);
     useMeetingStore.setState({ settingsTab: null });
-  }, []);
+  }, [requestedTab]);
   const [isVisible, setIsVisible] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
 
