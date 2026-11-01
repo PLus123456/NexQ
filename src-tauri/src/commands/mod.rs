@@ -24,4 +24,5 @@ pub mod updater_commands;
 pub mod ui_commands;
 // p1-llm:
 // p4-rag:
+pub mod rag_engine_commands;
 // p5-onboarding:

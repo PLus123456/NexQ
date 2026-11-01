@@ -3276,6 +3276,7 @@ name = "nexq"
 version = "2.29.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bzip2",
  "chrono",
  "core-foundation 0.10.1",

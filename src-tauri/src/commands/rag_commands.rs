@@ -1,132 +1,66 @@
-use std::sync::Arc;
-use tauri::{command, AppHandle, Emitter, State};
+use tauri::{command, AppHandle, State};
 use crate::intelligence::IntelligenceEngine;
-use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder};
+use crate::llm::api::{self, LlmTask};
+use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder, engine::RagEngine, indexer::JobKind};
 use crate::state::AppState;
+use std::sync::Arc;
 
-#[command]
-pub async fn rebuild_rag_index(
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    // Auto-enable RAG when user explicitly requests a rebuild
-    let rag_arc = state.rag.as_ref()
-        .ok_or_else(|| "RAG manager not initialized".to_string())?;
-
-    {
-        let mut mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-        if !mgr.config().enabled {
-            let mut config = mgr.config().clone();
-            config.enabled = true;
-            mgr.update_config(config);
-            log::info!("RAG auto-enabled via rebuild request");
-        }
-    }
-
-    // Get list of context resources
-    let resources = {
-        let ctx = state.context.as_ref()
-            .ok_or_else(|| "Context manager not initialized".to_string())?;
-        let ctx_mgr = ctx.lock().map_err(|e| e.to_string())?;
-        ctx_mgr.list_resources()
-    };
-
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
-
-    // Clear existing index
-    {
-        let db = db_arc.lock().map_err(|e| e.to_string())?;
-        RagManager::clear_index(db.connection())?;
-    }
-
-    // Re-index each file
-    for resource in &resources {
-        let text = rag::file_processor::extract_text(&resource.file_path, &resource.file_type)
-            .unwrap_or_default();
-
-        if !text.is_empty() {
-            // Extract config under brief lock, then drop guard before await
-            let (config, embedder_url) = {
-                let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-                (mgr.config().clone(), mgr.embedder_url())
-            };
-            RagManager::index_file_async(
-                db_arc,
-                &resource.id,
-                &text,
-                &resource.name,
-                &app_handle,
-                &config,
-                &embedder_url,
-            ).await?;
-        }
-    }
-
-    // Emit completion event
-    let _ = app_handle.emit("rag_index_progress", serde_json::json!({
-        "status": "complete",
-        "total_files": resources.len(),
-    }));
-
-    log::info!("RAG index rebuild complete: {} files processed", resources.len());
-    Ok(())
+fn engine() -> Result<Arc<RagEngine>, String> {
+    rag::engine::global().ok_or_else(|| "RAG engine not started".to_string())
 }
 
+/// Copies the engine's config into `AppState.rag` (what `config()` returns).
+pub(crate) fn mirror_config(state: &AppState, config: &RagConfig) {
+    if let Some(rag) = state.rag.as_ref() {
+        if let Ok(mut mgr) = rag.lock() {
+            mgr.mirror(config.clone());
+        }
+    }
+}
+
+/// Builds or updates the knowledge base: indexes new and changed documents,
+/// re-chunks those chunked with other settings, and when the embedding
+/// model changed embeds everything into a new index before switching to it
+/// (unchanged chunks keep their vectors). Waits until done.
+#[command]
+pub async fn rebuild_rag_index(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = engine()?;
+    // Auto-enable RAG when user explicitly requests a rebuild
+    if !engine.config().enabled {
+        let config = engine.update_config(&serde_json::json!({ "enabled": true }))?;
+        mirror_config(&state, &config);
+        log::info!("RAG auto-enabled via rebuild request");
+    }
+
+    let summary = engine.run(JobKind::Rebuild).await?;
+    log::info!(
+        "RAG index rebuild done: {} files, {} new chunks, {} embedded",
+        summary.files_done,
+        summary.chunks_inserted,
+        summary.vectors_embedded
+    );
+    match summary.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Re-reads and re-indexes one document now. Waits until done.
 #[command]
 pub async fn rebuild_file_index(
     resource_id: String,
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let rag_arc = state.rag.as_ref()
-        .ok_or_else(|| "RAG manager not initialized".to_string())?;
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
-
-    // Remove existing index for this file
-    {
-        let db = db_arc.lock().map_err(|e| e.to_string())?;
-        RagManager::remove_file_index(db.connection(), &resource_id)?;
+    let summary = engine()?
+        .run(JobKind::Sync { resources: Some(vec![resource_id.clone()]), force: true })
+        .await?;
+    if let Some(failure) = summary.failures.into_iter().find(|f| f.resource_id == resource_id) {
+        return Err(failure.error);
     }
-
-    // Get file info from context manager
-    let (file_path, file_type, file_name) = {
-        let ctx = state.context.as_ref()
-            .ok_or_else(|| "Context manager not initialized".to_string())?;
-        let ctx_mgr = ctx.lock().map_err(|e| e.to_string())?;
-        let resources = ctx_mgr.list_resources();
-        let resource = resources.iter()
-            .find(|r| r.id == resource_id)
-            .ok_or_else(|| format!("Resource {} not found", resource_id))?;
-        (resource.file_path.clone(), resource.file_type.clone(), resource.name.clone())
-    };
-
-    // Extract text and re-index
-    let text = rag::file_processor::extract_text(&file_path, &file_type)
-        .unwrap_or_default();
-
-    if !text.is_empty() {
-        let (config, embedder_url) = {
-            let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-            (mgr.config().clone(), mgr.embedder_url())
-        };
-        RagManager::index_file_async(
-            db_arc,
-            &resource_id,
-            &text,
-            &file_name,
-            &app_handle,
-            &config,
-            &embedder_url,
-        ).await?;
+    if let Some(error) = summary.error {
+        return Err(error);
     }
-
-    let _ = app_handle.emit("rag_index_progress", serde_json::json!({
-        "status": "file_complete",
-        "resource_id": resource_id,
-    }));
-
     log::info!("RAG file index rebuilt for resource {}", resource_id);
     Ok(())
 }
@@ -135,12 +69,12 @@ pub async fn rebuild_file_index(
 pub async fn clear_rag_index(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
-
-    let db = db_arc.lock().map_err(|e| e.to_string())?;
-    RagManager::clear_index(db.connection())?;
-
+    if let Some(db_arc) = state.database.as_ref() {
+        if let Ok(db) = db_arc.lock() {
+            let _ = crate::db::rag::clear_all_chunks(db.connection());
+        }
+    }
+    engine()?.run(JobKind::Clear).await?;
     log::info!("RAG index cleared");
     Ok(())
 }
@@ -149,20 +83,22 @@ pub async fn clear_rag_index(
 pub async fn get_rag_status(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
-
     // Get the actual resource count from the context manager (in-memory, reliable)
     let context_file_count = state.context.as_ref()
         .and_then(|c| c.lock().ok())
         .map(|c| c.list_resources().len())
         .unwrap_or(0);
 
-    let db = db_arc.lock().map_err(|e| e.to_string())?;
-    let mut status = RagManager::get_status(db.connection())?;
-
-    // Use context manager count as total_files (context_resources DB table may be empty)
-    status.total_files = context_file_count.max(status.indexed_files);
+    let engine = engine()?;
+    engine.index_info().await; // refreshes the counters
+    let stats = engine.stats();
+    let status = crate::db::rag::RagIndexStatus {
+        total_files: context_file_count.max(stats.documents_indexed),
+        indexed_files: stats.documents_indexed,
+        total_chunks: stats.chunks,
+        total_tokens: stats.tokens,
+        last_indexed_at: stats.last_indexed_at_ms.and_then(rag::engine::ms_to_rfc3339),
+    };
 
     serde_json::to_string(&status)
         .map_err(|e| format!("Failed to serialize RAG status: {}", e))
@@ -190,49 +126,40 @@ pub async fn test_rag_search(
 }
 
 #[command]
-pub async fn get_rag_config(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let rag_arc = state.rag.as_ref()
-        .ok_or_else(|| "RAG manager not initialized".to_string())?;
-
-    let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-    let config = mgr.config();
-
-    serde_json::to_string(config)
+pub async fn get_rag_config() -> Result<String, String> {
+    serde_json::to_string(&engine()?.config())
         .map_err(|e| format!("Failed to serialize RAG config: {}", e))
 }
 
+/// Applies `config_json` as a patch: a client that sends the upstream
+/// fields only leaves the newer settings untouched.
 #[command]
 pub async fn update_rag_config(
     config_json: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let rag_arc = state.rag.as_ref()
-        .ok_or_else(|| "RAG manager not initialized".to_string())?;
-
-    let new_config: RagConfig = serde_json::from_str(&config_json)
+    let patch: serde_json::Value = serde_json::from_str(&config_json)
         .map_err(|e| format!("Failed to parse RAG config: {}", e))?;
-
-    let mut mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-    mgr.update_config(new_config);
+    let config = engine()?.update_config(&patch)?;
+    mirror_config(&state, &config);
 
     log::info!("RAG config updated");
     Ok(())
 }
 
-#[command]
-pub async fn test_ollama_embedding_connection(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let base_url = {
-        let rag_arc = state.rag.as_ref()
-            .ok_or_else(|| "RAG manager not initialized".to_string())?;
-        let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-        mgr.embedder_url()
-    };
+/// The Ollama server of the embedding settings (or the upstream default).
+fn ollama_base_url() -> Result<String, String> {
+    let config = engine()?.config();
+    Ok(if config.embedding.provider == rag::config::EmbeddingProvider::Ollama && !config.embedding.base_url.is_empty() {
+        config.embedding.base_url
+    } else {
+        config.ollama_url
+    })
+}
 
-    let status = OllamaEmbedder::test_connection(&base_url).await?;
+#[command]
+pub async fn test_ollama_embedding_connection() -> Result<String, String> {
+    let status = OllamaEmbedder::test_connection(&ollama_base_url()?).await?;
 
     serde_json::to_string(&status)
         .map_err(|e| format!("Failed to serialize connection status: {}", e))
@@ -242,16 +169,8 @@ pub async fn test_ollama_embedding_connection(
 pub async fn pull_embedding_model(
     model: String,
     app_handle: AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let base_url = {
-        let rag_arc = state.rag.as_ref()
-            .ok_or_else(|| "RAG manager not initialized".to_string())?;
-        let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-        mgr.embedder_url()
-    };
-
-    OllamaEmbedder::pull_model(&base_url, &model, app_handle).await
+    OllamaEmbedder::pull_model(&ollama_base_url()?, &model, app_handle).await
 }
 
 /// Remove the RAG index for a single file without touching other files.
@@ -261,22 +180,23 @@ pub async fn remove_file_rag_index(
     resource_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
-
-    let db = db_arc.lock().map_err(|e| e.to_string())?;
-    RagManager::remove_file_index(db.connection(), &resource_id)?;
+    if let Some(db_arc) = state.database.as_ref() {
+        if let Ok(db) = db_arc.lock() {
+            let _ = crate::db::rag::delete_chunks_by_file(db.connection(), &resource_id);
+        }
+    }
+    engine()?.run(JobKind::Remove { resource_id: resource_id.clone() }).await?;
 
     log::info!("RAG index removed for resource {}", resource_id);
     Ok(())
 }
 
-/// Test RAG pipeline end-to-end: search for chunks, then call the configured LLM
-/// to answer the question using those chunks as context.
+/// Test RAG pipeline end-to-end: search for chunks, then ask the model the
+/// "knowledge base answer" task routes to (`LlmTask::RagAnswer`) to answer
+/// the question using those chunks as context.
 ///
-/// Accepts optional `llm_provider` and `llm_model` from the frontend to ensure
-/// the correct LLM is used (the backend router may be out of sync with the
-/// frontend's persisted settings).
+/// `llm_provider` / `llm_model` are accepted for older callers; the model
+/// comes from the task routing.
 ///
 /// Uses the same streaming events as generate_assist (llm_stream_start/token/end)
 /// so the frontend can display the response progressively.
@@ -290,6 +210,7 @@ pub async fn test_rag_answer(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    log::debug!("Test KB: caller asked for {:?} / {:?}; using the routed model", llm_provider, llm_model);
 
     // 1. Search RAG for relevant chunks
     let rag_arc = state.rag.as_ref()
@@ -315,71 +236,11 @@ pub async fn test_rag_answer(
         .unwrap_or_default();
     let context = rag::prompt_builder::build_rag_context(&chunks, &custom_instr);
 
-    // 3. Get LLM provider — sync from frontend if provided
-    let llm_arc = state.llm.as_ref()
-        .ok_or_else(|| "LLM router not initialized".to_string())?;
-
-    // If the frontend passed a provider that differs from the active one, use a
-    // temporary provider for this call. The router's active provider and model
-    // are never changed by a test.
-    let mut temp_provider: Option<(
-        Arc<tokio::sync::Mutex<Box<dyn crate::llm::provider::LLMProvider>>>,
-        String,
-    )> = None;
-    if let Some(ref provider_str) = llm_provider {
-        let requested = provider_str.to_lowercase();
-        let current_type = {
-            let router = llm_arc.lock().map_err(|e| e.to_string())?;
-            router.active_provider_type().map(|pt| pt.as_str().to_string())
-        };
-
-        if current_type.as_deref() != Some(requested.as_str()) {
-            // Load the API key from the credential store so cloud providers work correctly
-            let api_key = state.credentials.as_ref()
-                .and_then(|c| c.lock().ok())
-                .and_then(|creds| creds.get_key(&requested).ok().flatten());
-
-            let provider_config = crate::llm::ProviderConfig {
-                provider_type: requested.clone(),
-                api_key,
-                base_url: None, // use provider's default base URL
-                auth_type: None,
-                auth_value: None,
-                auth_header: None,
-            };
-
-            match crate::llm::create_provider(&provider_config) {
-                Ok(p) => {
-                    let display = crate::llm::ProviderType::from_str(&requested)
-                        .map(|pt| pt.display_name().to_string())
-                        .unwrap_or_else(|_| requested.clone());
-                    log::info!("Test KB: using temporary {} provider", requested);
-                    temp_provider = Some((Arc::new(tokio::sync::Mutex::new(p)), display));
-                }
-                Err(e) => return Err(format!("Could not use {}: {}", requested, e)),
-            }
-        }
-    }
-
-    let (provider_arc, model_name, provider_name) = {
-        let router = llm_arc.lock().map_err(|e| e.to_string())?;
-        let model_name = llm_model.clone()
-            .unwrap_or_else(|| router.active_model().to_string());
-        if model_name.is_empty() {
-            return Err("No active model selected — configure one in LLM settings".to_string());
-        }
-        match temp_provider {
-            Some((provider, display)) => (provider, model_name, display),
-            None => {
-                let provider = router.get_provider()
-                    .map_err(|e| format!("No active LLM provider: {}", e))?;
-                let ptype = router.active_provider_type()
-                    .map(|pt| pt.display_name().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string());
-                (provider, model_name, ptype)
-            }
-        }
-    };
+    // 3. The model for knowledge base answers
+    let resolved = api::resolve_for_task(&app_handle, &LlmTask::RagAnswer)
+        .await
+        .map_err(String::from)?;
+    let provider_arc = api::legacy_handle(&resolved);
 
     // 4. Call LLM with streaming (reuses existing llm_stream_* events)
     let cancel_flag = Arc::new(crate::llm::provider::CancelToken::new());
@@ -397,8 +258,8 @@ pub async fn test_rag_answer(
         true,           // include_rag (this is a RAG test)
         false,          // include_instructions
         provider_arc,
-        model_name,
-        provider_name,
+        resolved.model,
+        resolved.display_name,
         crate::llm::provider::GenerationParams {
             request_id: Some(request_id),
             ..Default::default()

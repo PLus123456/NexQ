@@ -1,51 +1,75 @@
+pub mod cjk;
 pub mod config;
 pub mod chunker;
+pub mod store;
+pub mod flat_index;
+pub mod embedding;
+pub mod engine;
+pub mod indexer;
+pub mod tauri_host;
 pub mod embedder;
 pub mod vector_store;
-pub mod fts_store;
 pub mod search;
 pub mod prompt_builder;
 pub mod file_processor;
 pub mod transcript_indexer;
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use config::RagConfig;
-use embedder::OllamaEmbedder;
-use search::ScoredChunk;
+use engine::{RagEngine, SearchParams};
+use indexer::JobKind;
+use search::{ScoredChunk, SearchMode};
 use transcript_indexer::TranscriptIndexer;
 use crate::db::rag as rag_db;
 use crate::db::DatabaseManager;
 use rusqlite::Connection;
-use tauri::{AppHandle, Emitter};
-use uuid::Uuid;
+use tauri::AppHandle;
 
-/// Progress event payload emitted during file indexing.
-#[derive(Debug, Clone, serde::Serialize)]
-struct IndexProgress {
-    file_id: String,
-    file_name: String,
-    chunks_total: usize,
-    chunks_embedded: usize,
-    status: String,
-}
-
-/// Central orchestrator for the RAG pipeline.
+/// Facade over the RAG engine (`engine.rs`), kept in `AppState.rag`.
 ///
-/// Owns the configuration, embedding client, and optional transcript indexer.
-/// Provides methods for indexing files, searching, and managing the index.
+/// The methods keep their upstream signatures: `intelligence_commands.rs`
+/// (the LLM package's file) calls `search_async`, `get_status` and
+/// `config()` as before. The static methods ignore the `nexq.db` handles
+/// they are given: the index lives in `<app data>/rag/rag.db`.
 pub struct RagManager {
+    /// Mirror of the engine's config, for `config()` (refreshed by the commands).
     config: RagConfig,
-    embedder: OllamaEmbedder,
     transcript_indexer: Option<TranscriptIndexer>,
 }
 
 impl RagManager {
-    /// Create a new RagManager from a configuration.
-    ///
-    /// Sets up the Ollama embedder and optionally creates a TranscriptIndexer
-    /// if `config.include_transcript` is true.
+    /// Starts the engine with the stored config (`<app data>/rag/`), and
+    /// once the app state is ready queues the startup sync (when RAG is
+    /// enabled): documents removed meanwhile are dropped, new or changed
+    /// ones indexed.
+    pub fn bootstrap(app: AppHandle, app_data_dir: &Path) -> Self {
+        let host = Arc::new(tauri_host::TauriHost::new(app));
+        let engine = RagEngine::start(&app_data_dir.join("rag"), host.clone());
+        engine::install_global(engine.clone());
+        let startup = engine.clone();
+        engine::spawn(async move {
+            use engine::RagHost;
+            for _ in 0..240 {
+                if host.resources().is_some() {
+                    let config = startup.config();
+                    if config.enabled && config.indexing.auto_index {
+                        startup.enqueue(JobKind::Sync { resources: None, force: false });
+                    }
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            log::warn!("RAG: context resources not available, startup sync skipped");
+        });
+        Self::new(engine.config())
+    }
+
+    /// A manager with `config` (no engine of its own; the static methods use
+    /// the global one).
     pub fn new(config: RagConfig) -> Self {
-        let embedder = OllamaEmbedder::new(&config.ollama_url);
         let transcript_indexer = if config.include_transcript {
             Some(TranscriptIndexer::new(config.chunk_size))
         } else {
@@ -53,7 +77,6 @@ impl RagManager {
         };
         Self {
             config,
-            embedder,
             transcript_indexer,
         }
     }
@@ -63,20 +86,34 @@ impl RagManager {
         &self.config
     }
 
-    /// Get the Ollama base URL.
+    /// The embedding service's base URL (informational).
     pub fn embedder_url(&self) -> String {
-        self.embedder.base_url().to_string()
+        self.config.embedding.base_url.clone()
     }
 
     /// Get the configured embedding model name.
     pub fn embedding_model(&self) -> String {
-        self.config.embedding_model.clone()
+        self.config.embedding.model.clone()
     }
 
-    /// Update the configuration. Recreates the embedder and toggles
-    /// the transcript indexer as needed.
+    /// Replace the configuration (applied as a patch, so fields the caller
+    /// doesn't know keep their values) and store it.
     pub fn update_config(&mut self, config: RagConfig) {
-        self.embedder = OllamaEmbedder::new(&config.ollama_url);
+        let next = match (engine::global(), serde_json::to_value(&config)) {
+            (Some(engine), Ok(patch)) => match engine.update_config(&patch) {
+                Ok(next) => next,
+                Err(e) => {
+                    log::warn!("RAG config not saved: {e}");
+                    config
+                }
+            },
+            _ => config,
+        };
+        self.mirror(next);
+    }
+
+    /// Takes the engine's config without storing anything.
+    pub fn mirror(&mut self, config: RagConfig) {
         if config.include_transcript && self.transcript_indexer.is_none() {
             self.transcript_indexer = Some(TranscriptIndexer::new(config.chunk_size));
         } else if !config.include_transcript {
@@ -90,225 +127,81 @@ impl RagManager {
         self.transcript_indexer.as_mut()
     }
 
-    /// Index a file: chunk the text, insert chunk records, embed in batches,
-    /// store embeddings, and update the resource index status.
-    ///
-    /// This is a static async method — extract config from RagManager under lock,
-    /// then call this without holding any MutexGuard across awaits.
-    ///
-    /// Emits "rag_index_progress" events via the Tauri app handle.
-    ///
-    /// Returns the total number of chunks created.
+    /// Index one resource now and wait for it (re-reads the file; unchanged
+    /// chunks keep their vectors). Returns its chunk count. The text, name
+    /// and connection arguments are not needed any more.
     pub async fn index_file_async(
-        db: &Arc<Mutex<DatabaseManager>>,
+        _db: &Arc<Mutex<DatabaseManager>>,
         file_id: &str,
-        text: &str,
-        file_name: &str,
-        app_handle: &AppHandle,
-        config: &RagConfig,
-        embedder_url: &str,
+        _text: &str,
+        _file_name: &str,
+        _app_handle: &AppHandle,
+        _config: &RagConfig,
+        _embedder_url: &str,
     ) -> Result<usize, String> {
-        let embedder = OllamaEmbedder::new(embedder_url);
-
-        // Phase 1: Chunk the text (no DB needed)
-        let chunks = chunker::chunk_text(
-            text,
-            config.chunk_size,
-            config.chunk_overlap,
-            &config.splitting_strategy,
-        );
-
-        if chunks.is_empty() {
-            return Ok(0);
+        let engine = engine::global().ok_or("RAG engine not started")?;
+        let summary = engine
+            .run(JobKind::Sync { resources: Some(vec![file_id.to_string()]), force: true })
+            .await?;
+        if let Some(failure) = summary.failures.first() {
+            return Err(failure.error.clone());
         }
-
-        let total_chunks = chunks.len();
-
-        let _ = app_handle.emit(
-            "rag_index_progress",
-            &IndexProgress {
-                file_id: file_id.to_string(),
-                file_name: file_name.to_string(),
-                chunks_total: total_chunks,
-                chunks_embedded: 0,
-                status: "chunking".to_string(),
-            },
-        );
-
-        // Build ChunkRecords
-        let chunk_records: Vec<rag_db::ChunkRecord> = chunks
-            .iter()
-            .map(|c| rag_db::ChunkRecord {
-                chunk_id: Uuid::new_v4().to_string(),
-                file_id: file_id.to_string(),
-                chunk_index: c.index as i64,
-                text: c.text.clone(),
-                token_count: c.token_count as i64,
-                source_type: "file".to_string(),
-            })
-            .collect();
-
-        // Phase 2: Insert chunks into DB (brief lock, no await)
-        {
-            let db_guard = db.lock().map_err(|e| format!("DB lock failed: {}", e))?;
-            rag_db::insert_chunks_batch(db_guard.connection(), &chunk_records)
-                .map_err(|e| format!("Failed to insert chunks for {}: {}", file_name, e))?;
-        } // lock released before async work
-
-        // Phase 3: Embed in batches (async, no DB lock held)
-        let mut chunks_embedded: usize = 0;
-        let mut batch_embeddings: Vec<(String, Vec<u8>)> = Vec::new();
-
-        for batch_start in (0..chunk_records.len()).step_by(config.batch_size) {
-            let batch_end = (batch_start + config.batch_size).min(chunk_records.len());
-            let batch = &chunk_records[batch_start..batch_end];
-
-            let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-            let embeddings = embedder
-                .embed_documents(texts, &config.embedding_model)
-                .await?;
-
-            for (record, embedding) in batch.iter().zip(embeddings.iter()) {
-                let embedding_bytes = vector_store::f32_vec_to_bytes(embedding);
-                batch_embeddings.push((record.chunk_id.clone(), embedding_bytes));
-            }
-
-            chunks_embedded += batch.len();
-
-            let _ = app_handle.emit(
-                "rag_index_progress",
-                &IndexProgress {
-                    file_id: file_id.to_string(),
-                    file_name: file_name.to_string(),
-                    chunks_total: total_chunks,
-                    chunks_embedded,
-                    status: "embedding".to_string(),
-                },
-            );
-        }
-
-        // Phase 4: Store all embeddings + update status (brief lock, no await)
-        {
-            let db_guard = db.lock().map_err(|e| format!("DB lock failed: {}", e))?;
-            let conn = db_guard.connection();
-            for (chunk_id, embedding_bytes) in &batch_embeddings {
-                rag_db::store_embedding(conn, chunk_id, embedding_bytes)
-                    .map_err(|e| format!("Failed to store embedding: {}", e))?;
-            }
-            rag_db::update_index_status(conn, file_id, "indexed")
-                .map_err(|e| format!("Failed to update index status: {}", e))?;
-        }
-
-        let _ = app_handle.emit(
-            "rag_index_progress",
-            &IndexProgress {
-                file_id: file_id.to_string(),
-                file_name: file_name.to_string(),
-                chunks_total: total_chunks,
-                chunks_embedded: total_chunks,
-                status: "complete".to_string(),
-            },
-        );
-
-        log::info!(
-            "Indexed file '{}' ({} chunks, {} embeddings)",
-            file_name,
-            total_chunks,
-            chunks_embedded
-        );
-
-        Ok(total_chunks)
+        Ok(summary.chunks_inserted + summary.chunks_kept)
     }
 
-    /// Remove all chunks and embeddings for a file from the index.
+    /// Remove a file from the index (queued; also clears the upstream tables).
     pub fn remove_file_index(conn: &Connection, file_id: &str) -> Result<(), String> {
-        rag_db::delete_chunks_by_file(conn, file_id)
-            .map_err(|e| format!("Failed to remove file index: {}", e))?;
-        rag_db::update_index_status(conn, file_id, "none")
-            .map_err(|e| format!("Failed to update index status: {}", e))?;
+        let _ = rag_db::delete_chunks_by_file(conn, file_id);
+        if let Some(engine) = engine::global() {
+            engine.enqueue(JobKind::Remove { resource_id: file_id.to_string() });
+        }
         Ok(())
     }
 
-    /// Clear the entire RAG index (all chunks, embeddings, and FTS data).
+    /// Clear the entire RAG index (queued; also clears the upstream tables).
     pub fn clear_index(conn: &Connection) -> Result<(), String> {
-        rag_db::clear_all_chunks(conn)
-            .map_err(|e| format!("Failed to clear RAG index: {}", e))?;
+        let _ = rag_db::clear_all_chunks(conn);
+        if let Some(engine) = engine::global() {
+            engine.enqueue(JobKind::Clear);
+        }
         Ok(())
     }
 
-    /// Perform an async search against the RAG index.
-    ///
-    /// Creates a temporary OllamaEmbedder for the query embedding, locks the
-    /// database, loads stored embeddings, and dispatches to the appropriate
-    /// search mode (hybrid, semantic, or keyword).
+    /// Search the index. `config` supplies `top_k`, `search_mode` and
+    /// `semantic_weight`; the embedding settings are the engine's. Vectors
+    /// are used only when they belong to the current embedding setup, so a
+    /// changed model never mixes old and new vectors (keywords answer
+    /// meanwhile).
     pub async fn search_async(
-        db: &Arc<Mutex<DatabaseManager>>,
+        _db: &Arc<Mutex<DatabaseManager>>,
         query: &str,
         config: &RagConfig,
-        embedder_url: &str,
-        model: &str,
+        _embedder_url: &str,
+        _model: &str,
     ) -> Result<Vec<ScoredChunk>, String> {
-        let embedder = OllamaEmbedder::new(embedder_url);
-
-        // Embed the query (needed for semantic and hybrid modes)
-        let query_embedding = if config.search_mode != "keyword" {
-            Some(embedder.embed_query(query, model).await?)
-        } else {
-            None
+        let Some(engine) = engine::global() else {
+            return Ok(Vec::new());
         };
-
-        // Lock database and perform search
-        let db_guard = db
-            .lock()
-            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
-        let conn = db_guard.connection();
-
-        match config.search_mode.as_str() {
-            "hybrid" => {
-                let query_emb = query_embedding
-                    .as_ref()
-                    .ok_or("Query embedding required for hybrid search")?;
-
-                // Load all stored embeddings for vector search
-                let stored = load_all_embeddings(conn)?;
-
-                search::hybrid_search(conn, query_emb, query, config, &stored)
-            }
-            "semantic" => {
-                let query_emb = query_embedding
-                    .as_ref()
-                    .ok_or("Query embedding required for semantic search")?;
-
-                let stored = load_all_embeddings(conn)?;
-
-                search::semantic_only_search(conn, query_emb, config, &stored)
-            }
-            "keyword" => search::keyword_only_search(conn, query, config),
-            other => Err(format!("Unknown search mode: {}", other)),
-        }
+        let params = SearchParams {
+            top_k: config.top_k.max(1),
+            mode: SearchMode::parse(&config.search_mode),
+            semantic_weight: config.semantic_weight,
+        };
+        Ok(engine.search(query, params).await?.chunks)
     }
 
-    /// Get the current RAG index status (chunk counts, file counts, etc.).
-    pub fn get_status(conn: &Connection) -> Result<rag_db::RagIndexStatus, String> {
-        rag_db::get_index_status(conn)
-            .map_err(|e| format!("Failed to get RAG index status: {}", e))
-    }
-}
-
-/// Load all embeddings from the database into memory for vector search.
-///
-/// Returns Vec of (chunk_id, embedding_vector) pairs.
-fn load_all_embeddings(conn: &Connection) -> Result<Vec<(String, Vec<f32>)>, String> {
-    let rows = rag_db::get_all_embeddings(conn)
-        .map_err(|e| format!("Failed to load embeddings: {}", e))?;
-
-    let embeddings: Vec<(String, Vec<f32>)> = rows
-        .into_iter()
-        .map(|(chunk_id, bytes)| {
-            let vec = vector_store::bytes_to_f32_vec(&bytes);
-            (chunk_id, vec)
+    /// Index counters, from memory (no database query).
+    pub fn get_status(_conn: &Connection) -> Result<rag_db::RagIndexStatus, String> {
+        let stats = engine::global().map(|e| e.stats()).unwrap_or_default();
+        Ok(rag_db::RagIndexStatus {
+            total_files: stats.documents,
+            indexed_files: stats.documents_indexed,
+            total_chunks: stats.chunks,
+            total_tokens: stats.tokens,
+            last_indexed_at: stats.last_indexed_at_ms.and_then(engine::ms_to_rfc3339),
         })
-        .collect();
-
-    Ok(embeddings)
+    }
 }
+
+#[cfg(test)]
+mod tests;

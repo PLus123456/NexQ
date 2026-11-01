@@ -54,6 +54,8 @@ ogg = "0.9"
 libopus_sys = { version = "0.4", features = ["static", "bundled"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs = "0.8"
+# == PLUS: rag deps ==
+base64 = "0.22"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 cpal = "0.15"
