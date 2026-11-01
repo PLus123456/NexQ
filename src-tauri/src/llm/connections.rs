@@ -856,15 +856,59 @@ fn is_plain_http_remote(base: &str) -> bool {
     }
 }
 
-/// The chat address for `model`: `{model}` replaced by the URL-encoded name.
+/// The chat address for `model`: `{model}` replaced by the URL-encoded name
+/// (encoded like JavaScript's `encodeURIComponent`, so the settings page
+/// previews the same address).
 pub fn chat_url_for(chat_url: &str, model: &str) -> String {
     if !chat_url.contains("{model}") {
         return chat_url.to_string();
     }
-    let encoded: String = url::form_urlencoded::byte_serialize(model.as_bytes())
-        .collect::<String>()
-        .replace('+', "%20");
-    chat_url.replace("{model}", &encoded)
+    chat_url.replace("{model}", &encode_uri_component(model))
+}
+
+/// `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )`
+/// percent-encoded as UTF-8.
+fn encode_uri_component(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Accepts other spellings of two fields in a connection sent by the
+/// frontend: `models_endpoint` as `{"mode": …, "url": …}` or as an address,
+/// and `compat.temperature` as `{"fixed": n}`. Rewrites them to the stored form.
+pub fn accept_input_aliases(input: &mut Value) {
+    let Some(fields) = input.as_object_mut() else { return };
+    match fields.get("models_endpoint").cloned() {
+        Some(Value::Object(endpoint)) => {
+            let mode = endpoint.get("mode").and_then(Value::as_str).unwrap_or("auto").to_string();
+            fields.insert("models_endpoint".to_string(), Value::String(mode));
+            if let Some(url) = endpoint.get("url").and_then(Value::as_str) {
+                if fields.get("models_url").is_none_or(Value::is_null) {
+                    fields.insert("models_url".to_string(), Value::String(url.to_string()));
+                }
+            }
+        }
+        Some(Value::String(text)) if text.starts_with("http://") || text.starts_with("https://") => {
+            fields.insert("models_endpoint".to_string(), Value::String("custom".to_string()));
+            fields.insert("models_url".to_string(), Value::String(text));
+        }
+        _ => {}
+    }
+    if let Some(Value::Object(compat)) = fields.get_mut("compat") {
+        if let Some(Value::Object(temperature)) = compat.get("temperature").cloned() {
+            if let Some(value) = temperature.get("fixed").and_then(Value::as_f64) {
+                compat.insert("temperature".to_string(), Value::String("fixed".to_string()));
+                compat.insert("fixed_temperature".to_string(), serde_json::json!(value));
+            }
+        }
+    }
 }
 
 // ── Task routing ────────────────────────────────────────────────────────────
@@ -1108,6 +1152,32 @@ mod tests {
         assert!(preview(&c).kind_warnings.contains(&"looks_openai_compat".to_string()));
         let c = conn("a", LlmKind::OpenAiCompat, "http://example.com/v1");
         assert!(preview(&c).kind_warnings.contains(&"plain_http_remote".to_string()));
+    }
+
+    #[test]
+    fn model_names_are_encoded_like_encode_uri_component() {
+        assert_eq!(chat_url_for("https://h/{model}/x", "a b/c:d~e(1)!*'"), "https://h/a%20b%2Fc%3Ad~e(1)!*'/x");
+        assert_eq!(chat_url_for("https://h/{model}", "模型"), "https://h/%E6%A8%A1%E5%9E%8B");
+    }
+
+    #[test]
+    fn other_spellings_of_models_endpoint_and_temperature_are_accepted() {
+        let mut input = json!({"models_endpoint": {"mode": "custom", "url": "https://h/list"}, "compat": {"temperature": {"fixed": 0.7}}});
+        accept_input_aliases(&mut input);
+        let conn: LlmConnection = serde_json::from_value(input).unwrap();
+        assert_eq!((conn.models_endpoint, conn.models_url.as_deref()), (ModelsEndpoint::Custom, Some("https://h/list")));
+        assert_eq!((conn.compat.temperature, conn.compat.fixed_temperature), (TemperatureMode::Fixed, Some(0.7)));
+        let mut input = json!({"models_endpoint": {"mode": "disabled"}});
+        accept_input_aliases(&mut input);
+        assert_eq!(serde_json::from_value::<LlmConnection>(input).unwrap().models_endpoint, ModelsEndpoint::Disabled);
+        let mut input = json!({"models_endpoint": "https://h/models"});
+        accept_input_aliases(&mut input);
+        let conn: LlmConnection = serde_json::from_value(input).unwrap();
+        assert_eq!((conn.models_endpoint, conn.models_url.as_deref()), (ModelsEndpoint::Custom, Some("https://h/models")));
+        // The stored form passes through unchanged.
+        let mut input = json!({"models_endpoint": "auto", "compat": {"temperature": "omit"}});
+        accept_input_aliases(&mut input);
+        assert_eq!(input, json!({"models_endpoint": "auto", "compat": {"temperature": "omit"}}));
     }
 
     #[test]

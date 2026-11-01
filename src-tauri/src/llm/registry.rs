@@ -500,6 +500,15 @@ impl LlmRegistry {
         hasher.finish()
     }
 
+    /// Whether `conn` (a draft) sends exactly the requests its saved
+    /// version sends (same id, same request settings, same server).
+    pub fn matches_saved(&self, conn: &LlmConnection) -> bool {
+        let config = self.config();
+        config
+            .connection(&conn.id)
+            .is_some_and(|saved| self.fingerprint(saved) == self.fingerprint(conn))
+    }
+
     /// Forget the client of `id` (its secret changed).
     pub fn invalidate(&self, id: &str) {
         if let Ok(mut providers) = self.inner.providers.lock() {
@@ -1030,6 +1039,8 @@ fn is_valid_id(id: &str) -> bool {
 /// The connection to save and what the keychain must do (pure: the
 /// registry runs the keychain plan, then commits the connection).
 fn prepare_upsert(snapshot: &LlmConfigFile, input: Value, now: i64) -> Result<(LlmConnection, KeychainPlan), String> {
+    let mut input = input;
+    connections::accept_input_aliases(&mut input);
     let Value::Object(fields) = &input else {
         return Err("A connection must be a JSON object".to_string());
     };

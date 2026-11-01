@@ -117,10 +117,13 @@ pub async fn llm_set_route(
 
 #[command]
 pub async fn llm_set_response_language(
-    value: String,
+    value: Option<String>,
+    language: Option<String>,
     app: AppHandle,
     registry: State<'_, LlmRegistry>,
 ) -> Result<LlmConfigView, String> {
+    // `value` per the contract; `language` accepted too.
+    let value = value.or(language).ok_or_else(|| "Pass the response language as value".to_string())?;
     registry.set_response_language(&value)?;
     registry::after_change(&app);
     Ok(view(&app, &registry))
@@ -295,6 +298,7 @@ pub async fn llm_test_connection(
     registry: State<'_, LlmRegistry>,
 ) -> Result<TestConnectionResult, String> {
     let saved_id = if draft.is_none() { id.clone() } else { None };
+    let typed_secret = secret.as_deref().is_some_and(|s| !s.trim().is_empty());
     let start = Instant::now();
     let (client, conn) = match probe_client(&registry, id, draft, secret) {
         Ok(found) => found,
@@ -355,6 +359,9 @@ pub async fn llm_test_connection(
             },
         }
     };
+    // A draft that is the saved connection, tested with its saved key, marks
+    // the saved connection as tested too.
+    let saved_id = saved_id.or_else(|| (!typed_secret && registry.matches_saved(&conn)).then(|| conn.id.clone()));
     if out.ok {
         if let Some(id) = saved_id {
             match registry.mark_verified(&id) {
@@ -382,6 +389,8 @@ fn failed(failure: &Failure, conn: &LlmConnection, start: Instant, model: Option
 
 #[command]
 pub async fn llm_preview_endpoints(draft: Value) -> Result<EndpointsPreviewResult, String> {
+    let mut draft = draft;
+    connections::accept_input_aliases(&mut draft);
     let has_auth = draft.get("auth").is_some();
     let mut conn: LlmConnection = serde_json::from_value(draft).map_err(|e| format!("Invalid connection: {e}"))?;
     if !has_auth {
