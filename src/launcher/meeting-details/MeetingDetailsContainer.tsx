@@ -225,7 +225,11 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         });
       }
     });
+    // Every window hears the live meeting's failed lines too: only this
+    // meeting's errors count. handleRetranslateAll resets `retranslating`
+    // itself once the whole batch is done.
     const unlistenError = onTranslationError((error) => {
+      if (error.meeting_id && error.meeting_id !== meetingId) return;
       if (error.segment_id) {
         setTranslatingSegments((prev) => {
           const next = new Set(prev);
@@ -233,13 +237,12 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
           return next;
         });
       }
-      setRetranslating(false);
     });
     return () => {
       unlistenResult.then((fn) => fn());
       unlistenError.then((fn) => fn());
     };
-  }, []);
+  }, [meetingId]);
 
   // Audio keyboard shortcuts (Space, Arrow keys, [ ])
   useAudioKeyboardShortcuts();
@@ -338,6 +341,12 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       );
     } catch (err) {
       console.error("[MeetingDetails] Retranslate all failed:", err);
+      // Lines that never reported back (the batch failed up front) stop spinning.
+      setTranslatingSegments((prev) => {
+        const next = new Set(prev);
+        for (const seg of mismatched) next.delete(seg.id);
+        return next;
+      });
     } finally {
       setRetranslating(false);
     }
