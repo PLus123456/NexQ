@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { showToast } from "../stores/toastStore";
 import { acceleratorFromEvent, formatShortcut, normalizeAccelerator, reservedShortcutAction } from "../lib/shortcutLabel";
+import { useT } from "../i18n";
 
 interface ShortcutButtonProps {
   value: string;
@@ -15,6 +16,7 @@ interface ShortcutButtonProps {
  * becomes the shortcut; Esc cancels.
  */
 export function ShortcutButton({ value, defaultValue, onChange, others = {} }: ShortcutButtonProps) {
+  const { t } = useT(["settings", "common"]);
   const [recording, setRecording] = useState(false);
 
   useEffect(() => {
@@ -33,16 +35,16 @@ export function ShortcutButton({ value, defaultValue, onChange, others = {} }: S
         Object.entries(others).find(([other]) => normalizeAccelerator(other) === normalizeAccelerator(accel))?.[1];
       if (taken) {
         // Keep listening: the current binding (and the other action) stay as they are.
-        showToast(`${formatShortcut(accel)} is already used by "${taken}"`, "error");
+        showToast(t("shortcutButton.taken", { shortcut: formatShortcut(accel), action: taken }), "error");
         return;
       }
       onChange(accel);
       setRecording(false);
-      showToast(`Shortcut set to ${formatShortcut(accel)}`, "success");
+      showToast(t("shortcutButton.set", { shortcut: formatShortcut(accel) }), "success");
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [recording, onChange, others]);
+  }, [recording, onChange, others, t]);
 
   return (
     <div className="flex items-center gap-2">
@@ -51,17 +53,17 @@ export function ShortcutButton({ value, defaultValue, onChange, others = {} }: S
           onClick={() => onChange(defaultValue)}
           className="rounded-md px-2 py-1 text-meta text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer"
         >
-          Reset
+          {t("common:actions.reset")}
         </button>
       )}
       <button
         onClick={() => setRecording((r) => !r)}
-        aria-label={recording ? "Press the new shortcut, or Escape to cancel" : `Change shortcut, currently ${formatShortcut(value)}`}
+        aria-label={recording ? t("shortcutButton.recordingAriaLabel") : t("shortcutButton.changeAriaLabel", { shortcut: formatShortcut(value) })}
         className={`rounded-lg px-2.5 py-1 font-mono text-xs transition-colors duration-150 cursor-pointer ${
           recording ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "bg-secondary/60 text-foreground hover:bg-secondary"
         }`}
       >
-        {recording ? "Press keys…" : formatShortcut(value)}
+        {recording ? t("shortcutButton.recording") : formatShortcut(value)}
       </button>
     </div>
   );

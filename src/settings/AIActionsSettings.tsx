@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import type { ParseKeys, TFunction } from "i18next";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useConfigStore } from "../stores/configStore";
+import { useT } from "../i18n";
+import { actionDisplayName } from "../lib/actionNames";
 import type { ActionConfig, InstructionPresets } from "../lib/types";
 import {
   ChevronDown,
@@ -27,75 +30,75 @@ const BUILT_IN_MODES = [
   "AskQuestion",
 ];
 
-const ACTION_DESCRIPTIONS: Record<string, string> = {
-  Assist: "Auto-responds when a question is detected from other participants",
-  WhatToSay: "Suggests what you should say next, written in first person",
-  Shorten: "Condenses the last response into a brief, speakable version",
-  FollowUp: "Suggests questions you could ask the other participants",
-  Recap: "Summarizes the entire meeting so far with key points and action items",
-  AskQuestion: "You type a free-form question and the AI answers from context",
+/** Built-in action id -> description key (translated where it is shown). */
+const ACTION_DESCRIPTION_KEYS: Record<string, ParseKeys<"settings">> = {
+  Assist: "aiActions.actions.descriptions.assist",
+  WhatToSay: "aiActions.actions.descriptions.whatToSay",
+  Shorten: "aiActions.actions.descriptions.shorten",
+  FollowUp: "aiActions.actions.descriptions.followUp",
+  Recap: "aiActions.actions.descriptions.recap",
+  AskQuestion: "aiActions.actions.descriptions.askQuestion",
 };
 
-const TONE_OPTIONS = [
-  { label: "Professional", value: "Professional" },
-  { label: "Casual", value: "Casual" },
-  { label: "Formal", value: "Formal" },
-  { label: "Friendly", value: "Friendly" },
-  { label: "Direct", value: "Direct" },
+// Preset options: `value` is what gets stored, `labelKey` is translated where it is shown.
+const TONE_OPTIONS: { labelKey: ParseKeys<"settings">; value: string }[] = [
+  { labelKey: "aiActions.style.tone.options.professional", value: "Professional" },
+  { labelKey: "aiActions.style.tone.options.casual", value: "Casual" },
+  { labelKey: "aiActions.style.tone.options.formal", value: "Formal" },
+  { labelKey: "aiActions.style.tone.options.friendly", value: "Friendly" },
+  { labelKey: "aiActions.style.tone.options.direct", value: "Direct" },
 ];
 
-const FORMAT_OPTIONS = [
-  { label: "Bullet Points", value: "bullets" },
-  { label: "Paragraphs", value: "paragraphs" },
-  { label: "Numbered List", value: "numbered" },
-  { label: "One-liner", value: "oneliner" },
+const FORMAT_OPTIONS: { labelKey: ParseKeys<"settings">; value: string }[] = [
+  { labelKey: "aiActions.style.format.options.bullets", value: "bullets" },
+  { labelKey: "aiActions.style.format.options.paragraphs", value: "paragraphs" },
+  { labelKey: "aiActions.style.format.options.numbered", value: "numbered" },
+  { labelKey: "aiActions.style.format.options.oneliner", value: "oneliner" },
 ];
 
-const LENGTH_OPTIONS = [
-  { label: "Brief", value: "brief" },
-  { label: "Standard", value: "standard" },
-  { label: "Detailed", value: "detailed" },
+const LENGTH_OPTIONS: { labelKey: ParseKeys<"settings">; value: string }[] = [
+  { labelKey: "aiActions.style.length.options.brief", value: "brief" },
+  { labelKey: "aiActions.style.length.options.standard", value: "standard" },
+  { labelKey: "aiActions.style.length.options.detailed", value: "detailed" },
 ];
 
-const OPINION_OPTIONS = [
-  { label: "Factual only", value: null },
-  { label: "Add my take", value: "add" },
+const OPINION_OPTIONS: { labelKey: ParseKeys<"settings">; value: string | null }[] = [
+  { labelKey: "aiActions.style.perspective.options.factual", value: null },
+  { labelKey: "aiActions.style.perspective.options.addTake", value: "add" },
 ];
 
+// The "Active" summary row: one sentence per chosen preset (see presetSummary).
+const FORMAT_SUMMARY_KEYS: Record<string, ParseKeys<"settings">> = {
+  bullets: "aiActions.style.summary.format.bullets",
+  paragraphs: "aiActions.style.summary.format.paragraphs",
+  numbered: "aiActions.style.summary.format.numbered",
+  oneliner: "aiActions.style.summary.format.oneliner",
+};
 
-/** Help content for each setting — shown via HelpButton/HelpPanel toggle */
-const HELP: Record<string, { title: string; body: string }> = {
-  tone: {
-    title: "Tone",
-    body: "Sets the conversational voice of AI responses.\n\nProfessional \u2014 client-facing meetings & formal settings\nCasual \u2014 team standups & internal syncs\nFormal \u2014 board presentations & executive briefs\nFriendly \u2014 1-on-1s & coaching sessions\nDirect \u2014 rapid Q&A & time-constrained calls\n\nClick a selected chip again to deselect.",
-  },
-  format: {
-    title: "Format",
-    body: "Controls how AI structures its output.\n\nBullet Points \u2014 ideal for action items, meeting notes\nParagraphs \u2014 best for narrative summaries & explanations\nNumbered Lists \u2014 great for step-by-step procedures\nOne-liner \u2014 ultra-concise, glanceable suggestions",
-  },
-  length: {
-    title: "Length",
-    body: "Adjusts response verbosity.\n\nBrief (1-2 sentences) \u2014 fast-paced calls, overlay readability\nStandard (3-5 sentences) \u2014 balanced detail for most meetings\nDetailed \u2014 thorough analysis when you have time to read",
-  },
+const LENGTH_SUMMARY_KEYS: Record<string, ParseKeys<"settings">> = {
+  brief: "aiActions.style.summary.length.brief",
+  standard: "aiActions.style.summary.length.standard",
+  detailed: "aiActions.style.summary.length.detailed",
+};
+
+/** Help content for each setting (translation keys) — shown via HelpButton/HelpPanel toggle */
+const HELP: Record<string, { titleKey: ParseKeys<"settings">; bodyKey: ParseKeys<"settings"> }> = {
+  tone: { titleKey: "aiActions.style.tone.label", bodyKey: "aiActions.style.tone.help" },
+  format: { titleKey: "aiActions.style.format.label", bodyKey: "aiActions.style.format.help" },
+  length: { titleKey: "aiActions.style.length.label", bodyKey: "aiActions.style.length.help" },
   opinion: {
-    title: "Perspective",
-    body: "Controls whether the AI adds its own analysis.\n\nFactual only \u2014 answers are grounded strictly in transcript/memory context, no interpretation (default)\nAdd my take \u2014 appends a short '## My Take' section with the AI's own analysis, interpretation, or recommendation after the factual answer",
+    titleKey: "aiActions.style.perspective.label",
+    bodyKey: "aiActions.style.perspective.help",
   },
   instructions: {
-    title: "Additional Instructions",
-    body: "Free-form text injected into every AI prompt. Use this for:\n\n\u2022 Role context (e.g. \"I'm a Product Manager\")\n\u2022 Domain-specific terminology or acronyms\n\u2022 Additional formatting or style rules\n\nCombined with the preset selections above. Clear this field if it duplicates preset text.",
+    titleKey: "aiActions.instructions.label",
+    bodyKey: "aiActions.instructions.help",
   },
-  autoTrigger: {
-    title: "Auto-Trigger",
-    body: "When enabled, NexQ listens for questions directed at you during the meeting and automatically generates suggested answers.\n\nTurn OFF during presentations or when you want manual-only control. You can still trigger actions manually with the overlay buttons.",
-  },
-  temperature: {
-    title: "Temperature",
-    body: "Controls AI creativity and randomness.\n\nLow (0.0\u20130.3) \u2014 precise, consistent, factual. Best for technical discussions, data review, and compliance topics.\nMedium (0.4\u20130.6) \u2014 balanced blend of accuracy and variety.\nHigh (0.7\u20131.0) \u2014 varied, creative. Useful for brainstorming and ideation sessions.",
-  },
+  autoTrigger: { titleKey: "aiActions.autoTrigger.label", bodyKey: "aiActions.autoTrigger.help" },
+  temperature: { titleKey: "aiActions.temperature.label", bodyKey: "aiActions.temperature.help" },
   transcriptWindow: {
-    title: "Transcript Window",
-    body: "How many minutes of recent conversation the AI reads before responding.\n\nShort (1-5 min) \u2014 focused on the immediate topic, faster responses. Good for quick meetings.\nLong (10-30 min) \u2014 broader context for complex, multi-topic discussions that reference earlier points.",
+    titleKey: "aiActions.transcriptWindow.label",
+    bodyKey: "aiActions.transcriptWindow.help",
   },
 };
 
@@ -109,10 +112,10 @@ function minToSecs(min: number): number {
   return min * 60;
 }
 
-function formatWindowDisplay(seconds: number | null): string {
-  if (seconds === null) return "Default";
-  if (seconds === 0) return "All";
-  return `${secsToMin(seconds)} min`;
+function formatWindowDisplay(seconds: number | null, t: TFunction<["settings", "common"]>): string {
+  if (seconds === null) return t("common:labels.default");
+  if (seconds === 0) return t("aiActions.transcriptWindow.all");
+  return t("aiActions.units.minutes", { count: secsToMin(seconds) });
 }
 
 /** Section header with icon badge */
@@ -148,6 +151,7 @@ function HelpButton({
   activeId: string | null;
   onToggle: (id: string | null) => void;
 }) {
+  const { t } = useT("settings");
   const isOpen = activeId === id;
   return (
     <button
@@ -161,7 +165,7 @@ function HelpButton({
           ? "border-primary/40 bg-primary/10 text-primary"
           : "border-border/40 text-muted-foreground/60 hover:border-border/60 hover:text-muted-foreground"
       } h-[18px] w-[18px]`}
-      title="Show explanation"
+      title={t("aiActions.help.show")}
     >
       {isOpen ? <X className="h-2.5 w-2.5" /> : <HelpCircle className="h-2.5 w-2.5" />}
     </button>
@@ -170,13 +174,14 @@ function HelpButton({
 
 /** Expandable help panel — matches ContextStrategySettings pattern */
 function HelpPanel({ id }: { id: string }) {
+  const { t } = useT("settings");
   const content = HELP[id];
   if (!content) return null;
   return (
     <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-3 space-y-1">
-      <p className="text-xs font-semibold text-primary/80">{content.title}</p>
+      <p className="text-xs font-semibold text-primary/80">{t(content.titleKey)}</p>
       <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
-        {content.body}
+        {t(content.bodyKey)}
       </p>
     </div>
   );
@@ -184,7 +189,8 @@ function HelpPanel({ id }: { id: string }) {
 
 /** Hint under a control the Claude CLI path ignores. */
 function CliUnusedHint() {
-  return <p className="mt-1 text-meta text-muted-foreground/70">Not used with Claude CLI</p>;
+  const { t } = useT("settings");
+  return <p className="mt-1 text-meta text-muted-foreground/70">{t("aiActions.cliUnused.hint")}</p>;
 }
 
 /** Small toggle switch (h-5 w-9) */
@@ -222,6 +228,7 @@ function Toggle({
 // ─── Main Component ──────────────────────────────────────
 
 export function AIActionsSettings() {
+  const { t } = useT(["settings", "common"]);
   const configs = useAIActionsStore((s) => s.configs);
   const loadConfigs = useAIActionsStore((s) => s.loadConfigs);
   const updateGlobalDefaults = useAIActionsStore((s) => s.updateGlobalDefaults);
@@ -354,29 +361,39 @@ export function AIActionsSettings() {
     return Math.ceil(chars / 4);
   }, [configs.customInstructions]);
 
+  // A plain-language summary of the chosen presets for the "Active" row. (The
+  // instructions actually sent to the AI are composed in aiActionsStore.)
   const presetSummary = useMemo(() => {
     const parts: string[] = [];
     const p = configs.instructionPresets;
-    if (p.tone) parts.push(`${p.tone} tone.`);
+    if (p.tone) {
+      const toneOption = TONE_OPTIONS.find((opt) => opt.value === p.tone);
+      parts.push(
+        t("aiActions.style.summary.tone", { tone: toneOption ? t(toneOption.labelKey) : p.tone })
+      );
+    }
     if (p.format) {
-      const fm: Record<string, string> = {
-        bullets: "Use bullet points.", paragraphs: "Use paragraphs.",
-        numbered: "Use a numbered list.", oneliner: "Keep it to one line.",
-      };
-      parts.push(fm[p.format] || `Use ${p.format} format.`);
+      const formatKey = FORMAT_SUMMARY_KEYS[p.format];
+      parts.push(
+        formatKey ? t(formatKey) : t("aiActions.style.summary.format.other", { format: p.format })
+      );
     }
     if (p.length) {
-      const lm: Record<string, string> = {
-        brief: "Brief responses.", standard: "Standard length responses.",
-        detailed: "Detailed responses.",
-      };
-      parts.push(lm[p.length] || `${p.length} responses.`);
+      const lengthKey = LENGTH_SUMMARY_KEYS[p.length];
+      parts.push(
+        lengthKey ? t(lengthKey) : t("aiActions.style.summary.length.other", { length: p.length })
+      );
     }
     if (p.opinion === "add") {
-      parts.push("Adds a 'My Take' section with the AI's own analysis.");
+      parts.push(t("aiActions.style.summary.perspective"));
     }
     return parts.join(" ");
-  }, [configs.instructionPresets]);
+  }, [configs.instructionPresets, t]);
+
+  const describeAction = (mode: string): string | undefined => {
+    const key = ACTION_DESCRIPTION_KEYS[mode];
+    return key ? t(key) : undefined;
+  };
 
   const globalWindowMin = secsToMin(configs.globalDefaults.transcriptWindowSeconds);
 
@@ -388,15 +405,15 @@ export function AIActionsSettings() {
         <div className="rounded-xl border border-border/30 bg-card/50 p-4">
           <SectionHeader
             icon={MessageSquare}
-            title="Response Style"
-            subtitle="How the AI formats and phrases its answers"
+            title={t("aiActions.style.title")}
+            subtitle={t("aiActions.style.subtitle")}
           />
 
           <div className="space-y-4">
             {/* Tone */}
             <div>
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Tone
+                {t("aiActions.style.tone.label")}
                 <HelpButton id="tone" activeId={openHelp} onToggle={toggleHelp} />
               </label>
               {openHelp === "tone" && <HelpPanel id="tone" />}
@@ -411,7 +428,7 @@ export function AIActionsSettings() {
                         : "text-muted-foreground hover:bg-accent/50"
                     }`}
                   >
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </button>
                 ))}
               </div>
@@ -420,7 +437,7 @@ export function AIActionsSettings() {
             {/* Format */}
             <div>
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Format
+                {t("aiActions.style.format.label")}
                 <HelpButton id="format" activeId={openHelp} onToggle={toggleHelp} />
               </label>
               {openHelp === "format" && <HelpPanel id="format" />}
@@ -435,7 +452,7 @@ export function AIActionsSettings() {
                         : "text-muted-foreground hover:bg-accent/50"
                     }`}
                   >
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </button>
                 ))}
               </div>
@@ -444,7 +461,7 @@ export function AIActionsSettings() {
             {/* Length */}
             <div>
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Length
+                {t("aiActions.style.length.label")}
                 <HelpButton id="length" activeId={openHelp} onToggle={toggleHelp} />
               </label>
               {openHelp === "length" && <HelpPanel id="length" />}
@@ -459,7 +476,7 @@ export function AIActionsSettings() {
                         : "text-muted-foreground hover:bg-accent/50"
                     }`}
                   >
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </button>
                 ))}
               </div>
@@ -468,14 +485,14 @@ export function AIActionsSettings() {
             {/* Perspective */}
             <div>
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                Perspective
+                {t("aiActions.style.perspective.label")}
                 <HelpButton id="opinion" activeId={openHelp} onToggle={toggleHelp} />
               </label>
               {openHelp === "opinion" && <HelpPanel id="opinion" />}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {OPINION_OPTIONS.map((opt) => (
                   <button
-                    key={opt.label}
+                    key={opt.labelKey}
                     onClick={() => handleOpinionChange(opt.value)}
                     className={`rounded-full px-3 py-1 text-xs font-medium cursor-pointer transition-colors duration-150 ${
                       (configs.instructionPresets.opinion ?? null) === opt.value
@@ -483,7 +500,7 @@ export function AIActionsSettings() {
                         : "text-muted-foreground hover:bg-accent/50"
                     }`}
                   >
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </button>
                 ))}
               </div>
@@ -493,7 +510,7 @@ export function AIActionsSettings() {
             {presetSummary && (
               <div className="rounded-lg border border-primary/10 bg-primary/5 px-3 py-2 flex items-center gap-2">
                 <span className="text-meta font-semibold text-primary/80 uppercase tracking-wider shrink-0">
-                  Active
+                  {t("aiActions.style.active")}
                 </span>
                 <span className="text-xs text-foreground/80">{presetSummary}</span>
               </div>
@@ -505,12 +522,14 @@ export function AIActionsSettings() {
             <div>
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  Additional Instructions
+                  {t("aiActions.instructions.label")}
                   <HelpButton id="instructions" activeId={openHelp} onToggle={toggleHelp} />
                 </label>
                 <div className="flex items-center gap-3 text-meta text-muted-foreground/70">
-                  <span>{configs.customInstructions.length} chars</span>
-                  <span>~{instructionTokens} tokens</span>
+                  <span>
+                    {t("aiActions.instructions.charCount", { count: configs.customInstructions.length })}
+                  </span>
+                  <span>{t("aiActions.instructions.tokenCount", { count: instructionTokens })}</span>
                 </div>
               </div>
               {openHelp === "instructions" && <HelpPanel id="instructions" />}
@@ -518,7 +537,7 @@ export function AIActionsSettings() {
                 rows={3}
                 value={configs.customInstructions}
                 onChange={(e) => handleCustomInstructionsChange(e.target.value)}
-                placeholder="Add extra instructions beyond the presets above..."
+                placeholder={t("aiActions.instructions.placeholder")}
                 className="mt-2 w-full resize-none rounded-lg border border-border/50 bg-secondary/30 px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
             </div>
@@ -531,8 +550,8 @@ export function AIActionsSettings() {
           <div className="rounded-xl border border-border/30 bg-card/50 p-4">
             <SectionHeader
               icon={Zap}
-              title="AI Behavior"
-              subtitle="Control automation and response characteristics"
+              title={t("aiActions.behavior.title")}
+              subtitle={t("aiActions.behavior.subtitle")}
             />
 
             <div className="space-y-4">
@@ -540,13 +559,13 @@ export function AIActionsSettings() {
               <div>
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Auto-Trigger
+                    {t("aiActions.autoTrigger.label")}
                     <HelpButton id="autoTrigger" activeId={openHelp} onToggle={toggleHelp} />
                   </label>
                   <Toggle
                     checked={configs.globalDefaults.autoTrigger}
                     onChange={(v) => handleGlobalDefaultChange("autoTrigger", v)}
-                    label="Toggle auto-trigger"
+                    label={t("aiActions.autoTrigger.ariaLabel")}
                   />
                 </div>
                 {openHelp === "autoTrigger" && <HelpPanel id="autoTrigger" />}
@@ -559,7 +578,7 @@ export function AIActionsSettings() {
                 <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
                   <div className="flex items-center justify-between">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Temperature
+                      {t("aiActions.temperature.label")}
                       <HelpButton id="temperature" activeId={openHelp} onToggle={toggleHelp} />
                     </label>
                     <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
@@ -576,12 +595,12 @@ export function AIActionsSettings() {
                     onChange={(e) =>
                       handleGlobalDefaultChange("temperature", Number(e.target.value))
                     }
-                    aria-label="Temperature"
+                    aria-label={t("aiActions.temperature.label")}
                     className="mt-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed"
                   />
                   <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
-                    <span>Precise 0.0</span>
-                    <span>Creative 1.0</span>
+                    <span>{t("aiActions.temperature.precise")}</span>
+                    <span>{t("aiActions.temperature.creative")}</span>
                   </div>
                 </fieldset>
                 {cliActive && <CliUnusedHint />}
@@ -593,8 +612,8 @@ export function AIActionsSettings() {
           <div className="rounded-xl border border-border/30 bg-card/50 p-4">
             <SectionHeader
               icon={Layers}
-              title="Context Window"
-              subtitle="What data the AI considers when responding"
+              title={t("aiActions.context.title")}
+              subtitle={t("aiActions.context.subtitle")}
             />
 
             <div className="space-y-4">
@@ -603,11 +622,11 @@ export function AIActionsSettings() {
                 <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
                   <div className="flex items-center justify-between">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Transcript Window
+                      {t("aiActions.transcriptWindow.label")}
                       <HelpButton id="transcriptWindow" activeId={openHelp} onToggle={toggleHelp} />
                     </label>
                     <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
-                      {globalWindowMin} min
+                      {t("aiActions.units.minutes", { count: globalWindowMin })}
                     </span>
                   </div>
                   {openHelp === "transcriptWindow" && <HelpPanel id="transcriptWindow" />}
@@ -623,12 +642,12 @@ export function AIActionsSettings() {
                         minToSecs(Number(e.target.value))
                       )
                     }
-                    aria-label="Transcript Window"
+                    aria-label={t("aiActions.transcriptWindow.label")}
                     className="mt-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed"
                   />
                   <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
-                    <span>1 min</span>
-                    <span>30 min</span>
+                    <span>{t("aiActions.units.minutes", { count: 1 })}</span>
+                    <span>{t("aiActions.units.minutes", { count: 30 })}</span>
                   </div>
                 </fieldset>
                 {cliActive && <CliUnusedHint />}
@@ -640,14 +659,14 @@ export function AIActionsSettings() {
               <div>
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-muted-foreground">
-                    RAG Chunks
+                    {t("aiActions.ragChunks.label")}
                   </label>
                   <span className="text-xs text-muted-foreground/60">
-                    Set in Context Strategy
+                    {t("aiActions.ragChunks.setElsewhere")}
                   </span>
                 </div>
                 <p className="mt-1 text-meta text-muted-foreground/50">
-                  Document chunks per query are controlled by "Results to Retrieve (top-K)" in Context Strategy. Per-action overrides available in each action's Override Defaults.
+                  {t("aiActions.ragChunks.hint")}
                 </p>
               </div>
             </div>
@@ -659,21 +678,21 @@ export function AIActionsSettings() {
       <div className="rounded-xl border border-border/30 bg-card/50 p-4">
         <SectionHeader
           icon={Sparkles}
-          title="Actions"
-          subtitle="Built-in and custom AI action modes"
+          title={t("aiActions.actions.title")}
+          subtitle={t("aiActions.actions.subtitle")}
         />
 
         {/* Built-in Actions */}
         <div>
           <h4 className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">
-            Built-in ({builtInActions.length})
+            {t("aiActions.actions.builtIn", { count: builtInActions.length })}
           </h4>
           <div className="rounded-lg border border-border/20 divide-y divide-border/20 overflow-hidden">
             {builtInActions.map((action) => (
               <ActionCard
                 key={action.mode}
                 action={action}
-                description={ACTION_DESCRIPTIONS[action.mode]}
+                description={describeAction(action.mode)}
                 isExpanded={!!expandedActions[action.mode]}
                 isOverrideExpanded={!!expandedOverrides[action.mode]}
                 onToggleExpand={() => toggleExpanded(action.mode)}
@@ -693,7 +712,7 @@ export function AIActionsSettings() {
         {/* Custom Actions */}
         <div className="mt-5">
           <h4 className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">
-            Custom ({customActions.length})
+            {t("aiActions.actions.custom", { count: customActions.length })}
           </h4>
 
           {customActions.length > 0 && (
@@ -721,7 +740,7 @@ export function AIActionsSettings() {
 
           {customActions.length === 0 && !showNewActionForm && (
             <p className="py-2 text-center text-meta text-muted-foreground/60">
-              No custom actions yet
+              {t("aiActions.actions.empty")}
             </p>
           )}
 
@@ -731,14 +750,14 @@ export function AIActionsSettings() {
                 type="text"
                 value={newActionName}
                 onChange={(e) => setNewActionName(e.target.value)}
-                placeholder="Action name"
+                placeholder={t("aiActions.actions.namePlaceholder")}
                 className="w-full rounded-lg border border-border/50 bg-secondary/30 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
               <textarea
                 rows={3}
                 value={newActionPrompt}
                 onChange={(e) => setNewActionPrompt(e.target.value)}
-                placeholder="System prompt for this action..."
+                placeholder={t("aiActions.actions.promptPlaceholder")}
                 className="w-full resize-none rounded-lg border border-border/50 bg-secondary/30 px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
               <div className="flex gap-2">
@@ -748,7 +767,7 @@ export function AIActionsSettings() {
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors duration-150 hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Plus className="h-3 w-3" />
-                  Add
+                  {t("common:actions.add")}
                 </button>
                 <button
                   onClick={() => {
@@ -758,7 +777,7 @@ export function AIActionsSettings() {
                   }}
                   className="rounded-lg border border-border/50 bg-secondary/30 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors duration-150 hover:bg-secondary hover:text-foreground"
                 >
-                  Cancel
+                  {t("common:actions.cancel")}
                 </button>
               </div>
             </div>
@@ -770,7 +789,7 @@ export function AIActionsSettings() {
               className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/50 py-2 text-xs font-medium text-muted-foreground cursor-pointer transition-colors duration-150 hover:border-primary/30 hover:text-primary"
             >
               <Plus className="h-3.5 w-3.5" />
-              Add Custom Action
+              {t("aiActions.actions.addButton")}
             </button>
           )}
         </div>
@@ -815,6 +834,7 @@ function ActionCard({
   cliActive,
   onDelete,
 }: ActionCardProps) {
+  const { t } = useT(["settings", "common"]);
   const handleDeleteClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -843,7 +863,7 @@ function ActionCard({
           <ChevronRight className="h-3 w-3 text-muted-foreground/70 shrink-0" />
         )}
         <span className="text-xs font-medium text-foreground shrink-0">
-          {action.name}
+          {actionDisplayName(action)}
         </span>
         <span className="text-meta text-muted-foreground/60 shrink-0">
           {action.mode}
@@ -858,7 +878,7 @@ function ActionCard({
             <button
               onClick={handleDeleteClick}
               className="rounded-md p-1 text-muted-foreground/60 transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive"
-              aria-label={`Delete ${action.name}`}
+              aria-label={t("aiActions.card.delete.ariaLabel", { name: actionDisplayName(action) })}
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -866,7 +886,7 @@ function ActionCard({
           <Toggle
             checked={action.visible}
             onChange={(v) => onToggleVisible(v)}
-            label={`Toggle ${action.name} visibility`}
+            label={t("aiActions.card.visibility.ariaLabel", { name: actionDisplayName(action) })}
           />
         </div>
       </button>
@@ -885,7 +905,7 @@ function ActionCard({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                System Prompt
+                {t("aiActions.card.systemPrompt")}
               </label>
               {showReset && onResetPrompt && (
                 <button
@@ -894,7 +914,7 @@ function ActionCard({
                   className="flex items-center gap-1 text-meta font-medium text-muted-foreground transition-colors duration-150 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <RotateCcw className="h-3 w-3" />
-                  Reset
+                  {t("common:actions.reset")}
                 </button>
               )}
             </div>
@@ -909,21 +929,21 @@ function ActionCard({
           {/* Context Sources — two-column grid */}
           <div>
             <label className="text-xs font-medium text-muted-foreground">
-              Context Sources
+              {t("aiActions.card.sources.label")}
             </label>
             <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1.5">
               {[
-                { key: "includeTranscript", label: "Transcript", checked: action.includeTranscript },
-                { key: "includeRagChunks", label: "RAG Chunks", checked: action.includeRagChunks },
-                { key: "includeCustomInstructions", label: "Custom Instructions", checked: action.includeCustomInstructions },
-                { key: "includeDetectedQuestion", label: "Detected Question", checked: action.includeDetectedQuestion },
-                { key: "webSearch", label: "Web Search", checked: action.webSearch },
+                { key: "includeTranscript", label: t("aiActions.card.sources.transcript"), checked: action.includeTranscript },
+                { key: "includeRagChunks", label: t("aiActions.ragChunks.label"), checked: action.includeRagChunks },
+                { key: "includeCustomInstructions", label: t("aiActions.card.sources.customInstructions"), checked: action.includeCustomInstructions },
+                { key: "includeDetectedQuestion", label: t("aiActions.card.sources.detectedQuestion"), checked: action.includeDetectedQuestion },
+                { key: "webSearch", label: t("aiActions.card.sources.webSearch"), checked: action.webSearch },
               ].map(({ key, label, checked }) => {
                 const unused = cliActive && key === "webSearch";
                 return (
                   <label
                     key={key}
-                    title={unused ? "Not used with Claude CLI" : undefined}
+                    title={unused ? t("aiActions.cliUnused.hint") : undefined}
                     className={`flex items-center gap-2 ${unused ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
                   >
                     <input
@@ -939,7 +959,7 @@ function ActionCard({
               })}
             </div>
             {cliActive && (
-              <p className="mt-1.5 text-meta text-muted-foreground/70">Web Search: not used with Claude CLI</p>
+              <p className="mt-1.5 text-meta text-muted-foreground/70">{t("aiActions.cliUnused.webSearch")}</p>
             )}
           </div>
 
@@ -954,7 +974,7 @@ function ActionCard({
               ) : (
                 <ChevronRight className="h-3 w-3" />
               )}
-              Override Defaults
+              {t("aiActions.card.overrides.title")}
             </button>
 
             {isOverrideExpanded && (
@@ -964,10 +984,10 @@ function ActionCard({
                   <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-meta font-medium text-muted-foreground">
-                        Transcript Window
+                        {t("aiActions.transcriptWindow.label")}
                       </label>
                       <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
-                        {formatWindowDisplay(action.transcriptWindowSeconds)}
+                        {formatWindowDisplay(action.transcriptWindowSeconds, t)}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -983,7 +1003,7 @@ function ActionCard({
                           }
                           className="h-3 w-3 rounded border-border/50 accent-primary"
                         />
-                        <span className="text-meta text-muted-foreground">Override</span>
+                        <span className="text-meta text-muted-foreground">{t("aiActions.card.overrides.toggle")}</span>
                       </label>
                       {action.transcriptWindowSeconds !== null && (
                         <input
@@ -1005,8 +1025,8 @@ function ActionCard({
                     </div>
                     {action.transcriptWindowSeconds !== null && (
                       <div className="mt-1 flex justify-between text-meta text-muted-foreground/60">
-                        <span>All</span>
-                        <span>30 min</span>
+                        <span>{t("aiActions.transcriptWindow.all")}</span>
+                        <span>{t("aiActions.units.minutes", { count: 30 })}</span>
                       </div>
                     )}
                   </fieldset>
@@ -1016,7 +1036,7 @@ function ActionCard({
                 {/* RAG Top-K Override */}
                 <div className="flex items-center justify-between">
                   <label className="text-meta font-medium text-muted-foreground">
-                    RAG Top-K
+                    {t("aiActions.card.overrides.ragTopK")}
                   </label>
                   <div className="flex items-center gap-2">
                     <label className="flex items-center gap-1.5 cursor-pointer">
@@ -1028,7 +1048,7 @@ function ActionCard({
                         }
                         className="h-3 w-3 rounded border-border/50 accent-primary"
                       />
-                      <span className="text-meta text-muted-foreground">Override</span>
+                      <span className="text-meta text-muted-foreground">{t("aiActions.card.overrides.toggle")}</span>
                     </label>
                     {action.ragTopK !== null && (
                       <select
@@ -1053,11 +1073,11 @@ function ActionCard({
                   <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-meta font-medium text-muted-foreground">
-                        Temperature
+                        {t("aiActions.temperature.label")}
                       </label>
                       <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
                         {action.temperature === null
-                          ? "Default"
+                          ? t("common:labels.default")
                           : action.temperature.toFixed(1)}
                       </span>
                     </div>
@@ -1071,7 +1091,7 @@ function ActionCard({
                           }
                           className="h-3 w-3 rounded border-border/50 accent-primary"
                         />
-                        <span className="text-meta text-muted-foreground">Override</span>
+                        <span className="text-meta text-muted-foreground">{t("aiActions.card.overrides.toggle")}</span>
                       </label>
                       {action.temperature !== null && (
                         <input

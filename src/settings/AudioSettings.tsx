@@ -9,9 +9,11 @@ import {
   stopAudioTest,
 } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
+import { useT } from "../i18n";
 import type { AudioDeviceList } from "../lib/types";
 
 export function AudioSettings() {
+  const { t } = useT("settings");
   const {
     micDeviceId,
     systemDeviceId,
@@ -58,7 +60,7 @@ export function AudioSettings() {
       }
     } catch (err) {
       console.error("Failed to load audio devices:", err);
-      showToast("Couldn't detect audio devices — check your connections", "error");
+      showToast(t("audio.errors.detectFailed"), "error");
     } finally {
       setLoadingDevices(false);
     }
@@ -89,32 +91,31 @@ export function AudioSettings() {
     <div className="space-y-6">
       {/* Microphone Device */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Microphone</label>
+        <label className="text-sm font-medium">{t("audio.mic.label")}</label>
         <div className="flex gap-2">
           <select
             value={micDeviceId || ""}
             onChange={(e) => setMicDeviceId(e.target.value || null)}
             disabled={loadingDevices}
-            aria-label="Microphone device"
+            aria-label={t("audio.mic.ariaLabel")}
             className="flex-1 rounded-md border bg-background px-3 py-2 text-sm"
           >
             <option value="">
-              {loadingDevices ? "Detecting microphones..." : "Select microphone"}
+              {loadingDevices ? t("audio.mic.detecting") : t("audio.mic.select")}
             </option>
             {devices.inputs.map((device) => (
               <option key={device.id} value={device.id}>
-                {device.name}
-                {device.is_default ? " (Default)" : ""}
+                {device.is_default ? t("audio.deviceDefault", { name: device.name }) : device.name}
               </option>
             ))}
           </select>
           <button
             onClick={() => micDeviceId && handleTestDevice(micDeviceId, true)}
             disabled={!micDeviceId || testingDevice !== null}
-            aria-label="Test microphone"
+            aria-label={t("audio.mic.testAriaLabel")}
             className="rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
           >
-            {testingDevice === micDeviceId ? "Testing..." : "Test"}
+            {testingDevice === micDeviceId ? t("audio.test.testing") : t("audio.test.label")}
           </button>
         </div>
 
@@ -122,12 +123,12 @@ export function AudioSettings() {
         <AudioLevelMeter
           level={micLevel}
           peak={micPeak}
-          label="Mic"
+          label={t("audio.mic.meterLabel")}
         />
 
         {testingDevice === micDeviceId && (
           <p className="text-xs text-info">
-            Speak into your microphone...
+            {t("audio.mic.prompt")}
           </p>
         )}
         {testResult && testResult.deviceId === micDeviceId && !testingDevice && (
@@ -135,30 +136,29 @@ export function AudioSettings() {
             className={`text-xs ${testResult.success ? "text-success" : "text-warning"}`}
           >
             {testResult.success
-              ? "Audio detected — device is working"
-              : "No audio detected — try speaking louder or check your mic"}
+              ? t("audio.detected")
+              : t("audio.mic.noAudio")}
           </p>
         )}
       </div>
 
       {/* System Audio Device */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">System Audio (Output)</label>
+        <label className="text-sm font-medium">{t("audio.system.label")}</label>
         <div className="flex gap-2">
           <select
             value={systemDeviceId || ""}
             onChange={(e) => setSystemDeviceId(e.target.value || null)}
             disabled={loadingDevices}
-            aria-label="System audio device"
+            aria-label={t("audio.system.ariaLabel")}
             className="flex-1 rounded-md border bg-background px-3 py-2 text-sm"
           >
             <option value="">
-              {loadingDevices ? "Detecting outputs..." : "Select output device"}
+              {loadingDevices ? t("audio.system.detecting") : t("audio.system.select")}
             </option>
             {devices.outputs.map((device) => (
               <option key={device.id} value={device.id}>
-                {device.name}
-                {device.is_default ? " (Default)" : ""}
+                {device.is_default ? t("audio.deviceDefault", { name: device.name }) : device.name}
               </option>
             ))}
           </select>
@@ -167,10 +167,10 @@ export function AudioSettings() {
               systemDeviceId && handleTestDevice(systemDeviceId, false)
             }
             disabled={!systemDeviceId || testingDevice !== null}
-            aria-label="Test system audio"
+            aria-label={t("audio.system.testAriaLabel")}
             className="rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
           >
-            {testingDevice === systemDeviceId ? "Testing..." : "Test"}
+            {testingDevice === systemDeviceId ? t("audio.test.testing") : t("audio.test.label")}
           </button>
         </div>
 
@@ -178,12 +178,12 @@ export function AudioSettings() {
         <AudioLevelMeter
           level={systemLevel}
           peak={systemPeak}
-          label="System"
+          label={t("audio.system.meterLabel")}
         />
 
         {testingDevice === systemDeviceId && (
           <p className="text-xs text-info">
-            Play some audio on your computer...
+            {t("audio.system.prompt")}
           </p>
         )}
         {testResult && testResult.deviceId === systemDeviceId && !testingDevice && (
@@ -191,8 +191,8 @@ export function AudioSettings() {
             className={`text-xs ${testResult.success ? "text-success" : "text-warning"}`}
           >
             {testResult.success
-              ? "Audio detected — device is working"
-              : "No audio detected — try playing something on your speakers"}
+              ? t("audio.detected")
+              : t("audio.system.noAudio")}
           </p>
         )}
       </div>
@@ -203,7 +203,7 @@ export function AudioSettings() {
         disabled={loadingDevices}
         className="text-sm text-muted-foreground hover:text-foreground"
       >
-        {loadingDevices ? "Refreshing..." : "Refresh devices"}
+        {loadingDevices ? t("audio.refresh.refreshing") : t("audio.refresh.label")}
       </button>
     </div>
   );
@@ -221,6 +221,7 @@ function AudioLevelMeter({
   peak: number;
   label: string;
 }) {
+  const { t } = useT("settings");
   const clampedLevel = Math.min(Math.max(level, 0), 1);
   const clampedPeak = Math.min(Math.max(peak, 0), 1);
 
@@ -228,7 +229,7 @@ function AudioLevelMeter({
     <div
       className="flex items-center gap-2"
       role="meter"
-      aria-label={`${label} audio level`}
+      aria-label={t("audio.meter.ariaLabel", { label })}
       aria-valuenow={Math.round(clampedLevel * 100)}
       aria-valuemin={0}
       aria-valuemax={100}

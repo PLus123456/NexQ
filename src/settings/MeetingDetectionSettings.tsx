@@ -1,37 +1,40 @@
+import type { ParseKeys } from "i18next";
 import { Radar } from "lucide-react";
 import { useConfigStore } from "../stores/configStore";
-import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
+import { BUILT_IN_SCENARIOS, scenarioName } from "../lib/scenarios";
 import { isMacPlatform } from "../lib/shortcutLabel";
+import { useT } from "../i18n";
 import type { AIScenario, MeetingDetectionConfig } from "../lib/types";
 
 type AppKey = "zoom" | "teams" | "google_meet" | "webex" | "slack" | "discord";
 
-const APPS: Array<{ key: AppKey; label: string }> = [
-  { key: "zoom", label: "Zoom" },
-  { key: "teams", label: "Microsoft Teams" },
-  { key: "google_meet", label: "Google Meet" },
-  { key: "webex", label: "Webex" },
-  { key: "slack", label: "Slack huddles" },
-  { key: "discord", label: "Discord" },
+const APPS: Array<{ key: AppKey; labelKey: ParseKeys<"settings"> }> = [
+  { key: "zoom", labelKey: "meetingDetection.apps.zoom" },
+  { key: "teams", labelKey: "meetingDetection.apps.teams" },
+  { key: "google_meet", labelKey: "meetingDetection.apps.googleMeet" },
+  { key: "webex", labelKey: "meetingDetection.apps.webex" },
+  { key: "slack", labelKey: "meetingDetection.apps.slack" },
+  { key: "discord", labelKey: "meetingDetection.apps.discord" },
 ];
 
-const DISMISS_OPTIONS: Array<{ value: number; label: string }> = [
-  { value: 30, label: "30 seconds" },
-  { value: 60, label: "1 minute" },
-  { value: 120, label: "2 minutes" },
-  { value: 0, label: "Until the call ends" },
+const DISMISS_OPTIONS: Array<{ value: number; labelKey: ParseKeys<"settings"> }> = [
+  { value: 30, labelKey: "meetingDetection.dismiss.options.seconds30" },
+  { value: 60, labelKey: "meetingDetection.dismiss.options.minute1" },
+  { value: 120, labelKey: "meetingDetection.dismiss.options.minutes2" },
+  { value: 0, labelKey: "meetingDetection.dismiss.options.untilCallEnds" },
 ];
 
-const CHECK_OPTIONS: Array<{ value: number; label: string }> = [
-  { value: 1, label: "Every second" },
-  { value: 2, label: "Every 2 seconds" },
-  { value: 3, label: "Every 3 seconds" },
-  { value: 5, label: "Every 5 seconds" },
-  { value: 10, label: "Every 10 seconds" },
+const CHECK_OPTIONS: Array<{ value: number; labelKey: ParseKeys<"settings"> }> = [
+  { value: 1, labelKey: "meetingDetection.check.options.second1" },
+  { value: 2, labelKey: "meetingDetection.check.options.seconds2" },
+  { value: 3, labelKey: "meetingDetection.check.options.seconds3" },
+  { value: 5, labelKey: "meetingDetection.check.options.seconds5" },
+  { value: 10, labelKey: "meetingDetection.check.options.seconds10" },
 ];
 
 /** Settings → General: offer to start NexQ when a call app starts a meeting. */
 export function MeetingDetectionSettings() {
+  const { t } = useT("settings");
   const config = useConfigStore((s) => s.meetingDetection);
   const setConfig = useConfigStore((s) => s.setMeetingDetection);
   const update = (patch: Partial<MeetingDetectionConfig>) => setConfig({ ...config, ...patch });
@@ -48,11 +51,10 @@ export function MeetingDetectionSettings() {
           />
           <div>
             <label id="meeting-detection-label" className="text-sm font-medium text-foreground">
-              Detect meetings
+              {t("meetingDetection.label")}
             </label>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              When a call starts in one of these apps, a small prompt offers to start NexQ, named after the call.
-              NexQ only checks which app is using your microphone; it never listens until you start.
+              {t("meetingDetection.description")}
             </p>
           </div>
         </div>
@@ -75,15 +77,15 @@ export function MeetingDetectionSettings() {
       </div>
 
       {unsupported ? (
-        <p className="text-meta text-muted-foreground/70">Available on Windows for now; macOS support is coming.</p>
+        <p className="text-meta text-muted-foreground/70">{t("meetingDetection.unsupported")}</p>
       ) : (
         config.enabled && (
           <>
             <div className="h-px bg-border/20" />
             <div>
-              <span className="text-xs font-medium text-foreground/80">Apps</span>
-              <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="Apps to detect">
-                {APPS.map(({ key, label }) => {
+              <span className="text-xs font-medium text-foreground/80">{t("meetingDetection.apps.label")}</span>
+              <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label={t("meetingDetection.apps.ariaLabel")}>
+                {APPS.map(({ key, labelKey }) => {
                   const on = config[key];
                   return (
                     <button
@@ -97,19 +99,19 @@ export function MeetingDetectionSettings() {
                           : "border-border/40 bg-secondary/20 text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      {label}
+                      {t(labelKey)}
                     </button>
                   );
                 })}
               </div>
               <p className="mt-1.5 text-meta text-muted-foreground/60">
-                Google Meet, and Teams or Zoom in a browser, are recognized from the active tab.
+                {t("meetingDetection.apps.note")}
               </p>
             </div>
 
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
-                <span className="text-xs font-medium text-foreground/80">Start as</span>
+                <span className="text-xs font-medium text-foreground/80">{t("meetingDetection.startAs.label")}</span>
                 <select
                   value={config.default_scenario}
                   onChange={(e) => update({ default_scenario: e.target.value as AIScenario })}
@@ -117,13 +119,13 @@ export function MeetingDetectionSettings() {
                 >
                   {BUILT_IN_SCENARIOS.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.name}
+                      {scenarioName(s)}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs font-medium text-foreground/80">Hide the prompt after</span>
+                <span className="text-xs font-medium text-foreground/80">{t("meetingDetection.dismiss.label")}</span>
                 <select
                   value={config.auto_dismiss_secs}
                   onChange={(e) => update({ auto_dismiss_secs: Number(e.target.value) })}
@@ -131,13 +133,13 @@ export function MeetingDetectionSettings() {
                 >
                   {DISMISS_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
-                      {o.label}
+                      {t(o.labelKey)}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs font-medium text-foreground/80">Check for calls</span>
+                <span className="text-xs font-medium text-foreground/80">{t("meetingDetection.check.label")}</span>
                 <select
                   value={config.check_interval_secs}
                   onChange={(e) => update({ check_interval_secs: Math.max(1, Number(e.target.value)) })}
@@ -145,14 +147,14 @@ export function MeetingDetectionSettings() {
                 >
                   {CHECK_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
-                      {o.label}
+                      {t(o.labelKey)}
                     </option>
                   ))}
                 </select>
               </label>
             </div>
             <p className="text-meta text-muted-foreground/60">
-              Each check takes a few milliseconds. More often means the prompt appears sooner after a call starts.
+              {t("meetingDetection.check.hint")}
             </p>
           </>
         )

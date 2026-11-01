@@ -1,22 +1,24 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import type { ParseKeys } from "i18next";
 import { useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import type { HotkeyConfig } from "../lib/types";
 import { RotateCcw, Keyboard } from "lucide-react";
+import { useT } from "../i18n";
 
-/** Display-friendly labels for each hotkey action */
-const HOTKEY_LABELS: Record<keyof HotkeyConfig, string> = {
-  toggle_assist: "Toggle AI Assist",
-  start_end_meeting: "Start / End Meeting",
-  show_hide: "Show / Hide Overlay",
-  open_settings: "Open Settings",
-  escape: "Escape / Cancel",
-  mode_assist: "Mode: Assist",
-  mode_say: "Mode: What to Say",
-  mode_shorten: "Mode: Shorten",
-  mode_followup: "Mode: Follow-Up",
-  mode_recap: "Mode: Recap",
-  mode_ask: "Mode: Ask Question",
+/** Translation keys of the display-friendly labels for each hotkey action */
+const HOTKEY_LABEL_KEYS: Record<keyof HotkeyConfig, ParseKeys<"settings">> = {
+  toggle_assist: "hotkeys.actions.toggleAssist",
+  start_end_meeting: "hotkeys.actions.startEndMeeting",
+  show_hide: "hotkeys.actions.showHide",
+  open_settings: "hotkeys.actions.openSettings",
+  escape: "hotkeys.actions.escape",
+  mode_assist: "hotkeys.actions.modeAssist",
+  mode_say: "hotkeys.actions.modeSay",
+  mode_shorten: "hotkeys.actions.modeShorten",
+  mode_followup: "hotkeys.actions.modeFollowUp",
+  mode_recap: "hotkeys.actions.modeRecap",
+  mode_ask: "hotkeys.actions.modeAsk",
 };
 
 const DEFAULT_HOTKEYS: HotkeyConfig = {
@@ -59,6 +61,7 @@ function keyEventToString(e: KeyboardEvent): string | null {
 }
 
 export function HotkeySettings() {
+  const { t } = useT(["settings", "common"]);
   const hotkeys = useConfigStore((s) => s.hotkeys);
   const setHotkeys = useConfigStore((s) => s.setHotkeys);
 
@@ -86,7 +89,7 @@ export function HotkeySettings() {
 
       if (conflictingAction) {
         setConflict(
-          `"${combo}" is already used by "${HOTKEY_LABELS[conflictingAction[0]]}"`
+          t("hotkeys.conflict", { combo, action: t(HOTKEY_LABEL_KEYS[conflictingAction[0]]) })
         );
         // Still set it -- user was warned, and they can fix the other one
       } else {
@@ -96,7 +99,7 @@ export function HotkeySettings() {
       const updated: HotkeyConfig = { ...hotkeys, [editingKey]: combo };
       setHotkeys(updated);
       setEditingKey(null);
-      showToast(`Hotkey updated: ${HOTKEY_LABELS[editingKey]} = ${combo}`, "success");
+      showToast(t("hotkeys.toast.updated", { action: t(HOTKEY_LABEL_KEYS[editingKey]), combo }), "success");
     };
 
     listenerRef.current = handler;
@@ -106,7 +109,7 @@ export function HotkeySettings() {
       window.removeEventListener("keydown", handler, { capture: true });
       listenerRef.current = null;
     };
-  }, [editingKey, hotkeys, setHotkeys]);
+  }, [editingKey, hotkeys, setHotkeys, t]);
 
   const handleRowClick = useCallback((action: keyof HotkeyConfig) => {
     setConflict(null);
@@ -117,8 +120,8 @@ export function HotkeySettings() {
     setHotkeys(DEFAULT_HOTKEYS);
     setEditingKey(null);
     setConflict(null);
-    showToast("Hotkeys reset to defaults", "info");
-  }, [setHotkeys]);
+    showToast(t("hotkeys.toast.reset"), "info");
+  }, [setHotkeys, t]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingKey(null);
@@ -133,21 +136,21 @@ export function HotkeySettings() {
           <div className="flex items-center gap-2">
             <Keyboard className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-primary/80">
-              Keyboard Shortcuts
+              {t("hotkeys.title")}
             </h3>
           </div>
           <button
             onClick={handleResetDefaults}
             className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-secondary/30 px-3 py-2 text-xs font-medium text-muted-foreground transition-all duration-150 hover:bg-secondary hover:text-foreground hover:-translate-y-px active:translate-y-px active:scale-[0.97] cursor-pointer"
-            aria-label="Reset all hotkeys to defaults"
+            aria-label={t("hotkeys.reset.ariaLabel")}
           >
             <RotateCcw className="h-3 w-3" />
-            Reset to Defaults
+            {t("hotkeys.reset.label")}
           </button>
         </div>
 
         <p className="mt-2 text-xs text-muted-foreground">
-          Click on any binding to change it, then press your desired key combination.
+          {t("hotkeys.intro")}
         </p>
       </div>
 
@@ -164,15 +167,15 @@ export function HotkeySettings() {
           <thead>
             <tr className="border-b border-border/20 bg-secondary/20">
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                Action
+                {t("hotkeys.table.action")}
               </th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                Binding
+                {t("hotkeys.table.binding")}
               </th>
             </tr>
           </thead>
           <tbody>
-            {(Object.keys(HOTKEY_LABELS) as (keyof HotkeyConfig)[]).map(
+            {(Object.keys(HOTKEY_LABEL_KEYS) as (keyof HotkeyConfig)[]).map(
               (action, idx, arr) => {
                 const isEditing = editingKey === action;
                 const binding = hotkeys[action] || DEFAULT_HOTKEYS[action];
@@ -188,7 +191,7 @@ export function HotkeySettings() {
                     }}
                     tabIndex={0}
                     role="button"
-                    aria-label={`Change hotkey for ${HOTKEY_LABELS[action]}, currently ${binding}`}
+                    aria-label={t("hotkeys.row.ariaLabel", { action: t(HOTKEY_LABEL_KEYS[action]), binding })}
                     className={`cursor-pointer transition-colors duration-100 ${
                       isEditing
                         ? "bg-primary/10"
@@ -196,13 +199,13 @@ export function HotkeySettings() {
                     } ${idx < arr.length - 1 ? "border-b border-border/20" : ""}`}
                   >
                     <td className="px-4 py-2.5 text-foreground/80">
-                      {HOTKEY_LABELS[action]}
+                      {t(HOTKEY_LABEL_KEYS[action])}
                     </td>
                     <td className="px-4 py-2.5">
                       {isEditing ? (
                         <span className="inline-flex items-center gap-2">
                           <span className="animate-pulse rounded-lg bg-primary/20 px-2.5 py-1 font-mono text-primary">
-                            Press a key...
+                            {t("hotkeys.recording")}
                           </span>
                           <button
                             onClick={(e) => {
@@ -211,7 +214,7 @@ export function HotkeySettings() {
                             }}
                             className="rounded-lg px-2 py-1 text-meta text-muted-foreground hover:bg-accent hover:text-foreground"
                           >
-                            Cancel
+                            {t("common:actions.cancel")}
                           </button>
                         </span>
                       ) : (
@@ -230,7 +233,7 @@ export function HotkeySettings() {
 
       {/* Info */}
       <p className="text-xs text-muted-foreground/70">
-        Changes are saved automatically. Global shortcuts require Ctrl or Cmd modifier.
+        {t("hotkeys.footer")}
       </p>
     </div>
   );
