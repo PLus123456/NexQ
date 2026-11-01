@@ -166,6 +166,10 @@ impl From<UrlError> for String {
     }
 }
 
+// A typed address may carry a secret (`user:pass@`, `?api-key=…`): messages
+// and logs show URLs only through `shown_url` / `redact_url` on a parsed `Url`,
+// never the raw text.
+
 /// Where audio is posted: `url_override` when set (used as typed, http/https
 /// only), else `{base_url}/audio/transcriptions` by the shared endpoint rules
 /// (`/v1` is never added, the query is kept, a full URL is used as is).
@@ -177,22 +181,40 @@ pub fn transcriptions_url(cfg: &OpenAICompatSttConfig) -> Result<Url, UrlError> 
     match join_endpoint(&cfg.base_url, AUDIO_TRANSCRIPTIONS_PATH) {
         Ok(url) => Ok(url),
         Err(EndpointError::Empty) => Err(UrlError::no_base_url()),
-        Err(err) => Err(UrlError::invalid(err.to_string())),
+        Err(err) => Err(UrlError::invalid(endpoint_message(err))),
     }
 }
 
+/// The override, checked. Its errors don't repeat it.
 fn parse_override(input: &str) -> Result<Url, UrlError> {
     let url = Url::parse(input)
-        .map_err(|e| UrlError::invalid(format!("Invalid transcription URL \"{input}\": {e}")))?;
+        .map_err(|e| UrlError::invalid(format!("The transcription URL is not a valid URL ({e})")))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(UrlError::invalid(format!(
-            "The transcription URL must start with http:// or https:// (got \"{input}\")"
-        )));
+        return Err(UrlError::invalid("The transcription URL must start with http:// or https://"));
     }
     if url.host_str().is_none_or(str::is_empty) {
-        return Err(UrlError::invalid(format!("The transcription URL \"{input}\" has no host")));
+        return Err(UrlError::invalid("The transcription URL has no host"));
     }
     Ok(url)
+}
+
+/// `url` for messages and logs, secrets masked. None when it doesn't parse:
+/// `redact_url` hands unparsable text back unchanged.
+fn shown_url(url: &str) -> Option<String> {
+    Url::parse(url).ok().map(|parsed| redact_url(parsed.as_str()))
+}
+
+/// An endpoint error for messages. The "try …" of a missing scheme repeats
+/// the input, so it is redacted (or dropped); the other errors carry only a
+/// scheme or the URL parser's own words.
+fn endpoint_message(err: EndpointError) -> String {
+    match err {
+        EndpointError::MissingScheme { suggestion } => match shown_url(&suggestion) {
+            Some(suggestion) => EndpointError::MissingScheme { suggestion }.to_string(),
+            None => "Base URL must start with http:// or https://".to_string(),
+        },
+        other => other.to_string(),
+    }
 }
 
 /// Where the settings-page test lists models: `{base_url}/models` (a full
@@ -200,23 +222,26 @@ fn parse_override(input: &str) -> Result<Url, UrlError> {
 /// `url_override`, the base is the override without `/audio/transcriptions`.
 pub fn models_url(cfg: &OpenAICompatSttConfig) -> Result<Url, String> {
     let base = cfg.base_url.trim();
-    let override_url = cfg.url_override.trim();
-    let source = if base.is_empty() { override_url } else { base };
-    if source.is_empty() {
-        return Err(UrlError::no_base_url().message);
-    }
-    let stripped = strip_endpoint_path(source, &[AUDIO_TRANSCRIPTIONS_PATH]).map(|(b, _)| b);
-    let models_base = match stripped {
-        Some(stripped) => stripped,
-        None if !base.is_empty() => base.to_string(),
-        None => {
-            return Err(format!(
-                "Can't tell where the models are listed from {}",
-                redact_url(override_url)
-            ))
+    let models_base = if base.is_empty() {
+        let override_url = cfg.url_override.trim();
+        if override_url.is_empty() {
+            return Err(UrlError::no_base_url().message);
         }
+        let url = parse_override(override_url)?;
+        match strip_endpoint_path(url.as_str(), &[AUDIO_TRANSCRIPTIONS_PATH]) {
+            Some((stripped, _)) => stripped,
+            None => {
+                return Err(format!(
+                    "Can't tell where the models are listed from {}",
+                    redact_url(url.as_str())
+                ))
+            }
+        }
+    } else {
+        strip_endpoint_path(base, &[AUDIO_TRANSCRIPTIONS_PATH])
+            .map_or_else(|| base.to_string(), |(stripped, _)| stripped)
     };
-    join_endpoint(&models_base, MODELS_PATH).map_err(String::from)
+    join_endpoint(&models_base, MODELS_PATH).map_err(endpoint_message)
 }
 
 // ── Responses and text ──────────────────────────────────────────────────────
@@ -2002,6 +2027,60 @@ mod tests {
         assert_eq!(err.code, "invalid_url");
         assert!(err.message.contains("http://192.168.1.10:8000/v1"), "{}", err.message);
         assert_eq!(transcriptions_url(&with_urls("ftp://h/v1", "")).unwrap_err().code, "invalid_url");
+    }
+
+    /// A typed URL's secrets in any message.
+    fn leaks(text: &str) -> bool {
+        text.contains("secret") || text.contains("api-key=abc")
+    }
+
+    #[test]
+    fn url_errors_never_repeat_a_secret() {
+        for typed in [
+            "https://user:secret@gw.example.com/x?api-key=abc",
+            "ftp://user:secret@gw.example.com/x?api-key=abc",
+            "user:secret@gw.example.com/x?api-key=abc",
+            "https://user:secret@[gw.example.com/x?api-key=abc",
+            "https://user:secret@gw.example.com:99999/x?api-key=abc",
+        ] {
+            // As the override and as the base URL.
+            for cfg in [with_urls("", typed), with_urls(typed, "")] {
+                if let Err(err) = transcriptions_url(&cfg) {
+                    assert_eq!(err.code, "invalid_url");
+                    assert!(!leaks(&err.message), "{typed}: {}", err.message);
+                }
+                if let Err(message) = models_url(&cfg) {
+                    assert!(!leaks(&message), "{typed}: {message}");
+                }
+            }
+        }
+        // Missing scheme: the suggestion is shown redacted.
+        let err = transcriptions_url(&with_urls("user:secret@gw.example.com/x?api-key=abc", "")).unwrap_err();
+        assert!(err.message.contains("https://user:***@gw.example.com/x?api-key=***"), "{}", err.message);
+        // A valid override that lists no models next to it.
+        let message = models_url(&with_urls("", "https://user:secret@gw.example.com/x?api-key=abc")).unwrap_err();
+        assert!(message.contains("https://user:***@gw.example.com/x?api-key=***"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn urls_with_secrets_are_redacted_in_the_probe_and_the_dev_log() {
+        let server = FakeServer::start(|_| Reply::status(500, "boom")).await;
+        let mut cfg = config("");
+        cfg.url_override = format!("http://user:secret@{}/x/audio/transcriptions?api-key=abc", server.addr);
+
+        let result = probe(&cfg, None).await;
+        assert_eq!(result.code, "http_error");
+        assert!(!leaks(&format!("{result:?}")), "{result:?}");
+        assert!(result.url.as_deref().unwrap().contains("/x/models?api-key=***"), "{result:?}");
+
+        let mut run = start(cfg, None, "en-US").await;
+        run.phrase(1000).await;
+        let (_, notices) = run.stop().await;
+        assert_eq!(server.transcriptions().len(), 1);
+        assert!(debug_lines(&notices, "error").iter().any(|e| e.contains("api-key=***")), "{notices:?}");
+        for notice in &notices {
+            assert!(!leaks(&format!("{notice:?}")), "{notice:?}");
+        }
     }
 
     #[test]
