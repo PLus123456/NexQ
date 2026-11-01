@@ -20,6 +20,8 @@ export interface MeetingPreset {
   /** Keychain slot of the key the preset needs. */
   requiresKey?: string;
   requiresDownload?: string;
+  /** Needs the remote STT server's address (`openaiCompatSttConfig.base_url`). */
+  requiresBaseUrl?: boolean;
   windowsOnly?: boolean;
 }
 
@@ -59,6 +61,16 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
     them: { hint: "default_output", stt: "soniox", nativeTranslation: { mode: "one_way" } },
     requiresKey: "soniox",
     requiresDownload: "whisper_cpp",
+  },
+  {
+    // NexQ Plus: a Whisper server of your own (faster-whisper-server / speaches,
+    // vLLM, LocalAI...) for both parties, once its address is set.
+    id: "remote_whisper",
+    name: "Self-hosted Whisper",
+    description: "Your own Whisper server (OpenAI-compatible) for both parties", // i18n-ignore: worded via stt:presets.<id>
+    you: { hint: "default_mic", stt: "openai_compat" },
+    them: { hint: "default_output", stt: "openai_compat" },
+    requiresBaseUrl: true,
   },
   {
     id: "best_quality",

@@ -69,6 +69,10 @@
       "name": "Soniox for Them",
       "description": "Soniox transcribes and translates the other side in real time; Whisper.cpp on this Mac for you"
     },
+    "remote_whisper": {
+      "name": "Self-hosted Whisper",
+      "description": "Your own Whisper server (OpenAI-compatible) for both parties"
+    },
     "best_quality": {
       "name": "Best Quality",
       "description": "Deepgram cloud — fastest, most accurate"

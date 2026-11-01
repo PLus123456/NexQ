@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import enStt from "../i18n/locales/en/stt.json";
+import zhStt from "../i18n/locales/zh-CN/stt.json";
 import type { AudioDevice, MeetingAudioConfig } from "../lib/types";
 import { BUILT_IN_PRESETS, applyPreset } from "./presets";
 
@@ -59,5 +61,38 @@ describe("presets", () => {
     const fresh = applyPreset(preset("soniox_them"), devices);
     expect(fresh.them.native_translation).toEqual({ mode: "one_way" });
     expect(fresh.them.language).toBeUndefined();
+  });
+
+  it("Self-hosted Whisper: your own Whisper server for both parties, once its address is set", () => {
+    const remote = preset("remote_whisper");
+    expect(remote.requiresBaseUrl).toBe(true);
+    // The key is optional and nothing is downloaded.
+    expect(remote.requiresKey).toBeUndefined();
+    expect(remote.requiresDownload).toBeUndefined();
+    const cfg = applyPreset(remote, devices, current);
+    expect(cfg.you).toMatchObject({
+      device_id: "mic-1", is_input_device: true, stt_provider: "openai_compat", language: "zh-CN",
+    });
+    expect(cfg.them).toMatchObject({
+      device_id: "out-1", is_input_device: false, stt_provider: "openai_compat", language: "auto",
+    });
+    expect(cfg.preset_name).toBe("Self-hosted Whisper");
+    // No engine-side translation: the party's translation settings stay.
+    expect(cfg.them.native_translation).toEqual({ mode: "off", target_language: "ja" });
+  });
+
+  it("list Self-hosted Whisper right after Soniox for Them", () => {
+    const ids = BUILT_IN_PRESETS.map((p) => p.id);
+    expect(ids.indexOf("remote_whisper")).toBe(ids.indexOf("soniox_them") + 1);
+  });
+
+  it("are worded in both UI languages, in English as written here", () => {
+    type Words = Record<string, { name: string; description: string } | undefined>;
+    for (const p of BUILT_IN_PRESETS) {
+      expect((enStt.presets as Words)[p.id]).toEqual({ name: p.name, description: p.description });
+      const zh = (zhStt.presets as Words)[p.id];
+      expect(zh?.name, p.id).toBeTruthy();
+      expect(zh?.description, p.id).toBeTruthy();
+    }
   });
 });

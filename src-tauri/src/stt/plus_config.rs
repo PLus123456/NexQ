@@ -34,7 +34,8 @@ pub struct OpenAICompatSttConfig {
     pub response_format: String,
     /// Prompt guiding spelling and style. Empty = none.
     pub prompt: String,
-    /// Longest audio sent in one request (seconds).
+    /// Audio per request (seconds). When the server falls behind, waiting
+    /// segments are merged into requests of up to 25 s.
     pub segment_duration_secs: f32,
     /// Silence that ends a segment early (ms).
     pub pause_split_ms: u32,
