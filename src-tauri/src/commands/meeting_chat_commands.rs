@@ -15,6 +15,7 @@ use crate::db::meeting_chat::{self, MeetingChatMessage};
 use crate::intelligence::prompt_templates::MEETING_ASK_PROMPT;
 use crate::llm::cli_agent::context::{build_preload_messages, pack_messages};
 use crate::llm::cli_agent::manager::SessionScope;
+use crate::llm::api;
 use crate::llm::cli_agent::routing::{earlier_exchange, Route, PRELOAD_MESSAGE_CHARS, REPLAY_TAIL_CHARS};
 use crate::llm::provider::{GenerationParams, LLMError, LLMMessage, StreamStartPayload, TokenSink};
 use crate::state::AppState;
@@ -202,7 +203,7 @@ pub async fn ask_meeting(
 
     let scope = SessionScope::Past(meeting_id.clone());
     let epoch = state.meeting_sessions.epoch(&scope);
-    let mut route = request_route(&state, MEETING_ASK_MODE, &scope);
+    let mut route = request_route(&app_handle, &state, MEETING_ASK_MODE, &scope);
 
     if let Route::ClaudeSession(key) = &route {
         let req = SessionAssist {
@@ -213,7 +214,7 @@ pub async fn ask_meeting(
             detected_question: None,
             transcript_segments: None,
             scope: None,
-            task_instructions: session_task_instructions(&presets),
+            task_instructions: api::with_answer_language(&session_task_instructions(&presets), &app_handle),
             include_rag: false,
             include_instructions: true,
             include_question: true,
@@ -247,15 +248,17 @@ pub async fn ask_meeting(
             }
             SessionOutcome::Stateless => route = Route::Stateless,
             SessionOutcome::Unavailable(kind, reason) => {
-                route = route_after_outage(&state, &app_handle, MEETING_ASK_MODE, &scope, kind, &reason, &params)?;
+                route = route_after_outage(&state, &app_handle, MEETING_ASK_MODE, kind, &reason, &params)?;
             }
         }
     }
 
-    // ── Stateless: the whole meeting in one prompt (active or fallback provider) ──
-    let (provider, model, provider_name, _) = stateless_provider(&state, &app_handle, &route, &params).await?;
+    // ── Stateless: the whole meeting in one prompt (the task's connection, or its fallback) ──
+    debug_assert!(matches!(route, Route::Stateless));
+    let resolved = stateless_provider(&app_handle, MEETING_ASK_MODE, &params).await?;
+    let (model, provider_name) = (resolved.model.clone(), resolved.display_name.clone());
     let context = past_meeting_context(&state, &meeting_id)?;
-    let system_prompt = stateless_system_prompt(&composed);
+    let system_prompt = api::with_answer_language(&stateless_system_prompt(&composed), &app_handle);
     let user_prompt = stateless_user_prompt(&context, &question);
     if cancel.is_cancelled() {
         return Ok(());
@@ -299,18 +302,17 @@ pub async fn ask_meeting(
         LLMMessage { role: "system".into(), content: system_prompt },
         LLMMessage { role: "user".into(), content: user_prompt },
     ];
-    let result = {
-        let provider = provider.lock().await;
-        provider
-            .stream_completion(
-                messages,
-                &model,
-                GenerationParams { temperature: Some(temperature), ..params },
-                app_handle.clone(),
-                Some(sink),
-            )
-            .await
-    };
+    // The shared provider: nothing is locked while the answer streams.
+    let result = resolved
+        .provider
+        .stream_completion(
+            messages,
+            &model,
+            GenerationParams { temperature: Some(temperature), ..params },
+            app_handle.clone(),
+            Some(sink),
+        )
+        .await;
 
     // The provider already emitted the end / error event of this request; a
     // stopped stream got its end from `cancel_generation` and is not saved.

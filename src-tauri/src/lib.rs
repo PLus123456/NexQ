@@ -252,30 +252,10 @@ pub fn run() {
             log::info!("STT router initialized");
             // == PLUS INIT: p2-stt ==
 
-            // -- Initialize LLMRouter with auto-detected provider --
-            let mut llm_router = llm::LLMRouter::new();
-
-            // Try to auto-detect Ollama as default provider (no API key needed)
-            let ollama_config = llm::ProviderConfig {
-                provider_type: "ollama".to_string(),
-                api_key: None,
-                base_url: None,
-                auth_type: None,
-                auth_value: None,
-                auth_header: None,
-            };
-            match llm_router.set_provider(ollama_config) {
-                Ok(()) => {
-                    log::info!("LLM router: Ollama set as default provider");
-                }
-                Err(e) => {
-                    log::warn!("LLM router: Failed to set Ollama as default: {}", e);
-                }
-            }
-
-            app_state.llm = Some(Arc::new(Mutex::new(llm_router)));
-            log::info!("LLM router initialized");
+            // -- LLM connections (llm-connections.json, migrated from the old
+            // settings on first start) and the LLMRouter façade on the default route --
             // == PLUS INIT: p1-llm ==
+            llm::registry::init(app.handle(), &mut app_state, &app_data_dir);
 
             // -- Initialize IntelligenceEngine --
             let intel_engine = intelligence::IntelligenceEngine::new();
@@ -319,55 +299,8 @@ pub fn run() {
 
             app.manage(app_state);
 
-            // -- Auto-detect first Ollama model in background --
-            let auto_detect_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Give Ollama a moment to be ready
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                let state = auto_detect_app.state::<AppState>();
-                if let Some(ref llm_arc) = state.llm {
-                    // Get the provider arc while holding the std lock briefly
-                    let (provider_arc, needs_model) = {
-                        match llm_arc.lock() {
-                            Ok(router) => {
-                                let needs = router.active_model().is_empty();
-                                let provider = router.get_provider().ok();
-                                (provider, needs)
-                            }
-                            Err(_) => return,
-                        }
-                    };
-
-                    if needs_model {
-                        if let Some(provider_arc) = provider_arc {
-                            let provider = provider_arc.lock().await;
-                            match provider.list_models().await {
-                                Ok(models) if !models.is_empty() => {
-                                    let first_model = models[0].id.clone();
-                                    let model_count = models.len();
-                                    drop(provider); // release tokio lock before std lock
-
-                                    if let Ok(mut router) = llm_arc.lock() {
-                                        router.set_active_model(first_model.clone());
-                                        log::info!(
-                                            "Auto-detected Ollama model: {} (from {} available)",
-                                            first_model,
-                                            model_count
-                                        );
-                                    }
-                                }
-                                Ok(_) => {
-                                    log::warn!("Ollama running but no models found");
-                                }
-                                Err(e) => {
-                                    log::warn!("Ollama not reachable for auto-detect: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            // -- Auto-detect the first Ollama model when the default has none --
+            llm::registry::spawn_startup_tasks(app.handle().clone());
 
             // -- UI language for the tray: the stored choice, before the menu is built --
             i18n::load_from_config(app.handle());
@@ -558,6 +491,17 @@ pub fn run() {
             llm_commands::get_llm_providers,
             llm_commands::list_openrouter_models,
             // == PLUS COMMANDS: p1-llm ==
+            commands::llm_connection_commands::llm_get_config,
+            commands::llm_connection_commands::llm_upsert_connection,
+            commands::llm_connection_commands::llm_delete_connection,
+            commands::llm_connection_commands::llm_set_route,
+            commands::llm_connection_commands::llm_set_response_language,
+            commands::llm_connection_commands::llm_set_secret,
+            commands::llm_connection_commands::llm_secret_status,
+            commands::llm_connection_commands::llm_fetch_models,
+            commands::llm_connection_commands::llm_test_connection,
+            commands::llm_connection_commands::llm_preview_endpoints,
+            commands::llm_connection_commands::llm_reset_from_legacy,
             // == COMMANDS: intelligence ==
             intelligence_commands::generate_assist,
             intelligence_commands::cancel_generation,

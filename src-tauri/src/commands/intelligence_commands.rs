@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tauri::{command, AppHandle, Emitter, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
 
 use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
 use crate::intelligence::context_scope::{self, ResolvedScope, TranscriptWindow};
@@ -9,13 +9,14 @@ use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
 use crate::llm::cli_agent::protocol::{AgentErrorKind, TurnResult};
 use crate::llm::cli_agent::routing::{
-    self, choose_route, AgentFallbackPayload, AskFailure, ClaudeHealth, Route,
+    self, choose_route, AgentFallbackPayload, AskFailure, Route,
 };
+use crate::llm::api::{self, LlmKind, LlmTask, ResolvedLlm};
 use crate::llm::provider::{
-    emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, LLMProvider,
-    RagChunkInfo, StreamEndPayload, StreamStartPayload,
+    emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, RagChunkInfo,
+    StreamEndPayload, StreamStartPayload,
 };
-use crate::llm::{create_provider, ProviderConfig, ProviderType};
+use crate::llm::registry::{self as llm_registry, LlmRegistry};
 use crate::rag;
 use crate::state::AppState;
 
@@ -296,14 +297,13 @@ fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> (SessionSco
     (scope, epoch)
 }
 
-/// Where this request goes (see `choose_route`).
-pub(crate) fn request_route(state: &AppState, mode: &str, scope: &SessionScope) -> Route {
-    let active = state
-        .llm
-        .as_ref()
-        .and_then(|l| l.lock().ok())
-        .and_then(|r| r.active_provider_type().cloned());
-    let Some(active) = active else {
+/// Where this request goes (see `choose_route`): by the connection kind the
+/// request's task is routed to.
+pub(crate) fn request_route(app: &AppHandle, state: &AppState, mode: &str, scope: &SessionScope) -> Route {
+    let kind = app
+        .try_state::<LlmRegistry>()
+        .and_then(|registry| registry.route_kind(&LlmTask::from_mode(mode).key()));
+    let Some(kind) = kind else {
         return Route::Stateless;
     };
     let cfg = state
@@ -311,64 +311,7 @@ pub(crate) fn request_route(state: &AppState, mode: &str, scope: &SessionScope) 
         .read()
         .map(|c| c.clone())
         .unwrap_or_default();
-    choose_route(&active, state.claude_health.get(), scope, mode, &cfg)
-}
-
-/// Fallback provider, model and display name for `config` (type only): the
-/// API key comes from the credential store; the model is the configured
-/// fallback model, else the provider's first listed model. The result is
-/// cached until the provider, model or key changes.
-async fn resolve_fallback(
-    state: &AppState,
-    mut config: ProviderConfig,
-) -> Result<(Arc<tokio::sync::Mutex<Box<dyn LLMProvider>>>, String, String), String> {
-    let provider_type = ProviderType::from_str(&config.provider_type).map_err(|e| e.to_string())?;
-    if config.api_key.is_none() {
-        config.api_key = state
-            .credentials
-            .as_ref()
-            .and_then(|c| c.lock().ok())
-            .and_then(|c| c.get_key(&config.provider_type).ok().flatten());
-    }
-    let configured = state
-        .claude_cli_config
-        .read()
-        .ok()
-        .and_then(|c| c.fallback_model.clone())
-        .filter(|m| !m.trim().is_empty());
-    let cache_key = (config.provider_type.clone(), configured.clone(), config.api_key.clone());
-    if let Some(cached) = state.claude_fallback.lock().ok().and_then(|slot| {
-        slot.as_ref()
-            .filter(|c| c.key == cache_key)
-            .map(|c| (c.provider.clone(), c.model.clone(), c.name.clone()))
-    }) {
-        return Ok(cached);
-    }
-    let provider = create_provider(&config)
-        .map_err(|e| format!("Fallback provider {} unavailable: {}", provider_type.display_name(), e))?;
-    let model = match configured {
-        Some(model) => model,
-        None => provider
-            .list_models()
-            .await
-            .ok()
-            .and_then(|models| models.into_iter().next())
-            .map(|m| m.id)
-            .ok_or_else(|| {
-                format!("Fallback provider {} has no model to use", provider_type.display_name())
-            })?,
-    };
-    let resolved = routing::CachedFallback {
-        key: cache_key,
-        provider: Arc::new(tokio::sync::Mutex::new(provider)),
-        model,
-        name: provider_type.display_name().to_string(),
-    };
-    let out = (resolved.provider.clone(), resolved.model.clone(), resolved.name.clone());
-    if let Ok(mut slot) = state.claude_fallback.lock() {
-        *slot = Some(resolved);
-    }
-    Ok(out)
+    choose_route(kind, state.claude_health.get(), scope, mode, &cfg)
 }
 
 /// Everything the Claude session path needs from a request.
@@ -497,7 +440,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
             StreamStartPayload {
                 mode: mode.to_string(),
                 model: model.to_string(),
-                provider: ProviderType::ClaudeCli.display_name().to_string(),
+                provider: crate::llm::connections::CLAUDE_DISPLAY_NAME.to_string(),
                 system_prompt: record.system_prompt.clone(),
                 user_prompt: prompt.to_string(),
                 include_transcript: new_count > 0,
@@ -554,7 +497,11 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         // A stopped stream already got its end from `cancel_generation`.
         _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(None)),
         Ok(turn) => {
+            let was_down = state.claude_health.get() != routing::ClaudeHealth::Healthy;
             state.claude_health.record_success();
+            if was_down {
+                llm_registry::after_change(app);
+            }
             let total = turn.prompt_tokens() + turn.output_tokens;
             let usage = crate::llm::cli_agent::provider::stream_usage(&turn, timing.first_token_ms());
             crate::llm::provider::emit_end_with_usage(
@@ -602,99 +549,90 @@ fn end_closed(app: &AppHandle, params: &GenerationParams, start: std::time::Inst
 }
 
 /// Claude turned out unavailable for a session request: mark it so and
-/// return the fallback route (the same decision as for a request arriving
-/// while Claude is down), or report the outage when no fallback is set.
+/// answer statelessly, where the task's resolution picks the fallback (the
+/// same decision as for a request arriving while Claude is down), or report
+/// the outage when nothing can take over.
 pub(crate) fn route_after_outage(
     state: &AppState,
     app: &AppHandle,
     mode: &str,
-    scope: &SessionScope,
     kind: AgentErrorKind,
     reason: &str,
     params: &GenerationParams,
 ) -> Result<Route, String> {
     log::warn!("Claude unavailable ({reason}); falling back");
     state.claude_health.mark_unavailable(kind);
-    match request_route(state, mode, scope) {
-        fallback @ Route::Fallback(_) => Ok(fallback),
-        _ => {
-            // No fallback to switch to: a usage limit is still announced once
-            // per outage (empty `provider` = nothing took over).
-            if kind == AgentErrorKind::RateLimited && state.claude_health.take_fallback_notice() {
-                let _ = app.emit(
-                    routing::FALLBACK_EVENT,
-                    AgentFallbackPayload {
-                        reason: routing::reason_label(kind).to_string(),
-                        provider: String::new(),
-                    },
-                );
-            }
-            let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
+    llm_registry::after_change(app);
+    let has_fallback = app.try_state::<LlmRegistry>().is_some_and(|registry| {
+        let claude = llm_registry::claude_context(app);
+        llm_registry::resolve_task(&registry.config(), &LlmTask::from_mode(mode).key(), &claude)
+            .is_ok_and(|r| r.via_fallback)
+    });
+    if has_fallback {
+        return Ok(Route::Stateless);
+    }
+    // No fallback to switch to: a usage limit is still announced once per
+    // outage (empty `provider` = nothing took over).
+    if kind == AgentErrorKind::RateLimited && state.claude_health.take_fallback_notice() {
+        let _ = app.emit(
+            routing::FALLBACK_EVENT,
+            AgentFallbackPayload {
+                reason: routing::reason_label(kind).to_string(),
+                provider: String::new(),
+            },
+        );
+    }
+    let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
+    emit_error(app, params, &message);
+    Err(message)
+}
+
+/// The connection, model and display name for today's full-prompt path:
+/// the task's route, or its fallback while Claude is unavailable (announced
+/// once with `agent_fallback`). A failure is reported on the stream too.
+pub(crate) async fn stateless_provider(
+    app: &AppHandle,
+    mode: &str,
+    params: &GenerationParams,
+) -> Result<ResolvedLlm, String> {
+    match api::resolve_for_task(app, &LlmTask::from_mode(mode)).await {
+        Ok(resolved) => Ok(resolved),
+        Err(e) => {
+            let message = e.to_string();
             emit_error(app, params, &message);
             Err(message)
         }
     }
 }
 
-/// The provider for today's full-prompt path, with its model, display name
-/// and type: the fallback provider on [`Route::Fallback`] (announcing the
-/// outage once with `agent_fallback`), else the active provider.
-pub(crate) async fn stateless_provider(
-    state: &AppState,
-    app: &AppHandle,
-    route: &Route,
-    params: &GenerationParams,
-) -> Result<(Arc<tokio::sync::Mutex<Box<dyn LLMProvider>>>, String, String, Option<ProviderType>), String> {
-    match route {
-        Route::Fallback(config) => match resolve_fallback(state, config.clone()).await {
-            Ok((provider, model, name)) => {
-                if state.claude_health.take_fallback_notice() {
-                    let reason = match state.claude_health.get() {
-                        ClaudeHealth::Unavailable(kind) => routing::reason_label(kind),
-                        ClaudeHealth::Healthy => "unavailable",
-                    };
-                    let _ = app.emit(
-                        routing::FALLBACK_EVENT,
-                        AgentFallbackPayload {
-                            reason: reason.to_string(),
-                            provider: name.clone(),
-                        },
-                    );
-                }
-                let provider_type = ProviderType::from_str(&config.provider_type).ok();
-                Ok((provider, model, name, provider_type))
-            }
-            Err(message) => {
-                emit_error(app, params, &message);
-                Err(message)
-            }
-        },
-        _ => {
-            let llm = state
-                .llm
-                .as_ref()
-                .ok_or_else(|| "LLM router not initialized".to_string())?;
-            let router = llm
-                .lock()
-                .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-            let provider = router
-                .get_provider()
-                .map_err(|e| format!("No active LLM provider: {}", e))?;
-
-            let model_name = router.active_model().to_string();
-            if model_name.is_empty() {
-                return Err("No active model selected".to_string());
-            }
-
-            let ptype = router
-                .active_provider_type()
-                .map(|pt| pt.display_name().to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            Ok((provider, model_name, ptype, router.active_provider_type().cloned()))
-        }
+/// The meeting's Gemini context cache, when it can serve `resolved`: made
+/// on the same connection (a cache from before connections: with the old
+/// Gemini key on Google's API) and for the same model (Gemini rejects a cache
+/// made for another model).
+fn gemini_cache_for(app: &AppHandle, state: &AppState, resolved: &ResolvedLlm) -> Option<String> {
+    if resolved.kind != LlmKind::Gemini {
+        return None;
     }
+    let cache = state.gemini_cache.lock().ok()?.clone()?;
+    let same_connection = match &cache.connection_id {
+        Some(id) => *id == resolved.connection_id,
+        None => app.try_state::<LlmRegistry>().is_some_and(|registry| {
+            registry.config().connection(&resolved.connection_id).is_some_and(|c| {
+                c.secret_ref.as_deref() == Some("gemini")
+                    && c.base_url.trim_end_matches('/') == "https://generativelanguage.googleapis.com"
+            })
+        }),
+    };
+    if !same_connection || !crate::llm::gemini_cache::same_model(&cache.model, &resolved.model) {
+        log::info!(
+            "Gemini context cache {} not used: made for {} on another connection or model ({})",
+            cache.name,
+            cache.model,
+            resolved.model
+        );
+        return None;
+    }
+    Some(cache.name)
 }
 
 #[command]
@@ -797,7 +735,7 @@ pub async fn generate_assist(
 
     // ── Route: warm Claude session, fallback provider, or stateless ──
     let (scope, epoch) = request_scope(&state, past_meeting_id.as_deref());
-    let mut route = request_route(&state, &mode, &scope);
+    let mut route = request_route(&app_handle, &state, &mode, &scope);
 
     if let Route::ClaudeSession(key) = &route {
         // The action's own prompt (or the mode template) and presets travel in
@@ -811,6 +749,7 @@ pub async fn generate_assist(
         } else {
             action_prompt
         };
+        let task_instructions = api::with_answer_language(&task_instructions, &app_handle);
         let req = SessionAssist {
             key: key.clone(),
             epoch,
@@ -830,13 +769,9 @@ pub async fn generate_assist(
             rag_top_k,
             temperature,
             params: GenerationParams {
-                temperature: None,
-                max_tokens: None,
-                cache_name: None,
-                enable_web_search: false,
                 request_id: Some(request_id.clone()),
-                silent: false,
                 cancel: Some(cancel_token.clone()),
+                ..GenerationParams::default()
             },
             cancel: cancel_token.clone(),
         };
@@ -853,7 +788,7 @@ pub async fn generate_assist(
                     cancel: Some(cancel_token.clone()),
                     ..GenerationParams::default()
                 };
-                route = route_after_outage(&state, &app_handle, &mode, &scope, kind, &reason, &params)?;
+                route = route_after_outage(&state, &app_handle, &mode, kind, &reason, &params)?;
             }
         }
     }
@@ -937,37 +872,29 @@ pub async fn generate_assist(
         base_system_prompt
     };
 
-    // Get the LLM provider and model info: the fallback provider when Claude
-    // is unavailable, else the active one.
-    let (provider_arc, model, provider_name, provider_type) = {
+    // The task's connection and model (its fallback while Claude is unavailable).
+    debug_assert!(matches!(route, Route::Stateless));
+    let resolved = {
         let params = GenerationParams {
             request_id: Some(request_id.clone()),
             cancel: Some(cancel_token.clone()),
             ..GenerationParams::default()
         };
-        stateless_provider(&state, &app_handle, &route, &params).await?
+        stateless_provider(&app_handle, &mode, &params).await?
     };
 
     // Check for active Gemini context cache — only applies when Gemini is the provider
-    let active_cache_name = if provider_type == Some(ProviderType::Gemini) {
-        state.gemini_cache
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(|c| c.name.clone()))
-    } else {
-        None
-    };
+    let active_cache_name = gemini_cache_for(&app_handle, &state, &resolved);
 
     let enable_web_search = action_cfg.as_ref().map(|c| c.web_search).unwrap_or(false);
 
     let params = GenerationParams {
         temperature: Some(temperature),
-        max_tokens: None,
         cache_name: active_cache_name.clone(),
         enable_web_search,
         request_id: Some(request_id),
-        silent: false,
         cancel: Some(cancel_token.clone()),
+        ..GenerationParams::default()
     };
 
     // When Gemini cache is active, skip RAG entirely — no Ollama embed needed.
@@ -1013,9 +940,9 @@ pub async fn generate_assist(
         include_question,
         include_rag,
         include_instructions,
-        provider_arc,
-        model,
-        provider_name,
+        api::legacy_handle(&resolved),
+        resolved.model.clone(),
+        resolved.display_name.clone(),
         params,
         temperature,
         rag.query,

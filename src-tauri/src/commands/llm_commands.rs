@@ -1,8 +1,9 @@
 use std::sync::Arc;
-use tauri::{command, State};
+use tauri::{command, AppHandle, State};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::llm::provider::LLMProvider;
+use crate::llm::registry::{self, LlmRegistry};
 use crate::llm::{create_provider, LLMRouter, ProviderConfig};
 use crate::llm::openrouter_models;
 use crate::state::AppState;
@@ -28,10 +29,17 @@ fn resolve_provider(
         .map_err(|e| format!("No active provider: {}", e))
 }
 
+/// Old API (NexQ Plus shim): points the default route at the connection
+/// that stands for this provider type (`legacy-<type>`, created when
+/// missing). Idempotent: when the default connection already stands for
+/// this type nothing changes, so the frontend's startup push never undoes a
+/// route chosen in the new settings. An API key in the config is used for
+/// this session only (the old settings store it in the keychain themselves).
 #[command]
 pub async fn set_llm_provider(
     provider: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
+    registry: State<'_, LlmRegistry>,
 ) -> Result<(), String> {
     // Parse the provider config from the JSON string, or create a simple one from the provider name
     let config: ProviderConfig = match serde_json::from_str(&provider) {
@@ -49,22 +57,15 @@ pub async fn set_llm_provider(
         }
     };
 
-    let llm = state
-        .llm
-        .as_ref()
-        .ok_or_else(|| "LLM router not initialized".to_string())?;
-
-    let mut router = llm
-        .lock()
-        .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
     // Log the provider type only: the raw config JSON carries the API key / auth value.
     let provider_type = config.provider_type.clone();
-    router
-        .set_provider(config)
+    let changed = registry
+        .apply_legacy_provider(&config)
         .map_err(|e| format!("Failed to set provider: {}", e))?;
-
-    log::info!("LLM provider set to: {}", provider_type);
+    if changed {
+        registry::after_change(&app);
+        log::info!("LLM provider set to: {}", provider_type);
+    }
     Ok(())
 }
 
@@ -90,23 +91,22 @@ pub async fn list_models(
     serde_json::to_string(&models).map_err(|e| format!("Failed to serialize models: {}", e))
 }
 
+/// Old API (NexQ Plus shim): the default route's model, when the default
+/// connection stands for `provider`; ignored otherwise.
 #[command]
 pub async fn set_active_model(
-    _provider: String,
+    provider: String,
     model_id: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
+    registry: State<'_, LlmRegistry>,
 ) -> Result<(), String> {
-    let llm = state
-        .llm
-        .as_ref()
-        .ok_or_else(|| "LLM router not initialized".to_string())?;
-
-    let mut router = llm
-        .lock()
-        .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-    router.set_active_model(model_id.clone());
-    log::info!("Active model set to: {}", model_id);
+    let changed = registry
+        .apply_legacy_model(&provider, &model_id)
+        .map_err(|e| format!("Failed to set model: {}", e))?;
+    if changed {
+        registry::after_change(&app);
+        log::info!("Active model set to: {}", model_id);
+    }
     Ok(())
 }
 
@@ -137,9 +137,43 @@ pub async fn get_llm_providers() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize providers: {}", e))
 }
 
+/// The OpenRouter key for the model catalog: `connection_id`'s, else the
+/// old `openrouter` slot, else the first OpenRouter connection's.
+fn openrouter_key(
+    registry: &LlmRegistry,
+    state: &AppState,
+    connection_id: Option<&str>,
+) -> Result<String, String> {
+    let config = registry.config();
+    if let Some(id) = connection_id {
+        let conn = config
+            .connection(id)
+            .ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
+        return registry
+            .secret_for(conn)?
+            .ok_or_else(|| format!("No API key is saved for \"{}\"", conn.display_name()));
+    }
+    let slot = state
+        .credentials
+        .as_ref()
+        .and_then(|c| c.lock().ok())
+        .and_then(|c| c.get_key("openrouter").ok().flatten());
+    if let Some(key) = slot {
+        return Ok(key);
+    }
+    config
+        .connections
+        .iter()
+        .filter(|c| c.is_openrouter())
+        .find_map(|c| registry.secret_for(c).ok().flatten())
+        .ok_or_else(|| "OpenRouter API key not found. Please enter your API key first.".to_string())
+}
+
 #[command]
 pub async fn list_openrouter_models(
     force_refresh: bool,
+    connection_id: Option<String>,
+    registry: State<'_, LlmRegistry>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Check cache first (unless force refresh)
@@ -160,19 +194,8 @@ pub async fn list_openrouter_models(
         }
     }
 
-    // Get API key from CredentialManager
-    let api_key = {
-        let cred_mgr = state
-            .credentials
-            .as_ref()
-            .ok_or_else(|| "Credential manager not initialized".to_string())?;
-        let cred = cred_mgr
-            .lock()
-            .map_err(|e| format!("Failed to lock credential manager: {}", e))?;
-        cred.get_key("openrouter")
-            .map_err(|e| format!("Failed to get API key: {}", e))?
-            .ok_or_else(|| "OpenRouter API key not found. Please enter your API key first.".to_string())?
-    };
+    // The key of the given OpenRouter connection, or the usual one.
+    let api_key = openrouter_key(&registry, &state, connection_id.as_deref())?;
 
     // Fetch from API
     let models = openrouter_models::fetch_openrouter_models(&api_key).await?;

@@ -146,28 +146,32 @@ impl NDJSONParser {
 
 /// A line buffer for incremental SSE/NDJSON parsing from byte streams.
 /// Accumulates bytes until complete lines are available.
+///
+/// Lines are decoded only once complete: a multi-byte character (Chinese,
+/// emoji…) split across two network chunks is decoded whole instead of
+/// turning into `�` (decoding each chunk on its own did that).
+#[derive(Debug, Default)]
 pub struct LineBuffer {
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl LineBuffer {
     pub fn new() -> Self {
-        Self {
-            buffer: String::new(),
-        }
+        Self::default()
     }
 
-    /// Push new bytes into the buffer and extract complete lines.
-    pub fn push(&mut self, data: &str) -> Vec<String> {
-        self.buffer.push_str(data);
+    /// Push new bytes (a network chunk, or text) into the buffer and extract
+    /// complete lines, without their `\n` / `\r\n`.
+    pub fn push(&mut self, data: impl AsRef<[u8]>) -> Vec<String> {
+        self.buffer.extend_from_slice(data.as_ref());
         let mut lines = Vec::new();
-
-        while let Some(pos) = self.buffer.find('\n') {
-            let line = self.buffer[..pos].to_string();
-            self.buffer = self.buffer[pos + 1..].to_string();
-            lines.push(line);
+        let mut start = 0;
+        while let Some(pos) = self.buffer[start..].iter().position(|&b| b == b'\n') {
+            let end = start + pos;
+            lines.push(decode_line(&self.buffer[start..end]));
+            start = end + 1;
         }
-
+        self.buffer.drain(..start);
         lines
     }
 
@@ -176,7 +180,46 @@ impl LineBuffer {
         if self.buffer.is_empty() {
             None
         } else {
-            Some(std::mem::take(&mut self.buffer))
+            let rest = std::mem::take(&mut self.buffer);
+            Some(decode_line(&rest))
         }
+    }
+}
+
+/// One line's text, without a trailing `\r`.
+fn decode_line(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_buffer_keeps_a_character_split_across_chunks() {
+        let text = "data: {\"t\":\"你好\"}\n";
+        let bytes = text.as_bytes();
+        // Split inside the three bytes of 你.
+        let cut = text.find('你').unwrap() + 1;
+        let mut buffer = LineBuffer::new();
+        assert!(buffer.push(&bytes[..cut]).is_empty());
+        assert_eq!(buffer.push(&bytes[cut..]), vec!["data: {\"t\":\"你好\"}".to_string()]);
+        assert_eq!(buffer.flush(), None);
+    }
+
+    #[test]
+    fn line_buffer_strips_crlf_and_flushes_the_rest() {
+        let mut buffer = LineBuffer::new();
+        assert_eq!(buffer.push("a\r\nb\n\nc"), vec!["a", "b", ""]);
+        assert_eq!(buffer.flush().as_deref(), Some("c"));
+        assert_eq!(buffer.flush(), None);
+        // Byte by byte, a 4-byte emoji still comes out whole.
+        let mut buffer = LineBuffer::new();
+        let mut lines = Vec::new();
+        for b in "🙂x\n".as_bytes() {
+            lines.extend(buffer.push([*b]));
+        }
+        assert_eq!(lines, vec!["🙂x"]);
     }
 }

@@ -32,6 +32,11 @@ pub struct GenerationParams {
     /// `LLMError::Cancelled` once it fires. Never serialized.
     #[serde(skip)]
     pub cancel: Option<Arc<CancelToken>>,
+    /// Extra request-body fields from the task's route (JSON Merge Patch,
+    /// applied after the connection's own). `model`, `messages` and
+    /// `stream` are never overridden.
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 impl Default for GenerationParams {
@@ -44,6 +49,7 @@ impl Default for GenerationParams {
             request_id: None,
             silent: false,
             cancel: None,
+            extra_body: None,
         }
     }
 }

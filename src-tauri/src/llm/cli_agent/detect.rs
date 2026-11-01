@@ -49,23 +49,35 @@ fn first_line_ending(stdout: &str, ext: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Where Homebrew puts `claude` (Apple silicon, then Intel). An app started
+/// from Finder gets a short PATH without these, so they are checked too.
+#[cfg(unix)]
+const EXTRA_BIN_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
 /// Find `claude`: the native installer location first (`~/.local/bin/claude`,
-/// used by `curl -fsSL https://claude.ai/install.sh | bash`), then PATH.
+/// used by `curl -fsSL https://claude.ai/install.sh | bash`), then PATH, then
+/// Homebrew's folders and the older local install (`~/.claude/local/claude`).
 #[cfg(unix)]
 pub fn find_claude_binary() -> Option<PathBuf> {
-    find_claude_in(std::env::var_os("HOME").as_deref(), std::env::var_os("PATH").as_deref())
+    let extra: Vec<PathBuf> = EXTRA_BIN_DIRS.iter().map(PathBuf::from).collect();
+    find_claude_in(std::env::var_os("HOME").as_deref(), std::env::var_os("PATH").as_deref(), &extra)
 }
 
-/// [`find_claude_binary`] for a given `HOME` and `PATH`.
+/// [`find_claude_binary`] for a given `HOME`, `PATH` and extra folders.
 #[cfg(unix)]
-fn find_claude_in(home: Option<&std::ffi::OsStr>, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+fn find_claude_in(home: Option<&std::ffi::OsStr>, path: Option<&std::ffi::OsStr>, extra: &[PathBuf]) -> Option<PathBuf> {
     if let Some(home) = home {
         let p = Path::new(home).join(".local").join("bin").join("claude");
         if is_executable_file(&p) {
             return Some(p);
         }
     }
-    std::env::split_paths(path?)
+    let on_path = path.map(|p| std::env::split_paths(p).collect::<Vec<_>>()).unwrap_or_default();
+    let local = home.map(|h| Path::new(h).join(".claude").join("local"));
+    on_path
+        .into_iter()
+        .chain(extra.iter().cloned())
+        .chain(local)
         .map(|dir| dir.join("claude"))
         .find(|p| is_executable_file(p))
 }
@@ -273,8 +285,8 @@ mod tests {
         let plain = claude_script(&root.join("a"), 0o644);
         let exe = claude_script(&root.join("b"), 0o755);
         let path = std::env::join_paths([plain.parent().unwrap(), exe.parent().unwrap()]).unwrap();
-        assert_eq!(find_claude_in(None, Some(path.as_os_str())), Some(exe));
-        assert_eq!(find_claude_in(None, None), None);
+        assert_eq!(find_claude_in(None, Some(path.as_os_str()), &[]), Some(exe));
+        assert_eq!(find_claude_in(None, None, &[]), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -285,8 +297,28 @@ mod tests {
         let native = claude_script(&root.join("home").join(".local").join("bin"), 0o755);
         let on_path = claude_script(&root.join("bin"), 0o755);
         let home = root.join("home");
-        let found = find_claude_in(Some(home.as_os_str()), Some(on_path.parent().unwrap().as_os_str()));
+        let found = find_claude_in(Some(home.as_os_str()), Some(on_path.parent().unwrap().as_os_str()), &[]);
         assert_eq!(found, Some(native));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn homebrew_and_the_old_local_install_are_found_without_path() {
+        // A Finder launch: PATH is /usr/bin:/bin:/usr/sbin:/sbin, no Homebrew.
+        let root = temp_dir("brew");
+        let brew = claude_script(&root.join("opt").join("homebrew").join("bin"), 0o755);
+        let short_path = root.join("usr-bin");
+        std::fs::create_dir_all(&short_path).unwrap();
+        let extra = [root.join("missing"), brew.parent().unwrap().to_path_buf()];
+        assert_eq!(find_claude_in(None, Some(short_path.as_os_str()), &extra), Some(brew.clone()));
+        // PATH still wins over Homebrew.
+        let on_path = claude_script(&root.join("path"), 0o755);
+        assert_eq!(find_claude_in(None, Some(on_path.parent().unwrap().as_os_str()), &extra), Some(on_path));
+        // `claude migrate-installer` puts it in ~/.claude/local.
+        let home = root.join("home");
+        let local = claude_script(&home.join(".claude").join("local"), 0o755);
+        assert_eq!(find_claude_in(Some(home.as_os_str()), Some(short_path.as_os_str()), &[]), Some(local));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

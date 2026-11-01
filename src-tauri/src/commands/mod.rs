@@ -23,5 +23,6 @@ pub mod updater_commands;
 // One line per package below its own marker, so parallel branches merge cleanly.
 pub mod ui_commands;
 // p1-llm:
+pub mod llm_connection_commands;
 // p4-rag:
 // p5-onboarding:
