@@ -582,8 +582,10 @@ const SECRET_QUERY_PARAMS: &[&str] = &[
 ];
 
 /// `url` for error messages and logs: a userinfo password and the values of
-/// secret query parameters (`key`, `token`, `sig`, …) become `***`. Input
-/// that doesn't parse, or has nothing to mask, comes back unchanged.
+/// secret query parameters (`key`, `token`, `sig`, …) become `***`, and so
+/// does a username without a password (`https://TOKEN@host`, a token put in
+/// the username slot). Input that doesn't parse, or has nothing to mask,
+/// comes back unchanged.
 pub fn redact_url(url: &str) -> String {
     let Ok(mut parsed) = Url::parse(url) else {
         return url.to_string();
@@ -594,6 +596,8 @@ pub fn redact_url(url: &str) -> String {
         .is_some_and(|password| !password.is_empty())
     {
         masked |= parsed.set_password(Some("***")).is_ok();
+    } else if !parsed.username().is_empty() {
+        masked |= parsed.set_username("***").is_ok();
     }
     if let Some(query) = parsed.query().and_then(mask_query) {
         parsed.set_query(Some(&query));
@@ -1069,13 +1073,20 @@ mod tests {
             redact_url("https://h.example/v1?signature=s#frag"),
             "https://h.example/v1?signature=***#frag"
         );
+        assert_eq!(
+            redact_url("https://sk-live-123@h.example/v1"),
+            "https://***@h.example/v1"
+        );
+        assert_eq!(
+            redact_url("https://sk-live-123:@h.example/v1?key=abc"),
+            "https://***@h.example/v1?key=***"
+        );
     }
 
     #[test]
     fn redact_url_leaves_other_urls_alone() {
         for url in [
             "HTTPS://H.EXAMPLE/v1?model=gpt-4o",
-            "https://user@h.example/v1",
             "https://h.example/v1?keyword=x&monkey=1",
             "not a url",
             "",
