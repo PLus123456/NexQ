@@ -25,6 +25,9 @@ import {
   type OpenAICompatSttConfig,
   type SonioxConfig,
 } from "../lib/stt/types";
+import { migrateSttConfig } from "../lib/stt/migrations";
+import { LOCAL_MODEL_ENGINES, localModelIdOnSwitch } from "../lib/stt/providerMeta";
+import { currentPlatform } from "../lib/platform";
 
 const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
   model: "nova-3",
@@ -172,6 +175,12 @@ function pushOpenAICompatSttConfig(config: OpenAICompatSttConfig): void {
   );
 }
 
+function pushWhisperUseGpu(enabled: boolean): void {
+  import("../lib/stt/ipc").then(({ setWhisperUseGpu }) =>
+    setWhisperUseGpu(enabled).catch((e) => console.warn("[configStore] Failed to set the whisper.cpp GPU switch:", e)),
+  );
+}
+
 function pushSonioxConfig(config: SonioxConfig): void {
   import("../lib/stt/ipc").then(({ updateSonioxConfig }) =>
     updateSonioxConfig(config).catch((e) => console.warn("[configStore] Failed to update Soniox config:", e)),
@@ -253,6 +262,8 @@ interface ConfigState {
 
   // Whisper dual-pass config
   whisperDualPass: WhisperDualPassConfig;
+  /** whisper.cpp on the GPU (Metal on macOS); off = CPU. Applies when a party starts. */
+  whisperUseGpu: boolean;
 
   // Deepgram model/feature config
   deepgramConfig: DeepgramConfig;
@@ -386,6 +397,7 @@ interface ConfigState {
   setActiveModelForEngine: (engineId: string, modelId: string | null) => void;
   getActiveModelForEngine: (engineId: string) => string | null;
   setWhisperDualPass: (config: WhisperDualPassConfig) => void;
+  setWhisperUseGpu: (enabled: boolean) => void;
   setDeepgramConfig: (config: DeepgramConfig) => void;
   setGroqConfig: (config: GroqConfig) => void;
   setOpenAICompatSttConfig: (config: OpenAICompatSttConfig) => void;
@@ -471,6 +483,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
   activeModelPerEngine: {},
   verifiedCloudProviders: [],
   whisperDualPass: { shortChunkSecs: 1.0, longChunkSecs: 3.0, pauseSecs: 1.5 },
+  whisperUseGpu: true,
   deepgramConfig: DEFAULT_DEEPGRAM_CONFIG,
   groqConfig: DEFAULT_GROQ_CONFIG,
   openaiCompatSttConfig: DEFAULT_OPENAI_COMPAT_STT_CONFIG,
@@ -762,6 +775,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
         .catch((e) => console.warn("[configStore] Failed to update whisper dual-pass config:", e))
     );
   },
+  setWhisperUseGpu: (enabled) => {
+    set({ whisperUseGpu: enabled });
+    persistValue("whisperUseGpu", enabled);
+    pushWhisperUseGpu(enabled);
+  },
   setDeepgramConfig: (config) => {
     set({ deepgramConfig: config });
     persistValue("deepgramConfig", config);
@@ -1004,6 +1022,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const hotkeys = await store.get<HotkeyConfig>("hotkeys");
       const activeWhisperModel = await store.get<string | null>("activeWhisperModel");
       const whisperDualPass = await store.get<WhisperDualPassConfig>("whisperDualPass");
+      const whisperUseGpu = (await store.get<boolean>("whisperUseGpu")) ?? true;
       const contextStrategy = await store.get<ContextStrategy>("contextStrategy");
       const verifiedCloudProviders = await store.get<string[]>("verifiedCloudProviders");
       const deepgramConfig = await store.get<DeepgramConfig>("deepgramConfig");
@@ -1064,107 +1083,34 @@ export const useConfigStore = create<ConfigState>((set) => ({
         claudeCliConfig.fallback_model = lastModelByProvider[llmProvider] ?? null;
       }
 
-      // Auto-migrate: if no meetingAudioConfig exists but old fields do,
-      // build a MeetingAudioConfig from legacy fields.
-      // ONLY run migrations on first load — not when re-entering settings mid-meeting.
+      // STT migrations, first load only (two windows each run them: they are
+      // idempotent). Per-party config and languages, Windows Speech only on
+      // Windows, one exclusive engine at a time. Whisper.cpp is a live engine
+      // and is no longer switched away. See lib/stt/migrations.ts.
       let resolvedMeetingConfig = meetingAudioConfig ?? null;
-      if (!alreadyLoaded && !resolvedMeetingConfig && (micDeviceId || systemDeviceId)) {
-        resolvedMeetingConfig = {
-          you: {
-            role: "You",
-            device_id: micDeviceId ?? "default",
-            is_input_device: true,
-            stt_provider: "web_speech",
-          },
-          them: {
-            role: "Them",
-            device_id: systemDeviceId ?? "default",
-            is_input_device: false,
-            stt_provider: "deepgram",
-          },
-          recording_enabled: recordingEnabled ?? false,
-          preset_name: null,
-        };
-        await store.set("meetingAudioConfig", resolvedMeetingConfig);
-        console.log("[configStore] Migrated legacy audio config to meetingAudioConfig");
-      }
-
-      // Migrate whisper_cpp → correct defaults (whisper_cpp is batch-only, not for live STT)
-      // Only run on first load to avoid overwriting user settings mid-meeting.
-      if (!alreadyLoaded && resolvedMeetingConfig) {
-        let migrated = false;
-        if ((resolvedMeetingConfig.you.stt_provider as string) === "whisper_cpp") {
-          resolvedMeetingConfig.you = { ...resolvedMeetingConfig.you, stt_provider: "web_speech", local_model_id: undefined };
-          migrated = true;
-        }
-        if ((resolvedMeetingConfig.them.stt_provider as string) === "whisper_cpp") {
-          resolvedMeetingConfig.them = { ...resolvedMeetingConfig.them, stt_provider: "deepgram", local_model_id: undefined };
-          migrated = true;
-        }
-        // windows_native only works with mic input; migrate Them (non-input) away from it
-        if (
-          (resolvedMeetingConfig.them.stt_provider as string) === "windows_native" &&
-          !resolvedMeetingConfig.them.is_input_device
-        ) {
-          resolvedMeetingConfig.them = { ...resolvedMeetingConfig.them, stt_provider: "deepgram" };
-          migrated = true;
-        }
-        // Mutual exclusion: Web Speech / Windows Speech can only be used by one party.
-        // If both parties have exclusive providers (from old config), keep "You" and fallback "Them".
-        const exclusiveProviders = ["web_speech", "windows_native"];
-        if (
-          exclusiveProviders.includes(resolvedMeetingConfig.you.stt_provider) &&
-          exclusiveProviders.includes(resolvedMeetingConfig.them.stt_provider)
-        ) {
-          resolvedMeetingConfig.them = {
-            ...resolvedMeetingConfig.them,
-            stt_provider: "deepgram",
-            local_model_id: undefined,
-          };
-          migrated = true;
-          console.log("[configStore] Migrated dual-exclusive STT: kept You, fell back Them to deepgram");
-        }
-        if (migrated) {
-          await store.set("meetingAudioConfig", resolvedMeetingConfig);
-          console.log("[configStore] Migrated meetingAudioConfig providers");
-        }
-      }
-
-      // Migrate top-level sttProvider away from whisper_cpp (first load only)
       let resolvedSttProvider = sttProvider;
-      if (!alreadyLoaded && (!resolvedSttProvider || (resolvedSttProvider as string) === "whisper_cpp")) {
-        resolvedSttProvider = "windows_native" as STTProviderType;
-        await store.set("sttProvider", resolvedSttProvider);
-        console.log("[configStore] Migrated top-level sttProvider to windows_native");
-      }
-
-      // If no meetingAudioConfig was found after all migrations, create a default (first load only)
-      if (!alreadyLoaded && !resolvedMeetingConfig) {
-        resolvedMeetingConfig = {
-          you: {
-            role: "You",
-            device_id: "default",
-            is_input_device: true,
-            stt_provider: "web_speech",
-          },
-          them: {
-            role: "Them",
-            device_id: "default",
-            is_input_device: false,
-            stt_provider: "deepgram",
-          },
-          recording_enabled: false,
-          preset_name: null,
-        };
-        await store.set("meetingAudioConfig", resolvedMeetingConfig);
-        console.log("[configStore] Created default meetingAudioConfig (Web Speech + Deepgram)");
+      if (!alreadyLoaded) {
+        const migrated = migrateSttConfig({
+          meetingAudioConfig,
+          sttProvider,
+          sttLanguage,
+          micDeviceId,
+          systemDeviceId,
+          recordingEnabled,
+          platform: currentPlatform(),
+        });
+        resolvedMeetingConfig = migrated.meetingAudioConfig;
+        resolvedSttProvider = migrated.sttProvider;
+        if (migrated.changed.meetingAudioConfig) await store.set("meetingAudioConfig", resolvedMeetingConfig);
+        if (migrated.changed.sttProvider) await store.set("sttProvider", resolvedSttProvider);
+        if (migrated.notes.length > 0) console.log(`[configStore] STT migration: ${migrated.notes.join("; ")}`);
       }
 
       set((state) => ({
         ...state,
         _loaded: true,
         ...(theme != null && { theme }),
-        ...(sttProvider != null && { sttProvider }),
+        ...(resolvedSttProvider != null && { sttProvider: resolvedSttProvider }),
         ...(sttLanguage != null && { sttLanguage }),
         ...(llmProvider != null && { llmProvider }),
         ...(llmModel != null && { llmModel }),
@@ -1189,6 +1135,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(activeWhisperModel !== undefined && { activeWhisperModel }),
         ...(activeModelPerEngine != null && { activeModelPerEngine }),
         ...(whisperDualPass != null && { whisperDualPass }),
+        whisperUseGpu,
         ...(contextStrategy != null && { contextStrategy }),
         ...(verifiedCloudProviders != null && { verifiedCloudProviders }),
         ...(deepgramConfig != null && { deepgramConfig }),
@@ -1231,20 +1178,14 @@ export const useConfigStore = create<ConfigState>((set) => ({
       // Post-load: ensure local providers have a local_model_id so footer/backend use the right model
       if (resolvedMeetingConfig) {
         const amp = activeModelPerEngine ?? {};
-        const defaultModels: Record<string, string> = {
-          sherpa_onnx: "streaming-zipformer-en-20M",
-          ort_streaming: "zipformer-en-20M",
-          parakeet_tdt: "parakeet-tdt-0.6b-v3-int8",
-        };
-        const localProviders = ["sherpa_onnx", "ort_streaming", "parakeet_tdt", "whisper_cpp"];
         let needsPersist = false;
         for (const party of ["you", "them"] as const) {
           const p = resolvedMeetingConfig[party];
-          if (localProviders.includes(p.stt_provider) && !p.local_model_id) {
-            resolvedMeetingConfig[party] = {
-              ...p,
-              local_model_id: amp[p.stt_provider] ?? defaultModels[p.stt_provider] ?? undefined,
-            };
+          const modelId = LOCAL_MODEL_ENGINES.includes(p.stt_provider) && !p.local_model_id
+            ? localModelIdOnSwitch(p.stt_provider, amp, activeWhisperModel ?? null)
+            : undefined;
+          if (modelId) {
+            resolvedMeetingConfig[party] = { ...p, local_model_id: modelId };
             needsPersist = true;
           }
         }
@@ -1291,6 +1232,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<WhisperDualPassConfig>("whisperDualPass", (val) => {
         if (val != null) set({ whisperDualPass: val });
+      });
+      store.onKeyChange<boolean>("whisperUseGpu", (val) => {
+        if (val != null) set({ whisperUseGpu: val });
       });
       store.onKeyChange<ContextScopeSetting>("contextScope", (val) => {
         if (val != null) set({ contextScope: normalizeContextScope(val) });
@@ -1376,6 +1320,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       // Sync the remote STT and Soniox settings (the backend starts with the defaults).
       pushOpenAICompatSttConfig(openaiCompatSttConfig);
       pushSonioxConfig(sonioxConfig);
+      if (!whisperUseGpu) pushWhisperUseGpu(false);
 
       // Sync persisted pause threshold to Rust backend on startup.
       const loadedPauseThreshold = pauseThresholdMs ?? 3000;

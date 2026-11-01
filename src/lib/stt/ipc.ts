@@ -27,3 +27,8 @@ export async function probeSoniox(config: SonioxConfig): Promise<SttProbeResult>
   const json = await invoke<string>("probe_soniox", { configJson: JSON.stringify(config) });
   return JSON.parse(json) as SttProbeResult;
 }
+
+/** Run whisper.cpp on the GPU (Metal on macOS) or the CPU; applies when a party next starts. */
+export async function setWhisperUseGpu(enabled: boolean): Promise<void> {
+  return invoke("set_whisper_use_gpu", { enabled });
+}

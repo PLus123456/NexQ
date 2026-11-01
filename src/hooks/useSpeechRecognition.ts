@@ -72,13 +72,30 @@ function getSpeakerLabel(cfg: ReturnType<typeof useConfigStore.getState>["meetin
 }
 
 /**
+ * The language Web Speech recognizes: that of the party using it, else the
+ * global STT language. It can't detect, so "auto" uses the system language.
+ */
+export function webSpeechLanguage(
+  cfg: ReturnType<typeof useConfigStore.getState>["meetingAudioConfig"],
+  sttLanguage: string,
+): string {
+  const party = cfg && getSpeakerLabel(cfg) === "Them" ? cfg.them : cfg?.you;
+  const language = party?.language || sttLanguage;
+  if (!language || language.toLowerCase() === "auto") {
+    return (typeof navigator !== "undefined" && navigator.language) || "en-US";
+  }
+  return language;
+}
+
+/**
  * Hook that runs browser-native speech recognition while a meeting is active.
  * Speaker label is determined by which party has web_speech configured —
  * YOU and THEM are treated identically.
  */
 export function useSpeechRecognition() {
   const isRecording = useMeetingStore((s) => s.isRecording);
-  const sttLanguage = useConfigStore((s) => s.sttLanguage);
+  // The Web Speech party's language: a change restarts recognition.
+  const sttLanguage = useConfigStore((s) => webSpeechLanguage(s.meetingAudioConfig, s.sttLanguage));
 
   const audioMode = useMeetingStore((s) => s.audioMode);
 
@@ -269,7 +286,8 @@ export function useSpeechRecognition() {
               fresh.continuous = true;
               fresh.interimResults = true;
               fresh.maxAlternatives = 1;
-              fresh.lang = useConfigStore.getState().sttLanguage || currentLanguage;
+              const latest = useConfigStore.getState();
+              fresh.lang = webSpeechLanguage(latest.meetingAudioConfig, latest.sttLanguage) || currentLanguage;
               // Copy handlers from old instance
               fresh.onresult = recognitionRef.current!.onresult;
               fresh.onerror = recognitionRef.current!.onerror;
