@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useT } from "../i18n";
 import { useStreamStore } from "../stores/streamStore";
 import { runUserAction } from "../lib/userAction";
 import { showToast } from "../stores/toastStore";
@@ -11,6 +12,7 @@ interface AskInputProps {
 
 // Sub-PRD 6: Text input for manual questions (Ctrl+5 / Ask mode)
 export function AskInput({ visible, onClose }: AskInputProps) {
+  const { t } = useT("overlay");
   const [inputText, setInputText] = useState("");
   const isStreaming = useStreamStore((s) => s.isStreaming);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -28,12 +30,12 @@ export function AskInput({ visible, onClose }: AskInputProps) {
 
     // Send question in AskQuestion mode (with the picked transcript scope)
     runUserAction("AskQuestion", text).catch((err) => {
-      const msg = err instanceof Error ? err.message : "Failed to send question";
+      const msg = err instanceof Error ? err.message : t("ask.errors.sendFailed");
       showToast(msg, "error");
     });
     setInputText("");
     onClose();
-  }, [inputText, isStreaming, onClose]);
+  }, [inputText, isStreaming, onClose, t]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -61,8 +63,8 @@ export function AskInput({ visible, onClose }: AskInputProps) {
         value={inputText}
         onChange={(e) => setInputText(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Ask about the meeting..."
-        aria-label="Ask a question"
+        placeholder={t("ask.input.placeholder")}
+        aria-label={t("ask.input.ariaLabel")}
         disabled={isStreaming}
         maxLength={2000}
         className="flex-1 bg-transparent text-xs text-foreground/90 placeholder:text-muted-foreground/50 outline-none"
@@ -71,16 +73,16 @@ export function AskInput({ visible, onClose }: AskInputProps) {
         onClick={handleSubmit}
         disabled={!inputText.trim() || isStreaming}
         className="rounded-lg p-1.5 text-primary transition-colors duration-150 hover:bg-primary/10 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
-        title="Send (Enter)"
-        aria-label="Send question"
+        title={t("ask.send.title")}
+        aria-label={t("ask.send.ariaLabel")}
       >
         <Send className="h-3.5 w-3.5" />
       </button>
       <button
         onClick={onClose}
         className="rounded-lg p-1.5 text-muted-foreground/60 transition-colors duration-150 hover:bg-accent hover:text-muted-foreground"
-        title="Close (Esc)"
-        aria-label="Close ask input"
+        title={t("ask.close.title")}
+        aria-label={t("ask.close.ariaLabel")}
       >
         <X className="h-3.5 w-3.5" />
       </button>

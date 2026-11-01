@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { ParseKeys } from "i18next";
+import { Trans, useT } from "../i18n";
 import { getModeLabel } from "../lib/utils";
 import type { AIResponse, StreamSource } from "../lib/types";
 import { useConfigStore } from "../stores/configStore";
@@ -26,8 +28,15 @@ type TabId = "current" | `resp-${string}` | `pinned-${string}`;
 /** Answers shown as tabs next to "Current"; the rest are in History. */
 const PREVIOUS_TABS = 4;
 
+const ALIGN_KEYS: Record<"left" | "center" | "right", { label: ParseKeys<"overlay">; title: ParseKeys<"overlay"> }> = {
+  left: { label: "response.typeset.align.left.label", title: "response.typeset.align.left.title" },
+  center: { label: "response.typeset.align.center.label", title: "response.typeset.align.center.title" },
+  right: { label: "response.typeset.align.right.label", title: "response.typeset.align.right.title" },
+};
+
 // Sub-PRD 6: Streaming markdown, response history tabs, pin/copy
 export function AIResponsePanel() {
+  const { t } = useT("overlay");
   const isStreaming = useStreamStore((s) => s.isStreaming);
   const phase = useStreamStore((s) => s.phase);
   const currentContent = useStreamStore((s) => s.currentContent);
@@ -151,9 +160,9 @@ export function AIResponsePanel() {
       {/* Tabs row */}
       {hasTabs && (
         <div className="mb-2 flex shrink-0 items-center gap-1.5 pb-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" role="tablist" aria-label="AI response tabs">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" role="tablist" aria-label={t("response.tabs.ariaLabel")}>
             <TabButton
-              label="Current"
+              label={t("response.tabs.current")}
               active={activeTab === "current"}
               onClick={() => setActiveTab("current")}
             />
@@ -183,7 +192,7 @@ export function AIResponsePanel() {
               onClick={() => (historyOpen ? closeHistory() : setHistoryOpen(true))}
               aria-expanded={historyOpen}
               aria-haspopup="dialog"
-              aria-label={`History, ${responseHistory.length} ${responseHistory.length === 1 ? "answer" : "answers"}`}
+              aria-label={t("response.history.ariaLabel", { count: responseHistory.length })}
               className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium transition-colors duration-150 ${
                 historyOpen || openedFromHistory
                   ? "bg-primary/15 text-primary"
@@ -191,7 +200,7 @@ export function AIResponsePanel() {
               }`}
             >
               <History className="h-2.5 w-2.5" aria-hidden="true" />
-              History · <span className="tabular-nums">{responseHistory.length}</span>
+              {t("response.history.label")} · <span className="tabular-nums">{responseHistory.length}</span>
             </button>
           )}
         </div>
@@ -212,7 +221,7 @@ export function AIResponsePanel() {
           onClose={closeHistory}
         />
       )}
-      <div ref={scrollRef} className="absolute inset-0 overflow-y-auto" role="tabpanel" aria-label="AI response content">
+      <div ref={scrollRef} className="absolute inset-0 overflow-y-auto" role="tabpanel" aria-label={t("response.content.ariaLabel")}>
         {/* Request in flight: progress, then the words as they arrive */}
         {activeTab === "current" && inFlight && (
           <div className="space-y-2.5" aria-atomic="false">
@@ -275,7 +284,15 @@ export function AIResponsePanel() {
           <div className="flex h-full flex-col items-center justify-center gap-2">
             <Sparkles className="h-5 w-5 text-primary/30" />
             <p className="text-xs text-muted-foreground/50">
-              Press <kbd className="mx-0.5 rounded border border-border/30 bg-secondary/30 px-1.5 py-0.5 font-mono text-meta text-foreground/70">Space</kbd> for AI assistance
+              <Trans
+                t={t}
+                i18nKey="response.empty.hint"
+                components={{
+                  kbd: (
+                    <kbd className="mx-0.5 rounded border border-border/30 bg-secondary/30 px-1.5 py-0.5 font-mono text-meta text-foreground/70" />
+                  ),
+                }}
+              />
             </p>
           </div>
         )}
@@ -286,29 +303,29 @@ export function AIResponsePanel() {
       <div className="flex shrink-0 flex-col gap-1 border-t border-border/10 px-1 pt-1.5">
         {/* Row 1: font size + color */}
         <div className="flex items-center gap-3">
-          <span className="text-[0.6rem] uppercase tracking-widest text-muted-foreground/40 font-medium">AI Text</span>
+          <span className="text-[0.6rem] uppercase tracking-widest text-muted-foreground/40 font-medium">{t("response.typeset.label")}</span>
           <div className="flex items-center gap-1">
-            <button onClick={() => setAiResponseFontSize(Math.max(8, aiResponseFontSize - 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.6rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Smaller">A</button>
+            <button onClick={() => setAiResponseFontSize(Math.max(8, aiResponseFontSize - 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.6rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.smaller")}>A</button>
             <span className="text-[0.6rem] tabular-nums text-muted-foreground/50 w-6 text-center">{aiResponseFontSize}</span>
-            <button onClick={() => setAiResponseFontSize(Math.min(32, aiResponseFontSize + 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.75rem] font-medium text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Larger">A</button>
+            <button onClick={() => setAiResponseFontSize(Math.min(32, aiResponseFontSize + 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.75rem] font-medium text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.larger")}>A</button>
           </div>
-          <ColorPickerButton value={aiResponseTextColor} onChange={setAiResponseTextColor} label="AI text color" />
+          <ColorPickerButton value={aiResponseTextColor} onChange={setAiResponseTextColor} label={t("response.typeset.colorLabel")} />
         </div>
         {/* Row 2: line height + horizontal padding + text align */}
         <div className="flex items-center gap-3">
           {/* Line height */}
           <div className="flex items-center gap-1">
-            <span className="text-[0.6rem] text-muted-foreground/40">LH</span>
-            <button onClick={() => setAiResponseLineHeight(Math.max(1.0, parseFloat((aiResponseLineHeight - 0.1).toFixed(1))))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Decrease line height">−</button>
+            <span className="text-[0.6rem] text-muted-foreground/40">{t("response.typeset.lineHeight.label")}</span>
+            <button onClick={() => setAiResponseLineHeight(Math.max(1.0, parseFloat((aiResponseLineHeight - 0.1).toFixed(1))))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.lineHeight.decrease")}>−</button>
             <span className="text-[0.6rem] tabular-nums text-muted-foreground/50 w-6 text-center">{aiResponseLineHeight.toFixed(1)}</span>
-            <button onClick={() => setAiResponseLineHeight(Math.min(3.0, parseFloat((aiResponseLineHeight + 0.1).toFixed(1))))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Increase line height">+</button>
+            <button onClick={() => setAiResponseLineHeight(Math.min(3.0, parseFloat((aiResponseLineHeight + 0.1).toFixed(1))))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.lineHeight.increase")}>+</button>
           </div>
           {/* Horizontal padding */}
           <div className="flex items-center gap-1">
             <span className="text-[0.6rem] text-muted-foreground/40">↔</span>
-            <button onClick={() => setAiResponseHPad(Math.max(0, aiResponseHPad - 4))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Decrease margin">−</button>
+            <button onClick={() => setAiResponseHPad(Math.max(0, aiResponseHPad - 4))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.margin.decrease")}>−</button>
             <span className="text-[0.6rem] tabular-nums text-muted-foreground/50 w-6 text-center">{aiResponseHPad}</span>
-            <button onClick={() => setAiResponseHPad(Math.min(80, aiResponseHPad + 4))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title="Increase margin">+</button>
+            <button onClick={() => setAiResponseHPad(Math.min(80, aiResponseHPad + 4))} className="h-5 w-5 flex items-center justify-center rounded text-[0.65rem] text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground/70 transition-colors" title={t("response.typeset.margin.increase")}>+</button>
           </div>
           {/* Text align */}
           <div className="flex items-center gap-0.5 rounded border border-border/20 overflow-hidden">
@@ -317,9 +334,9 @@ export function AIResponsePanel() {
                 key={a}
                 onClick={() => setAiResponseAlign(a)}
                 className={`px-1.5 py-0.5 text-[0.6rem] font-medium transition-colors ${aiResponseAlign === a ? "bg-primary/20 text-primary" : "text-muted-foreground/40 hover:text-muted-foreground/70"}`}
-                title={`Align ${a}`}
+                title={t(ALIGN_KEYS[a].title)}
               >
-                {a === "left" ? "L" : a === "center" ? "C" : "R"}
+                {t(ALIGN_KEYS[a].label)}
               </button>
             ))}
           </div>
@@ -368,10 +385,13 @@ function AnswerHeader({
   onCopy: () => void;
   onPin?: () => void;
 }) {
+  const { t } = useT("overlay");
   const total = response ? response.total_ms || response.latency_ms : null;
   const timing = [
     total ? formatDuration(total) : null,
-    response?.first_token_ms != null ? `first words ${formatDuration(response.first_token_ms)}` : null,
+    response?.first_token_ms != null
+      ? t("response.timing.firstWords", { duration: formatDuration(response.first_token_ms) })
+      : null,
   ].filter(Boolean).join(" · ");
   return (
     <div className="flex items-center justify-between gap-2">
@@ -388,14 +408,14 @@ function AnswerHeader({
       <div className="flex shrink-0 items-center gap-1">
         <ActionButton
           icon={copied ? Check : Copy}
-          title="Copy to clipboard"
+          title={t("response.actions.copy")}
           onClick={onCopy}
           active={copied}
         />
         {onPin && (
           <ActionButton
             icon={pinned ? PinOff : Pin}
-            title={pinned ? "Unpin" : "Pin response"}
+            title={pinned ? t("response.actions.unpin") : t("response.actions.pin")}
             onClick={onPin}
           />
         )}

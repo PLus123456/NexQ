@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Bookmark, BookmarkX, MessageSquarePlus, Copy } from "lucide-react";
+import { useT } from "../i18n";
 
 interface TranscriptContextMenuProps {
   x: number;
@@ -14,6 +15,7 @@ interface TranscriptContextMenuProps {
 export function TranscriptContextMenu({
   x, y, isBookmarked, onBookmark, onAddNote, onCopy, onClose,
 }: TranscriptContextMenuProps) {
+  const { t } = useT("overlay");
   const ref = useRef<HTMLDivElement>(null);
 
   // Close on outside click or Escape
@@ -49,17 +51,17 @@ export function TranscriptContextMenu({
   const items = [
     {
       icon: isBookmarked ? <BookmarkX className="h-3.5 w-3.5" /> : <Bookmark className="h-3.5 w-3.5" />,
-      label: isBookmarked ? "Remove Bookmark" : "Bookmark",
+      label: isBookmarked ? t("contextMenu.removeBookmark") : t("contextMenu.bookmark"),
       onClick: () => { onBookmark(); onClose(); },
     },
     {
       icon: <MessageSquarePlus className="h-3.5 w-3.5" />,
-      label: "Add Note",
+      label: t("contextMenu.addNote"),
       onClick: () => { onAddNote(); onClose(); },
     },
     {
       icon: <Copy className="h-3.5 w-3.5" />,
-      label: "Copy Text",
+      label: t("contextMenu.copyText"),
       onClick: () => { onCopy(); onClose(); },
     },
   ];

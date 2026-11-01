@@ -1,9 +1,11 @@
 // Small formatters for the AI response panel (timer, meeting time, previews).
 
+import { formatDate, t } from "../i18n";
+
 /** "0.6 s", "12.3 s", then "1:05" past a minute. */
 export function formatDuration(ms: number): string {
   const safe = Math.max(0, ms);
-  if (safe < 60_000) return `${(safe / 1000).toFixed(1)} s`;
+  if (safe < 60_000) return t("overlay:format.seconds", { value: (safe / 1000).toFixed(1) });
   const secs = Math.floor(safe / 1000);
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
@@ -14,7 +16,7 @@ export function formatAnswerTime(timestamp: number, meetingStart: number | null)
     const secs = Math.floor((timestamp - meetingStart) / 1000);
     return `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
   }
-  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return formatDate(timestamp, { hour: "2-digit", minute: "2-digit" });
 }
 
 /** First non-empty line of an answer, without markdown markers. */
@@ -27,8 +29,8 @@ export function previewLine(content: string): string {
 export function linesLabel(newLines: number | null, sessionKey: string | null): string | null {
   if (newLines == null) return null;
   if (sessionKey) {
-    if (newLines === 0) return "no new transcript since last answer";
-    return `${newLines} new transcript ${newLines === 1 ? "line" : "lines"} sent`;
+    if (newLines === 0) return t("overlay:progress.lines.none");
+    return t("overlay:progress.lines.sent", { count: newLines });
   }
-  return `${newLines} transcript ${newLines === 1 ? "line" : "lines"}`;
+  return t("overlay:progress.lines.total", { count: newLines });
 }
