@@ -2073,3 +2073,114 @@ pub async fn get_mute_status(app: AppHandle) -> Result<String, String> {
     serde_json::to_string(&status).map_err(|e| format!("Failed to serialize: {}", e))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::{NativeTranslationConfig, PartyAudioConfig, PartyRole};
+    use std::sync::{Arc, Mutex};
+
+    fn party(provider: &str, language: Option<&str>) -> PartyAudioConfig {
+        PartyAudioConfig {
+            role: PartyRole::Them,
+            device_id: "default".into(),
+            is_input_device: false,
+            stt_provider: provider.into(),
+            local_model_id: None,
+            language: language.map(str::to_string),
+            native_translation: None,
+        }
+    }
+
+    /// AppState with a router at `global` and translation target `target`.
+    fn state(global: &str, target: Option<&str>) -> AppState {
+        let mut state = AppState::new();
+        let mut router = crate::stt::STTRouter::new();
+        router.set_language(global);
+        state.stt = Some(Arc::new(Mutex::new(router)));
+        if let Some(target) = target {
+            let mut translation = crate::translation::TranslationRouter::new();
+            translation.set_default_target_lang(target.to_string());
+            state.translation = Some(Arc::new(Mutex::new(translation)));
+        }
+        state
+    }
+
+    #[test]
+    fn a_party_uses_its_own_language_else_the_global_one() {
+        let state = state("ja-JP", None);
+        assert_eq!(party_lang(&party("deepgram", Some("zh-CN")), &state), "zh-CN");
+        assert_eq!(party_lang(&party("deepgram", Some("auto")), &state), "auto");
+        assert_eq!(party_lang(&party("deepgram", None), &state), "ja-JP");
+    }
+
+    #[test]
+    fn older_configs_without_the_new_fields_still_parse() {
+        let old = r#"{"role":"You","device_id":"default","is_input_device":true,"stt_provider":"web_speech"}"#;
+        let cfg: PartyAudioConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.language, None);
+        assert_eq!(cfg.native_translation, None);
+        let new = r#"{"role":"Them","device_id":"x","is_input_device":false,"stt_provider":"soniox",
+                      "language":"auto","native_translation":{"mode":"one_way","target_language":"zh-CN"}}"#;
+        let cfg: PartyAudioConfig = serde_json::from_str(new).unwrap();
+        assert_eq!(cfg.language.as_deref(), Some("auto"));
+        assert!(cfg.native_translation.unwrap().is_one_way());
+    }
+
+    #[test]
+    fn soniox_translates_only_when_on_and_follows_the_translation_target() {
+        let state = state("en-US", Some("zh-CN"));
+        let mut them = party("soniox", Some("en-US"));
+        assert_eq!(soniox_translation_target(&them, &state), None);
+
+        them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &state).as_deref(), Some("zh"));
+
+        them.native_translation = Some(NativeTranslationConfig {
+            mode: "one_way".into(),
+            target_language: Some("ja".into()),
+            ..Default::default()
+        });
+        assert_eq!(soniox_translation_target(&them, &state).as_deref(), Some("ja"));
+
+        them.native_translation = Some(NativeTranslationConfig { mode: "off".into(), target_language: Some("ja".into()), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &state), None);
+
+        // No translation router and no target of its own: nothing to translate into.
+        let bare = super::tests::state("en-US", None);
+        them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &bare), None);
+    }
+
+    #[test]
+    fn soniox_and_whisper_cpp_segment_their_own_lines() {
+        assert!(self_segmenting("soniox"));
+        assert!(self_segmenting("whisper_cpp"));
+        assert!(!self_segmenting("deepgram"));
+        assert!(!self_segmenting("openai_compat"));
+        assert_eq!(Party::Them.segment_prefix("ab12"), "them_ab12_");
+        assert_eq!(Party::You.segment_prefix("ab12"), "you_ab12_");
+        assert_eq!((Party::You.speaker(), Party::Them.speaker()), ("User", "Them"));
+    }
+
+    #[test]
+    fn direct_lines_carry_the_diarization_tag() {
+        let result = crate::stt::provider::TranscriptResult {
+            text: "Hi".into(),
+            is_final: true,
+            confidence: 0.9,
+            timestamp_ms: 42,
+            speaker: None,
+            language: Some("en".into()),
+            segment_id: Some("sx1_1".into()),
+            duration_ms: Some(300),
+            speaker_tag: Some("S2".into()),
+        };
+        let seg = direct_segment_json("them_ab12_sx1_1", "Them", &result);
+        assert_eq!(seg["id"], "them_ab12_sx1_1");
+        assert_eq!(seg["speaker"], "Them");
+        assert_eq!(seg["speaker_tag"], "S2");
+        assert_eq!(seg["speaker_id"], "speaker_1");
+        assert_eq!(seg["is_final"], true);
+    }
+}
