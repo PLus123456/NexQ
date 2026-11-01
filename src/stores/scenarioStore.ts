@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { load, Store } from "@tauri-apps/plugin-store";
 import type { AIScenario, ScenarioTemplate } from "../lib/types";
-import { BUILT_IN_SCENARIOS, getScenarioById } from "../lib/scenarios";
+import { BUILT_IN_SCENARIOS, getScenarioById, scenarioDescription } from "../lib/scenarios";
 
 const STORE_FILE = "config.json";
 
@@ -136,6 +136,8 @@ export const useScenarioStore = create<ScenarioState>((set, get) => ({
       ...base,
       id: `custom_${Date.now()}`,
       name: newName,
+      // A built-in's description is stored in English; the clone keeps what the user saw.
+      description: base.is_custom ? base.description : scenarioDescription(base),
       is_custom: true,
     };
 

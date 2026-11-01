@@ -13,6 +13,7 @@ import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
 import { useConfigStore } from "../stores/configStore";
 import { normalizeAccelerator, reservedShortcutAction } from "../lib/shortcutLabel";
+import { t } from "../i18n";
 
 /** Ctrl+M: end the running meeting (in every window that holds it) or start one. */
 async function toggleMeetingFromShortcut(): Promise<void> {
@@ -21,7 +22,7 @@ async function toggleMeetingFromShortcut(): Promise<void> {
   switch (meetingShortcutAction(!!store.activeMeeting, quitPending)) {
     case "end":
       if (!(await endMeetingFromThisWindow())) {
-        showToast("Couldn't finish saving the meeting", "error");
+        showToast(t("misc:shortcuts.meetingNotSaved"), "error");
       }
       break;
     case "start":
@@ -38,9 +39,9 @@ export async function toggleStealthMode(): Promise<void> {
   const enabled = !config.stealthMode;
   try {
     await config.setStealthMode(enabled);
-    showToast(enabled ? "Hidden from screen share" : "Visible in screen share", "info");
+    showToast(enabled ? t("misc:shortcuts.stealth.hidden") : t("misc:shortcuts.stealth.visible"), "info");
   } catch (e) {
-    showToast(`Couldn't change screen-share visibility: ${e instanceof Error ? e.message : String(e)}`, "error");
+    showToast(t("misc:shortcuts.stealth.failed", { detail: e instanceof Error ? e.message : String(e) }), "error");
   }
 }
 

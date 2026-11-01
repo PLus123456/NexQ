@@ -10,7 +10,7 @@ function stamp(now: Date): string {
  * "Weekly sync" → "Weekly sync — Meeting 2026-10-23 15:02".
  */
 export function composeMeetingTitle(prefix: string | null | undefined, now = new Date()): string {
-  const base = `Meeting ${stamp(now)}`;
+  const base = `Meeting ${stamp(now)}`; // i18n-ignore: stored default title, same as the backend's
   const p = prefix?.replace(/\s+/g, " ").trim();
   return p ? `${p} — ${base}` : base;
 }

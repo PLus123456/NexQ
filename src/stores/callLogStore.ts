@@ -4,8 +4,11 @@ import { stripThinkTags } from "../lib/utils";
 
 const MAX_ENTRIES = 100;
 
-/** Shown on an entry that has received nothing for a long time (it can still recover). */
-export const STALLED_MESSAGE = "No response yet";
+/**
+ * Marks an entry that has received nothing for a long time (it can still recover). It is state kept in
+ * `errorMessage`, so it stays English; CallLogEntry shows it in the UI language (`calllog:entry.stalled`).
+ */
+export const STALLED_MESSAGE = "No response yet"; // i18n-ignore: 存在 entry.errorMessage 里的状态值，界面上由 CallLogEntry 翻译显示
 
 /** A stalled entry's placeholder error, cleared once anything arrives. */
 function clearStall(e: LogEntry): Pick<LogEntry, "stalled" | "errorMessage"> {

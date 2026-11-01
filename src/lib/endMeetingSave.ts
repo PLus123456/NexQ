@@ -2,6 +2,8 @@
 // retried briefly; the caller keeps the meeting open if lines remain unsaved,
 // so the transcript is never cleared before it reached the database.
 
+import { t } from "../i18n";
+
 export async function saveSegmentsWithRetry<T>(
   segments: T[],
   save: (segment: T) => Promise<void>,
@@ -30,8 +32,7 @@ export async function saveSegmentsWithRetry<T>(
   return failed;
 }
 
+// The message is shown to the user as it is (toast when End fails).
 export function unsavedTranscriptError(failed: number): Error {
-  return new Error(
-    `${failed} transcript line${failed === 1 ? "" : "s"} could not be saved. The meeting is still open — press End again.`
-  );
+  return new Error(t("misc:endMeetingSave.unsavedTranscript", { count: failed }));
 }

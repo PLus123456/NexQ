@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { Zap } from "lucide-react";
+import { useT } from "../i18n";
 import { useStreamStore } from "../stores/streamStore";
 import { useStreamTimingStore } from "../stores/streamTimingStore";
 import { formatDuration, lastAnswerTooltip } from "../lib/agentUsage";
@@ -22,6 +23,7 @@ function useNow(active: boolean, ms = 100): number {
 
 /** `null` when there is nothing to show (no answer yet). */
 export function StreamLatency({ divider }: { divider?: React.ReactNode }) {
+  const { t } = useT("misc");
   const isStreaming = useStreamStore((s) => s.isStreaming);
   const latencyMs = useStreamStore((s) => s.latencyMs);
   const startedAt = useStreamTimingStore((s) => s.startedAt);
@@ -40,10 +42,12 @@ export function StreamLatency({ divider }: { divider?: React.ReactNode }) {
   let text: string;
   let title: string | undefined;
   if (live) {
-    const phase = firstTokenAt == null ? "Thinking" : "Writing";
-    text = `${phase} ${(Math.max(0, now - startedAt) / 1000).toFixed(1)} s`;
+    const seconds = (Math.max(0, now - startedAt) / 1000).toFixed(1);
+    text = firstTokenAt == null
+      ? t("streamLatency.thinking", { seconds })
+      : t("streamLatency.writing", { seconds });
   } else if (isStreaming) {
-    text = "Answering…";
+    text = t("streamLatency.answering");
   } else {
     text = formatDuration(latencyMs ?? 0);
     title = lastAnswerTooltip(latencyMs ?? 0, lastFirstTokenMs);

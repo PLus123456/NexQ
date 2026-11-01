@@ -6,6 +6,7 @@
 
 import { generateAssist } from "./ipc";
 import { resolveScope, DEFAULT_CONTEXT_SCOPE } from "./contextScope";
+import { actionDisplayName } from "./actionNames";
 import { getModeLabel } from "./utils";
 import type { IntelligenceMode } from "./types";
 import { useConfigStore } from "../stores/configStore";
@@ -16,7 +17,7 @@ import { useAIActionsStore } from "../stores/aiActionsStore";
 export function actionLabel(mode: string): string {
   const actions = useAIActionsStore.getState().configs.actions;
   const cfg = actions[mode] ?? Object.values(actions).find((a) => a.mode === mode);
-  return cfg?.name || getModeLabel(mode as IntelligenceMode) || mode;
+  return (cfg ? actionDisplayName(cfg) : "") || getModeLabel(mode as IntelligenceMode) || mode;
 }
 
 export async function runUserAction(mode: string, customQuestion?: string): Promise<void> {
