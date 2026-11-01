@@ -136,20 +136,28 @@ pub async fn translate_text(
     let target = target_lang;
     let source = source_lang.filter(|s| !s.is_empty() && s != "auto");
 
-    // Check cache first, then clone Arc<dyn Provider> BEFORE dropping lock
-    let (cached_result, provider_arc, provider_name) = {
+    // Clone Arc<dyn Provider> and what its answers depend on BEFORE dropping lock
+    let (provider, llm_settings, fingerprint) = {
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        if let Some(cached) = router.cache().get(&text, &target) {
-            (Some(cached.to_string()), None, router.active_provider_name())
-        } else {
-            let p = router.get_provider().map_err(|e| e.to_string())?;
-            let name = p.provider_name().to_string();
-            (None, Some(p), name)
-        }
+        let p = router.get_provider().map_err(|e| e.to_string())?;
+        // LLM translation goes through the LLM settings' task routing
+        let llm = (router.active_type() == Some(&TranslationProviderType::Llm))
+            .then(|| router.options().llm.clone());
+        (p, llm, router.options_fingerprint())
         // Lock dropped here — safe to .await below
     };
+    let provider_name = match &llm_settings {
+        Some(_) => llm_provider_label(&app, &LlmTask::Translation).await,
+        None => provider.provider_name().to_string(),
+    };
 
-    if let Some(cached) = cached_result {
+    // Check the cache: same text, target, source, provider (and model), settings
+    let scope = crate::translation::cache_scope(&target, source.as_deref(), &provider_name, fingerprint);
+    let cached = {
+        let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
+        router.cache().get(&text, &scope).map(str::to_string)
+    };
+    if let Some(cached) = cached {
         return Ok(TranslationResult {
             segment_id: None,
             original_text: text,
@@ -161,18 +169,7 @@ pub async fn translate_text(
     }
 
     // Translate — no lock held, using Arc clone
-    let provider = provider_arc.unwrap();
-
-    // LLM translation goes through the LLM settings' task routing
-    let llm_settings = {
-        let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        (router.active_type() == Some(&TranslationProviderType::Llm))
-            .then(|| router.options().llm.clone())
-    };
-
-    let mut provider_name = provider_name;
     let translated = if let Some(settings) = llm_settings {
-        provider_name = llm_provider_label(&app, &LlmTask::Translation).await;
         translate_with_llm(&app, &LlmTask::Translation, &settings, &text, source.as_deref(), &target, LIVE_LLM_TIMEOUT).await?
     } else {
         // Split long text if needed (>5000 chars for cloud providers)
@@ -213,7 +210,7 @@ pub async fn translate_text(
     // Cache the result
     {
         let mut router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        router.cache_mut().insert(&text, &target, translated.clone());
+        router.cache_mut().insert(&text, &scope, translated.clone());
     }
 
     Ok(TranslationResult {

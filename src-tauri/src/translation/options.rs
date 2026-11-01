@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Custom service addresses; empty = the provider's official endpoint.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProviderEndpoints {
     /// DeepL API prefix ending in `/v2` (also DeepL-compatible services such as DeepLX).
@@ -40,7 +40,7 @@ impl ProviderEndpoints {
 
 /// How LLM translation prompts the model. Empty prompts use the defaults
 /// (`src/lib/translation/llmDefaults.json`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LlmTranslationSettings {
     /// System message; `{source}`, `{target}`, `{glossary}` are filled in.

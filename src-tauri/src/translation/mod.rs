@@ -207,6 +207,13 @@ impl TranslationCache {
     }
 }
 
+/// The cache key part besides the text: a cached translation is reused only
+/// for the same target, source, provider (LLM: connection and model) and
+/// settings (`options_fingerprint`), so switching any of them translates afresh.
+pub fn cache_scope(target: &str, source: Option<&str>, provider: &str, options_fingerprint: u64) -> String {
+    format!("{target}\u{1f}{}\u{1f}{provider}\u{1f}{options_fingerprint:x}", source.unwrap_or(""))
+}
+
 // ── Router ──
 
 /// API keys (and the Microsoft region) as stored in the keychain; `None` = not set.
@@ -287,6 +294,14 @@ impl TranslationRouter {
 
     pub fn options(&self) -> &options::TranslationOptions {
         &self.options
+    }
+
+    /// Changes whenever the service addresses or the LLM prompts change.
+    pub fn options_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.options.endpoints.hash(&mut hasher);
+        self.options.llm.hash(&mut hasher);
+        hasher.finish()
     }
 
     pub fn set_default_target_lang(&mut self, lang: String) {
@@ -496,6 +511,31 @@ mod tests {
         assert_eq!(google.provider_name(), "Google Cloud Translation");
         assert_eq!(router.active_type(), Some(&TranslationProviderType::Llm));
         assert_eq!(router.options().endpoints.google(), None);
+    }
+
+    #[test]
+    fn cached_translations_belong_to_their_provider_and_settings() {
+        let mut router = TranslationRouter::new();
+        let before = router.options_fingerprint();
+        let deepl = cache_scope("zh-CN", None, "DeepL", before);
+        router.cache_mut().insert("Hello", &deepl, "你好".into());
+        assert_eq!(router.cache().get("Hello", &deepl), Some("你好"));
+
+        // Another provider, model, source or target misses.
+        for other in [
+            cache_scope("zh-CN", None, "Microsoft Translator", before),
+            cache_scope("zh-CN", None, "DeepSeek · deepseek-chat", before),
+            cache_scope("zh-CN", Some("en"), "DeepL", before),
+            cache_scope("ja", None, "DeepL", before),
+        ] {
+            assert_eq!(router.cache().get("Hello", &other), None, "{other}");
+        }
+
+        // So do new prompts or addresses.
+        router.apply_options(serde_json::from_str(r#"{"llm": {"glossary": "Hello => 您好"}}"#).unwrap());
+        let after = router.options_fingerprint();
+        assert_ne!(before, after);
+        assert_eq!(router.cache().get("Hello", &cache_scope("zh-CN", None, "DeepL", after)), None);
     }
 
     #[test]
