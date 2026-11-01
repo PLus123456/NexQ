@@ -332,8 +332,10 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
         {displayMode === "inline" && (
           <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
             {translation.text ? (
-              // Kept while a longer version is on its way, dimmed.
-              <span className={translation.pending ? "opacity-60" : undefined}>{translation.text}</span>
+              // Dimmed while a longer version is on its way or the engine is still streaming it.
+              <span className={translation.pending || translation.streaming ? "opacity-60" : undefined}>
+                {translation.text}
+              </span>
             ) : translation.pending ? (
               <span className="text-muted-foreground/40 animate-pulse">{t("line.translating")}</span>
             ) : translation.error ? (

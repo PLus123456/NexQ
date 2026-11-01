@@ -973,6 +973,8 @@ export interface TranslationResult {
   source_lang: string;
   target_lang: string;
   provider: string;
+  /** Engine-side translations (Soniox) stream in: false while the sentence's translation can still change. */
+  is_final?: boolean;
 }
 
 export interface TranslationLanguage {

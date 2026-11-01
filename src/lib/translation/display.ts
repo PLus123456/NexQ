@@ -34,6 +34,8 @@ export interface LineTranslation {
   complete: boolean;
   /** A segment of the line is being translated. */
   pending: boolean;
+  /** A part is a streaming engine translation that can still change. */
+  streaming: boolean;
   /** Why a segment without a translation failed. */
   error?: string;
   /** Distinct provider names, in order of appearance. */
@@ -59,6 +61,7 @@ export function lineTranslation(
     parts,
     complete: ids.length > 0 && parts.length === ids.length,
     pending: ids.some((id) => translating.has(id)),
+    streaming: parts.some((p) => p.is_final === false),
     error,
     providers: [...new Set(parts.map((p) => providerDisplayName(p.provider)).filter(Boolean))],
   };

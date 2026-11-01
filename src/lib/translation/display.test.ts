@@ -37,6 +37,12 @@ describe("lineTranslation", () => {
     expect(line.providers).toEqual(["DeepL", "Soniox"]);
   });
 
+  it("streaming engine translations are marked", () => {
+    const streaming = new Map([["s1", { ...result("s1", "早上", "soniox"), is_final: false }]]);
+    expect(lineTranslation(["s1"], streaming, new Set(), new Map()).streaming).toBe(true);
+    expect(lineTranslation(["s1"], translations, new Set(), new Map()).streaming).toBe(false);
+  });
+
   it("a segment still translating marks the whole line pending", () => {
     const line = lineTranslation(["s1", "s3"], translations, new Set(["s3"]), new Map());
     expect(line.text).toBe("First.");

@@ -58,18 +58,32 @@ afterEach(() => {
 });
 
 describe("TranslationQuickSetup", () => {
-  it("LLM translation of the other side is ready as is", async () => {
-    const onStatusChange = await renderStep();
+  it("LLM translation counts once a real translation passed, and stays done when the step comes back", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "test_translation_connection") return { connected: true, language_count: 0, response_ms: 900, sample: "早上好" };
+      return cmd === "has_api_key" ? false : undefined;
+    });
+    let onStatusChange = await renderStep();
     expect(screen.getByText("Translation")).toBeInTheDocument();
     expect(onStatusChange).toHaveBeenCalledTimes(1);
-    expect(lastStatus(onStatusChange)).toEqual(["ok", undefined]);
+    expect(lastStatus(onStatusChange)).toEqual(["incomplete", undefined]);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    });
+    expect(invoke.mock.calls.find(([c]) => c === "test_translation_connection")?.[1]).toMatchObject({ provider: "llm" });
+    expect(lastStatus(onStatusChange)).toEqual(["ok", "LLM Translation → Chinese (Simplified)"]);
+
+    cleanup();
+    onStatusChange = await renderStep();
+    expect(lastStatus(onStatusChange)).toEqual(["ok", "LLM Translation → Chinese (Simplified)"]);
   });
 
-  it("turning translation off is a finished choice", async () => {
+  it("turning translation off skips the step", async () => {
     const onStatusChange = await renderStep();
     fireEvent.click(screen.getByRole("switch", { name: "Translate during meetings" }));
     expect(useTranslationStore.getState().translateParties).toEqual({ you: false, them: false });
-    expect(lastStatus(onStatusChange)).toEqual(["ok", undefined]);
+    expect(lastStatus(onStatusChange)).toEqual(["skipped", "No translation"]);
   });
 
   it("a service with a key stays incomplete until it is tested", async () => {
@@ -90,7 +104,11 @@ describe("TranslationQuickSetup", () => {
     });
     expect(invoke).toHaveBeenCalledWith("store_api_key", { provider: "translation_deepl", key: "key:fx" });
     expect(invoke.mock.calls.find(([c]) => c === "test_translation_connection")?.[1]).toMatchObject({ provider: "deepl" });
-    expect(lastStatus(onStatusChange)).toEqual(["ok", undefined]);
+    expect(lastStatus(onStatusChange)).toEqual(["ok", "DeepL → Chinese (Simplified)"]);
+
+    // A new key has to be tested again.
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "other:fx" } });
+    expect(lastStatus(onStatusChange)).toEqual(["incomplete", undefined]);
   });
 
   it("a failed test reports the error", async () => {
@@ -115,7 +133,8 @@ describe("TranslationQuickSetup", () => {
     expect(useConfigStore.getState().meetingAudioConfig?.them.native_translation).toEqual({ mode: "one_way", target_language: "" });
     // Everything is translated by the engine: no service to choose or test.
     expect(screen.queryByRole("radio", { name: "DeepL" })).toBeNull();
-    expect(lastStatus(onStatusChange)).toEqual(["ok", undefined]);
+    expect(lastStatus(onStatusChange)?.[0]).toBe("ok");
+    expect(lastStatus(onStatusChange)?.[1]).toMatch(/translates into Chinese \(Simplified\)$/);
 
     fireEvent.click(native);
     expect(useConfigStore.getState().meetingAudioConfig?.them.native_translation?.mode).toBe("off");

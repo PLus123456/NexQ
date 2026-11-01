@@ -219,7 +219,8 @@
       "targetHint": "把转写记录翻译成这种语言",
       "opusMtLocked": "由当前的 OPUS-MT 模型决定（{{name}}）。",
       "source": "源语言",
-      "sourceHint": "选“自动检测”时，用每一路的识别语言；那一路也是自动检测时由服务自己判断。"
+      "sourceHint": "选“自动检测”时，用每一路的识别语言；那一路也是自动检测时由服务自己判断。",
+      "nativeNote": "由识别引擎直接翻译的一路（Soniox）在下次开始识别时才换成新的目标语言。"
     },
     "behavior": {
       "title": "行为",
@@ -301,6 +302,13 @@
     "customEndpoint": "使用自定义服务地址",
     "testNeeded": "测试一下服务即可完成这一步。",
     "testOk": "可以使用（{{ms}} 毫秒）",
-    "moreSettings": "更多设置：服务地址、提示词、术语表"
+    "moreSettings": "更多设置：服务地址、提示词、术语表",
+    "testedBefore": "已测试通过",
+    "summary": {
+      "off": "不翻译",
+      "native": "{{engine}} 直接翻译成{{language}}",
+      "service": "{{provider}} → {{language}}",
+      "mixed": "{{engine}} 和 {{provider}} → {{language}}"
+    }
   }
 }

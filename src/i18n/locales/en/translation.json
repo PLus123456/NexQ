@@ -222,7 +222,8 @@
       "targetHint": "Translate transcripts into this language",
       "opusMtLocked": "Set by the active OPUS-MT model ({{name}}).",
       "source": "Source Language",
-      "sourceHint": "Auto-detect uses each party's recognition language, unless that is set to auto-detect too."
+      "sourceHint": "Auto-detect uses each party's recognition language, unless that is set to auto-detect too.",
+      "nativeNote": "Parties the speech engine translates (Soniox) switch to a new target the next time recognition starts."
     },
     "behavior": {
       "title": "Behavior",
@@ -304,6 +305,13 @@
     "customEndpoint": "Use a custom service URL",
     "testNeeded": "Test the service to finish this step.",
     "testOk": "Works ({{ms}} ms)",
-    "moreSettings": "More settings: service URLs, prompts, glossary"
+    "moreSettings": "More settings: service URLs, prompts, glossary",
+    "testedBefore": "Tested",
+    "summary": {
+      "off": "No translation",
+      "native": "{{engine}} translates into {{language}}",
+      "service": "{{provider}} → {{language}}",
+      "mixed": "{{engine}} and {{provider}} → {{language}}"
+    }
   }
 }

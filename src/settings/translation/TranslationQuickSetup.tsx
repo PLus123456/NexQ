@@ -3,9 +3,11 @@
 // (the STT engine itself when it can — Soniox —, the LLM, DeepL, Microsoft,
 // Google). A service that needs a key is tested before the step counts as done.
 //
-// Status: "ok" when translation is off, done by the STT engine or the LLM
-// (testing it is optional), or a key service passed its test; "incomplete"
-// while such a service is untested; "error" after a failed test.
+// Status (the wizard moves on only with ok or skipped): "skipped" when
+// translation is off; "ok" when the STT engine translates every chosen party
+// (its key is tested in the speech recognition step) or the translation
+// service passed its test here, with a one-line summary as detail;
+// "incomplete" while the service is untested; "error" after a failed test.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { CheckCircle, Loader2, Wifi, XCircle } from "lucide-react";
@@ -14,7 +16,7 @@ import { useConfigStore } from "../../stores/configStore";
 import { useMeetingStore } from "../../stores/meetingStore";
 import { errorMessage, useTranslationStore } from "../../stores/translationStore";
 import { getApiKey, hasApiKey, storeApiKey } from "../../lib/ipc";
-import { TRANSLATION_COMMON } from "../../lib/languages";
+import { TRANSLATION_COMMON, languageLabel } from "../../lib/languages";
 import { LanguageCombobox } from "../../components/LanguageCombobox";
 import { testTranslationProvider } from "../../lib/translation/ipc";
 import {
@@ -36,6 +38,9 @@ type TestState = { state: "idle" } | { state: "testing" } | { state: "ok"; ms: n
 const QUICK_PROVIDERS: readonly TranslationProviderType[] = ["llm", ...CLOUD_PROVIDERS.map((p) => p.value)];
 
 const PARTY_KEYS = { you: "common:labels.you", them: "common:labels.them" } as const;
+
+/** The configuration that last passed its test, so going back to the step keeps it done. */
+let passedConfig: string | null = null;
 
 export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
   const { t } = useT(["translation", "common"]);
@@ -72,6 +77,13 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   const needsService = TRANSLATION_PARTIES.some((p) => modes[p] === "service");
   const cloud = isCloudProvider(provider) ? provider : null;
   const option = providerOption(provider);
+  const serviceConfig = `${provider}|${cloud ? endpoints[cloud].trim() : ""}|${option?.needsRegion ? region : ""}`;
+  const testPassed = test.state === "ok" || (test.state === "idle" && passedConfig === serviceConfig);
+  /** The key, address or region changed: an earlier test no longer counts. */
+  const invalidateTest = () => {
+    passedConfig = null;
+    setTest({ state: "idle" });
+  };
 
   // ── Applying modes (several parties at once) ──
   const applyModes = (next: Partial<Record<TranslationParty, PartyTranslationMode>>) => {
@@ -150,6 +162,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
       if (option?.needsRegion) await storeApiKey(MICROSOFT_REGION_KEY, region);
       const result = await testTranslationProvider(provider, { endpoints, llm }, option?.needsRegion ? region : undefined);
       if (result.connected) {
+        passedConfig = serviceConfig;
         setTest({ state: "ok", ms: result.response_ms });
         // The active provider picks up the key just saved.
         void syncBackend();
@@ -162,15 +175,26 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   };
 
   // ── Status for the wizard ──
-  let status: QuickSetupStatus = "ok";
+  const nativeEngine = engineName(partyConfig(audio, checkedNativeCapable[0] ?? "them")?.stt_provider);
+  const serviceName = option?.labelKey ? t(option.labelKey) : option?.label ?? provider;
+  let status: QuickSetupStatus;
   let detail: string | undefined;
-  if (enabled && needsService) {
-    if (test.state === "error") {
-      status = "error";
-      detail = test.message;
-    } else if (cloud && test.state !== "ok") {
-      status = "incomplete";
-    }
+  if (!enabled) {
+    status = "skipped";
+    detail = t("quickSetup.summary.off");
+  } else if (!needsService) {
+    status = "ok";
+    detail = t("quickSetup.summary.native", { engine: nativeEngine, language: languageLabel(targetLang) });
+  } else if (test.state === "error") {
+    status = "error";
+    detail = test.message;
+  } else if (testPassed) {
+    status = "ok";
+    detail = useNative
+      ? t("quickSetup.summary.mixed", { engine: nativeEngine, provider: serviceName, language: languageLabel(targetLang) })
+      : t("quickSetup.summary.service", { provider: serviceName, language: languageLabel(targetLang) });
+  } else {
+    status = "incomplete";
   }
   const report = useRef(onStatusChange);
   report.current = onStatusChange;
@@ -305,7 +329,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                       value={apiKey}
                       onChange={(e) => {
                         setApiKey(e.target.value);
-                        setTest({ state: "idle" });
+                        invalidateTest();
                       }}
                       placeholder={
                         hasStoredKey
@@ -326,7 +350,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                         value={region}
                         onChange={(e) => {
                           setRegion(e.target.value);
-                          setTest({ state: "idle" });
+                          invalidateTest();
                         }}
                         className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none cursor-pointer"
                       >
@@ -342,7 +366,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                       value={endpoints[cloud]}
                       onChange={(url) => {
                         setEndpoint(cloud, url);
-                        setTest({ state: "idle" });
+                        invalidateTest();
                       }}
                       apiKey={apiKey}
                     />
@@ -374,6 +398,12 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                     {t("quickSetup.testOk", { ms: test.ms })}
                   </span>
                 )}
+                {test.state === "idle" && testPassed && (
+                  <span className="flex items-center gap-1 text-xs text-success" role="status">
+                    <CheckCircle className="h-3 w-3" />
+                    {t("quickSetup.testedBefore")}
+                  </span>
+                )}
               </div>
               {test.state === "error" && (
                 <p className="flex items-start gap-1.5 text-xs text-destructive" role="alert">
@@ -381,7 +411,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                   <span className="break-words">{t("common:errors.testFailed", { detail: test.message })}</span>
                 </p>
               )}
-              {cloud && test.state === "idle" && (
+              {test.state === "idle" && !testPassed && (
                 <p className="text-xs text-muted-foreground">{t("quickSetup.testNeeded")}</p>
               )}
             </div>
