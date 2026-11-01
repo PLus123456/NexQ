@@ -1,1 +1,75 @@
-{}
+{
+  "selection": {
+    "translate": "Translate",
+    "translating": "..."
+  },
+  "postMeeting": {
+    "title": "Translations",
+    "displayMode": {
+      "inline": "Inline",
+      "hover": "Hover"
+    },
+    "retranslateMismatched_one": "Retranslate {{count}} mismatched",
+    "retranslateMismatched_other": "Retranslate {{count}} mismatched",
+    "hide": "Hide translations",
+    "show": "Show translations"
+  },
+  "opusMt": {
+    "title": "OPUS-MT Models",
+    "summary": "{{downloaded}} downloaded · {{total}} available",
+    "filter": {
+      "all": "All Languages"
+    },
+    "loading": "Loading models...",
+    "activeBanner": "Active: {{name}}",
+    "empty": "No models found for this filter.",
+    "row": {
+      "cancelDownload": "Cancel download",
+      "active": "Active",
+      "activate": {
+        "label": "Activate",
+        "title": "Set as active model"
+      },
+      "download": {
+        "label": "Download",
+        "title": "Download model"
+      },
+      "delete": "Delete model"
+    },
+    "toast": {
+      "downloadFailedFor": "Download failed for {{modelId}}",
+      "downloadFailed": "Download failed: {{detail}}",
+      "deleted": "Model deleted",
+      "deleteFailed": "Delete failed: {{detail}}",
+      "activated": "Model activated — translation will load on first use",
+      "activationFailed": "Activation failed: {{detail}}"
+    }
+  },
+  "transcript": {
+    "empty": {
+      "capturing": "Capturing audio",
+      "hint": "Speech will appear as it's detected",
+      "startMeeting": "Start a meeting to see the transcript"
+    },
+    "search": {
+      "placeholder": "Search transcript...",
+      "label": "Search transcript",
+      "matches_one": "{{count}} match",
+      "matches_other": "{{count}} matches",
+      "clear": "Clear search"
+    },
+    "typeset": {
+      "text": "Text",
+      "textColor": "Text color",
+      "translation": "Translation",
+      "translationColor": "Translation color"
+    },
+    "scrollToLatest": "Scroll to latest",
+    "audio": {
+      "mute": "Mute {{label}}",
+      "unmute": "Unmute {{label}}",
+      "level": "{{label}} audio level",
+      "muted": "Muted"
+    }
+  }
+}

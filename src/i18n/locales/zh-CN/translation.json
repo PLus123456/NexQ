@@ -1,1 +1,73 @@
-{}
+{
+  "selection": {
+    "translate": "翻译",
+    "translating": "翻译中…"
+  },
+  "postMeeting": {
+    "title": "翻译",
+    "displayMode": {
+      "inline": "行内",
+      "hover": "悬停"
+    },
+    "retranslateMismatched_other": "重新翻译 {{count}} 个不匹配的片段",
+    "hide": "隐藏翻译",
+    "show": "显示翻译"
+  },
+  "opusMt": {
+    "title": "OPUS-MT 模型",
+    "summary": "已下载 {{downloaded}} 个 · 共 {{total}} 个可用",
+    "filter": {
+      "all": "全部语言"
+    },
+    "loading": "正在加载模型…",
+    "activeBanner": "当前使用：{{name}}",
+    "empty": "没有符合筛选条件的模型。",
+    "row": {
+      "cancelDownload": "取消下载",
+      "active": "使用中",
+      "activate": {
+        "label": "启用",
+        "title": "设为当前模型"
+      },
+      "download": {
+        "label": "下载",
+        "title": "下载模型"
+      },
+      "delete": "删除模型"
+    },
+    "toast": {
+      "downloadFailedFor": "{{modelId}} 下载失败",
+      "downloadFailed": "下载失败：{{detail}}",
+      "deleted": "模型已删除",
+      "deleteFailed": "删除失败：{{detail}}",
+      "activated": "模型已启用，翻译将在首次使用时加载",
+      "activationFailed": "启用失败：{{detail}}"
+    }
+  },
+  "transcript": {
+    "empty": {
+      "capturing": "正在采集音频",
+      "hint": "检测到语音后会立即显示在这里",
+      "startMeeting": "开始会议后即可看到字幕"
+    },
+    "search": {
+      "placeholder": "搜索字幕…",
+      "label": "搜索字幕",
+      "matches_other": "{{count}} 处匹配",
+      "clear": "清除搜索"
+    },
+    "typeset": {
+      "text": "原文",
+      "textColor": "原文颜色",
+      "translation": "译文",
+      "translationColor": "译文颜色"
+    },
+    "scrollToLatest": "回到最新",
+    "audio": {
+      "mute": "静音：{{label}}",
+      "unmute": "取消静音：{{label}}",
+      "level": "{{label}}的音量",
+      "muted": "已静音"
+    }
+  }
+}
