@@ -1,8 +1,9 @@
 //! Request routing for the Claude CLI provider.
 //!
-//! - [`choose_route`]: a request goes to a warm meeting session, to the
-//!   fallback provider (Claude unavailable), or down today's stateless path
-//!   (any other provider, or no meeting scope).
+//! - [`choose_route`]: a request goes to a warm meeting session, or down
+//!   today's stateless path (any other connection, no meeting scope, or
+//!   Claude unavailable: the task's resolution then picks the fallback, see
+//!   `llm::registry::resolve_task`).
 //! - [`HealthTracker`]: whether Claude is usable; set unavailable after a
 //!   failed restart, back to healthy by the background re-probe (rate limits
 //!   back off for 15 min first).
@@ -25,8 +26,8 @@ use super::manager::{
 use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::AgentError;
 use crate::context::token_counter::count_tokens;
+use crate::llm::api::LlmKind;
 use crate::llm::provider::{CancelToken, LLMProvider};
-use crate::llm::{ProviderConfig, ProviderType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,32 +71,29 @@ pub enum ClaudeHealth {
 pub enum Route {
     /// The warm Claude session of a meeting.
     ClaudeSession(SessionKey),
-    /// Claude is unavailable: today's full-prompt path on this provider.
-    Fallback(ProviderConfig),
-    /// Today's full-prompt path on the active provider.
+    /// Today's full-prompt path on the task's connection (the fallback when
+    /// Claude is unavailable).
     Stateless,
 }
 
-/// Pick the route of one request. Only the Claude CLI provider has sessions,
-/// and only meeting scopes (live or past) use them; Utility requests go
-/// through the provider's own `stream_completion`. When Claude is unavailable
-/// the request goes to the fallback provider, or, with none configured, down
-/// the stateless path, where the Claude provider reports the reason.
+/// Pick the route of one request from the connection kind its task resolves
+/// to. Only the Claude CLI has sessions, and only meeting scopes (live or
+/// past) use them; Utility requests go through the provider's own
+/// `stream_completion`. When Claude is unavailable the request goes down the
+/// stateless path, where its resolution picks the fallback, or, with none,
+/// the Claude provider reports the reason.
 pub fn choose_route(
-    active: &ProviderType,
+    kind: LlmKind,
     claude_health: ClaudeHealth,
     scope: &SessionScope,
     mode: &str,
     cfg: &ClaudeCliConfig,
 ) -> Route {
-    if *active != ProviderType::ClaudeCli {
+    if kind != LlmKind::ClaudeCli {
         return Route::Stateless;
     }
     match claude_health {
-        ClaudeHealth::Unavailable(_) => match &cfg.fallback_provider {
-            Some(provider) => Route::Fallback(fallback_config(provider)),
-            None => Route::Stateless,
-        },
+        ClaudeHealth::Unavailable(_) => Route::Stateless,
         ClaudeHealth::Healthy => match scope {
             SessionScope::Utility => Route::Stateless,
             SessionScope::Live(_) | SessionScope::Past(_) => Route::ClaudeSession(SessionKey {
@@ -103,18 +101,6 @@ pub fn choose_route(
                 tier: tier_for(mode, scope, cfg),
             }),
         },
-    }
-}
-
-/// A provider config naming only the type; the caller adds the API key.
-pub fn fallback_config(provider: &str) -> ProviderConfig {
-    ProviderConfig {
-        provider_type: provider.to_string(),
-        api_key: None,
-        base_url: None,
-        auth_type: None,
-        auth_value: None,
-        auth_header: None,
     }
 }
 
@@ -809,18 +795,20 @@ pub async fn run_health_probe(app: tauri::AppHandle) {
         }
         if probe_claude().await.is_ok() && state.claude_health.mark_healthy() {
             log::info!("Claude CLI looks available again; requests try it again");
+            // The settings' "effective" routes no longer show the fallback.
+            crate::llm::registry::after_change(&app);
         }
     }
 }
 
-/// True when the active LLM provider is the Claude CLI.
+/// True when some task is routed to the Claude CLI (kept current by the
+/// LLM registry on the router façade).
 pub fn claude_is_active(state: &crate::state::AppState) -> bool {
     state
         .llm
         .as_ref()
         .and_then(|llm| llm.lock().ok())
-        .and_then(|router| router.active_provider_type().cloned())
-        .map(|pt| pt == ProviderType::ClaudeCli)
+        .map(|router| router.claude_in_use())
         .unwrap_or(false)
 }
 
@@ -840,7 +828,7 @@ mod tests {
     #[test]
     fn route_claude_healthy_live_assist() {
         let route = choose_route(
-            &ProviderType::ClaudeCli,
+            LlmKind::ClaudeCli,
             ClaudeHealth::Healthy,
             &live(),
             "Assist",
@@ -856,30 +844,25 @@ mod tests {
 
     #[test]
     fn route_unavailable_with_fallback() {
+        // The stateless path: the task's resolution picks the fallback.
         let cfg = ClaudeCliConfig {
             fallback_provider: Some("ollama".into()),
             ..Default::default()
         };
         let route = choose_route(
-            &ProviderType::ClaudeCli,
+            LlmKind::ClaudeCli,
             ClaudeHealth::Unavailable(AgentErrorKind::NotLoggedIn),
             &live(),
             "Assist",
             &cfg,
         );
-        match route {
-            Route::Fallback(p) => {
-                assert_eq!(p.provider_type, "ollama");
-                assert_eq!(p.api_key, None);
-            }
-            other => panic!("expected the fallback, got {other:?}"),
-        }
+        assert!(matches!(route, Route::Stateless), "{route:?}");
     }
 
     #[test]
     fn route_unavailable_no_fallback() {
         let route = choose_route(
-            &ProviderType::ClaudeCli,
+            LlmKind::ClaudeCli,
             ClaudeHealth::Unavailable(AgentErrorKind::RateLimited),
             &live(),
             "Assist",
@@ -891,7 +874,7 @@ mod tests {
     #[test]
     fn route_non_claude_provider() {
         let route = choose_route(
-            &ProviderType::Ollama,
+            LlmKind::Ollama,
             ClaudeHealth::Healthy,
             &live(),
             "Assist",
@@ -904,7 +887,7 @@ mod tests {
     fn routing_recap_deep_past_deep_utility_stateless() {
         let cfg = ClaudeCliConfig::default();
         let key = |scope: &SessionScope, mode: &str| {
-            match choose_route(&ProviderType::ClaudeCli, ClaudeHealth::Healthy, scope, mode, &cfg) {
+            match choose_route(LlmKind::ClaudeCli, ClaudeHealth::Healthy, scope, mode, &cfg) {
                 Route::ClaudeSession(k) => Some(k.tier),
                 _ => None,
             }
@@ -1359,8 +1342,20 @@ mod tests {
         };
         assert_eq!(kind, AgentErrorKind::Crashed);
         let cfg = ClaudeCliConfig { fallback_provider: Some("ollama".into()), ..Default::default() };
-        let route = choose_route(&ProviderType::ClaudeCli, ClaudeHealth::Unavailable(kind), &key.scope, "Assist", &cfg);
-        assert!(matches!(&route, Route::Fallback(p) if p.provider_type == "ollama"), "{route:?}");
+        let route = choose_route(LlmKind::ClaudeCli, ClaudeHealth::Unavailable(kind), &key.scope, "Assist", &cfg);
+        assert!(matches!(&route, Route::Stateless), "{route:?}");
+        // …where the task resolves to the fallback connection.
+        let claude = crate::llm::connections::legacy_connection(&crate::llm::ProviderType::ClaudeCli, None, None, None);
+        let mut llm = crate::llm::connections::LlmConfigFile::default();
+        llm.routing.default.target = Some(crate::llm::connections::RouteTarget { connection_id: claude.id.clone(), model: None });
+        llm.connections = vec![claude];
+        let context = crate::llm::registry::ClaudeContext {
+            available: false,
+            legacy_fallback: Some(("ollama".into(), Some("llama3".into()))),
+            fast_model: "haiku".into(),
+        };
+        let resolved = crate::llm::registry::resolve_task(&llm, "assist:Assist", &context).unwrap();
+        assert_eq!((resolved.connection.id.as_str(), resolved.via_fallback), ("legacy-ollama", true));
     }
 
     #[tokio::test]

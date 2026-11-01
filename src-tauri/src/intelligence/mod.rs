@@ -151,12 +151,16 @@ impl IntelligenceEngine {
             ..params
         };
 
+        // The answer language chosen in Settings → AI Models (the UI language by
+        // default) closes the system prompt.
+        let system_prompt = crate::llm::api::with_answer_language(system_prompt, &app_handle);
+
         // Build the prompt using configurable flags.
         // The system prompt IS the only instruction (per-action editable + composed instructions).
         // The user message contains only togglable data sections (transcript, RAG, questions).
         let builder = ContextBuilder::new();
         let messages = builder.build_prompt_with_config(
-            system_prompt,
+            &system_prompt,
             &transcript_text,
             last_question.as_ref(),
             &context_text,

@@ -5,10 +5,11 @@
 //! `LLMRouter`, `ProviderType` or `create_provider`, which will go away.
 //! Signatures are frozen: fields and functions may be added, never changed.
 //!
-//! This is the P0 stub. It ignores the task and serves every call from the
-//! global `LLMRouter` provider and model, locking the provider for each call
-//! exactly like the code it replaces. The LLM package (P1) swaps the function
-//! bodies for connection-based task routing without changing the signatures.
+//! Each task is routed to its own connection and model
+//! (`llm-connections.json`, see `llm::registry`): the routes follow their
+//! parent tasks up to `default`, and a task routed to an unavailable Claude
+//! subscription goes to its fallback. Providers are shared and unlocked, so
+//! translation and the AI assistant run at the same time.
 
 use std::fmt;
 use std::future::Future;
@@ -16,14 +17,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
-use tokio::sync::Mutex as TokioMutex;
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
 
 use super::provider::{
-    CancelToken, CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    TokenSink,
+    CancelToken, CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, TokenSink,
 };
-use super::ProviderType;
+use super::registry::{self, ClaudeContext, LlmRegistry, RoutedProvider};
+use super::{ProviderType, SharedProvider};
+use crate::i18n::UiLanguage;
+use crate::llm::cli_agent::routing::{self as claude_routing, AgentFallbackPayload, ClaudeHealth};
 use crate::net::endpoint::{ConnectionSummary, ResolvedConnection};
 use crate::state::AppState;
 
@@ -228,42 +231,77 @@ fn status_in(message: &str) -> Option<u16> {
     })
 }
 
-/// Resolves `task` to a provider and model.
-pub async fn resolve_for_task(app: &AppHandle, _task: &LlmTask) -> Result<ResolvedLlm, LlmCallError> {
-    let state = app.state::<AppState>();
-    let llm = state
-        .llm
-        .as_ref()
-        .ok_or_else(|| LlmCallError::NotConfigured("LLM router not initialized".to_string()))?;
-    let router = llm
-        .lock()
-        .map_err(|_| LlmCallError::Other("LLM router lock poisoned".to_string()))?;
-
-    let inner = router
-        .get_provider()
-        .map_err(|e| LlmCallError::NotConfigured(e.to_string()))?;
-    let model = router.active_model().to_string();
-    if model.is_empty() {
-        return Err(LlmCallError::NotConfigured("No active model selected".to_string()));
+/// Resolves `task` to a provider and model: the task's route (or the
+/// nearest parent's), the Claude fallback when Claude is unavailable
+/// (announced once per outage with `agent_fallback`).
+pub async fn resolve_for_task(app: &AppHandle, task: &LlmTask) -> Result<ResolvedLlm, LlmCallError> {
+    let registry = registry_of(app)?;
+    let claude = registry::claude_context(app);
+    let (resolved, via_fallback) = resolve_with(&registry, &task.key(), &claude).await?;
+    if via_fallback {
+        announce_fallback(app, &resolved.display_name);
     }
-    let provider_type = router.active_provider_type().cloned();
-    let (type_key, display_name, kind) = match &provider_type {
-        Some(pt) => (pt.as_str().to_string(), pt.display_name().to_string(), LlmKind::from_provider_type(pt)),
-        None => ("unknown".to_string(), "Unknown".to_string(), LlmKind::OpenAiCompat),
-    };
+    Ok(resolved)
+}
 
-    Ok(ResolvedLlm {
-        provider: Arc::new(LockedProvider { inner, name: type_key.clone() }),
+fn registry_of(app: &AppHandle) -> Result<LlmRegistry, LlmCallError> {
+    app.try_state::<LlmRegistry>()
+        .map(|r| r.inner().clone())
+        .ok_or_else(|| LlmCallError::NotConfigured("LLM settings not loaded".to_string()))
+}
+
+/// [`resolve_for_task`] without the app: the route, the shared client, the
+/// model (a fallback without one gets its first listed model, as before).
+async fn resolve_with(registry: &LlmRegistry, key: &str, claude: &ClaudeContext) -> Result<(ResolvedLlm, bool), LlmCallError> {
+    let config = registry.config();
+    let resolved = registry::resolve_task(&config, key, claude)
+        .map_err(|(e, conn)| LlmCallError::NotConfigured(registry::route_error_message(key, e, conn.as_ref())))?;
+    let conn = &resolved.connection;
+    let provider = registry.provider_for(conn).map_err(LlmCallError::NotConfigured)?;
+    let model = match resolved.model.clone() {
+        Some(model) => model,
+        None if conn.kind == LlmKind::ClaudeCli => claude.fast_model.clone(),
+        None => provider
+            .list_models()
+            .await
+            .ok()
+            .and_then(|models| models.into_iter().next())
+            .map(|m| m.id)
+            .ok_or_else(|| LlmCallError::NotConfigured(format!("Fallback provider {} has no model to use", conn.display_name())))?,
+    };
+    let provider: Arc<dyn LLMProvider> = if resolved.overrides.is_empty() {
+        provider
+    } else {
+        Arc::new(RoutedProvider { inner: provider, overrides: resolved.overrides.clone() })
+    };
+    let out = ResolvedLlm {
+        provider,
         model,
-        connection_id: format!("legacy-{type_key}"),
-        display_name,
-        kind,
-    })
+        connection_id: conn.id.clone(),
+        display_name: conn.display_name(),
+        kind: conn.kind,
+    };
+    Ok((out, resolved.via_fallback))
+}
+
+/// First fallback request of an outage: tell the UI who took over.
+fn announce_fallback(app: &AppHandle, provider: &str) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    if state.claude_health.take_fallback_notice() {
+        let reason = match state.claude_health.get() {
+            ClaudeHealth::Unavailable(kind) => claude_routing::reason_label(kind),
+            ClaudeHealth::Healthy => "unavailable",
+        };
+        let _ = app.emit(
+            claude_routing::FALLBACK_EVENT,
+            AgentFallbackPayload { reason: reason.to_string(), provider: provider.to_string() },
+        );
+    }
 }
 
 /// Runs a silent stream and returns the whole answer: no `llm_stream_*`
-/// events, a per-call timeout, cancellation. (Per-connection concurrency
-/// limits and the Claude fallback arrive with the LLM package.)
+/// events, a per-call timeout, cancellation, at most the connection's
+/// concurrency limit of such calls at once, the Claude fallback.
 pub async fn complete_text(
     app: &AppHandle,
     task: &LlmTask,
@@ -271,8 +309,15 @@ pub async fn complete_text(
     opts: CompleteOptions,
 ) -> Result<String, LlmCallError> {
     let resolved = resolve_for_task(app, task).await?;
+    let gate = registry_of(app).ok().map(|registry| {
+        let config = registry.config();
+        match config.connection(&resolved.connection_id) {
+            Some(conn) => registry.semaphore_for(conn),
+            None => registry.semaphore_for(&super::connections::LlmConnection { id: resolved.connection_id.clone(), ..Default::default() }),
+        }
+    });
     let app = app.clone();
-    collect_text(&opts, move |params, sink| async move {
+    collect_text_gated(&opts, gate, move |params, sink| async move {
         resolved
             .provider
             .stream_completion(messages, &resolved.model, params, app, Some(sink))
@@ -290,21 +335,137 @@ pub fn legacy_handle(r: &ResolvedLlm) -> Arc<TokioMutex<Box<dyn LLMProvider>>> {
 /// A connection's address and auth headers, for the RAG package to call
 /// embeddings / rerank with an LLM connection. The secret is already read
 /// from the keychain: mask the headers before logging anything.
-pub fn resolve_connection(_app: &AppHandle, id: &str) -> Result<ResolvedConnection, LlmCallError> {
-    Err(LlmCallError::NotConfigured(format!(
-        "LLM connection '{id}' not found (connections arrive with the LLM settings update)"
-    )))
+pub fn resolve_connection(app: &AppHandle, id: &str) -> Result<ResolvedConnection, LlmCallError> {
+    let registry = registry_of(app)?;
+    let config = registry.config();
+    let conn = config
+        .connection(id)
+        .ok_or_else(|| LlmCallError::NotConfigured(format!("LLM connection '{id}' not found")))?;
+    if !conn.enabled {
+        return Err(LlmCallError::NotConfigured(format!("LLM connection '{}' is turned off", conn.display_name())));
+    }
+    if conn.kind == LlmKind::ClaudeCli {
+        return Err(LlmCallError::NotConfigured("The Claude subscription has no HTTP endpoint".to_string()));
+    }
+    let headers = registry.request_headers(conn).map_err(LlmCallError::Other)?;
+    Ok(ResolvedConnection {
+        id: conn.id.clone(),
+        kind: conn.kind,
+        base_url: conn.base_url.clone(),
+        headers,
+        timeout: Some(Duration::from_secs(conn.timeout_secs() as u64)),
+    })
 }
 
 /// Every LLM connection, without secrets.
-pub fn list_connections(_app: &AppHandle) -> Vec<ConnectionSummary> {
-    Vec::new()
+pub fn list_connections(app: &AppHandle) -> Vec<ConnectionSummary> {
+    let Ok(registry) = registry_of(app) else {
+        return Vec::new();
+    };
+    registry
+        .config()
+        .connections
+        .iter()
+        .map(|c| ConnectionSummary { id: c.id.clone(), name: c.display_name(), kind: c.kind, base_url: c.base_url.clone() })
+        .collect()
+}
+
+/// The instruction appended to AI prompts for the answer language
+/// (`response_language`: the UI language by default, nothing for
+/// `"transcript"`). Translation never uses it.
+pub fn answer_language_instruction(app: &AppHandle) -> Option<String> {
+    let setting = registry_of(app)
+        .map(|r| r.config().response_language)
+        .unwrap_or_else(|_| "ui".to_string());
+    language_instruction(&setting, crate::i18n::current_ui_language())
+}
+
+/// `prompt` with the answer-language instruction appended (unchanged when
+/// there is none).
+pub fn with_answer_language(prompt: &str, app: &AppHandle) -> String {
+    match answer_language_instruction(app) {
+        Some(instruction) if !prompt.contains(&instruction) => {
+            if prompt.trim().is_empty() {
+                instruction
+            } else {
+                format!("{prompt}\n\n{instruction}")
+            }
+        }
+        _ => prompt.to_string(),
+    }
+}
+
+/// The instruction for a `response_language` setting.
+pub fn language_instruction(setting: &str, ui: UiLanguage) -> Option<String> {
+    let code = match setting.trim() {
+        "" | "transcript" => return None,
+        "ui" => ui.code().to_string(),
+        other => other.to_string(),
+    };
+    let name = language_name(&code);
+    Some(format!(
+        "Respond in {name}. If the task asks for a specific output format (such as JSON), keep that format exactly and write only its human-readable text in {name}."
+    ))
+}
+
+/// English name (and native name) of a language code, for prompts.
+fn language_name(code: &str) -> String {
+    let lower = code.trim().to_ascii_lowercase().replace('_', "-");
+    let base = lower.split('-').next().unwrap_or_default();
+    if base == "zh" {
+        let traditional = ["tw", "hk", "mo", "hant"].iter().any(|t| lower.split('-').skip(1).any(|p| p == *t));
+        return if traditional { "Traditional Chinese (繁體中文)" } else { "Simplified Chinese (简体中文)" }.to_string();
+    }
+    let name = match base {
+        "en" => "English",
+        "ja" => "Japanese (日本語)",
+        "ko" => "Korean (한국어)",
+        "fr" => "French (français)",
+        "de" => "German (Deutsch)",
+        "es" => "Spanish (español)",
+        "pt" => "Portuguese (português)",
+        "it" => "Italian (italiano)",
+        "ru" => "Russian (русский)",
+        "uk" => "Ukrainian (українська)",
+        "pl" => "Polish (polski)",
+        "nl" => "Dutch (Nederlands)",
+        "tr" => "Turkish (Türkçe)",
+        "ar" => "Arabic (العربية)",
+        "he" => "Hebrew (עברית)",
+        "hi" => "Hindi (हिन्दी)",
+        "th" => "Thai (ไทย)",
+        "vi" => "Vietnamese (Tiếng Việt)",
+        "id" => "Indonesian (Bahasa Indonesia)",
+        "ms" => "Malay (Bahasa Melayu)",
+        "sv" => "Swedish (svenska)",
+        "da" => "Danish (dansk)",
+        "fi" => "Finnish (suomi)",
+        "no" | "nb" => "Norwegian (norsk)",
+        "cs" => "Czech (čeština)",
+        "el" => "Greek (Ελληνικά)",
+        "hu" => "Hungarian (magyar)",
+        "ro" => "Romanian (română)",
+        "fa" => "Persian (فارسی)",
+        _ => return format!("the language with the code \"{code}\""),
+    };
+    name.to_string()
 }
 
 /// Drives one silent stream: `start` gets the request's params and a sink and
 /// runs the provider; the sink's tokens are the answer. Kept free of
 /// `AppHandle` so it can be tested with a fake provider.
+#[cfg(test)]
 async fn collect_text<F, Fut>(opts: &CompleteOptions, start: F) -> Result<String, LlmCallError>
+where
+    F: FnOnce(GenerationParams, TokenSink) -> Fut,
+    Fut: Future<Output = Result<CompletionStats, LLMError>>,
+{
+    collect_text_gated(opts, None, start).await
+}
+
+/// [`collect_text`] waiting first for a permit of `gate` (the connection's
+/// concurrency limit); the wait counts toward the timeout and stops on cancel.
+async fn collect_text_gated<F, Fut>(opts: &CompleteOptions, gate: Option<Arc<Semaphore>>, start: F) -> Result<String, LlmCallError>
 where
     F: FnOnce(GenerationParams, TokenSink) -> Fut,
     Fut: Future<Output = Result<CompletionStats, LLMError>>,
@@ -326,7 +487,18 @@ where
         ..Default::default()
     };
 
-    let run = start(params, sink);
+    let waiter = cancel.clone();
+    let run = async move {
+        let _permit = match gate {
+            Some(gate) => tokio::select! {
+                biased;
+                _ = waiter.cancelled() => return Err(LLMError::Cancelled),
+                permit = gate.acquire_owned() => Some(permit.map_err(|_| LLMError::Cancelled)?),
+            },
+            None => None,
+        };
+        start(params, sink).await
+    };
     let result = match opts.timeout {
         Some(limit) => match tokio::time::timeout(limit, run).await {
             Ok(result) => result,
@@ -351,73 +523,6 @@ where
         return Err(LlmCallError::Empty);
     }
     Ok(text)
-}
-
-/// The router's current provider, locked for the duration of each call (as
-/// every caller did before this module existed).
-struct LockedProvider {
-    inner: Arc<TokioMutex<Box<dyn LLMProvider>>>,
-    /// Provider type key; read without taking the lock.
-    name: String,
-}
-
-#[async_trait::async_trait]
-impl LLMProvider for LockedProvider {
-    fn provider_name(&self) -> &str {
-        &self.name
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
-        self.inner.lock().await.list_models().await
-    }
-
-    async fn test_connection(&self) -> Result<bool, LLMError> {
-        self.inner.lock().await.test_connection().await
-    }
-
-    async fn stream_completion(
-        &self,
-        messages: Vec<LLMMessage>,
-        model: &str,
-        params: GenerationParams,
-        app_handle: AppHandle,
-        sink: Option<TokenSink>,
-    ) -> Result<CompletionStats, LLMError> {
-        self.inner
-            .lock()
-            .await
-            .stream_completion(messages, model, params, app_handle, sink)
-            .await
-    }
-}
-
-/// A shared provider behind the old `Box<dyn LLMProvider>` type.
-struct SharedProvider(Arc<dyn LLMProvider>);
-
-#[async_trait::async_trait]
-impl LLMProvider for SharedProvider {
-    fn provider_name(&self) -> &str {
-        self.0.provider_name()
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
-        self.0.list_models().await
-    }
-
-    async fn test_connection(&self) -> Result<bool, LLMError> {
-        self.0.test_connection().await
-    }
-
-    async fn stream_completion(
-        &self,
-        messages: Vec<LLMMessage>,
-        model: &str,
-        params: GenerationParams,
-        app_handle: AppHandle,
-        sink: Option<TokenSink>,
-    ) -> Result<CompletionStats, LLMError> {
-        self.0.stream_completion(messages, model, params, app_handle, sink).await
-    }
 }
 
 #[cfg(test)]
@@ -570,6 +675,111 @@ mod tests {
         fn assert_send<T: Send>(_: &T) {}
         assert_send(&resolve_for_task(app, &LlmTask::Translation));
         assert_send(&complete_text(app, &LlmTask::Translation, Vec::new(), CompleteOptions::default()));
+    }
+
+    #[tokio::test]
+    async fn tasks_resolve_to_their_route_with_a_shared_client() {
+        use crate::llm::connections::{LlmConfigFile, LlmConnection, RouteParams, RouteTarget, TaskRoute};
+        use crate::llm::persist::Loaded;
+        use crate::llm::registry::MemorySecrets;
+
+        let mut config = LlmConfigFile::default();
+        config.connections = vec![
+            LlmConnection { id: "c_big".into(), name: "Big".into(), base_url: "https://big.example/v1".into(), default_model: Some("big-1".into()), ..Default::default() },
+            LlmConnection { id: "c_fast".into(), name: "Fast".into(), base_url: "https://fast.example/v4".into(), default_model: Some("fast-1".into()), ..Default::default() },
+        ];
+        config.routing.default.target = Some(RouteTarget { connection_id: "c_big".into(), model: None });
+        config.routing.tasks.insert(
+            "translation".into(),
+            TaskRoute {
+                target: Some(RouteTarget { connection_id: "c_fast".into(), model: Some("glm-4-flash".into()) }),
+                params: RouteParams { temperature: Some(0.2), ..Default::default() },
+            },
+        );
+        let loaded = Loaded { config, read_only: false, warning: None, needs_save: false };
+        let registry = LlmRegistry::new(loaded, None, Arc::new(MemorySecrets::default()));
+        let claude = ClaudeContext::default();
+
+        let (summary, _) = resolve_with(&registry, &LlmTask::MeetingSummary.key(), &claude).await.unwrap();
+        assert_eq!((summary.connection_id.as_str(), summary.model.as_str(), summary.display_name.as_str()), ("c_big", "big-1", "Big"));
+        let (translation, via_fallback) = resolve_with(&registry, &LlmTask::Translation.key(), &claude).await.unwrap();
+        assert_eq!((translation.connection_id.as_str(), translation.model.as_str(), via_fallback), ("c_fast", "glm-4-flash", false));
+        assert_eq!(translation.kind, LlmKind::OpenAiCompat);
+        // Batch translation follows translation.
+        let (batch, _) = resolve_with(&registry, &LlmTask::TranslationBatch.key(), &claude).await.unwrap();
+        assert_eq!(batch.connection_id, "c_fast");
+        // The same task twice: one shared client underneath.
+        let (again, _) = resolve_with(&registry, &LlmTask::MeetingSummary.key(), &claude).await.unwrap();
+        assert!(Arc::ptr_eq(&summary.provider, &again.provider));
+        // Two old-style handles never queue on each other.
+        let a = legacy_handle(&summary);
+        let b = legacy_handle(&summary);
+        let _held = a.try_lock().unwrap();
+        assert!(b.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_fallback_without_a_model_takes_its_first_listed_model() {
+        use crate::llm::connections::{legacy_connection, LlmConfigFile, RouteTarget};
+        use crate::llm::http::test_support::{serve, Canned};
+        use crate::llm::persist::Loaded;
+        use crate::llm::registry::MemorySecrets;
+
+        let (base, _) = serve(vec![Canned::json(200, r#"{"models":[{"name":"qwen3:8b"},{"name":"llama3"}]}"#)]).await;
+        let claude = legacy_connection(&ProviderType::ClaudeCli, None, None, None);
+        let mut ollama = legacy_connection(&ProviderType::Ollama, None, None, None);
+        ollama.base_url = base;
+        let mut config = LlmConfigFile::default();
+        config.routing.default.target = Some(RouteTarget { connection_id: claude.id.clone(), model: None });
+        config.connections = vec![claude, ollama];
+        let loaded = Loaded { config, read_only: false, warning: None, needs_save: false };
+        let registry = LlmRegistry::new(loaded, None, Arc::new(MemorySecrets::default()));
+        let down = ClaudeContext { available: false, legacy_fallback: Some(("ollama".into(), None)), fast_model: "haiku".into() };
+
+        let (resolved, via_fallback) = resolve_with(&registry, "assist:Assist", &down).await.unwrap();
+        assert!(via_fallback);
+        assert_eq!((resolved.connection_id.as_str(), resolved.model.as_str()), ("legacy-ollama", "qwen3:8b"));
+        // Claude itself while healthy: its Fast model fills the slot.
+        let (resolved, _) = resolve_with(&registry, "assist:Assist", &ClaudeContext::default()).await.unwrap();
+        assert_eq!((resolved.kind, resolved.model.as_str(), resolved.display_name.as_str()), (LlmKind::ClaudeCli, "haiku", "Claude (subscription)"));
+    }
+
+    #[tokio::test]
+    async fn unrouted_tasks_explain_what_to_set_up() {
+        use crate::llm::persist::Loaded;
+        use crate::llm::registry::MemorySecrets;
+        let loaded = Loaded { config: Default::default(), read_only: false, warning: None, needs_save: false };
+        let registry = LlmRegistry::new(loaded, None, Arc::new(MemorySecrets::default()));
+        let err = resolve_with(&registry, "translation", &ClaudeContext::default()).await.unwrap_err();
+        assert!(matches!(&err, LlmCallError::NotConfigured(m) if m.contains("translation")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn the_concurrency_limit_queues_background_calls() {
+        let gate = Arc::new(Semaphore::new(1));
+        let held = gate.clone().acquire_owned().await.unwrap();
+        let fake = FakeProvider::answering(&["ok"]);
+        // While the only permit is taken, the call waits and times out.
+        let opts = CompleteOptions { timeout: Some(Duration::from_millis(30)), ..Default::default() };
+        let seen = Arc::new(Mutex::new(None));
+        let result = collect_text_gated(&opts, Some(gate.clone()), |params, sink| fake.stream(seen.clone(), params, sink)).await;
+        assert_eq!(result, Err(LlmCallError::Timeout));
+        assert!(seen.lock().unwrap().is_none(), "the provider was never called");
+        drop(held);
+        let result = collect_text_gated(&CompleteOptions::default(), Some(gate), |params, sink| fake.stream(seen.clone(), params, sink)).await;
+        assert_eq!(result, Ok("ok".to_string()));
+    }
+
+    #[test]
+    fn answer_language_follows_the_setting() {
+        let zh = language_instruction("ui", UiLanguage::ZhCn).unwrap();
+        assert!(zh.starts_with("Respond in Simplified Chinese (简体中文)."), "{zh}");
+        assert!(zh.contains("JSON"));
+        assert!(language_instruction("ui", UiLanguage::En).unwrap().starts_with("Respond in English."));
+        assert_eq!(language_instruction("transcript", UiLanguage::ZhCn), None);
+        assert!(language_instruction("zh-TW", UiLanguage::En).unwrap().contains("Traditional Chinese"));
+        assert!(language_instruction("ja", UiLanguage::ZhCn).unwrap().contains("Japanese"));
+        assert!(language_instruction("xx-YY", UiLanguage::En).unwrap().contains("\"xx-YY\""));
     }
 
     #[test]

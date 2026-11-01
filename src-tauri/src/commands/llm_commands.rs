@@ -1,8 +1,9 @@
 use std::sync::Arc;
-use tauri::{command, State};
+use tauri::{command, AppHandle, State};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::llm::provider::LLMProvider;
+use crate::llm::registry::{self, LlmRegistry};
 use crate::llm::{create_provider, LLMRouter, ProviderConfig};
 use crate::llm::openrouter_models;
 use crate::state::AppState;
@@ -28,10 +29,17 @@ fn resolve_provider(
         .map_err(|e| format!("No active provider: {}", e))
 }
 
+/// Old API (NexQ Plus shim): points the default route at the connection
+/// that stands for this provider type (`legacy-<type>`, created when
+/// missing). Idempotent: when the default connection already stands for
+/// this type nothing changes, so the frontend's startup push never undoes a
+/// route chosen in the new settings. An API key in the config is used for
+/// this session only (the old settings store it in the keychain themselves).
 #[command]
 pub async fn set_llm_provider(
     provider: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
+    registry: State<'_, LlmRegistry>,
 ) -> Result<(), String> {
     // Parse the provider config from the JSON string, or create a simple one from the provider name
     let config: ProviderConfig = match serde_json::from_str(&provider) {
@@ -49,22 +57,15 @@ pub async fn set_llm_provider(
         }
     };
 
-    let llm = state
-        .llm
-        .as_ref()
-        .ok_or_else(|| "LLM router not initialized".to_string())?;
-
-    let mut router = llm
-        .lock()
-        .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
     // Log the provider type only: the raw config JSON carries the API key / auth value.
     let provider_type = config.provider_type.clone();
-    router
-        .set_provider(config)
+    let changed = registry
+        .apply_legacy_provider(&config)
         .map_err(|e| format!("Failed to set provider: {}", e))?;
-
-    log::info!("LLM provider set to: {}", provider_type);
+    if changed {
+        registry::after_change(&app);
+        log::info!("LLM provider set to: {}", provider_type);
+    }
     Ok(())
 }
 
@@ -90,23 +91,22 @@ pub async fn list_models(
     serde_json::to_string(&models).map_err(|e| format!("Failed to serialize models: {}", e))
 }
 
+/// Old API (NexQ Plus shim): the default route's model, when the default
+/// connection stands for `provider`; ignored otherwise.
 #[command]
 pub async fn set_active_model(
-    _provider: String,
+    provider: String,
     model_id: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
+    registry: State<'_, LlmRegistry>,
 ) -> Result<(), String> {
-    let llm = state
-        .llm
-        .as_ref()
-        .ok_or_else(|| "LLM router not initialized".to_string())?;
-
-    let mut router = llm
-        .lock()
-        .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-    router.set_active_model(model_id.clone());
-    log::info!("Active model set to: {}", model_id);
+    let changed = registry
+        .apply_legacy_model(&provider, &model_id)
+        .map_err(|e| format!("Failed to set model: {}", e))?;
+    if changed {
+        registry::after_change(&app);
+        log::info!("Active model set to: {}", model_id);
+    }
     Ok(())
 }
 

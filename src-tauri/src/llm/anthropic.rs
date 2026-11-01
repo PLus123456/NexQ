@@ -1,28 +1,27 @@
 // Sub-PRD 5: Anthropic Messages API client
+// NexQ Plus: an Anthropic-protocol connection (Anthropic itself, or the
+// Anthropic-compatible endpoints of DeepSeek, Kimi, GLM…) is an
+// `http::HttpLlmClient`. This file builds the request body, decodes the
+// event stream (thinking included) and reads the model list.
 
-use futures::StreamExt;
 use serde::Deserialize;
-use serde_json::json;
-use std::time::Instant;
+use serde_json::{json, Value};
 
-use super::provider::{
-    CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    cancellable, check_cancelled, is_cancelled, emit_end_with_stats, emit_error, emit_token, TokenSink,
-};
-use super::stream_parser::{LineBuffer, SSEParser};
+use super::compat::{self, EffectiveParams, StreamEvent, ThinkStripper};
+use super::connections::{CompatFlags, ReasoningMode};
+use super::http::{EventDecoder, Failure, HttpLlmClient};
+use super::provider::{LLMMessage, ModelInfo};
+use super::stream_parser::LineBuffer;
 
 /// `anthropic-version` sent with every request.
-const API_VERSION: &str = "2023-06-01";
+pub const API_VERSION: &str = "2023-06-01";
 
 /// Output budget when the caller sets none. Current models think before they
 /// answer, and thinking counts toward `max_tokens`.
 const DEFAULT_MAX_TOKENS: u64 = 16_000;
 
-pub struct AnthropicClient {
-    api_key: String,
-    base_url: String,
-    client: reqwest::Client,
-}
+/// An Anthropic provider is an HTTP connection client.
+pub type AnthropicClient = HttpLlmClient;
 
 /// One page of `GET /v1/models`.
 #[derive(Deserialize)]
@@ -42,360 +41,241 @@ struct ApiModel {
 }
 
 /// Models that can still be called: retired ones fail every request.
-fn usable_models(models: Vec<ApiModel>) -> impl Iterator<Item = ModelInfo> {
+fn usable_models(models: Vec<ApiModel>, provider: &str) -> Vec<ModelInfo> {
     models
         .into_iter()
         .filter(|m| m.lifecycle.as_deref() != Some("retired"))
-        .map(ModelInfo::from)
-}
-
-impl From<ApiModel> for ModelInfo {
-    fn from(m: ApiModel) -> Self {
-        ModelInfo {
+        .map(|m| ModelInfo {
             name: m.display_name.unwrap_or_else(|| m.id.clone()),
             id: m.id,
-            provider: "anthropic".to_string(),
+            provider: provider.to_string(),
             context_window: m.max_input_tokens,
-        }
-    }
-}
-
-impl AnthropicClient {
-    pub fn new(api_key: &str, base_url: Option<&str>) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            base_url: base_url
-                .unwrap_or("https://api.anthropic.com")
-                .to_string(),
-            client: reqwest::Client::new(),
-        }
-    }
-
-    /// Current models, for a base URL that has no Models API (a proxy).
-    fn fallback_models() -> Vec<ModelInfo> {
-        [
-            ("claude-opus-5-5", "Claude Opus 5.5", 1_000_000),
-            ("claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000),
-            ("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000),
-            ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000),
-        ]
-        .into_iter()
-        .map(|(id, name, context)| ModelInfo {
-            id: id.to_string(),
-            name: name.to_string(),
-            provider: "anthropic".to_string(),
-            context_window: Some(context),
         })
         .collect()
-    }
+}
 
-    /// `GET /v1/models` request for the page after `after_id`.
-    fn models_request(&self, limit: u32, after_id: Option<&str>) -> reqwest::RequestBuilder {
-        let mut url = format!("{}/v1/models?limit={limit}", self.base_url);
-        if let Some(id) = after_id {
-            url.push_str("&after_id=");
-            url.push_str(id);
+/// The models of one page, and the id to continue after when there are more.
+pub fn parse_models(body: &Value, provider: &str) -> (Vec<ModelInfo>, Option<String>) {
+    match serde_json::from_value::<ModelPage>(body.clone()) {
+        Ok(page) => {
+            let next = page.last_id.filter(|_| page.has_more);
+            (usable_models(page.data, provider), next)
         }
-        self.client
-            .get(url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", API_VERSION)
-    }
-
-    /// The models this API key can use, newest first. `None` when the base URL
-    /// has no Models API.
-    async fn fetch_models(&self) -> Result<Option<Vec<ModelInfo>>, LLMError> {
-        let mut models = Vec::new();
-        let mut after_id: Option<String> = None;
-        loop {
-            let response = self.models_request(1000, after_id.as_deref()).send().await?;
-            let status = response.status();
-            if status.as_u16() == 404 {
-                return Ok(None);
-            }
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                let message = format!("Anthropic model list failed ({status}): {body}");
-                return Err(if status.as_u16() == 401 || status.as_u16() == 403 {
-                    LLMError::AuthError(message)
-                } else {
-                    LLMError::ProviderError(message)
-                });
-            }
-            let page: ModelPage = response.json().await?;
-            models.extend(usable_models(page.data));
-            match page.last_id {
-                Some(last) if page.has_more => after_id = Some(last),
-                _ => return Ok(Some(models)),
-            }
-        }
-    }
-
-    /// Parse Anthropic-specific SSE event types.
-    /// Anthropic SSE has "event:" lines followed by "data:" lines.
-    fn parse_anthropic_sse(chunk: &str) -> Vec<AnthropicEvent> {
-        let mut events = Vec::new();
-        let mut current_event_type: Option<String> = None;
-
-        for line in chunk.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                current_event_type = None;
-                continue;
-            }
-
-            if let Some(event_type) = line.strip_prefix("event:") {
-                current_event_type = Some(event_type.trim().to_string());
-                continue;
-            }
-
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data.is_empty() {
-                    continue;
-                }
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
-                    let event_type = current_event_type
-                        .clone()
-                        .or_else(|| val.get("type").and_then(|t| t.as_str()).map(|s| s.to_string()))
-                        .unwrap_or_default();
-
-                    events.push(AnthropicEvent {
-                        event_type,
-                        data: val,
-                    });
-                }
-                current_event_type = None;
-            }
-        }
-
-        events
+        Err(_) => (super::openai_compat::parse_models(body, provider), None),
     }
 }
 
-struct AnthropicEvent {
-    event_type: String,
-    data: serde_json::Value,
+/// Current models, for api.anthropic.com when its Models API is unreachable
+/// through a proxy path.
+pub fn fallback_models() -> Vec<ModelInfo> {
+    [
+        ("claude-opus-5-5", "Claude Opus 5.5", 1_000_000),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000),
+        ("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000),
+        ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000),
+    ]
+    .into_iter()
+    .map(|(id, name, context)| ModelInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        provider: "anthropic".to_string(),
+        context_window: Some(context),
+    })
+    .collect()
 }
 
-#[async_trait::async_trait]
-impl LLMProvider for AnthropicClient {
-    fn provider_name(&self) -> &str {
-        "anthropic"
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
-        Ok(self.fetch_models().await?.unwrap_or_else(Self::fallback_models))
-    }
-
-    async fn test_connection(&self) -> Result<bool, LLMError> {
-        // Listing models checks the key without spending tokens.
-        let response = self.models_request(1, None).send().await?;
-        Ok(response.status().is_success())
-    }
-
-    async fn stream_completion(
-        &self,
-        messages: Vec<LLMMessage>,
-        model: &str,
-        params: GenerationParams,
-        app_handle: tauri::AppHandle,
-        sink: Option<TokenSink>,
-    ) -> Result<CompletionStats, LLMError> {
-        let url = format!("{}/v1/messages", self.base_url);
-        let start = Instant::now();
-
-        // Anthropic requires system message to be separate
-        let mut system_content: Option<String> = None;
-        let mut api_messages: Vec<serde_json::Value> = Vec::new();
-
-        for msg in &messages {
-            if msg.role == "system" {
-                system_content = Some(msg.content.clone());
-            } else {
-                api_messages.push(json!({
-                    "role": msg.role,
-                    "content": msg.content
-                }));
+/// Every page of the model list, newest first. A 404 means the server has
+/// no Models API: Anthropic's own host gets the built-in list, any other
+/// (an Anthropic-compatible endpoint) an empty one — its models are typed in.
+pub async fn fetch_all_models(client: &HttpLlmClient, url: &str, provider: &str) -> Result<Vec<ModelInfo>, Failure> {
+    let mut models = Vec::new();
+    let mut after_id: Option<String> = None;
+    loop {
+        let mut page_url = url::Url::parse(url).map_err(|e| Failure::config(e.to_string()))?;
+        page_url.query_pairs_mut().append_pair("limit", "1000");
+        if let Some(id) = &after_id {
+            page_url.query_pairs_mut().append_pair("after_id", id);
+        }
+        let body = match client.get_json(page_url.as_str(), "Model list request").await {
+            Ok(body) => body,
+            Err(failure) if failure.status == Some(404) && models.is_empty() => {
+                let official = page_url.host_str() == Some("api.anthropic.com");
+                return Ok(if official { fallback_models() } else { Vec::new() });
             }
-        }
-
-        let max_tokens = params.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-        // No `temperature`: current Claude models reject sampling parameters
-        // with a 400, so `params.temperature` is not sent.
-        let mut body = json!({
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": api_messages,
-            "stream": true
-        });
-
-        if let Some(system) = &system_content {
-            body["system"] = json!(system);
-        }
-
-        // NOTE: llm_stream_start is emitted by IntelligenceEngine::generate_assist()
-        // with the correct mode. Do NOT emit it here — it would overwrite the mode.
-
-        let response = cancellable(
-            &params,
-            self
-                .client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", API_VERSION)
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send(),
-        )
-        .await?
-        .map_err(|e| {
-            if is_cancelled(&params) {
-                return LLMError::Cancelled;
-            }
-                emit_error(&app_handle, &params, &e.to_string());
-            LLMError::HttpError(e)
-        })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            let err_msg = format!("Anthropic request failed ({}): {}", status, body);
-            check_cancelled(&params)?;
-            emit_error(&app_handle, &params, &err_msg);
-
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                return Err(LLMError::AuthError(err_msg));
-            }
-            return Err(LLMError::ProviderError(err_msg));
-        }
-
-        let mut stream = response.bytes_stream();
-        let mut line_buffer = LineBuffer::new();
-        let mut token_count: u64 = 0;
-        let mut input_tokens: u64 = 0;
-        let mut output_tokens: u64 = 0;
-
-        while let Some(chunk_result) = cancellable(&params, stream.next()).await? {
-            check_cancelled(&params)?;
-            let chunk = chunk_result.map_err(|e| {
-                if is_cancelled(&params) {
-                    return LLMError::Cancelled;
-                }
-                emit_error(&app_handle, &params, &e.to_string());
-                LLMError::HttpError(e)
-            })?;
-
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            let lines = line_buffer.push(&chunk_str);
-
-            for line in lines {
-                let events = Self::parse_anthropic_sse(&line);
-                for event in events {
-                    match event.event_type.as_str() {
-                        "message_start" => {
-                            // Extract input token count from usage
-                            if let Some(usage) = event.data.get("message").and_then(|m| m.get("usage")) {
-                                if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                                    input_tokens = it;
-                                }
-                            }
-                        }
-                        "content_block_delta" => {
-                            if let Some(token) = SSEParser::extract_anthropic_token(&event.data) {
-                                if !token.is_empty() {
-                                    token_count += 1;
-                                    check_cancelled(&params)?;
-                                    emit_token(&app_handle, &params, &token, sink.as_ref());
-                                }
-                            }
-                        }
-                        "message_delta" => {
-                            // Extract output token count
-                            if let Some(usage) = event.data.get("usage") {
-                                if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                                    output_tokens = ot;
-                                }
-                            }
-                        }
-                        "message_stop" | "content_block_start" | "content_block_stop" | "ping" => {
-                            // No action needed for these event types
-                        }
-                        "error" => {
-                            let err_msg = event
-                                .data
-                                .get("error")
-                                .and_then(|e| e.get("message"))
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("Unknown Anthropic error")
-                                .to_string();
-                            emit_error(&app_handle, &params, &err_msg);
-                            return Err(LLMError::ProviderError(err_msg));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // Flush remaining buffer
-        if let Some(remaining) = line_buffer.flush() {
-            let events = Self::parse_anthropic_sse(&remaining);
-            for event in events {
-                if event.event_type == "content_block_delta" {
-                    if let Some(token) = SSEParser::extract_anthropic_token(&event.data) {
-                        if !token.is_empty() {
-                            token_count += 1;
-                            check_cancelled(&params)?;
-                            emit_token(&app_handle, &params, &token, sink.as_ref());
-                        }
-                    }
-                }
-            }
-        }
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-
-        // Use API-reported counts if available
-        if output_tokens == 0 {
-            output_tokens = token_count;
-        }
-        let total = input_tokens + output_tokens;
-
-        let stats = CompletionStats {
-            prompt_tokens: input_tokens,
-            completion_tokens: output_tokens,
-            total_tokens: total,
-            latency_ms,
+            Err(failure) => return Err(failure),
         };
+        let (page, next) = parse_models(&body, provider);
+        models.extend(page);
+        match next {
+            Some(next) => after_id = Some(next),
+            None => return Ok(models),
+        }
+    }
+}
 
-        check_cancelled(&params)?;
-        emit_end_with_stats(&app_handle, &params, &stats);
+/// Body of a `/v1/messages` stream request. System messages become `system`
+/// (joined when there are several); the temperature follows the compat
+/// switch (not sent by default: current Claude models reject it).
+pub fn chat_body(model: &str, messages: &[LLMMessage], params: &EffectiveParams, compat: &CompatFlags) -> Value {
+    let mut system_parts: Vec<&str> = Vec::new();
+    let mut api_messages: Vec<Value> = Vec::new();
+    for msg in messages {
+        if msg.role == "system" {
+            system_parts.push(&msg.content);
+        } else {
+            api_messages.push(json!({"role": msg.role, "content": msg.content}));
+        }
+    }
+    let max_tokens = params.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+    let mut body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": api_messages,
+        "stream": true
+    });
+    if !system_parts.is_empty() {
+        body["system"] = json!(system_parts.join("\n\n"));
+    }
+    if let Some(t) = compat::temperature_to_send(compat, params.temperature) {
+        body["temperature"] = json!(t);
+    }
+    compat::apply_extra_body(&mut body, params.extra_body.as_ref());
+    body
+}
 
-        Ok(stats)
+/// Decodes Anthropic's event stream: `event:` lines name the event the next
+/// `data:` line belongs to (the data's `type` says it too).
+pub struct AnthropicDecoder {
+    lines: LineBuffer,
+    event_type: Option<String>,
+    reasoning: ReasoningMode,
+    think: ThinkStripper,
+    input_tokens: u64,
+}
+
+impl AnthropicDecoder {
+    pub fn new(compat: &CompatFlags) -> Self {
+        Self {
+            lines: LineBuffer::new(),
+            event_type: None,
+            reasoning: compat.reasoning,
+            think: ThinkStripper::new(compat.strip_think_tags),
+            input_tokens: 0,
+        }
+    }
+
+    fn line(&mut self, line: &str, out: &mut Vec<StreamEvent>) {
+        let line = line.trim();
+        if line.is_empty() {
+            self.event_type = None;
+            return;
+        }
+        if let Some(event_type) = line.strip_prefix("event:") {
+            self.event_type = Some(event_type.trim().to_string());
+            return;
+        }
+        let payload = match line.strip_prefix("data:") {
+            Some(data) => data.trim(),
+            // A plain JSON error body served as the stream.
+            None if line.starts_with('{') => line,
+            None => return,
+        };
+        let Ok(data) = serde_json::from_str::<Value>(payload) else {
+            return;
+        };
+        let event_type = self
+            .event_type
+            .take()
+            .or_else(|| data.get("type").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        match event_type.as_str() {
+            "message_start" => {
+                if let Some(it) = data.pointer("/message/usage/input_tokens").and_then(Value::as_u64) {
+                    self.input_tokens = it;
+                    out.push(StreamEvent::Usage { prompt_tokens: it, completion_tokens: 0 });
+                }
+            }
+            "content_block_delta" => {
+                let delta = data.get("delta");
+                let delta_type = delta.and_then(|d| d.get("type")).and_then(Value::as_str).unwrap_or("text_delta");
+                match delta_type {
+                    "thinking_delta" => {
+                        if self.reasoning == ReasoningMode::Auto {
+                            if let Some(text) = delta.and_then(|d| d.get("thinking")).and_then(Value::as_str) {
+                                if !text.is_empty() {
+                                    out.push(StreamEvent::Reasoning(text.to_string()));
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(text) = delta.and_then(|d| d.get("text")).and_then(Value::as_str) {
+                            out.extend(self.think.push(text));
+                        }
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(ot) = data.pointer("/usage/output_tokens").and_then(Value::as_u64) {
+                    out.push(StreamEvent::Usage { prompt_tokens: self.input_tokens, completion_tokens: ot });
+                }
+            }
+            "message_stop" => out.push(StreamEvent::Done),
+            "error" => {
+                let message = compat::error_message(&data).unwrap_or_else(|| "Unknown Anthropic error".to_string());
+                out.push(StreamEvent::Error(message));
+            }
+            _ => {
+                if let Some(message) = compat::error_message(&data) {
+                    out.push(StreamEvent::Error(message));
+                }
+            }
+        }
+    }
+}
+
+impl EventDecoder for AnthropicDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        for line in self.lines.push(chunk) {
+            self.line(&line, &mut out);
+        }
+        out
+    }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        if let Some(rest) = self.lines.flush() {
+            self.line(&rest, &mut out);
+        }
+        out.extend(self.think.finish());
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::api::LlmKind;
+    use crate::llm::connections::LlmConnection;
+    use crate::llm::http::test_support::{serve, Canned, RecordingOutput};
+    use crate::llm::provider::GenerationParams;
+    use crate::net::endpoint::{AuthConfig, AuthMode};
+    use std::collections::HashMap;
 
     #[test]
     fn model_page_lists_callable_models_with_their_names() {
-        let page: ModelPage = serde_json::from_str(
-            r#"{
-                "data": [
-                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5",
-                     "max_input_tokens": 1000000, "lifecycle": "active"},
-                    {"type": "model", "id": "claude-old", "display_name": "Old", "lifecycle": "retired"},
-                    {"type": "model", "id": "claude-haiku-4-5-20251001", "lifecycle": "deprecated"}
-                ],
-                "has_more": false, "first_id": "claude-opus-5-5", "last_id": "claude-haiku-4-5-20251001"
-            }"#,
-        )
-        .unwrap();
-        assert!(!page.has_more);
-        let models: Vec<ModelInfo> = usable_models(page.data).collect();
+        let body = json!({
+            "data": [
+                {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5",
+                 "max_input_tokens": 1000000, "lifecycle": "active"},
+                {"type": "model", "id": "claude-old", "display_name": "Old", "lifecycle": "retired"},
+                {"type": "model", "id": "claude-haiku-4-5-20251001", "lifecycle": "deprecated"}
+            ],
+            "has_more": false, "first_id": "claude-opus-5-5", "last_id": "claude-haiku-4-5-20251001"
+        });
+        let (models, next) = parse_models(&body, "anthropic");
+        assert_eq!(next, None);
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["claude-opus-5-5", "claude-haiku-4-5-20251001"]);
         assert_eq!(models[0].name, "Claude Opus 5.5");
@@ -405,8 +285,82 @@ mod tests {
 
     #[test]
     fn fallback_lists_only_current_models() {
-        let ids: Vec<String> = AnthropicClient::fallback_models().into_iter().map(|m| m.id).collect();
+        let ids: Vec<String> = fallback_models().into_iter().map(|m| m.id).collect();
         assert!(ids.contains(&"claude-opus-5-5".to_string()));
         assert!(ids.iter().all(|id| !id.starts_with("claude-3")));
+    }
+
+    #[test]
+    fn body_keeps_system_apart_and_omits_temperature_by_default() {
+        let messages = vec![
+            LLMMessage { role: "system".into(), content: "A".into() },
+            LLMMessage { role: "system".into(), content: "B".into() },
+            LLMMessage { role: "user".into(), content: "hi".into() },
+        ];
+        let params = EffectiveParams { temperature: Some(0.3), ..Default::default() };
+        let body = chat_body("claude", &messages, &params, &CompatFlags::for_kind(LlmKind::Anthropic));
+        assert_eq!(body["system"], "A\n\nB");
+        assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        let body = chat_body("claude", &messages, &params, &CompatFlags::default());
+        assert_eq!(body["temperature"], 0.3);
+    }
+
+    #[test]
+    fn decoder_reads_text_thinking_usage_and_errors() {
+        let mut decoder = AnthropicDecoder::new(&CompatFlags::default());
+        let stream = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hm\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        let bytes = stream.as_bytes();
+        let cut = stream.find("你").unwrap() + 2;
+        let mut events = decoder.push(&bytes[..cut]);
+        events.extend(decoder.push(&bytes[cut..]));
+        events.extend(decoder.finish());
+        assert!(events.contains(&StreamEvent::Reasoning("hm".into())));
+        assert!(events.contains(&StreamEvent::Content("你好".into())));
+        assert!(events.contains(&StreamEvent::Usage { prompt_tokens: 12, completion_tokens: 5 }));
+        assert_eq!(events.last(), Some(&StreamEvent::Done));
+
+        let mut decoder = AnthropicDecoder::new(&CompatFlags::default());
+        let events = decoder.push(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n");
+        assert_eq!(events, vec![StreamEvent::Error("Overloaded (overloaded_error)".into())]);
+    }
+
+    #[tokio::test]
+    async fn requests_go_to_v1_messages_with_the_key_header() {
+        let (base, seen) = serve(vec![Canned::sse(&[
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ])])
+        .await;
+        let conn = LlmConnection {
+            kind: LlmKind::Anthropic,
+            base_url: format!("{base}/anthropic"),
+            auth: AuthConfig { mode: AuthMode::Header, header_name: "x-api-key".into(), prefix: String::new() },
+            ..Default::default()
+        };
+        let client = HttpLlmClient::new(&conn, Some("sk-ant"), &HashMap::new()).unwrap();
+        let out = RecordingOutput::default();
+        let messages = vec![LLMMessage { role: "user".into(), content: "hi".into() }];
+        client.stream_with(&messages, "deepseek-chat", &GenerationParams::default(), &out).await.unwrap();
+        assert_eq!(out.text(), "ok");
+        let request = seen.lock().unwrap()[0].clone();
+        assert_eq!(request.path, "/anthropic/v1/messages");
+        assert_eq!(request.header("x-api-key"), Some("sk-ant"));
+        assert_eq!(request.header("anthropic-version"), Some(API_VERSION));
+    }
+
+    #[tokio::test]
+    async fn a_proxy_without_a_models_api_lists_nothing() {
+        let (base, _) = serve(vec![Canned::json(404, "{}")]).await;
+        let conn = LlmConnection { kind: LlmKind::Anthropic, base_url: base, ..Default::default() };
+        let client = HttpLlmClient::new(&conn, Some("k"), &HashMap::new()).unwrap();
+        assert!(client.fetch_models().await.unwrap().1.is_empty());
     }
 }

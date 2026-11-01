@@ -1,19 +1,30 @@
 pub mod anthropic;
 pub mod api;
 pub mod cli_agent;
+pub mod compat;
+pub mod connections;
 pub mod custom;
 pub mod gemini;
 pub mod gemini_cache;
+pub mod http;
 pub mod ollama;
 pub mod openai_compat;
 pub mod openrouter_models;
+pub mod persist;
 pub mod provider;
+pub mod registry;
 pub mod stream_parser;
 
-use provider::{LLMError, LLMProvider};
+use provider::{
+    CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo, TokenSink,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
+
+use api::LlmKind;
+use connections::LlmConnection;
 
 /// Provider type enum matching the frontend LLMProviderType
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,88 +137,121 @@ pub struct ProviderInfo {
 }
 
 /// Build a provider client from a config without touching any router state.
-/// Used for the active provider (`LLMRouter::set_provider`) and for temporary
-/// providers (browsing models, connection tests, fallback).
+/// Used for temporary providers (browsing models, connection tests, the RAG
+/// test answer). The config is mapped to the connection that reproduces its
+/// provider type (`legacy-<type>`), so it runs on the same client as every
+/// connection.
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LLMProvider>, String> {
+    let (_, conn, secret) = legacy_from_config(config)?;
+    build_provider(&conn, secret.as_deref(), &HashMap::new())
+}
+
+/// The legacy connection a `ProviderConfig` describes, with its secret (the
+/// API key, or the custom endpoint's auth value). Cloud types need a key and
+/// the custom type a base URL, as before.
+pub fn legacy_from_config(
+    config: &ProviderConfig,
+) -> Result<(ProviderType, LlmConnection, Option<String>), String> {
+    let (provider_type, conn, secret) = legacy_from_config_lenient(config)?;
+    if provider_type.requires_api_key() && secret.is_none() {
+        return Err(format!("{} API key required", provider_type.display_name()));
+    }
+    if provider_type == ProviderType::Custom && conn.base_url.is_empty() {
+        return Err("Custom endpoint base URL required".to_string());
+    }
+    Ok((provider_type, conn, secret))
+}
+
+/// [`legacy_from_config`] without the key / base URL checks (the old
+/// `set_llm_provider` may leave the key in the keychain).
+pub fn legacy_from_config_lenient(
+    config: &ProviderConfig,
+) -> Result<(ProviderType, LlmConnection, Option<String>), String> {
     let provider_type = ProviderType::from_str(&config.provider_type).map_err(|e| match e {
         LLMError::NotConfigured(msg) => msg,
         other => other.to_string(),
     })?;
-
-    let provider: Box<dyn LLMProvider> = match provider_type {
-        ProviderType::Ollama => Box::new(ollama::OllamaClient::new(config.base_url.as_deref())),
-        ProviderType::LmStudio => Box::new(openai_compat::create_lm_studio_client(
-            config.base_url.as_deref(),
-        )),
-        ProviderType::Openai => {
-            let api_key = config
-                .api_key
-                .as_deref()
-                .ok_or_else(|| "OpenAI API key required".to_string())?;
-            Box::new(openai_compat::create_openai_client(api_key))
+    let mut conn = connections::legacy_connection(
+        &provider_type,
+        config.base_url.as_deref(),
+        config.auth_type.as_deref(),
+        config.auth_header.as_deref(),
+    );
+    // These types always honoured a base URL from the config; OpenAI, Groq
+    // and OpenRouter always used their own.
+    if matches!(
+        provider_type,
+        ProviderType::Ollama | ProviderType::LmStudio | ProviderType::Anthropic | ProviderType::Gemini
+    ) {
+        if let Some(base) = config.base_url.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+            conn.base_url = base.to_string();
         }
-        ProviderType::Anthropic => {
-            let api_key = config
-                .api_key
-                .as_deref()
-                .ok_or_else(|| "Anthropic API key required".to_string())?;
-            Box::new(anthropic::AnthropicClient::new(
-                api_key,
-                config.base_url.as_deref(),
-            ))
-        }
-        ProviderType::Groq => {
-            let api_key = config
-                .api_key
-                .as_deref()
-                .ok_or_else(|| "Groq API key required".to_string())?;
-            Box::new(openai_compat::create_groq_client(api_key))
-        }
-        ProviderType::Gemini => {
-            let api_key = config
-                .api_key
-                .as_deref()
-                .ok_or_else(|| "Gemini API key required".to_string())?;
-            Box::new(gemini::GeminiClient::new(api_key, config.base_url.as_deref()))
-        }
-        ProviderType::Openrouter => {
-            let api_key = config
-                .api_key
-                .as_deref()
-                .ok_or_else(|| "OpenRouter API key required".to_string())?;
-            Box::new(openai_compat::create_openrouter_client(api_key))
-        }
-        ProviderType::Custom => {
-            let base_url = config
-                .base_url
-                .clone()
-                .ok_or_else(|| "Custom endpoint base URL required".to_string())?;
-            let auth_type = match config.auth_type.as_deref() {
-                Some("bearer") => custom::CustomAuthType::Bearer,
-                Some("api_key") | Some("api-key") => custom::CustomAuthType::ApiKey,
-                _ => custom::CustomAuthType::None,
-            };
-            Box::new(custom::CustomClient::new(custom::CustomConfig {
-                base_url,
-                auth_type,
-                auth_value: config.auth_value.clone(),
-                auth_header: config.auth_header.clone(),
-            }))
-        }
-        // Needs no config: it reaches the session manager through the
-        // `AppHandle` passed to every `stream_completion` call.
-        ProviderType::ClaudeCli => Box::new(cli_agent::provider::ClaudeCliProvider::new()),
-    };
-
-    Ok(provider)
+    }
+    conn.base_url = connections::normalize_base_for_kind(conn.kind, &conn.base_url);
+    let secret = if provider_type == ProviderType::Custom {
+        config.auth_value.clone()
+    } else {
+        config.api_key.clone()
+    }
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+    Ok((provider_type, conn, secret))
 }
 
-/// Routes to active LLM provider, supports hot-switching and cancellation.
+/// The client for one connection: HTTP for the four protocols, the session
+/// manager for the Claude subscription (it reaches the manager through the
+/// `AppHandle` passed to every `stream_completion` call).
+pub fn build_provider(
+    conn: &LlmConnection,
+    secret: Option<&str>,
+    header_secrets: &HashMap<String, String>,
+) -> Result<Box<dyn LLMProvider>, String> {
+    match conn.kind {
+        LlmKind::ClaudeCli => Ok(Box::new(cli_agent::provider::ClaudeCliProvider::new())),
+        _ => http::HttpLlmClient::new(conn, secret, header_secrets)
+            .map(|client| Box::new(client) as Box<dyn LLMProvider>),
+    }
+}
+
+/// A shared provider behind the old `Box<dyn LLMProvider>` type: each holder
+/// gets its own lock around the same client, so nobody queues on anybody.
+pub struct SharedProvider(pub Arc<dyn LLMProvider>);
+
+#[async_trait::async_trait]
+impl LLMProvider for SharedProvider {
+    fn provider_name(&self) -> &str {
+        self.0.provider_name()
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
+        self.0.list_models().await
+    }
+
+    async fn test_connection(&self) -> Result<bool, LLMError> {
+        self.0.test_connection().await
+    }
+
+    async fn stream_completion(
+        &self,
+        messages: Vec<LLMMessage>,
+        model: &str,
+        params: GenerationParams,
+        app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
+    ) -> Result<CompletionStats, LLMError> {
+        self.0.stream_completion(messages, model, params, app_handle, sink).await
+    }
+}
+
+/// The default route, for callers that still use the old single-provider
+/// API (`AppState.llm`). The registry (`llm::registry`) keeps it in sync
+/// with `llm-connections.json`; nothing here is locked while a stream runs.
 pub struct LLMRouter {
-    active_provider: Option<Arc<TokioMutex<Box<dyn LLMProvider>>>>,
+    active_provider: Option<Arc<dyn LLMProvider>>,
     active_model: String,
     active_provider_type: Option<ProviderType>,
-    cancel_token: Arc<TokioMutex<bool>>,
+    /// Some task is routed to the Claude subscription.
+    claude_in_use: bool,
 }
 
 impl LLMRouter {
@@ -216,7 +260,7 @@ impl LLMRouter {
             active_provider: None,
             active_model: String::new(),
             active_provider_type: None,
-            cancel_token: Arc::new(TokioMutex::new(false)),
+            claude_in_use: false,
         }
     }
 
@@ -228,16 +272,34 @@ impl LLMRouter {
         let provider_type = ProviderType::from_str(&config.provider_type)?;
         let provider = create_provider(&config).map_err(LLMError::NotConfigured)?;
 
-        self.active_provider = Some(Arc::new(TokioMutex::new(provider)));
+        self.active_provider = Some(Arc::from(provider));
         self.active_provider_type = Some(provider_type);
         Ok(())
     }
 
-    /// Get a reference to the active provider (behind a tokio mutex for async access).
+    /// Point the router at an already built (shared) provider.
+    pub fn set_shared_provider(
+        &mut self,
+        provider: Option<Arc<dyn LLMProvider>>,
+        provider_type: Option<ProviderType>,
+    ) {
+        self.active_provider = provider;
+        self.active_provider_type = provider_type;
+    }
+
+    /// The active provider behind a tokio mutex, for the old call sites.
+    /// Every call returns a new lock around the same client, so concurrent
+    /// requests (translation and the AI assistant) never wait for each other.
     pub fn get_provider(&self) -> Result<Arc<TokioMutex<Box<dyn LLMProvider>>>, LLMError> {
         self.active_provider
             .clone()
+            .map(|p| Arc::new(TokioMutex::new(Box::new(SharedProvider(p)) as Box<dyn LLMProvider>)))
             .ok_or_else(|| LLMError::NotConfigured("No LLM provider configured".to_string()))
+    }
+
+    /// The active provider itself.
+    pub fn shared_provider(&self) -> Option<Arc<dyn LLMProvider>> {
+        self.active_provider.clone()
     }
 
     /// Get the active model name.
@@ -255,20 +317,13 @@ impl LLMRouter {
         self.active_provider_type.as_ref()
     }
 
-    /// Request cancellation of the current stream.
-    pub async fn cancel(&self) {
-        let mut cancel = self.cancel_token.lock().await;
-        *cancel = true;
+    /// Whether any task is routed to the Claude subscription.
+    pub fn claude_in_use(&self) -> bool {
+        self.claude_in_use
     }
 
-    /// Check if cancellation was requested and reset the flag.
-    pub async fn check_cancelled(&self) -> bool {
-        let mut cancel = self.cancel_token.lock().await;
-        let was_cancelled = *cancel;
-        if was_cancelled {
-            *cancel = false;
-        }
-        was_cancelled
+    pub fn set_claude_in_use(&mut self, in_use: bool) {
+        self.claude_in_use = in_use;
     }
 
     /// Get information about all available providers.
@@ -351,5 +406,33 @@ mod tests {
     fn create_provider_rejects_missing_key_and_unknown_type() {
         assert!(create_provider(&cfg("openai", None, None)).is_err());
         assert!(create_provider(&cfg("nope", None, None)).is_err());
+    }
+
+    #[test]
+    fn every_get_provider_call_returns_a_free_lock() {
+        let mut router = LLMRouter::new();
+        router.set_provider(cfg("ollama", None, None)).unwrap();
+        let first = router.get_provider().unwrap();
+        let second = router.get_provider().unwrap();
+        // A stream holding the first lock no longer blocks the second caller.
+        let _held = first.try_lock().expect("first lock is free");
+        assert!(second.try_lock().is_ok(), "the second caller does not queue");
+        assert!(first.try_lock().is_err(), "each lock still guards its own holder");
+    }
+
+    #[test]
+    fn legacy_configs_keep_their_addresses_and_secrets() {
+        let mut config = cfg("custom", None, Some(" http://h:8000/v1/ "));
+        config.auth_type = Some("bearer".into());
+        config.auth_value = Some(" tok ".into());
+        let (pt, conn, secret) = legacy_from_config(&config).unwrap();
+        assert_eq!(pt, ProviderType::Custom);
+        assert_eq!(conn.base_url, "http://h:8000/v1");
+        assert_eq!(secret.as_deref(), Some("tok"));
+        let (_, conn, _) = legacy_from_config(&cfg("ollama", None, Some("http://10.0.0.2:11434"))).unwrap();
+        assert_eq!(conn.base_url, "http://10.0.0.2:11434");
+        // OpenAI ignored a base URL before; it still does.
+        let (_, conn, _) = legacy_from_config(&cfg("openai", Some("k"), Some("http://evil"))).unwrap();
+        assert_eq!(conn.base_url, "https://api.openai.com/v1");
     }
 }
