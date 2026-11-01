@@ -134,7 +134,10 @@ describe("configStore: STT migrations and NexQ Plus engine settings", () => {
     launcher.getState().setOpenAICompatSttConfig({ ...launcher.getState().openaiCompatSttConfig, model: "large-v3" });
     launcher.getState().setWhisperUseGpu(false);
 
+    launcher.getState().setFirstRunCompleted(true);
+
     await vi.waitFor(() => expect(overlay.getState().sonioxConfig).toMatchObject({ model: "stt-rt-v6", region: "jp" }));
+    await vi.waitFor(() => expect(overlay.getState().firstRunCompleted).toBe(true));
     await vi.waitFor(() => expect(overlay.getState().openaiCompatSttConfig.model).toBe("large-v3"));
     await vi.waitFor(() => expect(overlay.getState().whisperUseGpu).toBe(false));
   });

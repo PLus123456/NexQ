@@ -1236,6 +1236,10 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<boolean>("whisperUseGpu", (val) => {
         if (val != null) set({ whisperUseGpu: val });
       });
+      // Re-running the first-run setup from the overlay reaches the launcher.
+      store.onKeyChange<boolean>("firstRunCompleted", (val) => {
+        if (val != null) set({ firstRunCompleted: val });
+      });
       store.onKeyChange<ContextScopeSetting>("contextScope", (val) => {
         if (val != null) set({ contextScope: normalizeContextScope(val) });
       });
