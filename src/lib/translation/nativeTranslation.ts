@@ -4,13 +4,14 @@
 // the recognition stream and sends `translation_result` itself) or by the
 // translation pipeline. The engine path is on when the engine supports it
 // (providerMeta `supportsNativeTranslation`) and the party's
-// `PartyAudioConfig.native_translation.mode` isn't "off"; the pipeline then
-// skips that party (live and "Translate all"). This is decided by the
-// settings, never by "a translation already arrived": Soniox's translation
-// often lands after `transcript_final`.
+// `PartyAudioConfig.native_translation` is "one_way", or "two_way" with two
+// different languages (the STT engine translates nothing otherwise); the
+// pipeline then skips that party (live and "Translate all"). This is decided
+// by the settings, never by "a translation already arrived": Soniox's
+// translation often lands after `transcript_final`.
 
-import type { MeetingAudioConfig, PartyAudioConfig, Speaker } from "../types";
-import { AUTO_LANGUAGE, normalizeLanguageCode } from "../languages";
+import type { MeetingAudioConfig, NativeTranslationConfig, PartyAudioConfig, Speaker } from "../types";
+import { AUTO_LANGUAGE, baseLanguage, normalizeLanguageCode } from "../languages";
 import { sttProviderMeta } from "../stt/providerMeta";
 import type { PartyTranslationMode, TranslateParties, TranslationParty } from "./types";
 
@@ -35,11 +36,24 @@ export function partyConfig(
   return audio?.[party];
 }
 
+/** Two-way needs two languages that differ as plain languages ("zh-CN" / "zh-TW" don't). */
+function hasLanguagePair(native: NativeTranslationConfig): boolean {
+  const a = baseLanguage(native.language_a ?? "");
+  const b = baseLanguage(native.language_b ?? "");
+  return a !== "" && b !== "" && a !== AUTO_LANGUAGE && b !== AUTO_LANGUAGE && a !== b;
+}
+
+/** The STT engine is set to translate (the mode is on, whatever the engine). */
+function nativeModeOn(native: NativeTranslationConfig | undefined): boolean {
+  return native?.mode === "one_way" || native?.mode === "two_way";
+}
+
 /** This party's translations come from its STT engine. */
 export function partyUsesNativeTranslation(config: PartyAudioConfig | null | undefined): boolean {
-  if (!config) return false;
-  const mode = config.native_translation?.mode;
-  return (mode === "one_way" || mode === "two_way") && engineSupportsNativeTranslation(config.stt_provider);
+  const native = config?.native_translation;
+  if (!config || !native || !engineSupportsNativeTranslation(config.stt_provider)) return false;
+  if (native.mode === "one_way") return true;
+  return native.mode === "two_way" && hasLanguagePair(native);
 }
 
 /** Who translates `party` right now. */
@@ -69,11 +83,11 @@ export function applyPartyTranslationMode(
   if (!audio || !config) return { parties: nextParties, audio: null };
 
   const current = config.native_translation;
-  const nativeOn = current?.mode === "one_way" || current?.mode === "two_way";
   let native = current;
-  if (mode === "native" && !nativeOn) {
+  if (mode === "native" && !partyUsesNativeTranslation(config)) {
+    // One way into the target (also replaces a two-way setting without a language pair).
     native = { ...current, mode: "one_way", target_language: current?.target_language ?? "" };
-  } else if (mode !== "native" && nativeOn) {
+  } else if (mode !== "native" && nativeModeOn(current)) {
     native = { ...current, mode: "off" };
   }
   if (native === current) return { parties: nextParties, audio: null };
