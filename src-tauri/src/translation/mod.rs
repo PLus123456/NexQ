@@ -123,6 +123,24 @@ pub(crate) fn endpoint_url(base: &str, path: &str) -> Result<url::Url, Translati
         .map_err(|e| TranslationError::NotConfigured(format!("Invalid service address: {e}")))
 }
 
+/// HTTP client of the cloud providers: a server that accepts the connection
+/// but never answers (a dead upstream behind a proxy) fails instead of
+/// leaving the line on "Translating…".
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// A request or response-body failure. reqwest's message carries the whole
+/// URL, whose query can hold a key (`?key=`, `?token=` in a custom address):
+/// it is dropped and the address added back with secrets masked.
+pub(crate) fn request_error(e: reqwest::Error, url: &str) -> TranslationError {
+    TranslationError::Http(format!("{} ({})", e.without_url(), redact_url(url)))
+}
+
 // ── Provider trait ──
 
 #[async_trait]

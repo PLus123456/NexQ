@@ -29,7 +29,7 @@ impl DeepLTranslator {
         Ok(Self {
             api_key,
             base_url,
-            client: reqwest::Client::new(),
+            client: http_client(),
         })
     }
 
@@ -56,7 +56,7 @@ impl DeepLTranslator {
         let resp = request
             .send()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))?;
+            .map_err(|e| request_error(e, &url))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -69,7 +69,7 @@ impl DeepLTranslator {
 
         resp.json()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))
+            .map_err(|e| request_error(e, &url))
     }
 }
 
@@ -176,7 +176,7 @@ impl TranslationProvider for DeepLTranslator {
             .authorize(self.client.get(url.clone()))
             .send()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))?;
+            .map_err(|e| request_error(e, url.as_str()))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -190,7 +190,7 @@ impl TranslationProvider for DeepLTranslator {
         let languages: Vec<DeepLLanguage> = resp
             .json()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))?;
+            .map_err(|e| request_error(e, url.as_str()))?;
 
         Ok(languages
             .into_iter()
@@ -293,6 +293,26 @@ mod tests {
         assert!(err.contains("403"), "{err}");
         assert!(err.contains("/v2/translate"), "{err}");
         assert!(err.contains("Wrong key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn network_errors_never_show_a_key_from_the_address() {
+        // Nothing listens on this port: the send itself fails.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let deepl = DeepLTranslator::new(None, Some(&format!("http://127.0.0.1:{port}/v2?token=sekrit"))).unwrap();
+        let err = deepl.translate("Hello", None, "de").await.unwrap_err().to_string();
+        assert!(!err.contains("sekrit"), "{err}");
+        assert!(err.contains("token=***"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_answer_never_shows_a_key_from_the_address() {
+        let server = FakeServer::start(vec![Reply::json(200, "<html>proxy login</html>")]).await;
+        let deepl = DeepLTranslator::new(None, Some(&format!("{}/v2?token=sekrit", server.url()))).unwrap();
+        let err = deepl.translate("Hello", None, "de").await.unwrap_err().to_string();
+        assert!(!err.contains("sekrit"), "{err}");
     }
 
     #[tokio::test]

@@ -38,16 +38,26 @@ impl MicrosoftTranslator {
             api_key,
             region: region.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()),
             base_url,
-            client: Client::new(),
+            client: http_client(),
         })
     }
 
-    /// `{base}{path}` with `api-version=3.0` (unless the base already has one) and `query`.
+    /// `{base}{path}` with `api-version=3.0` (unless the base already has
+    /// one) and `query`. A pasted sample address's own `to` / `from` are
+    /// dropped: Microsoft translates into every `to`, and the answer's first
+    /// one would win.
     fn url(&self, path: &str, query: &[(&str, &str)]) -> Result<url::Url, TranslationError> {
         let mut url = endpoint_url(&self.base_url, path)?;
-        let has_version = url.query_pairs().any(|(k, _)| k == "api-version");
+        let kept: Vec<(String, String)> = url
+            .query_pairs()
+            .filter(|(k, _)| k != "to" && k != "from")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let has_version = kept.iter().any(|(k, _)| k == "api-version");
+        url.set_query(None);
         {
             let mut pairs = url.query_pairs_mut();
+            pairs.extend_pairs(&kept);
             if !has_version {
                 pairs.append_pair("api-version", "3.0");
             }
@@ -76,7 +86,7 @@ impl MicrosoftTranslator {
             .json(body)
             .send()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))?;
+            .map_err(|e| request_error(e, url.as_str()))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -87,7 +97,7 @@ impl MicrosoftTranslator {
             )));
         }
 
-        resp.json().await.map_err(|e| TranslationError::Failed(e.to_string()))
+        resp.json().await.map_err(|e| request_error(e, url.as_str()))
     }
 
     fn translate_url(&self, source: Option<&str>, target: &str) -> Result<url::Url, TranslationError> {
@@ -160,13 +170,13 @@ impl TranslationProvider for MicrosoftTranslator {
     async fn supported_languages(&self) -> Result<Vec<Language>, TranslationError> {
         let url = self.url("/languages", &[("scope", "translation")])?;
         // Public on Microsoft's side; a gateway may still want the key.
-        let resp = self.authorize(self.client.get(url))
+        let resp = self.authorize(self.client.get(url.clone()))
             .send()
             .await
-            .map_err(|e| TranslationError::Http(e.to_string()))?;
+            .map_err(|e| request_error(e, url.as_str()))?;
 
         let json: Value = resp.json().await
-            .map_err(|e| TranslationError::Failed(e.to_string()))?;
+            .map_err(|e| request_error(e, url.as_str()))?;
 
         let translation_map = json["translation"].as_object()
             .ok_or_else(|| TranslationError::Failed("No translation languages".into()))?;
@@ -241,6 +251,20 @@ mod tests {
         assert_eq!(
             pasted.url("/languages", &[("scope", "translation")]).unwrap().as_str(),
             "https://gw.example.com/ms/languages?api-version=3.0&scope=translation"
+        );
+    }
+
+    #[test]
+    fn a_pasted_sample_keeps_only_our_languages() {
+        let ms = translator("https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=fr", None);
+        assert_eq!(
+            ms.translate_url(None, "zh-CN").unwrap().as_str(),
+            "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=zh-Hans"
+        );
+        let gateway = translator("https://gw.lan/ms?api-version=3.0&to=de&tenant=a", None);
+        assert_eq!(
+            gateway.translate_url(Some("ja"), "en").unwrap().as_str(),
+            "https://gw.lan/ms/translate?api-version=3.0&tenant=a&to=en&from=ja"
         );
     }
 

@@ -43,6 +43,10 @@ describe("previewTranslateUrl", () => {
     expect(previewTranslateUrl("microsoft", "https://gw.example.com/ms?api-version=3.0")).toMatchObject({
       url: "https://gw.example.com/ms/translate?api-version=3.0",
     });
+    // Microsoft's documented sample: its own languages are dropped.
+    expect(
+      previewTranslateUrl("microsoft", "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=fr"),
+    ).toMatchObject({ url: "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0", trimmed: "/translate" });
   });
 
   it("an address without http(s) is an error with a suggestion", () => {

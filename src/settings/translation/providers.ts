@@ -154,8 +154,13 @@ export function previewTranslateUrl(provider: CloudProvider, custom: string, api
   const joined = joinEndpoint(base, path);
   if (!joined.ok) return { ok: false, error: joined.error };
   let url = joined.url;
-  if (provider === "microsoft" && !/[?&]api-version=/.test(url)) {
-    url += `${url.includes("?") ? "&" : "?"}api-version=3.0`;
+  if (provider === "microsoft") {
+    // The app sets the languages itself (a pasted sample's own to/from are dropped).
+    const parsed = new URL(url);
+    parsed.searchParams.delete("to");
+    parsed.searchParams.delete("from");
+    if (!parsed.searchParams.has("api-version")) parsed.searchParams.set("api-version", "3.0");
+    url = parsed.href;
   }
   return { ok: true, url, custom: Boolean(input), trimmed };
 }

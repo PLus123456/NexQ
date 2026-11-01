@@ -29,7 +29,7 @@ impl GoogleTranslator {
             }
         };
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: http_client(),
             api_key,
             base_url,
         })
@@ -47,7 +47,7 @@ impl GoogleTranslator {
         request: reqwest::RequestBuilder,
         url: &url::Url,
     ) -> Result<T, TranslationError> {
-        let resp = self.authorize(request).send().await.map_err(map_reqwest_err)?;
+        let resp = self.authorize(request).send().await.map_err(|e| request_error(e, url.as_str()))?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -58,7 +58,7 @@ impl GoogleTranslator {
             )));
         }
 
-        resp.json().await.map_err(map_reqwest_err)
+        resp.json().await.map_err(|e| request_error(e, url.as_str()))
     }
 }
 
@@ -114,12 +114,6 @@ struct LanguageItem {
     language: String,
     #[serde(default)]
     name: Option<String>,
-}
-
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-fn map_reqwest_err(e: reqwest::Error) -> TranslationError {
-    TranslationError::Http(e.to_string())
 }
 
 // ── Trait implementation ──────────────────────────────────────────────────────
