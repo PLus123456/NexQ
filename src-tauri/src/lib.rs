@@ -583,6 +583,7 @@ pub fn run() {
             // == PLUS COMMANDS: p0-ui ==
             commands::ui_commands::set_ui_language,
             // == PLUS COMMANDS: p5-onboarding ==
+            commands::onboarding_commands::open_privacy_settings,
             // == COMMANDS: gemini cache ==
             gemini_cache_commands::create_gemini_context_cache,
             gemini_cache_commands::delete_gemini_context_cache,

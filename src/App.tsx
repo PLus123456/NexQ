@@ -9,6 +9,9 @@ import { FirstRunWizard } from "./components/wizard/FirstRunWizard";
 import { ToastContainer } from "./components/Toast";
 import { showToast } from "./stores/toastStore";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { t as translate, useT } from "./i18n";
+import { initOnboarding } from "./stores/onboardingStore";
+import { resolveAppView } from "./lib/onboarding/view";
 import { UpdateReadyToast } from "./components/UpdateToast";
 import { useTheme } from "./hooks/useTheme";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
@@ -33,6 +36,7 @@ import { logToFile } from "./lib/logger";
 import { emitOverlayMeetingReady, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 
 function App() {
+  const { t } = useT("onboarding");
   const currentView = useMeetingStore((s) => s.currentView);
   const settingsOpen = useMeetingStore((s) => s.settingsOpen);
   const setSettingsOpen = useMeetingStore((s) => s.setSettingsOpen);
@@ -70,6 +74,8 @@ function App() {
   // Load persisted config from Tauri store on app start
   useEffect(() => {
     loadConfig();
+    // First-run setup progress; also follows setup being started again in another window
+    initOnboarding();
     useAIActionsStore.getState().loadConfigs();
     // Restore the translation provider and its settings in the backend (the
     // Microsoft region comes from the keychain there). A provider that isn't
@@ -281,7 +287,7 @@ function App() {
       useMeetingStore.getState().endMeetingFlow().catch((err) => {
         console.error("[App] Tray stop meeting failed:", err);
         // The meeting stays open (e.g. transcript lines not saved yet): say why.
-        showToast(err instanceof Error ? err.message : "Couldn't end meeting", "error");
+        showToast(err instanceof Error ? err.message : translate("onboarding:app.errors.endMeeting"), "error");
       });
     }).then((unlisten) => unlisteners.push(unlisten));
 
@@ -343,15 +349,15 @@ function App() {
             <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center">
               <div className="h-3 w-3 rounded-full bg-primary/40 animate-pulse" />
             </div>
-            <div className="text-sm text-muted-foreground">Starting NexQ...</div>
+            <div className="text-sm text-muted-foreground">{t("app.starting")}</div>
           </div>
         )}
       </div>
     );
   }
 
-  // Determine which view to render
-  const resolvedView: AppView = !firstRunCompleted ? "wizard" : currentView;
+  // Determine which view to render (first-run setup until it is finished)
+  const resolvedView: AppView = resolveAppView(firstRunCompleted, currentView);
   const isOverlayWindow = windowLabel === "overlay";
   const isLauncherWindow = windowLabel === "launcher" || windowLabel === "";
 
@@ -359,9 +365,9 @@ function App() {
   if (isOverlayWindow) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-transparent text-foreground">
-        <ErrorBoundary fallbackMessage="NexQ encountered an error">
+        <ErrorBoundary fallbackMessage={t("app.errors.app")}>
           {currentView === "overlay" && (
-            <ErrorBoundary fallbackMessage="Failed to load overlay">
+            <ErrorBoundary fallbackMessage={t("app.errors.overlay")}>
               {/* key on the meeting id → remounts overlay UI per meeting so local
                   state (open panels, tabs, layout mode) does not carry over */}
               <div key={activeMeetingId || "no-meeting"} className="flex h-full">
@@ -384,23 +390,24 @@ function App() {
 
   return (
     <div className={`h-screen w-screen overflow-hidden text-foreground ${resolvedView === "overlay" ? "bg-transparent" : "bg-background"}`}>
-      <ErrorBoundary fallbackMessage="NexQ encountered an error">
+      <ErrorBoundary fallbackMessage={t("app.errors.app")}>
         {(resolvedView === "launcher" || resolvedView === "overlay") && (
-          <ErrorBoundary fallbackMessage="Failed to load launcher">
+          <ErrorBoundary fallbackMessage={t("app.errors.launcher")}>
             <LauncherView />
           </ErrorBoundary>
         )}
         {resolvedView === "wizard" && (
-          <ErrorBoundary fallbackMessage="Failed to load setup wizard">
+          <ErrorBoundary fallbackMessage={t("app.errors.wizard")}>
             <FirstRunWizard />
           </ErrorBoundary>
         )}
         {resolvedView === "settings" && (
-          <ErrorBoundary fallbackMessage="Failed to load settings">
+          <ErrorBoundary fallbackMessage={t("app.errors.settings")}>
             <SettingsOverlay />
           </ErrorBoundary>
         )}
-        {settingsOpen && resolvedView === "overlay" && <SettingsOverlay isModal />}
+        {/* Settings as a dialog over the current view (the meeting, the launcher, setup) */}
+        {settingsOpen && resolvedView !== "settings" && <SettingsOverlay isModal />}
       </ErrorBoundary>
       <ActiveMeetingProvider isLauncherWindow={isLauncherWindow} />
       <ToastContainer />

@@ -14,6 +14,7 @@ import { useConfigStore } from "./configStore";
 import { useTranscriptStore } from "./transcriptStore";
 import { initMeetingSpeakers, resetMeetingScopedStores } from "./resetMeeting";
 import { showToast } from "./toastStore";
+import { t } from "../i18n";
 
 interface MeetingState {
   // View state
@@ -186,11 +187,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         const hasSpeakers = initMeetingSpeakers(resolvedMode);
         // Inform user if local STT won't support speaker separation
         if (resolvedMode !== "online" && !hasSpeakers) {
-          const { showToast } = await import("../stores/toastStore");
-          showToast(
-            "Local STT doesn't support speaker separation — all speech labeled as Room.",
-            "info"
-          );
+          showToast(t("onboarding:meetingFlow.noSpeakerSeparation"), "info");
         }
       } catch { /* non-critical */ }
 
@@ -227,7 +224,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       } catch (err) {
         console.warn("[meetingStore] Audio capture failed to start:", err);
         // Every window shows it (the overlay is the one on screen).
-        const message = `Audio capture failed: ${err instanceof Error ? err.message : String(err)}`;
+        const message = t("onboarding:meetingFlow.captureFailed", { detail: err instanceof Error ? err.message : String(err) });
         import("@tauri-apps/api/event").then(({ emit }) => emit("capture_warning", message)).catch(() => {});
         // Continue anyway — meeting is created, user can still use AI features
       }
@@ -348,7 +345,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         await ipcEndMeeting(meeting.id);
       } catch (err) {
         console.error("[meetingStore] Failed to end meeting:", err);
-        throw new Error("The meeting could not be closed in the database. It is still open — press End again.");
+        throw new Error(t("onboarding:meetingFlow.endFailed"));
       }
     }
 

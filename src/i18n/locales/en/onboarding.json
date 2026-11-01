@@ -1,1 +1,190 @@
-{}
+{
+  "app": {
+    "starting": "Starting {{appName}}...",
+    "errors": {
+      "app": "{{appName}} encountered an error",
+      "overlay": "Failed to load overlay",
+      "launcher": "Failed to load launcher",
+      "wizard": "Failed to load setup wizard",
+      "settings": "Failed to load settings",
+      "endMeeting": "Couldn't end meeting"
+    }
+  },
+  "meetingFlow": {
+    "noSpeakerSeparation": "Local STT doesn't support speaker separation — all speech labeled as Room.",
+    "captureFailed": "Audio capture failed: {{detail}}",
+    "endFailed": "The meeting could not be closed in the database. It is still open — press End again."
+  },
+  "wizard": {
+    "title": "Setup",
+    "stepsLabel": "Setup steps",
+    "stepCounter": "Step {{current}} of {{total}}",
+    "loading": "Loading setup…",
+    "resumed": "Picked up where you left off.",
+    "skipRest": "Skip the remaining steps",
+    "skipRestHint": "Go straight to the last step. Anything skipped can be set up later in Settings."
+  },
+  "status": {
+    "pending": "Not started",
+    "incomplete": "Not done",
+    "ok": "Done",
+    "skipped": "Skipped",
+    "error": "Failed"
+  },
+  "stepNote": {
+    "ok": "This step is done. Continue when you're ready.",
+    "incomplete": "Pass the test to continue, or skip and set it up later in Settings.",
+    "error": "The test failed: {{detail}}",
+    "errorNoDetail": "The test failed. Change the settings and try again, or skip for now.",
+    "skipped": "Skipped. You can set it up later in Settings."
+  },
+  "steps": {
+    "language": {
+      "name": "Language",
+      "title": "Welcome to {{appName}}",
+      "description": "Choose the interface language first. The next steps set up the AI model, speech recognition and translation. Every step can be skipped and changed later in Settings.",
+      "label": "Interface language",
+      "system": "Follow the system",
+      "systemHint": "Currently {{language}}",
+      "appliesNow": "Applies right away, in every window.",
+      "upNext": "Coming up",
+      "overview": {
+        "llm": "Connect the AI model behind answers, summaries and translation.",
+        "stt": "Choose how you and the other side are transcribed.",
+        "translation": "Decide whether captions are translated, and by whom.",
+        "audio": "Check that your microphone and the other side's audio come through."
+      }
+    },
+    "llm": {
+      "name": "AI model",
+      "title": "Connect an AI model",
+      "description": "The model answers questions, writes meeting summaries and can translate. This step is done when a test request succeeds."
+    },
+    "stt": {
+      "name": "Speech recognition",
+      "title": "Set up speech recognition",
+      "description": "Choose an engine and a language for you and for the other side. This step is done when the engine passes its test."
+    },
+    "translation": {
+      "name": "Translation",
+      "title": "Set up translation",
+      "description": "Choose whether captions are translated, which side, into which language and by which service."
+    },
+    "audio": {
+      "name": "Audio check",
+      "title": "Audio Setup",
+      "description": "Choose audio sources for you and the other party, then check that both are heard.",
+      "smartDetect": "Smart Detect Sources",
+      "scanning": "Scanning devices...",
+      "scanResults": "Scan Results",
+      "active": "Active",
+      "silent": "Silent",
+      "source": "Audio Source",
+      "detecting": "Detecting devices...",
+      "defaultMic": "Default microphone",
+      "defaultOutput": "Default output (loopback)",
+      "microphones": "Microphones",
+      "outputs": "Speakers / Output",
+      "deviceDefault": "{{name}} (Default)",
+      "refresh": "Refresh devices",
+      "test": {
+        "start": "Test Audio",
+        "stop": "Stop ({{seconds}}s)",
+        "failed": "The test couldn't start: {{detail}}"
+      },
+      "micTest": {
+        "title": "Microphone Test",
+        "level": "Mic",
+        "meter": "Microphone audio level",
+        "speakNow": "Speak now to verify your microphone...",
+        "idle": "Click \"Test Audio\" and speak to check",
+        "detected": "Your microphone works.",
+        "silent": "No sound came from the microphone."
+      },
+      "systemTest": {
+        "title": "System Audio Test",
+        "level": "System",
+        "meter": "System audio level",
+        "playNow": "Play something now (a video or music) and keep it playing...",
+        "idle": "Start playing a video or music, then click \"Test Audio\"",
+        "detected": "The other side's audio comes through.",
+        "silent": "No system audio was heard."
+      },
+      "help": {
+        "title": "What to check",
+        "micDevice": "The source above is the microphone you are using.",
+        "micPermission": "{{appName}} is allowed to use the microphone: System Settings → Privacy & Security → Microphone.",
+        "micPermissionWindows": "Desktop apps are allowed to use the microphone: Settings → Privacy & security → Microphone.",
+        "systemPlaying": "Sound was playing during the test, through the output device chosen above.",
+        "systemPermission": "{{appName}} is allowed to record system audio: System Settings → Privacy & Security → Screen & System Audio Recording (macOS 14.2 or later).",
+        "openMicSettings": "Open microphone settings",
+        "openSystemSettings": "Open system audio recording settings",
+        "openFailed": "Couldn't open the settings: {{detail}}"
+      },
+      "problems": {
+        "mic": "No sound from the microphone.",
+        "system": "No system audio from the other side."
+      }
+    },
+    "finish": {
+      "name": "Finish",
+      "title": "Review your setup",
+      "description": "Here is where each step stands. Go back to any step, or change things later in Settings.",
+      "summary": "Setup summary",
+      "check": {
+        "title": "Before your first meeting",
+        "hint": "Can speech recognition run as it is set up? Checked from the settings: engine, API key, local model.",
+        "tested": "Speech recognition passed its test in step 3.",
+        "recheck": "Check again",
+        "checking": "Checking…",
+        "states": {
+          "ready": "Ready",
+          "needs_key": "API key missing",
+          "needs_model": "Model not downloaded",
+          "unsupported": "Not available on this computer",
+          "input_only": "Only hears a microphone",
+          "unknown": "Can't check"
+        },
+        "blocked": "Neither side's speech recognition can run yet, so a meeting would have no captions. Set up an engine first, or go to the launcher for now.",
+        "goToStt": "Set up speech recognition"
+      },
+      "startMeeting": "Start Meeting",
+      "goToLauncher": "Go to Launcher",
+      "startFailed": "Couldn't start the meeting: {{detail}}",
+      "knowledgeBase": {
+        "title": "Personal knowledge base",
+        "hint": "Upload your resume, a job description or notes. The AI draws on them for more personal answers.",
+        "upload": "Upload your resume"
+      },
+      "shortcuts": {
+        "title": "Keyboard Shortcuts",
+        "contexts": {
+          "meeting": "During meeting",
+          "global": "Global"
+        },
+        "actions": {
+          "assist": "Trigger AI Assist",
+          "startEnd": "Start / End meeting",
+          "showHide": "Show / Hide overlay",
+          "modeSay": "What to Say mode",
+          "modeShorten": "Shorten mode",
+          "modeFollowup": "Follow-up mode",
+          "modeRecap": "Recap mode",
+          "modeAsk": "Ask Question mode",
+          "openSettings": "Open Settings",
+          "escape": "Close overlay / settings"
+        }
+      }
+    }
+  },
+  "knowledgeBase": {
+    "title": "Personal knowledge base",
+    "settings": "Search and embedding settings"
+  },
+  "rerun": {
+    "label": "First-run setup",
+    "hint": "Go through the language, AI model, speech recognition, translation and audio check again. Opens right away; your settings are kept.",
+    "inMeeting": "Available once the meeting has ended.",
+    "action": "Run setup again"
+  }
+}

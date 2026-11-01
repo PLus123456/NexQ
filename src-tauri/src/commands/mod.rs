@@ -27,3 +27,4 @@ pub mod llm_connection_commands;
 // p4-rag:
 pub mod rag_engine_commands;
 // p5-onboarding:
+pub mod onboarding_commands;
