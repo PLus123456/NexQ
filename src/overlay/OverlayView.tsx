@@ -21,7 +21,6 @@ import { useMeetingShortcuts } from "../hooks/useMeetingShortcuts";
 import { useConfigStore } from "../stores/configStore";
 import { useSpeakerDetection } from "../hooks/useSpeakerDetection";
 import { useTopicDetection } from "../hooks/useTopicDetection";
-import { useTranslation } from "../hooks/useTranslation";
 import { MODE_COLORS } from "../lib/speakerColors";
 import { showLauncherWindow } from "../lib/windows";
 import {
@@ -128,9 +127,6 @@ export function OverlayView() {
 
   // Live topic detection from backend events
   useTopicDetection();
-
-  // Translation event subscriptions + auto-translate trigger
-  useTranslation();
 
   const handleEndMeeting = useCallback(async () => {
     try { await endMeetingFlow(); showToast("Meeting ended", "info"); }
