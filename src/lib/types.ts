@@ -986,6 +986,8 @@ export interface TranslationConnectionStatus {
   language_count: number;
   response_ms: number;
   error?: string;
+  /** The test sentence's translation, when the test translates one. */
+  sample?: string;
 }
 
 export interface BatchTranslationProgress {

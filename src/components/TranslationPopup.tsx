@@ -1,6 +1,7 @@
 import type { TranslationResult } from "../lib/types";
 import { Copy, X } from "lucide-react";
 import { useT } from "../i18n";
+import { providerDisplayName } from "../lib/translation/display";
 
 interface TranslationPopupProps {
   result: TranslationResult;
@@ -29,7 +30,7 @@ export function TranslationPopup({ result, onClose }: TranslationPopupProps) {
       <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/50">
         <span>{result.source_lang.toUpperCase()} &rarr; {result.target_lang.toUpperCase()}</span>
         <span className="text-border">&middot;</span>
-        <span>{result.provider}</span>
+        <span>{providerDisplayName(result.provider)}</span>
         <button
           onClick={handleCopy}
           className="ml-auto flex items-center gap-1 text-primary/50 hover:text-primary transition-colors"

@@ -96,7 +96,7 @@ export function OverlayView() {
   const setOverlayOpacity = useConfigStore((s) => s.setOverlayOpacity);
   const OPACITY_PRESETS = [0.9, 0.65, 0.35, 0.1];
   const cycleOpacity = () => {
-    const idx = OPACITY_PRESETS.findIndex((p) => Math.abs(p - overlayOpacity) < 0.08);
+    const idx = OPACITY_PRESETS.findIndex((p) => Math.abs(p - overlayOpacity) < 0.08); // i18n-ignore: a comparison, not text
     setOverlayOpacity(OPACITY_PRESETS[(idx + 1) % OPACITY_PRESETS.length]);
   };
 
