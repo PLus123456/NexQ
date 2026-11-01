@@ -71,6 +71,8 @@ export function TranslationSettings() {
   const setTargetLang = useTranslationStore((s) => s.setTargetLang);
   const sourceLang = useTranslationStore((s) => s.sourceLang);
   const setSourceLang = useTranslationStore((s) => s.setSourceLang);
+  const autoTranslateEnabled = useTranslationStore((s) => s.autoTranslateEnabled);
+  const setAutoTranslateEnabled = useTranslationStore((s) => s.setAutoTranslateEnabled);
   const selectionToolbarEnabled = useTranslationStore((s) => s.selectionToolbarEnabled);
   const setSelectionToolbarEnabled = useTranslationStore((s) => s.setSelectionToolbarEnabled);
   const cacheEnabled = useTranslationStore((s) => s.cacheEnabled);
@@ -635,6 +637,14 @@ export function TranslationSettings() {
           <div className="rounded-xl border border-border/30 bg-card/50 p-4">
             <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("settings.behavior.title")}</h3>
             <div className="space-y-4">
+              {/* Live translation on when a meeting starts (also set by the overlay's Translate button) */}
+              <ToggleRow
+                label={t("settings.behavior.autoStart.label")}
+                description={t("settings.behavior.autoStart.description")}
+                checked={autoTranslateEnabled}
+                onChange={setAutoTranslateEnabled}
+              />
+
               {/* Select-to-translate toolbar */}
               <ToggleRow
                 label={t("settings.behavior.selection.label")}

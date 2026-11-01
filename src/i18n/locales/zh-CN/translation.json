@@ -224,6 +224,10 @@
     },
     "behavior": {
       "title": "行为",
+      "autoStart": {
+        "label": "会议开始时自动翻译",
+        "description": "开会时直接打开实时翻译。悬浮窗里的“翻译”按钮也会改这个设置。"
+      },
       "selection": {
         "label": "划词翻译工具栏",
         "description": "在转写记录里选中文字时显示翻译按钮"

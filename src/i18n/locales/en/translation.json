@@ -227,6 +227,10 @@
     },
     "behavior": {
       "title": "Behavior",
+      "autoStart": {
+        "label": "Translate when a meeting starts",
+        "description": "Live translation starts on. The overlay's Translate button changes this too."
+      },
       "selection": {
         "label": "Select-to-translate toolbar",
         "description": "Show a translate button when selecting text in the transcript"

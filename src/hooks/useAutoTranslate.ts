@@ -86,9 +86,15 @@ export function startAutoTranslate(): () => void {
     else unlisteners.push(...subscriptions);
   });
 
-  // Lines of the previous meeting are dropped, not translated into the next one.
+  // Lines of the previous meeting are dropped, not translated into the next
+  // one; a new meeting starts with translation on or off as last chosen.
   const offMeeting = useMeetingStore.subscribe((state, previous) => {
-    if (state.activeMeeting?.id !== previous.activeMeeting?.id) scheduler.dispose();
+    if (state.activeMeeting?.id === previous.activeMeeting?.id) return;
+    scheduler.dispose();
+    if (state.activeMeeting) {
+      const translation = useTranslationStore.getState();
+      translation.setAutoTranslateActive(translation.autoTranslateEnabled);
+    }
   });
 
   return () => {

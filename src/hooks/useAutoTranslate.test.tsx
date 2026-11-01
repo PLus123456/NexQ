@@ -243,6 +243,33 @@ describe("live translation requests", () => {
   });
 });
 
+describe("starting a meeting", () => {
+  it("a new meeting starts with translation as last chosen", async () => {
+    await mount(<OverlayLevel />);
+    useTranslationStore.setState({ autoTranslateEnabled: true, autoTranslateActive: false });
+    await act(async () => {
+      useMeetingStore.setState({ activeMeeting: { id: "m2", title: "Next" } as Meeting });
+    });
+    expect(useTranslationStore.getState().autoTranslateActive).toBe(true);
+
+    useTranslationStore.setState({ autoTranslateEnabled: false });
+    await act(async () => {
+      useMeetingStore.setState({ activeMeeting: { id: "m3", title: "Later" } as Meeting });
+    });
+    expect(useTranslationStore.getState().autoTranslateActive).toBe(false);
+  });
+
+  it("a line pending when the meeting changes is not translated into the next one", async () => {
+    await mount(<OverlayLevel />);
+    await final(segment("them_old", "Last words"));
+    await act(async () => {
+      useMeetingStore.setState({ activeMeeting: { id: "m2", title: "Next" } as Meeting });
+    });
+    await settle();
+    expect(requests()).toEqual([]);
+  });
+});
+
 describe("results and failures", () => {
   it("an answer for text the line has outgrown is ignored", async () => {
     await mount(

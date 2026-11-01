@@ -101,6 +101,7 @@ export function OverlayView() {
 
   const autoTranslateActive = useTranslationStore((s) => s.autoTranslateActive);
   const setAutoTranslateActive = useTranslationStore((s) => s.setAutoTranslateActive);
+  const setAutoTranslateEnabled = useTranslationStore((s) => s.setAutoTranslateEnabled);
   const displayMode = useTranslationStore((s) => s.displayMode);
   const setDisplayMode = useTranslationStore((s) => s.setDisplayMode);
   const targetLang = useTranslationStore((s) => s.targetLang);
@@ -150,13 +151,15 @@ export function OverlayView() {
   const handleToggleTranslate = useCallback(() => {
     const turningOn = !autoTranslateActive;
     setAutoTranslateActive(turningOn);
+    // The next meeting starts the same way.
+    setAutoTranslateEnabled(turningOn);
     if (!turningOn) return;
     if (translationNotReady !== null) {
       showToast(t("overlay.translate.notReady", { detail: translationNotReady }), "error");
     } else if (nothingToTranslate) {
       showToast(t("overlay.translate.noParty"), "info");
     }
-  }, [autoTranslateActive, setAutoTranslateActive, translationNotReady, nothingToTranslate, t]);
+  }, [autoTranslateActive, setAutoTranslateActive, setAutoTranslateEnabled, translationNotReady, nothingToTranslate, t]);
 
   const handleTranslateAll = useCallback(async () => {
     const meetingId = activeMeeting?.id;
