@@ -14,7 +14,9 @@
 // complete non-final tail (it replaces the previous tail, even with nothing).
 // With translation on, original and translation tokens share the stream: a
 // stretch of original, then its translation, then more original. They are
-// matched by that order (translation tokens have no timestamps).
+// matched by that order (translation tokens have no timestamps). One-way
+// translates everything into one language; two-way translates each sentence
+// into the other language of a pair (a sentence in neither isn't translated).
 
 use std::time::{Duration, Instant};
 
@@ -77,6 +79,12 @@ impl Token {
     /// `<fin>`: Soniox finished a `FINALIZE_MESSAGE`.
     pub fn is_fin(&self) -> bool {
         self.text.trim() == "<fin>"
+    }
+
+    /// A final `<end>` / `<fin>` on the original side: the sentence is over.
+    /// (One on the translation side, or not final, ends nothing.)
+    pub fn ends_sentence(&self) -> bool {
+        self.is_final && !self.is_translation() && (self.is_endpoint() || self.is_fin())
     }
 
     /// Soniox won't translate this token.
@@ -207,6 +215,12 @@ pub struct StartParams {
     pub enable_speaker_diarization: bool,
     /// Clamped to 500–3000 ms; None = Soniox's default.
     pub max_endpoint_delay_ms: Option<u32>,
+    /// How readily a sentence ends, clamped to -1.0–1.0 (higher = sooner);
+    /// None = Soniox's default (0.0). Only `stt-rt-v5` takes it.
+    pub endpoint_sensitivity: Option<f32>,
+    /// How much the wait before an endpoint is cut, clamped to 0–3; None =
+    /// Soniox's default (0). Only `stt-rt-v5` takes it.
+    pub endpoint_latency_adjustment_level: Option<u8>,
     pub translation: Option<TranslationParams>,
     /// For Soniox usage logs.
     pub client_reference_id: Option<String>,
@@ -223,10 +237,12 @@ const MAX_REFERENCE_ID_BYTES: usize = 256;
 /// The first text frame of a session. Always pcm_s16le at 16 kHz mono with
 /// language identification and endpoint detection on. Hints become unique
 /// two-letter codes in their order (strict only with hints), the endpoint delay
-/// is clamped to 500–3000 ms, translation codes become two-letter (translation
-/// is left out when one is unusable), the reference id is cut to 256 bytes on a
-/// character boundary. `extra` adds or overrides fields last (`null` removes
-/// one) but never sets `api_key` nor changes the audio format.
+/// is clamped to 500–3000 ms, the v5 endpoint settings go in only when set
+/// (older models answer 400 to them) and clamped to their ranges, translation
+/// codes become two-letter (translation is left out when one is unusable, or
+/// when a two-way pair is one language twice), the reference id is cut to 256
+/// bytes on a character boundary. `extra` adds or overrides fields last
+/// (`null` removes one) but never sets `api_key` nor changes the audio format.
 pub fn build_start_message(p: &StartParams) -> Value {
     let mut msg = Map::new();
     msg.insert("model".into(), json!(p.model.trim()));
@@ -252,6 +268,12 @@ pub fn build_start_message(p: &StartParams) -> Value {
     if let Some(ms) = p.max_endpoint_delay_ms {
         msg.insert("max_endpoint_delay_ms".into(), json!(ms.clamp(500, 3000)));
     }
+    if let Some(sensitivity) = p.endpoint_sensitivity.filter(|s| s.is_finite()) {
+        msg.insert("endpoint_sensitivity".into(), json!(hundredths(sensitivity.clamp(-1.0, 1.0))));
+    }
+    if let Some(level) = p.endpoint_latency_adjustment_level {
+        msg.insert("endpoint_latency_adjustment_level".into(), json!(level.min(3)));
+    }
     if let Some(translation) = p.translation.as_ref().and_then(translation_config) {
         msg.insert("translation".into(), translation);
     }
@@ -271,7 +293,8 @@ pub fn build_start_message(p: &StartParams) -> Value {
     Value::Object(msg)
 }
 
-/// `translation` object with two-letter codes; None when a code is unusable.
+/// `translation` object with two-letter codes; None when a code is unusable
+/// or a two-way pair names one language twice.
 fn translation_config(t: &TranslationParams) -> Option<Value> {
     match t {
         TranslationParams::OneWay { target_language } => {
@@ -279,10 +302,21 @@ fn translation_config(t: &TranslationParams) -> Option<Value> {
             Some(json!({ "type": "one_way", "target_language": target }))
         }
         TranslationParams::TwoWay { language_a, language_b } => {
-            let (a, b) = (iso639_1(language_a)?, iso639_1(language_b)?);
+            let (a, b) = two_way_pair(language_a, language_b)?;
             Some(json!({ "type": "two_way", "language_a": a, "language_b": b }))
         }
     }
+}
+
+/// Two different two-letter codes, or None.
+fn two_way_pair(a: &str, b: &str) -> Option<(String, String)> {
+    let (a, b) = (iso639_1(a)?, iso639_1(b)?);
+    (a != b).then_some((a, b))
+}
+
+/// An f32 setting as Soniox gets it: 0.3, not 0.30000001192092896.
+fn hundredths(value: f32) -> f64 {
+    (f64::from(value) * 100.0).round() / 100.0
 }
 
 /// Two-letter code of a language tag: "zh-CN" → "zh", "EN" → "en". None for
@@ -433,6 +467,10 @@ const DEFAULT_CONFIDENCE: f32 = 0.9;
 pub struct AssemblerConfig {
     /// One-way translation target (two-letter); None = translation not configured.
     pub target_language: Option<String>,
+    /// Two-way translation pair (two-letter, different): each sentence goes into
+    /// the other language of the pair than its own, a sentence in neither gets
+    /// no translation. Takes the place of `target_language`; None = one-way.
+    pub two_way: Option<(String, String)>,
     /// An archived sentence's translation is final after this long without new translation (default 3 s).
     pub translation_settle: Duration,
     /// At most one translation update per sentence per this interval (default 250 ms).
@@ -445,9 +483,34 @@ impl Default for AssemblerConfig {
     fn default() -> Self {
         Self {
             target_language: None,
+            two_way: None,
             translation_settle: Duration::from_secs(3),
             translation_min_interval: Duration::from_millis(250),
             finalize_after: Duration::from_secs(30),
+        }
+    }
+}
+
+impl AssemblerConfig {
+    /// Translation is configured (one-way or two-way).
+    fn translates(&self) -> bool {
+        self.target_language.is_some() || self.two_way.is_some()
+    }
+
+    /// The language `sentence` is translated into: the one-way target, or the
+    /// other language of the two-way pair than the sentence's (None while its
+    /// language is unknown, and for a sentence in neither language).
+    fn target_of(&self, sentence: &Sentence) -> Option<&str> {
+        let Some((a, b)) = &self.two_way else {
+            return self.target_language.as_deref();
+        };
+        let spoken = iso639_1(&sentence.source_language()?)?;
+        if spoken == *a {
+            Some(b)
+        } else if spoken == *b {
+            Some(a)
+        } else {
+            None
         }
     }
 }
@@ -485,6 +548,8 @@ pub struct TranslationUpdate {
     pub original_text: String,
     pub translated_text: String,
     pub source_language: Option<String>,
+    /// Two-letter: the one-way target, or with two-way the other language of
+    /// the pair than this sentence's.
     pub target_language: String,
     pub is_final: bool,
 }
@@ -508,6 +573,9 @@ struct Sentence {
     shown: String,
     tr_shown: String,
     tr_shown_at: Option<Instant>,
+    /// Target of the last partial translation sent: its final goes there even
+    /// if the sentence's language no longer picks one (two-way).
+    tr_target: Option<String>,
 }
 
 impl Sentence {
@@ -545,6 +613,11 @@ impl Sentence {
         most_frequent(self.originals().filter_map(|t| t.language.as_deref()))
     }
 
+    /// The language it was said in: as its translation names it, else as recognized.
+    fn source_language(&self) -> Option<String> {
+        most_frequent(self.translations().filter_map(|t| t.source_language.as_deref())).or_else(|| self.language())
+    }
+
     fn update(&self, is_final: bool) -> SentenceUpdate {
         let confidences: Vec<f32> = self.finals.iter().filter_map(|t| t.confidence).collect();
         let confidence = if confidences.is_empty() {
@@ -570,8 +643,7 @@ impl Sentence {
             seq: self.seq,
             original_text: self.final_text.clone().unwrap_or_else(original),
             translated_text: translated.to_string(),
-            source_language: most_frequent(self.translations().filter_map(|t| t.source_language.as_deref()))
-                .or_else(|| self.language()),
+            source_language: self.source_language(),
             target_language: target.to_string(),
             is_final,
         }
@@ -601,6 +673,7 @@ impl Sentence {
         }
         self.tr_shown = translated.to_string();
         self.tr_shown_at = Some(now);
+        self.tr_target = Some(target.to_string());
         Some(self.translation_update(target, translated, false))
     }
 
@@ -627,7 +700,8 @@ impl Sentence {
 /// after that (Soniox doesn't promise it arrives before the endpoint), so the
 /// sentence is archived until its translation settles: when the next sentence's
 /// first final original arrives (everything before it in the stream is done),
-/// after `translation_settle` without translation, or at `flush`.
+/// after `translation_settle` without translation, or at `flush`. With two-way,
+/// each sentence's target follows the language it was said in.
 #[derive(Debug)]
 pub struct Assembler {
     cfg: AssemblerConfig,
@@ -641,6 +715,8 @@ impl Assembler {
     /// One per connection: lines are numbered from 1.
     pub fn new(mut cfg: AssemblerConfig) -> Self {
         cfg.target_language = cfg.target_language.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        // A pair Soniox can't take translates nothing (the start message leaves it out too).
+        cfg.two_way = cfg.two_way.and_then(|(a, b)| two_way_pair(&a, &b));
         Self { cfg, current: Sentence::new(1), archived: None, finalize_sent_at: None }
     }
 
@@ -657,7 +733,7 @@ impl Assembler {
         for token in tokens {
             if token.is_endpoint() || token.is_fin() {
                 // Never text. One on the translation side, or not final, ends nothing.
-                if token.is_final && !token.is_translation() {
+                if token.ends_sentence() {
                     self.end_sentence(now, &mut events);
                 }
             } else if token.is_translation() {
@@ -745,7 +821,7 @@ impl Assembler {
     /// guess earlier in this message), else the archived sentence while its
     /// translation is open (late translation), else the current sentence.
     fn push_translation(&mut self, token: &Token, now: Instant) {
-        if self.cfg.target_language.is_none() {
+        if !self.cfg.translates() {
             return;
         }
         let into = match self.archived.as_mut() {
@@ -776,7 +852,7 @@ impl Assembler {
         if let Some(older) = self.archived.take() {
             self.settle(older, events);
         }
-        if self.cfg.target_language.is_some() && !done.untranslated() {
+        if self.cfg.translates() && !done.untranslated() {
             self.archived = Some(done);
         } else {
             self.settle(done, events);
@@ -799,18 +875,18 @@ impl Assembler {
     }
 
     fn settle(&self, sentence: Sentence, events: &mut Vec<AssemblerEvent>) {
-        if let Some(target) = self.cfg.target_language.as_deref() {
+        if let Some(target) = self.cfg.target_of(&sentence).or(sentence.tr_target.as_deref()) {
             events.extend(sentence.settled_translation(target).map(AssemblerEvent::Translation));
         }
     }
 
     fn emit_translations(&mut self, now: Instant, events: &mut Vec<AssemblerEvent>) {
-        let Some(target) = self.cfg.target_language.as_deref() else {
-            return;
-        };
-        let min_interval = self.cfg.translation_min_interval;
+        let cfg = &self.cfg;
         for sentence in self.archived.iter_mut().chain(std::iter::once(&mut self.current)) {
-            if let Some(update) = sentence.translation_progress(target, min_interval, now) {
+            let Some(target) = cfg.target_of(sentence) else {
+                continue;
+            };
+            if let Some(update) = sentence.translation_progress(target, cfg.translation_min_interval, now) {
                 events.push(AssemblerEvent::Translation(update));
             }
         }
@@ -1041,6 +1117,26 @@ mod tests {
     }
 
     #[test]
+    fn the_v5_endpoint_settings_go_in_only_when_set_and_within_range() {
+        let msg = build_start_message(&params());
+        assert!(msg.get("endpoint_sensitivity").is_none(), "older models answer 400 to it");
+        assert!(msg.get("endpoint_latency_adjustment_level").is_none());
+
+        for (asked, sent) in [(0.3, 0.3), (-0.7, -0.7), (0.0, 0.0), (1.0, 1.0), (1.5, 1.0), (-4.0, -1.0)] {
+            let msg = build_start_message(&StartParams { endpoint_sensitivity: Some(asked), ..params() });
+            assert_eq!(msg["endpoint_sensitivity"], json!(sent), "{asked}");
+        }
+        let msg = build_start_message(&StartParams { endpoint_sensitivity: Some(f32::NAN), ..params() });
+        assert!(msg.get("endpoint_sensitivity").is_none());
+
+        for (asked, sent) in [(0, 0), (2, 2), (3, 3), (9, 3)] {
+            let msg = build_start_message(&StartParams { endpoint_latency_adjustment_level: Some(asked), ..params() });
+            assert_eq!(msg["endpoint_latency_adjustment_level"], sent, "{asked}");
+            assert!(msg.get("endpoint_sensitivity").is_none(), "each one on its own");
+        }
+    }
+
+    #[test]
     fn translation_codes_are_sent_as_two_letter_codes() {
         let one_way = TranslationParams::OneWay { target_language: "zh-CN".into() };
         let msg = build_start_message(&StartParams { translation: Some(one_way), ..params() });
@@ -1052,6 +1148,11 @@ mod tests {
 
         let unusable = TranslationParams::OneWay { target_language: "auto".into() };
         let msg = build_start_message(&StartParams { translation: Some(unusable), ..params() });
+        assert!(msg.get("translation").is_none());
+
+        // Two variants of Chinese are one language to Soniox: not a pair.
+        let one_language = TranslationParams::TwoWay { language_a: "zh-CN".into(), language_b: "zh-TW".into() };
+        let msg = build_start_message(&StartParams { translation: Some(one_language), ..params() });
         assert!(msg.get("translation").is_none());
     }
 
@@ -1617,6 +1718,151 @@ mod tests {
         events.extend(a.flush(at(200)));
         assert_eq!(lines(&events), [(1, "Hi", true)]);
         assert!(translations(&events).is_empty());
+    }
+
+    // ── Two-way translation ────────────────────────────────────────────────────
+
+    fn zh_en() -> AssemblerConfig {
+        AssemblerConfig { two_way: Some(("zh".into(), "en".into())), ..AssemblerConfig::default() }
+    }
+
+    /// Final original token recognized in `language`.
+    fn said(language: &str, text: &str) -> Token {
+        Token { language: Some(language.into()), translation_status: Some("original".into()), ..orig(text) }
+    }
+
+    /// Final translation token from `source` into `target`.
+    fn translated(source: &str, target: &str, text: &str) -> Token {
+        Token { language: Some(target.into()), source_language: Some(source.into()), ..trans(text) }
+    }
+
+    /// Translation events as (seq, translated text, target, is_final).
+    fn targeted(events: &[AssemblerEvent]) -> Vec<(u64, &str, &str, bool)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AssemblerEvent::Translation(u) => {
+                    Some((u.seq, u.translated_text.as_str(), u.target_language.as_str(), u.is_final))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_way_translates_each_sentence_into_the_other_language() {
+        let at = clock();
+        let mut a = Assembler::new(zh_en());
+        let mut events = a.on_tokens(
+            &[said("zh", "我们"), said("zh", "开始吧"), translated("zh", "en", "Let's start"), end()],
+            at(0),
+        );
+        events.extend(a.on_tokens(
+            &[said("en", "Sounds"), said("en", " good"), translated("en", "zh", "听起来不错"), end()],
+            at(300),
+        ));
+        events.extend(a.flush(at(600)));
+        assert_eq!(lines(&events), [(1, "我们开始吧", true), (2, "Sounds good", true)]);
+        assert_eq!(
+            targeted(&events),
+            [
+                (1, "Let's start", "en", false),
+                (1, "Let's start", "en", true),
+                (2, "听起来不错", "zh", false),
+                (2, "听起来不错", "zh", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_way_goes_by_the_source_its_translation_names_else_by_the_recognized_language() {
+        let at = clock();
+        let mut a = Assembler::new(zh_en());
+        // Mostly English words, but translated as Chinese: the translation is English.
+        let ev = a.on_tokens(
+            &[
+                said("en", "Kubernetes"),
+                said("en", " cluster"),
+                said("zh", "部署"),
+                translated("zh", "en", "Deploy the Kubernetes cluster"),
+                end(),
+            ],
+            at(0),
+        );
+        assert_eq!(targeted(&ev), [(1, "Deploy the Kubernetes cluster", "en", false)]);
+        // No source on the translation (yet): the recognized language decides.
+        let ev = a.on_tokens(&[said("en", "Budget"), trans_tail("预算")], at(300));
+        assert_eq!(targeted(&ev), [(1, "Deploy the Kubernetes cluster", "en", true), (2, "预算", "zh", false)]);
+        let ev = a.flush(at(600));
+        let [AssemblerEvent::Transcript(_), AssemblerEvent::Translation(settled)] = ev.as_slice() else {
+            panic!("{ev:?}")
+        };
+        assert_eq!(
+            (settled.translated_text.as_str(), settled.source_language.as_deref(), settled.target_language.as_str()),
+            ("预算", Some("en"), "zh")
+        );
+    }
+
+    #[test]
+    fn two_way_gives_a_sentence_in_neither_language_no_translation() {
+        let at = clock();
+        let none = |text: &str| Token { translation_status: Some("none".into()), ..said("ja", text) };
+        let mut a = Assembler::new(zh_en());
+        let ev = a.on_tokens(&[none("よろしく"), none("お願いします"), end()], at(0));
+        assert_eq!(lines(&ev), [(1, "よろしくお願いします", true)]);
+        assert!(targeted(&ev).is_empty());
+        assert!(a.archived.is_none(), "nothing to wait for");
+
+        // Not marked "none" and a translation turns up anyway: Japanese still has no other side.
+        let mut events = a.on_tokens(&[said("ja", "はい"), translated("ja", "en", "Yes"), end()], at(100));
+        events.extend(a.tick(at(3_200)));
+        events.extend(a.flush(at(3_300)));
+        assert_eq!(lines(&events), [(2, "はい", true)]);
+        assert!(targeted(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn two_way_still_hides_an_echo() {
+        let at = clock();
+        let mut a = Assembler::new(zh_en());
+        let mut events = a.on_tokens(&[said("zh", "你好"), said("zh", "，"), translated("zh", "en", "你好")], at(0));
+        events.extend(a.on_tokens(&[said("zh", "世界"), translated("zh", "en", "，世界"), end()], at(300)));
+        events.extend(a.on_tokens(&[said("en", "Next")], at(600)));
+        events.extend(a.flush(at(900)));
+        assert_eq!(
+            lines(&events),
+            [(1, "你好，", false), (1, "你好，世界", true), (2, "Next", false), (2, "Next", true)]
+        );
+        assert!(targeted(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn two_way_withdraws_a_partial_even_when_its_language_is_gone() {
+        let at = clock();
+        let mut a = Assembler::new(zh_en());
+        let guess = Token { language: Some("en".into()), source_language: Some("zh".into()), ..trans_tail("OK") };
+        assert_eq!(targeted(&a.on_tokens(&[orig_tail("好的"), guess], at(0))), [(1, "OK", "en", false)]);
+        // The guess is gone and nothing says the line is Chinese any more.
+        a.on_tokens(&[orig("好的"), end()], at(300));
+        assert_eq!(targeted(&a.flush(at(400))), [(1, "", "en", true)]);
+    }
+
+    #[test]
+    fn a_two_way_pair_soniox_cannot_take_translates_nothing() {
+        let at = clock();
+        for (a, b) in [("zh-CN", "zh-TW"), ("auto", "en"), ("zh", "")] {
+            let cfg = AssemblerConfig { two_way: Some((a.into(), b.into())), ..AssemblerConfig::default() };
+            let mut assembler = Assembler::new(cfg);
+            let mut events = assembler.on_tokens(&[said("zh", "好"), translated("zh", "en", "Good"), end()], at(0));
+            events.extend(assembler.flush(at(100)));
+            assert_eq!(lines(&events), [(1, "好", true)]);
+            assert!(targeted(&events).is_empty(), "{a} {b}: {events:?}");
+        }
+        // Settings-style codes are fine.
+        let cfg = AssemblerConfig { two_way: Some(("ZH-cn".into(), "en_US".into())), ..AssemblerConfig::default() };
+        let mut assembler = Assembler::new(cfg);
+        let ev = assembler.on_tokens(&[said("zh", "好"), translated("zh", "en", "Good"), end()], at(0));
+        assert_eq!(targeted(&ev), [(1, "Good", "en", false)]);
     }
 
     #[test]

@@ -71,6 +71,12 @@ pub struct SonioxConfig {
     pub model: String,
     /// 500–3000 ms (Soniox default 2000; subtitles want 1000–1500).
     pub max_endpoint_delay_ms: u32,
+    /// -1.0–1.0, higher = sentences end sooner. None = Soniox's default (0.0),
+    /// not sent: only `stt-rt-v5` takes it, older models answer 400.
+    pub endpoint_sensitivity: Option<f32>,
+    /// 0–3, higher = less wait before a sentence ends. None = Soniox's default
+    /// (0), not sent: only `stt-rt-v5` takes it, older models answer 400.
+    pub endpoint_latency_adjustment_level: Option<u8>,
     /// Keep the output to the hinted languages (best effort).
     pub language_hints_strict: bool,
     /// Tell remote speakers apart. Applies to the "Them" party only.
@@ -90,6 +96,8 @@ impl Default for SonioxConfig {
             region: "us".to_string(),
             model: "stt-rt-v5".to_string(),
             max_endpoint_delay_ms: 1500,
+            endpoint_sensitivity: None,
+            endpoint_latency_adjustment_level: None,
             language_hints_strict: false,
             enable_speaker_diarization: true,
             ws_url: String::new(),
@@ -199,6 +207,14 @@ mod tests {
         let sx: SonioxConfig = serde_json::from_str(r#"{"region":"eu"}"#).unwrap();
         assert_eq!(sx.model, "stt-rt-v5");
         assert_eq!(sx.max_endpoint_delay_ms, 1500);
+        assert_eq!((sx.endpoint_sensitivity, sx.endpoint_latency_adjustment_level), (None, None));
+
+        // The settings page writes null for "server default".
+        let sx: SonioxConfig =
+            serde_json::from_str(r#"{"endpoint_sensitivity":null,"endpoint_latency_adjustment_level":2}"#).unwrap();
+        assert_eq!((sx.endpoint_sensitivity, sx.endpoint_latency_adjustment_level), (None, Some(2)));
+        let sx: SonioxConfig = serde_json::from_str(r#"{"endpoint_sensitivity":-0.4}"#).unwrap();
+        assert_eq!(sx.endpoint_sensitivity, Some(-0.4));
     }
 
     #[test]

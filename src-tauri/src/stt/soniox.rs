@@ -2,13 +2,15 @@
 //
 // Audio (16 kHz mono s16le) goes out in ~100 ms binary frames; the start
 // message carries the party's language hints and, when its
-// `native_translation` is on, a one-way translation. Soniox segments the
-// speech itself (`<end>`), so each sentence is one transcript line
-// (`sx{connection}_{sentence}`, the party's emitter adds `them_<session>_`)
-// and its translation goes out as `translation_result` for exactly that line,
-// then into the meeting's translations table. Protocol rules (parsing,
-// sentence assembly, translation alignment, retry classes) live in
-// `soniox_protocol.rs`; this file only does the I/O.
+// `native_translation` is on, a one-way translation (everything into one
+// language) or a two-way one (each language of a pair into the other, for
+// in-person meetings). Soniox segments the speech itself (`<end>`), so each
+// sentence is one transcript line (`sx{connection}_{sentence}`, the party's
+// emitter adds `them_<session>_`) and its translation goes out as
+// `translation_result` for exactly that line, then into the meeting's
+// translations table. Protocol rules (parsing, sentence assembly, translation
+// alignment, retry classes) live in `soniox_protocol.rs`; this file only does
+// the I/O.
 //
 // Lifecycle:
 // - the key goes in the handshake (`Authorization: Bearer`, marked sensitive),
@@ -16,6 +18,10 @@
 // - `feed_audio` only queues the chunk (never waits on the network): the
 //   session task sends, reconnects (backoff from the protocol layer, audio
 //   kept for up to 10 s) and sends keepalive while the party is muted;
+// - Soniox ends a stream at 300 minutes: after 290 the connection hands over
+//   to a new one at the next sentence end (at most a minute later). It ends
+//   like a stop while the audio waits for the next connection, which opens
+//   at once and gets that audio first;
 // - stop: empty text frame, wait ≤ 5 s for `finished`, settle the last
 //   sentence and its translation.
 
@@ -24,6 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpStream;
@@ -38,7 +45,7 @@ use crate::stt::plus_config::{SonioxConfig, SttProbeResult};
 use crate::stt::provider::{STTProvider, STTProviderType, TranscriptResult};
 use crate::stt::soniox_protocol::{
     self as protocol, Assembler, AssemblerConfig, AssemblerEvent, Backoff, RetryClass, SentenceUpdate,
-    ServerMessage, StartParams, TranslationParams, TranslationUpdate,
+    ServerMessage, StartParams, Token, TranslationParams, TranslationUpdate,
 };
 
 type SonioxSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -62,6 +69,11 @@ const STOP_WAIT: Duration = Duration::from_secs(8);
 /// Retry interval once the backoff attempts are used up (network outages).
 const LONG_RETRY: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(250);
+/// A connection up this long hands over to a new one at its next sentence end
+/// (Soniox ends a stream at 300 min with `max_duration_reached`).
+const ROTATE_AFTER: Duration = Duration::from_secs(290 * 60);
+/// How long a due connection waits for a sentence end before it hands over anyway.
+const ROTATE_WAIT_MAX: Duration = Duration::from_secs(60);
 
 /// `NEXQ_SONIOX_TRACE=1` logs every message Soniox sends (transcript text
 /// included, so it is off by default): for checking the protocol's open
@@ -81,12 +93,8 @@ pub struct SonioxSessionOptions {
     pub language: String,
     /// The other party's language (hints for "auto").
     pub other_language: Option<String>,
-    /// One-way translation target as Soniox takes it (two-letter); None = no translation.
-    pub translation_target: Option<String>,
-    /// The same target as the translation settings name it ("zh-CN"): the
-    /// `target_lang` of the translations sent and saved, so the meeting's other
-    /// translations (same code) match them. None = `translation_target`.
-    pub translation_target_code: Option<String>,
+    /// What Soniox translates this party into.
+    pub translation: SonioxTranslation,
     /// Prefix of the transcript segment ids this party emits ("them_ab12_"),
     /// so translations carry the full id of their line.
     pub segment_id_prefix: String,
@@ -96,6 +104,77 @@ pub struct SonioxSessionOptions {
     pub diarize: bool,
 }
 
+/// A party's translation by Soniox. Each language comes twice: as the
+/// translation settings name it ("zh-CN": the `target_lang` of the
+/// translations sent and saved, so the meeting's other translations, same
+/// code, match them) and as Soniox takes it (two-letter, "zh").
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum SonioxTranslation {
+    #[default]
+    Off,
+    /// Everything said goes into one language.
+    OneWay { code: String, soniox: String },
+    /// Each language of the pair goes into the other (the two-letter codes
+    /// differ); speech in any other language is only transcribed.
+    TwoWay { a_code: String, a: String, b_code: String, b: String },
+}
+
+impl SonioxTranslation {
+    /// The start message's `translation`.
+    fn params(&self) -> Option<TranslationParams> {
+        match self {
+            Self::Off => None,
+            Self::OneWay { soniox, .. } => Some(TranslationParams::OneWay { target_language: soniox.clone() }),
+            Self::TwoWay { a, b, .. } => {
+                Some(TranslationParams::TwoWay { language_a: a.clone(), language_b: b.clone() })
+            }
+        }
+    }
+
+    /// Sentence assembly of one connection.
+    fn assembler_config(&self) -> AssemblerConfig {
+        match self {
+            Self::Off => AssemblerConfig::default(),
+            Self::OneWay { soniox, .. } => {
+                AssemblerConfig { target_language: Some(soniox.clone()), ..AssemblerConfig::default() }
+            }
+            Self::TwoWay { a, b, .. } => {
+                AssemblerConfig { two_way: Some((a.clone(), b.clone())), ..AssemblerConfig::default() }
+            }
+        }
+    }
+
+    /// The settings' code of the language a sentence was translated into
+    /// (`target`, two-letter); `target` itself when none names it.
+    fn target_code(&self, target: &str) -> String {
+        let code = match self {
+            Self::Off => None,
+            Self::OneWay { code, .. } => Some(code),
+            Self::TwoWay { a_code, a, b_code, b } => {
+                if target.eq_ignore_ascii_case(a.trim()) {
+                    Some(a_code)
+                } else if target.eq_ignore_ascii_case(b.trim()) {
+                    Some(b_code)
+                } else {
+                    None
+                }
+            }
+        };
+        code.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(target).to_string()
+    }
+}
+
+/// For the log: "off", "zh" (one-way), "zh↔en" (two-way).
+impl std::fmt::Display for SonioxTranslation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::OneWay { soniox, .. } => f.write_str(soniox),
+            Self::TwoWay { a, b, .. } => write!(f, "{}↔{}", a, b),
+        }
+    }
+}
+
 pub struct SonioxSTT {
     config: SonioxConfig,
     api_key: Option<String>,
@@ -103,6 +182,9 @@ pub struct SonioxSTT {
     app_handle: Option<AppHandle>,
     /// Sink override for tests (else built from the app handle).
     sink: Option<Arc<dyn SessionSink>>,
+    /// `ROTATE_AFTER` and `ROTATE_WAIT_MAX`; tests use milliseconds.
+    rotate_after: Duration,
+    rotate_wait_max: Duration,
     audio_tx: Option<mpsc::Sender<AudioChunk>>,
     session: Option<tokio::task::JoinHandle<()>>,
     dropped_chunks: u64,
@@ -116,6 +198,8 @@ impl SonioxSTT {
             options,
             app_handle: None,
             sink: None,
+            rotate_after: ROTATE_AFTER,
+            rotate_wait_max: ROTATE_WAIT_MAX,
             audio_tx: None,
             session: None,
             dropped_chunks: 0,
@@ -135,18 +219,20 @@ impl SonioxSTT {
                 _ => return Err("Soniox extra start parameters must be a JSON object".to_string()),
             },
         };
-        let hints = crate::stt::language::soniox_language_hints(&self.options.language, self.options.other_language.as_deref());
+        let mut hints = crate::stt::language::soniox_language_hints(&self.options.language, self.options.other_language.as_deref());
+        // Two-way: both languages are expected (strict hints would cut one off otherwise).
+        if let SonioxTranslation::TwoWay { a, b, .. } = &self.options.translation {
+            hints.extend([a.clone(), b.clone()]);
+        }
         let params = StartParams {
             model: self.config.model.trim().to_string(),
             language_hints: hints,
             language_hints_strict: self.config.language_hints_strict,
             enable_speaker_diarization: self.options.diarize,
             max_endpoint_delay_ms: Some(self.config.max_endpoint_delay_ms),
-            translation: self
-                .options
-                .translation_target
-                .clone()
-                .map(|target_language| TranslationParams::OneWay { target_language }),
+            endpoint_sensitivity: self.config.endpoint_sensitivity,
+            endpoint_latency_adjustment_level: self.config.endpoint_latency_adjustment_level,
+            translation: self.options.translation.params(),
             client_reference_id: self.options.client_reference_id.clone(),
             extra,
         };
@@ -193,12 +279,9 @@ impl STTProvider for SonioxSTT {
             start_message,
             segment_id_prefix: self.options.segment_id_prefix.clone(),
             diarize: self.options.diarize,
-            translation_target: self.options.translation_target.clone(),
-            translation_target_code: self
-                .options
-                .translation_target_code
-                .clone()
-                .filter(|code| !code.trim().is_empty()),
+            translation: self.options.translation.clone(),
+            rotate_after: self.rotate_after,
+            rotate_wait_max: self.rotate_wait_max,
             sink,
             result_tx,
             seen_speakers: Default::default(),
@@ -459,8 +542,11 @@ struct Session {
     start_message: String,
     segment_id_prefix: String,
     diarize: bool,
-    translation_target: Option<String>,
-    translation_target_code: Option<String>,
+    translation: SonioxTranslation,
+    /// A connection up this long hands over to a new one at its next sentence
+    /// end (`ROTATE_AFTER`), or once it waited this much longer (`ROTATE_WAIT_MAX`).
+    rotate_after: Duration,
+    rotate_wait_max: Duration,
     sink: Arc<dyn SessionSink>,
     result_tx: mpsc::Sender<TranscriptResult>,
     /// Diarized speakers already announced for this party.
@@ -471,6 +557,8 @@ struct Session {
 enum Ended {
     /// We stopped and Soniox finished (or the wait ran out).
     Stopped,
+    /// Handed over before Soniox's time limit: the next connection goes at once.
+    Rotated,
     /// Lost or refused: reconnect per the class (reason for the user).
     Lost(RetryClass, String),
 }
@@ -482,10 +570,14 @@ impl Session {
         let mut pending: VecDeque<Frame> = VecDeque::new();
         let mut audio_open = true;
         let mut connection = 0u32;
+        // The last connection handed over: this one is planned, not a reconnect.
+        let mut rotated = false;
 
         loop {
             connection += 1;
-            self.sink.status(if connection == 1 { "connecting" } else { "reconnecting" }, None);
+            if !rotated {
+                self.sink.status(if connection == 1 { "connecting" } else { "reconnecting" }, None);
+            }
             let connected = tokio::select! {
                 result = tokio::time::timeout(CONNECT_TIMEOUT, connect(&self.url, &self.api_key)) => {
                     result.unwrap_or_else(|_| Err((RetryClass::Retry, "connection timed out".to_string())))
@@ -506,8 +598,14 @@ impl Session {
 
             let (class, reason) = match ended {
                 Ended::Stopped => break,
+                // No backoff and no attempt used: the audio waiting in `pending` goes first.
+                Ended::Rotated => {
+                    rotated = true;
+                    continue;
+                }
                 Ended::Lost(class, reason) => (class, reason),
             };
+            rotated = false;
             if !audio_open {
                 // Stopped while the connection was failing: don't reconnect.
                 self.sink.status("error", Some(reason));
@@ -560,16 +658,16 @@ impl Session {
         if let Err(e) = write.send(Message::Text(self.start_message.clone().into())).await {
             return Ended::Lost(RetryClass::Retry, format!("couldn't send the start message: {}", e));
         }
+        let connected_at = Instant::now();
         self.sink.status("connected", None);
         self.sink.debug("info", &format!("connected (connection {})", connection));
 
-        let mut assembler = Assembler::new(AssemblerConfig {
-            target_language: self.translation_target.clone(),
-            ..AssemblerConfig::default()
-        });
+        let mut assembler = Assembler::new(self.translation.assembler_config());
         let mut timeline = Timeline::default();
         let mut last_sent = Instant::now();
         let mut finishing_since: Option<Instant> = None;
+        // Finishing to hand over to the next connection (not to stop).
+        let mut rotating = false;
 
         // Audio captured while connecting goes out first (Soniox accepts a short burst).
         while let Some(frame) = pending.pop_front() {
@@ -609,10 +707,17 @@ impl Session {
                                 if finished {
                                     if finishing_since.is_some() {
                                         self.emit(assembler.flush(now), connection, &timeline).await;
-                                        return Ended::Stopped;
+                                        return finished_as(rotating, *audio_open);
                                     }
                                     return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry,
                                         "Soniox ended the stream".to_string()).await;
+                                }
+                                // Due for a new connection: right after a sentence ended.
+                                let up = now.duration_since(connected_at);
+                                if finishing_since.is_none() && up >= self.rotate_after && tokens.iter().any(Token::ends_sentence) {
+                                    self.hand_over(&mut write, connection, up, "at a sentence end").await;
+                                    finishing_since = Some(now);
+                                    rotating = true;
                                 }
                             }
                             Ok(ServerMessage::Error(err)) => {
@@ -626,7 +731,7 @@ impl Session {
                                 self.sink.debug("error", &reason);
                                 if finishing_since.is_some() {
                                     self.emit(assembler.flush(now), connection, &timeline).await;
-                                    return Ended::Stopped;
+                                    return finished_as(rotating, *audio_open);
                                 }
                                 return self.lost(&mut assembler, connection, &timeline, class, reason).await;
                             }
@@ -635,7 +740,7 @@ impl Session {
                         Some(Ok(Message::Close(frame))) => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return Ended::Stopped;
+                                return finished_as(rotating, *audio_open);
                             }
                             let code = frame.as_ref().map(|f| u16::from(f.code));
                             let reason = match frame {
@@ -649,7 +754,7 @@ impl Session {
                         Some(Err(e)) => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return Ended::Stopped;
+                                return finished_as(rotating, *audio_open);
                             }
                             return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
                                 format!("connection error: {}", e)).await;
@@ -657,7 +762,7 @@ impl Session {
                         None => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return Ended::Stopped;
+                                return finished_as(rotating, *audio_open);
                             }
                             return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
                                 "connection dropped".to_string()).await;
@@ -666,6 +771,8 @@ impl Session {
                 }
                 chunk = audio_rx.recv(), if *audio_open => {
                     match chunk {
+                        // Handing over: the next connection sends it first.
+                        Some(chunk) if rotating => queue_frames(pending, framer.push(&chunk)),
                         Some(chunk) => {
                             for frame in framer.push(&chunk) {
                                 let samples = frame.samples;
@@ -678,6 +785,8 @@ impl Session {
                                 last_sent = Instant::now();
                             }
                         }
+                        // Stop while handing over: the end of the stream already went out.
+                        None if rotating => *audio_open = false,
                         None => {
                             // Stop: last audio, then the empty text frame; results until `finished`.
                             *audio_open = false;
@@ -702,8 +811,16 @@ impl Session {
                             self.sink.debug("warn", "no `finished` from Soniox within 5 s; last results may be missing");
                             self.emit(assembler.flush(now), connection, &timeline).await;
                             let _ = write.send(Message::Close(None)).await;
-                            return Ended::Stopped;
+                            return finished_as(rotating, *audio_open);
                         }
+                        continue;
+                    }
+                    // Due and no sentence end for a minute: hand over anyway.
+                    let up = now.duration_since(connected_at);
+                    if up >= self.rotate_after.saturating_add(self.rotate_wait_max) {
+                        self.hand_over(&mut write, connection, up, "without waiting longer for a sentence end").await;
+                        finishing_since = Some(now);
+                        rotating = true;
                         continue;
                     }
                     if assembler.wants_finalize(now) {
@@ -722,6 +839,22 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Start handing over to a new connection: Soniox gets the end of this
+    /// stream (the sentence in progress and its translation come back before
+    /// `finished`); the audio from here on waits for the next connection.
+    async fn hand_over(&self, write: &mut SplitSink<SonioxSocket, Message>, connection: u32, up: Duration, how: &str) {
+        self.sink.debug(
+            "info",
+            &format!(
+                "connection {} up {} min, moving to a new one {} (Soniox ends a stream at 300 min)",
+                connection,
+                up.as_secs() / 60,
+                how
+            ),
+        );
+        let _ = write.send(Message::Text("".into())).await;
     }
 
     /// The connection ended unexpectedly: settle what it produced, then report.
@@ -786,7 +919,8 @@ impl Session {
             original_text: t.original_text,
             translated_text: t.translated_text,
             source_lang: t.source_language.unwrap_or_else(|| "auto".to_string()),
-            target_lang: self.translation_target_code.clone().unwrap_or(t.target_language),
+            // Two-way: per sentence, language A's or B's code.
+            target_lang: self.translation.target_code(&t.target_language),
             provider: "soniox",
             is_final: t.is_final,
         }
@@ -798,8 +932,30 @@ fn sentence_id(connection: u32, seq: u64) -> String {
     format!("sx{}_{}", connection, seq)
 }
 
-/// Queue one chunk while not connected (the oldest audio goes past 10 s).
-/// Returns false once the audio queue closed (stop).
+/// How a connection that was finishing ends: handed over (the next one goes
+/// at once), else stopped. A stop during a hand-over ends the session once the
+/// old connection finished; the audio that waited meanwhile is dropped, as it
+/// is when the meeting ends while reconnecting.
+fn finished_as(rotating: bool, audio_open: bool) -> Ended {
+    if rotating && audio_open {
+        Ended::Rotated
+    } else {
+        Ended::Stopped
+    }
+}
+
+/// Keep frames for the next connection (the oldest audio goes past 10 s).
+fn queue_frames(pending: &mut VecDeque<Frame>, frames: Vec<Frame>) {
+    for frame in frames {
+        pending.push_back(frame);
+        if pending.len() > PENDING_MAX_FRAMES {
+            pending.pop_front();
+        }
+    }
+}
+
+/// Queue one chunk while not connected. Returns false once the audio queue
+/// closed (stop).
 async fn next_audio(
     audio_rx: &mut mpsc::Receiver<AudioChunk>,
     framer: &mut Framer,
@@ -808,12 +964,7 @@ async fn next_audio(
 ) -> bool {
     match audio_rx.recv().await {
         Some(chunk) => {
-            for frame in framer.push(&chunk) {
-                pending.push_back(frame);
-                if pending.len() > PENDING_MAX_FRAMES {
-                    pending.pop_front();
-                }
-            }
+            queue_frames(pending, framer.push(&chunk));
             true
         }
         None => {
@@ -945,21 +1096,31 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tokio::net::TcpListener;
 
     #[derive(Default)]
     struct TestSink {
         statuses: Mutex<Vec<(String, Option<String>)>>,
+        debugs: Mutex<Vec<String>>,
         translations: Mutex<Vec<TranslationEvent>>,
         speakers: Mutex<Vec<String>>,
+    }
+
+    impl TestSink {
+        fn status_names(&self) -> Vec<String> {
+            self.statuses.lock().unwrap().iter().map(|(s, _)| s.clone()).collect()
+        }
     }
 
     impl SessionSink for TestSink {
         fn status(&self, status: &str, message: Option<String>) {
             self.statuses.lock().unwrap().push((status.to_string(), message));
         }
-        fn debug(&self, _level: &str, _message: &str) {}
+        fn debug(&self, _level: &str, message: &str) {
+            self.debugs.lock().unwrap().push(message.to_string());
+        }
         fn translation(&self, translation: &TranslationEvent) {
             self.translations.lock().unwrap().push(translation.clone());
         }
@@ -972,22 +1133,35 @@ mod tests {
         AudioChunk { pcm_data: vec![value; samples], source: crate::audio::AudioSource::System, timestamp_ms: ts, is_speech: true }
     }
 
+    /// One-way into `target` ("zh", named "zh-CN" by the settings), or no translation.
     fn options(target: Option<&str>) -> SonioxSessionOptions {
+        let translation = match target {
+            Some(t) => SonioxTranslation::OneWay { code: format!("{}-CN", t), soniox: t.to_string() },
+            None => SonioxTranslation::Off,
+        };
         SonioxSessionOptions {
             party: "Them".into(),
             language: "auto".into(),
             other_language: Some("zh-CN".into()),
-            translation_target: target.map(str::to_string),
-            translation_target_code: target.map(|t| format!("{}-CN", t)),
+            translation,
             segment_id_prefix: "them_ab12_".into(),
             client_reference_id: Some("nexq:m1:them".into()),
             diarize: true,
         }
     }
 
+    /// Two-way between Chinese ("zh-CN") and English ("en-US").
+    fn zh_en() -> SonioxTranslation {
+        SonioxTranslation::TwoWay { a_code: "zh-CN".into(), a: "zh".into(), b_code: "en-US".into(), b: "en".into() }
+    }
+
     fn provider(ws_url: &str, target: Option<&str>, sink: Arc<TestSink>) -> SonioxSTT {
+        provider_with(ws_url, options(target), sink)
+    }
+
+    fn provider_with(ws_url: &str, options: SonioxSessionOptions, sink: Arc<TestSink>) -> SonioxSTT {
         let config = SonioxConfig { ws_url: ws_url.to_string(), ..SonioxConfig::default() };
-        let mut p = SonioxSTT::new(config, Some("test-key".into()), options(target));
+        let mut p = SonioxSTT::new(config, Some("test-key".into()), options);
         p.sink = Some(sink);
         p
     }
@@ -1043,6 +1217,43 @@ mod tests {
             options(None),
         );
         assert!(bad.start_message().is_err());
+    }
+
+    #[test]
+    fn the_start_message_has_a_two_way_pair_and_the_v5_endpoint_settings_only_when_set() {
+        let config = SonioxConfig {
+            endpoint_sensitivity: Some(0.4),
+            endpoint_latency_adjustment_level: Some(1),
+            ..SonioxConfig::default()
+        };
+        let two_way = SonioxSessionOptions { translation: zh_en(), ..options(None) };
+        let msg = SonioxSTT::new(config, Some("k".into()), two_way).start_message().unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(json["translation"], serde_json::json!({"type": "two_way", "language_a": "zh", "language_b": "en"}));
+        // Both languages of the pair are hinted, once each (the other party's "zh-CN" was already there).
+        assert_eq!(json["language_hints"], serde_json::json!(["zh", "en"]));
+        assert_eq!(json["endpoint_sensitivity"], 0.4);
+        assert_eq!(json["endpoint_latency_adjustment_level"], 1);
+
+        // Server defaults: neither goes out (models before v5 refuse them).
+        let msg = SonioxSTT::new(SonioxConfig::default(), Some("k".into()), options(None)).start_message().unwrap();
+        assert!(!msg.contains("endpoint_sensitivity") && !msg.contains("endpoint_latency_adjustment_level"), "{msg}");
+        assert!(!msg.contains("translation"), "{msg}");
+    }
+
+    #[test]
+    fn translations_are_tagged_with_the_settings_code_of_their_target() {
+        assert_eq!(zh_en().target_code("en"), "en-US");
+        assert_eq!(zh_en().target_code("zh"), "zh-CN");
+        assert_eq!(zh_en().target_code("ja"), "ja", "a language the pair doesn't name stays as Soniox put it");
+        let one_way = SonioxTranslation::OneWay { code: "zh-CN".into(), soniox: "zh".into() };
+        assert_eq!(one_way.target_code("zh"), "zh-CN");
+        let unnamed = SonioxTranslation::OneWay { code: " ".into(), soniox: "zh".into() };
+        assert_eq!(unnamed.target_code("zh"), "zh");
+        // As the Dev Log shows them.
+        assert_eq!(zh_en().to_string(), "zh↔en");
+        assert_eq!(one_way.to_string(), "zh");
+        assert_eq!(SonioxTranslation::Off.to_string(), "off");
     }
 
     #[test]
@@ -1157,6 +1368,217 @@ mod tests {
         assert_eq!(statuses.first().map(String::as_str), Some("connecting"));
         assert!(statuses.contains(&"connected".to_string()));
         assert_eq!(statuses.last().map(String::as_str), Some("disconnected"));
+    }
+
+    #[tokio::test]
+    async fn two_way_translations_go_out_under_language_a_or_b_by_sentence() {
+        let replies = vec![
+            r#"{"tokens":[{"text":"我们开始吧","is_final":true,"language":"zh","translation_status":"original"},{"text":"Let's start","is_final":true,"language":"en","translation_status":"translation","source_language":"zh"},{"text":"<end>","is_final":true}]}"#.to_string(),
+            r#"{"tokens":[{"text":"Sounds good","is_final":true,"language":"en","translation_status":"original"},{"text":"听起来不错","is_final":true,"language":"zh","translation_status":"translation","source_language":"en"},{"text":"<end>","is_final":true}]}"#.to_string(),
+        ];
+        let (url, server) = fake_soniox(replies).await;
+        let sink = Arc::new(TestSink::default());
+        let mut p = provider_with(&url, SonioxSessionOptions { translation: zh_en(), ..options(None) }, sink.clone());
+        let (tx, mut rx) = mpsc::channel(32);
+        p.start_stream(tx).await.unwrap();
+        for i in 0..30u64 {
+            p.feed_audio(chunk(100, 160, 50_000 + (i + 1) * 10)).await.unwrap();
+        }
+        // Stop once connected (a stop while connecting ends the session at once).
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        p.stop_stream().await.unwrap();
+
+        let mut lines = Vec::new();
+        let mut results = vec![first];
+        while let Ok(r) = rx.try_recv() {
+            results.push(r);
+        }
+        for r in results.into_iter().filter(|r| r.is_final) {
+            lines.push((r.segment_id.unwrap(), r.text));
+        }
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(lines, [pair("sx1_1", "我们开始吧"), pair("sx1_2", "Sounds good")]);
+
+        let translations = sink.translations.lock().unwrap().clone();
+        let settled: Vec<_> = translations
+            .iter()
+            .filter(|t| t.is_final)
+            .map(|t| (t.segment_id.as_str(), t.translated_text.as_str(), t.source_lang.as_str(), t.target_lang.as_str()))
+            .collect();
+        // The settings' codes of A and B, not the two-letter ones sent to Soniox.
+        assert_eq!(
+            settled,
+            [("them_ab12_sx1_1", "Let's start", "zh", "en-US"), ("them_ab12_sx1_2", "听起来不错", "en", "zh-CN")]
+        );
+        // Partials too: each carries its own sentence's target.
+        for t in &translations {
+            let target = if t.segment_id.ends_with("sx1_1") { "en-US" } else { "zh-CN" };
+            assert_eq!(t.target_lang, target, "{t:?}");
+        }
+        let (_, start, _) = server.await.unwrap();
+        assert_eq!(start["translation"], serde_json::json!({"type": "two_way", "language_a": "zh", "language_b": "en"}));
+    }
+
+    /// What a fake Soniox connection got: its start message, audio frames and audio bytes.
+    struct Received {
+        start: serde_json::Value,
+        frames: usize,
+        bytes: usize,
+    }
+
+    /// A fake Soniox serving one connection per script, one after the other.
+    /// A script's replies go out 100 ms after its first audio frame (the
+    /// connection is that much older by then), its last message (with
+    /// `finished`) 100 ms after the end of the stream, while audio keeps
+    /// coming. `started` counts the start messages received.
+    async fn fake_soniox_connections(
+        scripts: Vec<(Vec<String>, String)>,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<Vec<Received>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let started = Arc::new(AtomicUsize::new(0));
+        let count = started.clone();
+        let server = tokio::spawn(async move {
+            let mut received = Vec::new();
+            for (replies, last) in scripts {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let start = match ws.next().await.unwrap().unwrap() {
+                    Message::Text(t) => serde_json::from_str::<serde_json::Value>(t.as_str()).unwrap(),
+                    other => panic!("first message not text: {:?}", other),
+                };
+                count.fetch_add(1, Ordering::SeqCst);
+                let (mut frames, mut bytes) = (0, 0);
+                while let Some(Ok(msg)) = ws.next().await {
+                    match msg {
+                        Message::Binary(audio) => {
+                            frames += 1;
+                            bytes += audio.len();
+                            if frames == 1 {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                for r in &replies {
+                                    ws.send(Message::Text(r.clone().into())).await.unwrap();
+                                }
+                            }
+                        }
+                        Message::Text(t) if t.as_str().is_empty() => {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            ws.send(Message::Text(last.clone().into())).await.unwrap();
+                            let _ = ws.close(None).await;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                received.push(Received { start, frames, bytes });
+            }
+            received
+        });
+        (url, started, server)
+    }
+
+    /// Feeds 10 ms chunks at about 5× real time until `connections` start
+    /// messages arrived, then `more` chunks at once. Returns the chunks fed.
+    async fn feed_until_connection(p: &mut SonioxSTT, started: &AtomicUsize, connections: usize, more: u64) -> u64 {
+        let mut fed = 0u64;
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while started.load(Ordering::SeqCst) < connections {
+            assert!(Instant::now() < give_up, "connection {} never started", connections);
+            fed += 1;
+            p.feed_audio(chunk(7, 160, 10_000 + fed * 10)).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        for _ in 0..more {
+            fed += 1;
+            p.feed_audio(chunk(7, 160, 10_000 + fed * 10)).await.unwrap();
+        }
+        fed
+    }
+
+    /// Every sample fed went out exactly once, in 100 ms frames (the very last one partial).
+    fn assert_no_audio_lost(received: &[Received], fed: u64) {
+        assert!(received.iter().all(|c| c.frames > 0), "every connection got audio");
+        assert_eq!(received.iter().map(|c| c.bytes as u64).sum::<u64>(), fed * 160 * 2);
+        assert_eq!(received.iter().map(|c| c.frames as u64).sum::<u64>(), fed.div_ceil(10));
+    }
+
+    #[tokio::test]
+    async fn a_connection_hands_over_at_a_sentence_end_without_losing_audio() {
+        let scripts = vec![
+            (
+                vec![r#"{"tokens":[{"text":"Hello","is_final":true},{"text":"<end>","is_final":true},{"text":"Still","is_final":false}]}"#.to_string()],
+                r#"{"tokens":[{"text":"Still","is_final":true},{"text":" here","is_final":true}],"finished":true}"#.to_string(),
+            ),
+            (vec![r#"{"tokens":[{"text":"Again","is_final":true}]}"#.to_string()], r#"{"tokens":[],"finished":true}"#.to_string()),
+        ];
+        let (url, started, server) = fake_soniox_connections(scripts).await;
+        let sink = Arc::new(TestSink::default());
+        let mut p = provider(&url, None, sink.clone());
+        // Due 50 ms in: the `<end>` of the first reply (100 ms in) is where it hands over.
+        p.rotate_after = Duration::from_millis(50);
+        let (tx, mut rx) = mpsc::channel(64);
+        p.start_stream(tx).await.unwrap();
+        let fed = feed_until_connection(&mut p, &started, 2, 45).await;
+        p.stop_stream().await.unwrap();
+
+        let received = server.await.unwrap();
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[1].start, received[0].start);
+        assert_no_audio_lost(&received, fed);
+
+        let mut ids = Vec::new();
+        let mut finals = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            let id = r.segment_id.clone().unwrap();
+            if r.is_final {
+                finals.push((id.clone(), r.text));
+            }
+            ids.push(id);
+        }
+        let line = |id: &str, text: &str| (id.to_string(), text.to_string());
+        // The sentence in progress ends on the old connection; the new one numbers from 1.
+        assert_eq!(finals, [line("sx1_1", "Hello"), line("sx1_2", "Still here"), line("sx2_1", "Again")]);
+        let first_new = ids.iter().position(|id| id.starts_with("sx2_")).unwrap();
+        assert!(ids[..first_new].iter().all(|id| id.starts_with("sx1_")), "{ids:?}");
+        assert!(ids[first_new..].iter().all(|id| id.starts_with("sx2_")), "{ids:?}");
+
+        // Planned: no "reconnecting" for the user, no backoff.
+        assert_eq!(sink.status_names(), ["connecting", "connected", "connected", "disconnected"]);
+        assert!(sink.debugs.lock().unwrap().iter().any(|m| m.contains("moving to a new one at a sentence end")));
+    }
+
+    #[tokio::test]
+    async fn a_connection_hands_over_anyway_when_no_sentence_ends() {
+        let scripts = vec![
+            (
+                vec![r#"{"tokens":[{"text":"Long","is_final":true},{"text":" talk","is_final":false}]}"#.to_string()],
+                r#"{"tokens":[{"text":" talk","is_final":true}],"finished":true}"#.to_string(),
+            ),
+            (vec![], r#"{"tokens":[],"finished":true}"#.to_string()),
+        ];
+        let (url, started, server) = fake_soniox_connections(scripts).await;
+        let sink = Arc::new(TestSink::default());
+        let mut p = provider(&url, None, sink.clone());
+        // Due at once, but no `<end>` comes: it waits 500 ms at most.
+        p.rotate_after = Duration::ZERO;
+        p.rotate_wait_max = Duration::from_millis(500);
+        let (tx, mut rx) = mpsc::channel(64);
+        p.start_stream(tx).await.unwrap();
+        let fed = feed_until_connection(&mut p, &started, 2, 45).await;
+        p.stop_stream().await.unwrap();
+
+        let received = server.await.unwrap();
+        assert_eq!(received.len(), 2);
+        assert_no_audio_lost(&received, fed);
+        let mut finals = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            if r.is_final {
+                finals.push((r.segment_id.unwrap(), r.text));
+            }
+        }
+        assert_eq!(finals, [("sx1_1".to_string(), "Long talk".to_string())]);
+        assert_eq!(sink.status_names(), ["connecting", "connected", "connected", "disconnected"]);
+        assert!(sink.debugs.lock().unwrap().iter().any(|m| m.contains("without waiting longer for a sentence end")));
     }
 
     #[tokio::test]
