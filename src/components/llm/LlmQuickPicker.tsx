@@ -203,7 +203,8 @@ export function LlmQuickPicker({ view, onClose }: { view: LlmConfigView; onClose
       {pending && pending.kind !== "claude_cli" && (
         <div className="border-t border-border/20">
           <div className="flex items-center gap-1.5 border-b border-border/20 bg-muted/20 px-3 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
+            {/* Not uppercased: it holds the connection's own name. */}
+            <span className="min-w-0 flex-1 truncate text-meta font-semibold text-muted-foreground/70">
               {t("quickPicker.models", { name: pending.name || t("connections.untitled") })}
             </span>
             {pending.models_endpoint !== "disabled" && (
