@@ -137,9 +137,43 @@ pub async fn get_llm_providers() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize providers: {}", e))
 }
 
+/// The OpenRouter key for the model catalog: `connection_id`'s, else the
+/// old `openrouter` slot, else the first OpenRouter connection's.
+fn openrouter_key(
+    registry: &LlmRegistry,
+    state: &AppState,
+    connection_id: Option<&str>,
+) -> Result<String, String> {
+    let config = registry.config();
+    if let Some(id) = connection_id {
+        let conn = config
+            .connection(id)
+            .ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
+        return registry
+            .secret_for(conn)?
+            .ok_or_else(|| format!("No API key is saved for \"{}\"", conn.display_name()));
+    }
+    let slot = state
+        .credentials
+        .as_ref()
+        .and_then(|c| c.lock().ok())
+        .and_then(|c| c.get_key("openrouter").ok().flatten());
+    if let Some(key) = slot {
+        return Ok(key);
+    }
+    config
+        .connections
+        .iter()
+        .filter(|c| c.is_openrouter())
+        .find_map(|c| registry.secret_for(c).ok().flatten())
+        .ok_or_else(|| "OpenRouter API key not found. Please enter your API key first.".to_string())
+}
+
 #[command]
 pub async fn list_openrouter_models(
     force_refresh: bool,
+    connection_id: Option<String>,
+    registry: State<'_, LlmRegistry>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Check cache first (unless force refresh)
@@ -160,19 +194,8 @@ pub async fn list_openrouter_models(
         }
     }
 
-    // Get API key from CredentialManager
-    let api_key = {
-        let cred_mgr = state
-            .credentials
-            .as_ref()
-            .ok_or_else(|| "Credential manager not initialized".to_string())?;
-        let cred = cred_mgr
-            .lock()
-            .map_err(|e| format!("Failed to lock credential manager: {}", e))?;
-        cred.get_key("openrouter")
-            .map_err(|e| format!("Failed to get API key: {}", e))?
-            .ok_or_else(|| "OpenRouter API key not found. Please enter your API key first.".to_string())?
-    };
+    // The key of the given OpenRouter connection, or the usual one.
+    let api_key = openrouter_key(&registry, &state, connection_id.as_deref())?;
 
     // Fetch from API
     let models = openrouter_models::fetch_openrouter_models(&api_key).await?;
