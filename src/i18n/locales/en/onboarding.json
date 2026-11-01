@@ -140,6 +140,7 @@
         "states": {
           "ready": "Ready",
           "needs_key": "API key missing",
+          "needs_address": "Server address missing",
           "needs_model": "Model not downloaded",
           "unsupported": "Not available on this computer",
           "input_only": "Only hears a microphone",

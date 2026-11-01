@@ -5,12 +5,14 @@
 
 import type { MeetingAudioConfig, PartyAudioConfig } from "../types";
 import type { Platform } from "../platform";
-import { resolveLocalModelId, sttProviderMeta } from "../stt/providerMeta";
+import { resolveLocalModelId, sttKeySlot, sttProviderMeta } from "../stt/providerMeta";
 
 export type PartyReadiness =
   | "ready"
   /** The engine needs an API key and none is saved. */
   | "needs_key"
+  /** The engine runs on a server whose address isn't set. */
+  | "needs_address"
   /** The engine's model isn't downloaded. */
   | "needs_model"
   /** The engine doesn't run on this platform. */
@@ -31,6 +33,8 @@ export interface ReadinessContext {
   downloadedModels: (engine: string) => Promise<string[] | undefined>;
   activeModelPerEngine: Record<string, string>;
   activeWhisperModel: string | null;
+  /** Whether a remote engine's server address is set (engines with `requiresBaseUrl`). */
+  hasBaseUrl?: (engine: string) => boolean;
 }
 
 export async function checkParty(party: PartyAudioConfig, ctx: ReadinessContext): Promise<PartyReadiness> {
@@ -38,9 +42,10 @@ export async function checkParty(party: PartyAudioConfig, ctx: ReadinessContext)
   if (!meta) return "unknown";
   if (ctx.platform !== "unknown" && !meta.platforms.includes(ctx.platform)) return "unsupported";
   if (meta.inputOnly && !party.is_input_device) return "input_only";
+  if (meta.requiresBaseUrl && ctx.hasBaseUrl && !ctx.hasBaseUrl(meta.id)) return "needs_address";
   if (meta.requiresApiKey) {
     try {
-      if (!(await ctx.hasKey(meta.id))) return "needs_key";
+      if (!(await ctx.hasKey(sttKeySlot(meta)))) return "needs_key";
     } catch {
       return "unknown";
     }

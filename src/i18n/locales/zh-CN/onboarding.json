@@ -140,6 +140,7 @@
         "states": {
           "ready": "可以用",
           "needs_key": "缺少 API Key",
+          "needs_address": "缺少服务器地址",
           "needs_model": "模型还没下载",
           "unsupported": "这台电脑上不能用",
           "input_only": "只能识别麦克风",

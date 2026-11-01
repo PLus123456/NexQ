@@ -17,6 +17,7 @@ import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../li
 import {
   STT_LABELS, STT_PROVIDER_OPTIONS, EXCLUSIVE_FALLBACK_ORDER, isExclusiveProvider,
   LOCAL_MODEL_ENGINES, resolveLocalModelId, localModelIdOnSwitch, type SttIconKey,
+  isSttProviderAvailable, sttKeySlot,
 } from "../lib/stt/providerMeta";
 import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
@@ -649,7 +650,7 @@ function STTPickerDropdown({
     let cancelled = false;
     (async () => {
       try {
-        const keyProviders = STT_PROVIDER_OPTIONS.filter((o) => o.requiresApiKey).map((o) => o.id);
+        const keyProviders = STT_PROVIDER_OPTIONS.filter((o) => o.requiresApiKey).map(sttKeySlot);
         const [engines, ...keyResults] = await Promise.all([
           listLocalSTTEngines(),
           ...keyProviders.map(async (p) => {
@@ -700,11 +701,13 @@ function STTPickerDropdown({
   }
 
   function isAvailable(opt: (typeof STT_PROVIDER_OPTIONS)[0]): boolean {
-    if (opt.inputOnly && !isInput) return false;
-    if (opt.requiresDownload) return isLocalEngineReady(opt.requiresDownload);
-    // Assume available if key status hasn't loaded yet — prevents false fallbacks
-    if (opt.requiresApiKey) return apiKeyStatus[opt.id] ?? true;
-    return true;
+    return isSttProviderAvailable(opt, {
+      isInput,
+      isEngineReady: isLocalEngineReady,
+      // Assume available if key status hasn't loaded yet — prevents false fallbacks
+      hasKey: (slot) => apiKeyStatus[slot],
+      hasBaseUrl: useConfigStore.getState().openaiCompatSttConfig.base_url.trim() !== "",
+    });
   }
 
   function isExclusiveLocked(opt: (typeof STT_PROVIDER_OPTIONS)[0]): boolean {

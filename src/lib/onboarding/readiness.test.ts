@@ -31,6 +31,12 @@ describe("speech recognition readiness", () => {
     expect(await checkParty(party("web_speech", { is_input_device: false }), context())).toBe("input_only");
   });
 
+  it("a remote engine needs its server address", async () => {
+    const remote = party("openai_compat");
+    expect(await checkParty(remote, context({ hasBaseUrl: () => false }))).toBe("needs_address");
+    expect(await checkParty(remote, context({ hasBaseUrl: () => true }))).toBe("ready");
+  });
+
   it("a cloud engine needs its key, looked up under the engine id", async () => {
     const asked: string[] = [];
     const hasKey = async (slot: string) => {

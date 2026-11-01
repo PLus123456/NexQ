@@ -45,6 +45,7 @@ const READINESS_TONE: Record<PartyReadiness, string> = {
   ready: "bg-success/10 text-success",
   unknown: "bg-muted text-muted-foreground",
   needs_key: "bg-destructive/10 text-destructive",
+  needs_address: "bg-destructive/10 text-destructive",
   needs_model: "bg-destructive/10 text-destructive",
   unsupported: "bg-destructive/10 text-destructive",
   input_only: "bg-destructive/10 text-destructive",
@@ -73,6 +74,8 @@ function useSttReadiness() {
       },
       activeModelPerEngine: config.activeModelPerEngine,
       activeWhisperModel: config.activeWhisperModel,
+      // Remote Whisper is the only engine with a server address so far.
+      hasBaseUrl: () => config.openaiCompatSttConfig.base_url.trim() !== "",
     };
     const result = await checkSttReadiness(config.meetingAudioConfig, ctx);
     if (run !== latest.current) return; // a newer check is running
