@@ -20,7 +20,7 @@ beforeEach(() => {
   backend.current = createMockLlmBackend({
     revision: 5,
     connections: [deepseek],
-    routing: { default: { connection_id: deepseek.id, model: "deepseek-chat" }, tasks: {} },
+    routing: { default: { target: { connection_id: deepseek.id, model: "deepseek-chat" }, params: {} }, tasks: {} },
   });
   resetLlmConnectionsStoreForTests();
 });
@@ -58,24 +58,50 @@ describe("llmConnectionsStore", () => {
 
   it("applies the view a command answers with", async () => {
     await act(() => useLlmConnectionsStore.getState().load());
-    const ollama = mockConnection({ id: "c_00000003", name: "Ollama", kind: "ollama" });
+    // A new connection: sent with an empty id, Rust assigns one; the key travels in the same call.
+    const draft = mockConnection({ id: "c_draft001", name: "Ollama", kind: "ollama", base_url: "http://localhost:11434" });
+    let id = "";
     await act(async () => {
-      await useLlmConnectionsStore.getState().upsertConnection(ollama);
+      id = await useLlmConnectionsStore.getState().upsertConnection(draft, { isNew: true, secret: "k-1234" });
     });
-    expect(useLlmConnectionsStore.getState().view!.connections.map((c) => c.id)).toEqual([deepseek.id, ollama.id]);
+    const upsert = backend.current!.calls.find((c) => c.cmd === "llm_upsert_connection");
+    expect(upsert?.args).toMatchObject({ connection: { id: "" }, secret: "k-1234" });
+    expect(id).toMatch(/^c_[0-9a-f]{8}$/);
+    expect(useLlmConnectionsStore.getState().view!.connections.map((c) => c.id)).toEqual([deepseek.id, id]);
+    expect(useLlmConnectionsStore.getState().view!.connections[1].secret_hint).toBe("…1234");
 
     await act(async () => {
       await useLlmConnectionsStore.getState().setRoute("translation", {
-        target: { connection_id: ollama.id, model: "qwen3:8b" },
+        target: { connection_id: id, model: "qwen3:8b" },
         params: { temperature: 0.2 },
       });
     });
     expect(useLlmConnectionsStore.getState().view!.routing.tasks.translation.target?.model).toBe("qwen3:8b");
+    expect(useLlmConnectionsStore.getState().view!.effective.translation_batch).toMatchObject({ source: "translation", model: "qwen3:8b" });
 
+    let cleared: string[] = [];
     await act(async () => {
-      await useLlmConnectionsStore.getState().deleteConnection(ollama.id);
+      cleared = await useLlmConnectionsStore.getState().deleteConnection(id);
     });
-    expect(useLlmConnectionsStore.getState().view!.routing.tasks.translation.target).toBeNull();
+    expect(cleared).toEqual(["translation"]);
+    // Parameter overrides survive; the task follows its parent again.
+    expect(useLlmConnectionsStore.getState().view!.routing.tasks.translation).toEqual({ target: null, params: { temperature: 0.2 } });
+  });
+
+  it("points the default route somewhere else and keeps its parameters", async () => {
+    await act(() => useLlmConnectionsStore.getState().load());
+    act(() => {
+      backend.current!.externalChange({
+        routing: { default: { target: { connection_id: deepseek.id, model: null }, params: { temperature: 0.5 } }, tasks: {} },
+      });
+    });
+    await act(async () => {
+      await useLlmConnectionsStore.getState().setDefaultRoute({ connection_id: deepseek.id, model: "deepseek-reasoner" });
+    });
+    expect(backend.current!.view().routing.default).toEqual({
+      target: { connection_id: deepseek.id, model: "deepseek-reasoner" },
+      params: { temperature: 0.5 },
+    });
   });
 
   it("marks the store unavailable when the build has no LLM commands", async () => {
@@ -103,9 +129,13 @@ describe("llmConnectionsStore", () => {
     backend.current.invoke = async () => ({ revision: 2, connections: [{ id: "legacy-ollama", kind: "ollama" }] });
     await act(() => useLlmConnectionsStore.getState().load());
     const [connection] = useLlmConnectionsStore.getState().view!.connections;
-    expect(connection.models_endpoint).toEqual({ mode: "auto" });
-    expect(connection.compat.strip_think_tags).toBe(true);
+    expect(connection.models_endpoint).toBe("auto");
+    expect(connection.compat).toMatchObject({ strip_think_tags: true, web_search: "auto", temperature: "pass" });
     expect(connection.manual_models).toEqual([]);
-    expect(useLlmConnectionsStore.getState().view!.routing).toEqual({ default: null, tasks: {} });
+    const view = useLlmConnectionsStore.getState().view!;
+    expect(view.routing).toEqual({ default: { target: null, params: {} }, tasks: {} });
+    // No effective from the backend: computed here.
+    expect(view.effective.assist.error).toBe("not_configured");
+    expect(view.known_tasks.map((t) => t.key)).toContain("claude_fallback");
   });
 });

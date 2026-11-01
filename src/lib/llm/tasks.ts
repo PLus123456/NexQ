@@ -1,8 +1,9 @@
-// The tasks a route can be set for, and how a task's route resolves. The
-// resolution mirrors the Rust registry so the routing table can show what
-// actually answers ("follows Default → DeepSeek / deepseek-chat").
+// The tasks a route can be set for, and how a task's route resolves. Rust
+// sends the resolution with every view (`effective`); the resolver here
+// mirrors its rules and fills in `effective` when a view comes without it
+// (older backend, tests).
 
-import type { LlmConfigView, LlmConnection, RouteTarget } from "./types";
+import type { EffectiveRoute, LlmConfigView, RouteError, RouteTarget, TaskInfo } from "./types";
 
 export type LlmTaskKey =
   | "default"
@@ -28,7 +29,7 @@ export interface LlmTaskDef {
   defaultTemperature?: number;
 }
 
-/** Table order: default first, then by how often the user meets the task. */
+/** Table order (the contract's `known_tasks` order): default first. */
 export const LLM_TASKS: readonly LlmTaskDef[] = [
   { key: "default", parent: null },
   { key: "assist", parent: "default", defaultTemperature: 0.6 },
@@ -42,74 +43,93 @@ export const LLM_TASKS: readonly LlmTaskDef[] = [
   { key: "claude_fallback", parent: "default" },
 ];
 
+export const KNOWN_TASKS: readonly TaskInfo[] = LLM_TASKS.map(({ key, parent }) => ({ key, parent }));
+
 export function taskDef(key: string): LlmTaskDef | undefined {
   return LLM_TASKS.find((task) => task.key === key);
 }
 
-export type RouteProblem =
-  /** Nothing configured up the chain (no default). */
-  | "not_configured"
-  /** The connection is turned off: requests fail rather than switch models. */
-  | "connection_disabled"
-  /** Neither the route nor the connection names a model. */
-  | "no_model"
-  /** claude_fallback resolving to Claude itself: there is no fallback. */
-  | "no_fallback";
-
-export interface ResolvedRoute {
-  /** The task whose target applies ("default" when nothing closer is set). */
-  source: LlmTaskKey;
-  /** The task's own target (null = it follows its parent). */
-  own: RouteTarget | null;
-  connection: LlmConnection | null;
-  /** The model that is sent (null for Claude, or with a problem). */
-  model: string | null;
-  /** The model came from the connection's default model. */
-  modelFromConnection: boolean;
-  problem: RouteProblem | null;
+export function isLlmTaskKey(key: string): key is LlmTaskKey {
+  return LLM_TASKS.some((task) => task.key === key);
 }
 
-function liveTarget(view: LlmConfigView, target: RouteTarget | null | undefined): RouteTarget | null {
+type RoutingSource = Pick<LlmConfigView, "connections" | "routing"> & { known_tasks?: readonly TaskInfo[] };
+
+/** The parent of a task: the view's `known_tasks`, else the built-in table; `assist:<action>` → assist. */
+function parentOf(view: RoutingSource, key: string): string | null {
+  if (key === "default") return null;
+  const known = view.known_tasks?.find((task) => task.key === key) ?? KNOWN_TASKS.find((task) => task.key === key);
+  if (known) return known.parent;
+  if (key.startsWith("assist:")) return "assist";
+  return "default";
+}
+
+function liveTarget(view: RoutingSource, target: RouteTarget | null | undefined): RouteTarget | null {
   // A target whose connection was deleted counts as not set.
   if (!target) return null;
   return view.connections.some((c) => c.id === target.connection_id) ? target : null;
 }
 
-/** The task's own (live) target, or for "default" the default route. */
-export function ownTarget(view: LlmConfigView, key: LlmTaskKey): RouteTarget | null {
-  if (key === "default") return liveTarget(view, view.routing.default);
+/** The task's own (live) target; for "default" the default route's. */
+export function ownTarget(view: RoutingSource, key: string): RouteTarget | null {
+  if (key === "default") return liveTarget(view, view.routing.default.target);
   return liveTarget(view, view.routing.tasks[key]?.target);
 }
 
 /** What answers `key`: the first target up the parent chain, else the default route. */
-export function resolveRoute(view: LlmConfigView, key: LlmTaskKey): ResolvedRoute {
-  const own = ownTarget(view, key);
-  let source: LlmTaskKey = key;
-  let target = own;
-  let def = taskDef(key);
-  while (!target && def?.parent) {
-    source = def.parent;
+export function resolveRoute(view: RoutingSource, key: string): EffectiveRoute {
+  const result: EffectiveRoute = {
+    source: null,
+    connection_id: null,
+    connection_name: null,
+    kind: null,
+    model: null,
+    via_fallback: false,
+    error: null,
+  };
+  const fail = (error: RouteError): EffectiveRoute => ({ ...result, error });
+
+  let source: string | null = key;
+  let target: RouteTarget | null = null;
+  while (source !== null) {
     target = ownTarget(view, source);
-    def = taskDef(source);
+    if (target) break;
+    source = parentOf(view, source);
   }
-  const result: ResolvedRoute = { source, own, connection: null, model: null, modelFromConnection: false, problem: null };
-  if (!target) return { ...result, problem: "not_configured" };
-  const connection = view.connections.find((c) => c.id === target.connection_id) ?? null;
-  if (!connection) return { ...result, problem: "not_configured" };
-  result.connection = connection;
-  if (key === "claude_fallback" && source === "default" && connection.kind === "claude_cli") {
-    return { ...result, problem: "no_fallback" };
+  if (!target || !source) {
+    // The default route points at a deleted connection.
+    return fail(view.routing.default.target ? "connection_missing" : "not_configured");
   }
-  if (!connection.enabled) return { ...result, problem: "connection_disabled" };
+  const connection = view.connections.find((c) => c.id === target.connection_id)!;
+  Object.assign(result, {
+    source,
+    connection_id: connection.id,
+    connection_name: connection.name,
+    kind: connection.kind,
+  });
+  if (key === "claude_fallback" && source === "default" && connection.kind === "claude_cli") return fail("no_fallback");
+  if (!connection.enabled) return fail("connection_disabled");
   if (connection.kind === "claude_cli") return result;
-  const model = target.model?.trim() || null;
-  if (model) return { ...result, model };
-  const fallback = connection.default_model?.trim() || null;
-  if (fallback) return { ...result, model: fallback, modelFromConnection: true };
-  return { ...result, problem: "no_model" };
+  if (!connection.base_url.trim() && !connection.chat_url_override?.trim()) return fail("base_url_missing");
+  const model = target.model?.trim() || connection.default_model?.trim() || null;
+  if (!model) return fail("no_model");
+  return { ...result, model };
+}
+
+/** `effective` for every known task and every routed key. */
+export function computeEffective(view: RoutingSource): Record<string, EffectiveRoute> {
+  const keys = new Set<string>([...(view.known_tasks ?? KNOWN_TASKS).map((t) => t.key), ...Object.keys(view.routing.tasks)]);
+  const effective: Record<string, EffectiveRoute> = {};
+  for (const key of keys) effective[key] = resolveRoute(view, key);
+  return effective;
+}
+
+/** What answers `key`, as Rust resolved it (computed here when the view lacks it). */
+export function effectiveRoute(view: LlmConfigView, key: string): EffectiveRoute {
+  return view.effective[key] ?? resolveRoute(view, key);
 }
 
 /** Tasks that name `connectionId` themselves (default included), in table order. */
-export function tasksUsing(view: LlmConfigView, connectionId: string): LlmTaskKey[] {
+export function tasksUsing(view: RoutingSource, connectionId: string): LlmTaskKey[] {
   return LLM_TASKS.filter((task) => ownTarget(view, task.key)?.connection_id === connectionId).map((t) => t.key);
 }

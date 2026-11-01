@@ -22,19 +22,20 @@ import {
   llmTestConnection,
   llmUpsertConnection,
   onLlmConfigChanged,
+  type ConnectionRef,
 } from "../lib/llm/ipc";
-import { normalizeView } from "../lib/llm/connection";
+import { normalizeView, toInput } from "../lib/llm/connection";
 import type {
+  FetchModelsResult,
   LlmConfigView,
   LlmConnection,
-  LlmTestResult,
   ResponseLanguage,
   RouteTarget,
   SecretStatus,
   TaskRoute,
+  TestConnectionResult,
   TestMode,
 } from "../lib/llm/types";
-import type { ModelInfo } from "../lib/types";
 
 /**
  * `unavailable`: this build has no LLM connection commands (the backend part
@@ -52,24 +53,23 @@ interface LlmConnectionsState {
   /** Applies a view unless it is older than the one shown. Returns whether it was applied. */
   applyView: (raw: unknown) => boolean;
 
-  upsertConnection: (connection: LlmConnection) => Promise<LlmConfigView>;
-  deleteConnection: (id: string) => Promise<LlmConfigView>;
+  /**
+   * Saves a connection; `isNew` creates it (Rust assigns the id). `secret`:
+   * undefined leaves the key alone, a string stores it ("" removes it).
+   * Resolves to the connection's id.
+   */
+  upsertConnection: (connection: LlmConnection, options?: { isNew?: boolean; secret?: string }) => Promise<string>;
+  /** Resolves to the task keys whose routes were cleared. */
+  deleteConnection: (id: string) => Promise<string[]>;
   setSecret: (id: string, secret: string | null) => Promise<SecretStatus>;
   secretStatus: (id: string) => Promise<SecretStatus>;
   /** null clears the task's route (it follows its parent again). */
   setRoute: (task: string, route: TaskRoute | null) => Promise<LlmConfigView>;
+  /** Points the default route at `target`, keeping its parameters. */
   setDefaultRoute: (target: RouteTarget) => Promise<LlmConfigView>;
-  setResponseLanguage: (language: ResponseLanguage) => Promise<LlmConfigView>;
-  /** Saved connection: fetches and caches its models (the view refreshes). */
-  fetchModels: (id: string) => Promise<ModelInfo[]>;
-  /** Unsaved edits: fetches without caching. */
-  fetchDraftModels: (draft: LlmConnection, secret: string | null) => Promise<ModelInfo[]>;
-  testConnection: (args: {
-    draft: LlmConnection;
-    secret?: string | null;
-    model?: string | null;
-    mode: TestMode;
-  }) => Promise<LlmTestResult>;
+  setResponseLanguage: (value: ResponseLanguage) => Promise<LlmConfigView>;
+  fetchModels: (ref: ConnectionRef) => Promise<FetchModelsResult>;
+  testConnection: (ref: ConnectionRef & { model?: string | null; mode?: TestMode }) => Promise<TestConnectionResult>;
 }
 
 let subscription: Promise<UnlistenFn> | null = null;
@@ -87,12 +87,10 @@ function subscribe(apply: (raw: unknown) => boolean) {
 }
 
 export const useLlmConnectionsStore = create<LlmConnectionsState>((set, get) => {
-  /** Runs a command that answers with the whole view, and applies it. */
-  const viaView = async (run: () => Promise<LlmConfigView>): Promise<LlmConfigView> => {
-    const raw = await run();
-    const view = normalizeView(raw);
-    get().applyView(view);
-    return get().view ?? view;
+  /** Applies a view a command answered with; returns the view shown afterwards. */
+  const take = (raw: LlmConfigView): LlmConfigView => {
+    get().applyView(raw);
+    return get().view ?? normalizeView(raw);
   };
 
   return {
@@ -134,23 +132,28 @@ export const useLlmConnectionsStore = create<LlmConnectionsState>((set, get) => 
       return true;
     },
 
-    upsertConnection: (connection) => viaView(() => llmUpsertConnection(connection)),
-    deleteConnection: (id) => viaView(() => llmDeleteConnection(id)),
+    upsertConnection: async (connection, options = {}) => {
+      const input = toInput(connection);
+      const result = await llmUpsertConnection(options.isNew ? { ...input, id: "" } : input, options.secret);
+      take(result.config);
+      return result.id;
+    },
+    deleteConnection: async (id) => {
+      const result = await llmDeleteConnection(id);
+      take(result.config);
+      return result.cleared_routes ?? [];
+    },
     setSecret: (id, secret) => llmSetSecret(id, secret),
     secretStatus: (id) => llmSecretStatus(id),
-    setRoute: (task, route) => viaView(() => llmSetRoute(task, route)),
-    setDefaultRoute: (target) => viaView(() => llmSetRoute("default", { target, params: {} })),
-    setResponseLanguage: (language) => viaView(() => llmSetResponseLanguage(language)),
-
-    fetchModels: async (id) => {
-      const models = await llmFetchModels({ id });
-      // The models are cached with the connection; pick up the new revision
-      // even if no change event comes.
-      void get().load();
-      return models;
+    setRoute: async (task, route) => take(await llmSetRoute(task, route)),
+    setDefaultRoute: async (target) => {
+      const params = get().view?.routing.default.params ?? {};
+      return take(await llmSetRoute("default", { target, params }));
     },
-    fetchDraftModels: (draft, secret) => llmFetchModels({ draft, secret }),
-    testConnection: (args) => llmTestConnection(args),
+    setResponseLanguage: async (value) => take(await llmSetResponseLanguage(value)),
+    // A saved connection's fetch / test also updates the view through the change event.
+    fetchModels: (ref) => llmFetchModels(ref),
+    testConnection: (ref) => llmTestConnection(ref),
   };
 });
 

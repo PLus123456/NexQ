@@ -2,36 +2,54 @@
 // model candidates shown in model inputs.
 
 import type { ModelOption } from "../../components/ModelCombobox";
+import type { AuthConfig } from "../endpoint";
+import { computeEffective, KNOWN_TASKS } from "./tasks";
 import type {
-  LlmAuthConfig,
+  EffectiveRoute,
   LlmCompat,
   LlmConfigView,
   LlmConnection,
+  LlmConnectionInput,
   LlmKind,
   LlmParams,
   LlmRouting,
-  ModelsEndpoint,
+  ModelsEndpointMode,
+  TaskInfo,
   TaskRoute,
+  WebSearchMode,
 } from "./types";
 import { LLM_KINDS } from "./types";
 
 export const DEFAULT_COMPAT: Readonly<LlmCompat> = Object.freeze({
   temperature: "pass",
+  fixed_temperature: null,
   max_tokens_field: "max_tokens",
   reasoning: "auto",
   strip_think_tags: true,
   stream_usage: false,
   ollama_fallback_on_404: false,
   keep_alive: null,
-  web_search: "none",
+  web_search: "auto",
 });
 
 export const DEFAULT_TIMEOUT_SECS = 10;
 export const DEFAULT_MAX_CONCURRENCY = 4;
 
-const NO_AUTH: LlmAuthConfig = { mode: "none", header_name: "", prefix: "" };
+/** The auth a kind starts with (the backend's defaults). */
+export function defaultAuth(kind: LlmKind): AuthConfig {
+  switch (kind) {
+    case "openai_compat":
+      return { mode: "bearer", header_name: "", prefix: "" };
+    case "anthropic":
+      return { mode: "header", header_name: "x-api-key", prefix: "" };
+    case "gemini":
+      return { mode: "header", header_name: "x-goog-api-key", prefix: "" };
+    default:
+      return { mode: "none", header_name: "", prefix: "" };
+  }
+}
 
-/** A new connection id: `c_` + 8 hex digits. */
+/** A new connection id: `c_` + 8 hex digits (only a draft key until saved: Rust assigns the real one). */
 export function newConnectionId(): string {
   const bytes = new Uint8Array(4);
   globalThis.crypto.getRandomValues(bytes);
@@ -48,19 +66,43 @@ export function blankConnection(kind: LlmKind, id = newConnectionId()): LlmConne
     enabled: true,
     base_url: "",
     chat_url_override: null,
-    models_endpoint: kind === "claude_cli" ? { mode: "disabled" } : { mode: "auto" },
-    auth: kind === "openai_compat" ? { mode: "bearer", header_name: "", prefix: "" } : { ...NO_AUTH },
-    secret_hint: null,
+    models_endpoint: kind === "claude_cli" ? "disabled" : "auto",
+    models_url: null,
+    auth: defaultAuth(kind),
     headers: [],
     default_model: null,
     manual_models: [],
-    model_cache: null,
     params: {},
-    compat: { ...DEFAULT_COMPAT },
+    compat: { ...DEFAULT_COMPAT, temperature: kind === "anthropic" ? "omit" : "pass" },
     timeout_secs: null,
     max_concurrency: null,
+    secret_ref: null,
+    secret_hint: null,
+    model_cache: null,
     verified_at_ms: null,
+    created_at_ms: null,
+    legacy_type: null,
   };
+}
+
+/** The editable fields, as `llm_upsert_connection` takes them. */
+export function toInput(connection: LlmConnection): LlmConnectionInput {
+  const {
+    secret_ref: _secretRef,
+    secret_hint: _secretHint,
+    model_cache: _modelCache,
+    verified_at_ms: _verifiedAt,
+    created_at_ms: _createdAt,
+    legacy_type: _legacyType,
+    ...input
+  } = connection;
+  return input;
+}
+
+/** "…ab12" → "ab12" (the shared key field adds its own ellipsis). */
+export function bareHint(hint: string | null | undefined): string | null {
+  const bare = hint?.replace(/^(…|\.\.\.)/, "").trim();
+  return bare ? bare : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,6 +121,10 @@ function numOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function oneOf<T extends string>(value: unknown, options: readonly T[], fallback: T): T {
+  return options.find((option) => option === value) ?? fallback;
+}
+
 function normalizeParams(raw: unknown): LlmParams {
   if (!isRecord(raw)) return {};
   const params: LlmParams = {};
@@ -90,16 +136,20 @@ function normalizeParams(raw: unknown): LlmParams {
   return params;
 }
 
-function normalizeModelsEndpoint(raw: unknown, kind: LlmKind): ModelsEndpoint {
-  // Accept the tagged object and plain strings ("auto", "disabled", or an address).
-  if (isRecord(raw)) {
-    if (raw.mode === "disabled") return { mode: "disabled" };
-    if (raw.mode === "custom" && typeof raw.url === "string") return { mode: "custom", url: raw.url };
-    if (raw.mode === "auto") return { mode: "auto" };
-  }
-  if (raw === "disabled") return { mode: "disabled" };
-  if (typeof raw === "string" && raw !== "auto" && raw.trim() !== "") return { mode: "custom", url: raw };
-  return kind === "claude_cli" ? { mode: "disabled" } : { mode: "auto" };
+function normalizeCompat(raw: unknown, kind: LlmKind): LlmCompat {
+  const r = isRecord(raw) ? raw : {};
+  const defaults = blankConnection(kind, "x").compat;
+  return {
+    temperature: oneOf(r.temperature, ["pass", "omit", "fixed"] as const, defaults.temperature),
+    fixed_temperature: numOrNull(r.fixed_temperature),
+    max_tokens_field: oneOf(r.max_tokens_field, ["max_tokens", "max_completion_tokens", "omit"] as const, "max_tokens"),
+    reasoning: oneOf(r.reasoning, ["auto", "off"] as const, "auto"),
+    strip_think_tags: r.strip_think_tags !== false,
+    stream_usage: r.stream_usage === true,
+    ollama_fallback_on_404: r.ollama_fallback_on_404 === true,
+    keep_alive: strOrNull(r.keep_alive),
+    web_search: oneOf<WebSearchMode>(r.web_search, ["auto", "none", "openrouter_online", "gemini_google_search"], "auto"),
+  };
 }
 
 /**
@@ -108,10 +158,9 @@ function normalizeModelsEndpoint(raw: unknown, kind: LlmKind): ModelsEndpoint {
  */
 export function normalizeConnection(raw: unknown): LlmConnection {
   const r = isRecord(raw) ? raw : {};
-  const kind = (LLM_KINDS as readonly string[]).includes(str(r.kind)) ? (r.kind as LlmKind) : "openai_compat";
+  const kind = oneOf(r.kind, LLM_KINDS, "openai_compat");
   const base = blankConnection(kind, str(r.id));
-  const auth = isRecord(r.auth) ? r.auth : {};
-  const compat = isRecord(r.compat) ? r.compat : {};
+  const auth = isRecord(r.auth) ? r.auth : null;
   const cache = isRecord(r.model_cache) ? r.model_cache : null;
   return {
     ...base,
@@ -120,21 +169,33 @@ export function normalizeConnection(raw: unknown): LlmConnection {
     enabled: r.enabled !== false,
     base_url: str(r.base_url),
     chat_url_override: strOrNull(r.chat_url_override),
-    models_endpoint: normalizeModelsEndpoint(r.models_endpoint, kind),
-    auth: {
-      mode: (["none", "bearer", "header", "query"] as const).find((m) => m === auth.mode) ?? "none",
-      header_name: str(auth.header_name),
-      prefix: str(auth.prefix),
-      query_param: strOrNull(auth.query_param),
-    },
-    secret_hint: strOrNull(r.secret_hint),
+    models_endpoint: oneOf<ModelsEndpointMode>(r.models_endpoint, ["auto", "custom", "disabled"], base.models_endpoint),
+    models_url: strOrNull(r.models_url),
+    auth: auth
+      ? {
+          mode: oneOf(auth.mode, ["none", "bearer", "header"] as const, "none"),
+          header_name: str(auth.header_name),
+          prefix: str(auth.prefix),
+        }
+      : base.auth,
     headers: Array.isArray(r.headers)
-      ? r.headers.filter(isRecord).map((h) => ({ name: str(h.name), value: str(h.value), secret: h.secret === true }))
+      ? r.headers.filter(isRecord).map((h) => ({
+          name: str(h.name),
+          value: str(h.value),
+          secret: h.secret === true,
+          value_saved: h.value_saved === true,
+        }))
       : [],
     default_model: strOrNull(r.default_model),
     manual_models: Array.isArray(r.manual_models)
       ? r.manual_models.filter((m): m is string => typeof m === "string" && m.trim() !== "")
       : [],
+    params: normalizeParams(r.params),
+    compat: normalizeCompat(r.compat, kind),
+    timeout_secs: numOrNull(r.timeout_secs),
+    max_concurrency: numOrNull(r.max_concurrency),
+    secret_ref: strOrNull(r.secret_ref),
+    secret_hint: strOrNull(r.secret_hint),
     model_cache: cache
       ? {
           models: Array.isArray(cache.models)
@@ -146,54 +207,87 @@ export function normalizeConnection(raw: unknown): LlmConnection {
               }))
             : [],
           fetched_at_ms: numOrNull(cache.fetched_at_ms),
+          url: strOrNull(cache.url),
           error: strOrNull(cache.error),
         }
       : null,
-    params: normalizeParams(r.params),
-    compat: { ...DEFAULT_COMPAT, ...(compat as Partial<LlmCompat>) },
-    timeout_secs: numOrNull(r.timeout_secs),
-    max_concurrency: numOrNull(r.max_concurrency),
     verified_at_ms: numOrNull(r.verified_at_ms),
+    created_at_ms: numOrNull(r.created_at_ms),
+    legacy_type: strOrNull(r.legacy_type),
   };
 }
 
 function normalizeTaskRoute(raw: unknown): TaskRoute {
   const r = isRecord(raw) ? raw : {};
-  const target = isRecord(r.target) && typeof r.target.connection_id === "string" && r.target.connection_id
-    ? { connection_id: r.target.connection_id, model: strOrNull(r.target.model) }
-    : null;
+  const target =
+    isRecord(r.target) && typeof r.target.connection_id === "string" && r.target.connection_id
+      ? { connection_id: r.target.connection_id, model: strOrNull(r.target.model) }
+      : null;
   return { target, params: normalizeParams(r.params) };
 }
 
 function normalizeRouting(raw: unknown): LlmRouting {
   const r = isRecord(raw) ? raw : {};
-  const def = isRecord(r.default) && typeof r.default.connection_id === "string" && r.default.connection_id
-    ? { connection_id: r.default.connection_id, model: strOrNull(r.default.model) }
-    : null;
   const tasks: Record<string, TaskRoute> = {};
   if (isRecord(r.tasks)) for (const [key, value] of Object.entries(r.tasks)) tasks[key] = normalizeTaskRoute(value);
-  return { default: def, tasks };
+  return { default: normalizeTaskRoute(r.default), tasks };
 }
 
-/** The whole view as received, normalized. */
+function normalizeEffective(raw: unknown): EffectiveRoute | null {
+  if (!isRecord(raw)) return null;
+  return {
+    source: strOrNull(raw.source),
+    connection_id: strOrNull(raw.connection_id),
+    connection_name: strOrNull(raw.connection_name),
+    kind: (LLM_KINDS as readonly unknown[]).includes(raw.kind) ? (raw.kind as LlmKind) : null,
+    model: strOrNull(raw.model),
+    via_fallback: raw.via_fallback === true,
+    error: strOrNull(raw.error),
+  };
+}
+
+/** The whole view as received, normalized; `effective` is computed when the view has none. */
 export function normalizeView(raw: unknown): LlmConfigView {
   const r = isRecord(raw) ? raw : {};
   const migration = isRecord(r.migration) ? r.migration : null;
+  const connections = Array.isArray(r.connections) ? r.connections.map(normalizeConnection).filter((c) => c.id) : [];
+  const routing = normalizeRouting(r.routing);
+  const knownTasks: TaskInfo[] = Array.isArray(r.known_tasks)
+    ? r.known_tasks
+        .filter(isRecord)
+        .filter((task) => typeof task.key === "string" && task.key)
+        .map((task) => ({ key: task.key as string, parent: strOrNull(task.parent) }))
+    : [];
+  const known_tasks = knownTasks.length > 0 ? knownTasks : [...KNOWN_TASKS];
+  const effective: Record<string, EffectiveRoute> = {};
+  if (isRecord(r.effective)) {
+    for (const [key, value] of Object.entries(r.effective)) {
+      const route = normalizeEffective(value);
+      if (route) effective[key] = route;
+    }
+  }
   return {
     schema_version: numOrNull(r.schema_version) ?? 1,
     revision: numOrNull(r.revision) ?? 0,
     read_only: r.read_only === true,
-    connections: Array.isArray(r.connections) ? r.connections.map(normalizeConnection).filter((c) => c.id) : [],
-    routing: normalizeRouting(r.routing),
+    load_warning: strOrNull(r.load_warning),
+    connections,
+    routing,
     response_language: str(r.response_language) || "ui",
     migration: migration
       ? {
-          from: str(migration.from),
+          source: str(migration.source) || "fresh",
           at_ms: numOrNull(migration.at_ms) ?? 0,
           legacy_provider: strOrNull(migration.legacy_provider),
           legacy_model: strOrNull(migration.legacy_model),
+          connections: Array.isArray(migration.connections)
+            ? migration.connections.filter((id): id is string => typeof id === "string")
+            : [],
         }
       : null,
+    known_tasks,
+    effective: Object.keys(effective).length > 0 ? effective : computeEffective({ connections, routing, known_tasks }),
+    claude_available: r.claude_available !== false,
   };
 }
 
@@ -239,9 +333,9 @@ export function modelOptions(
   return options;
 }
 
-/** Shallow-equal check of two connections as saved (order of keys ignored). */
+/** Same editable fields (what Rust keeps itself, like the model cache, is ignored). */
 export function sameConnection(a: LlmConnection, b: LlmConnection): boolean {
-  return JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b));
+  return JSON.stringify(sortKeys(toInput(a))) === JSON.stringify(sortKeys(toInput(b)));
 }
 
 function sortKeys(value: unknown): unknown {

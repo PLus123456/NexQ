@@ -139,11 +139,10 @@ function geminiChatUrl(baseUrl: string, model: string | null | undefined): UrlPr
 }
 
 /** The address the model list is fetched from; `none` when turned off. */
-export function modelsUrl(connection: Pick<LlmConnection, "kind" | "base_url" | "models_endpoint">): UrlPreview {
-  const endpoint = connection.models_endpoint;
-  if (connection.kind === "claude_cli" || endpoint.mode === "disabled") return { ok: false, reason: "none" };
-  if (endpoint.mode === "custom") {
-    const joined = joinEndpoint(endpoint.url, "");
+export function modelsUrl(connection: Pick<LlmConnection, "kind" | "base_url" | "models_endpoint" | "models_url">): UrlPreview {
+  if (connection.kind === "claude_cli" || connection.models_endpoint === "disabled") return { ok: false, reason: "none" };
+  if (connection.models_endpoint === "custom") {
+    const joined = joinEndpoint(connection.models_url ?? "", "");
     if (!joined.ok) return { ok: false, reason: joined.error.code === "empty" ? "empty" : "invalid" };
     return { ok: true, url: joined.url };
   }
@@ -154,13 +153,46 @@ export function modelsUrl(connection: Pick<LlmConnection, "kind" | "base_url" | 
   return { ok: true, url: joined.url };
 }
 
+/** A chat URL override that sends every model to the same address (only a hint). */
+export function overrideWithoutModel(connection: Pick<LlmConnection, "chat_url_override">): boolean {
+  const override = connection.chat_url_override?.trim();
+  return !!override && !override.includes(MODEL_PLACEHOLDER);
+}
+
+/**
+ * Plain `http://` to a host that isn't this computer or the local network:
+ * the key would cross the internet unencrypted (only a hint).
+ */
+export function isPlainHttpRemote(address: string): boolean {
+  const normalized = normalizeBaseUrl(address);
+  if (!normalized.ok) return false;
+  let url: URL;
+  try {
+    url = new URL(normalized.base);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:") return false;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".lan")) return false;
+  // IPv6 literal: loopback, link-local and unique-local addresses are local.
+  if (host.includes(":")) return !(host === "::1" || host.startsWith("fe80:") || /^f[cd]/.test(host));
+  const parts = host.split(".");
+  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
+    const [a, b] = parts.map(Number);
+    return !(a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 100 && b >= 64 && b <= 127));
+  }
+  // A single-label name ("nas", "gpu-box") is a local machine.
+  return host.includes(".");
+}
+
 /**
  * The origins (scheme://host:port) a connection's secret would be sent to:
  * the base URL, the chat override and a custom models address. Used to ask
  * for the key again before it could go to a new host.
  */
 export function secretOrigins(
-  connection: Pick<LlmConnection, "kind" | "base_url" | "chat_url_override" | "models_endpoint">,
+  connection: Pick<LlmConnection, "kind" | "base_url" | "chat_url_override" | "models_endpoint" | "models_url">,
 ): Set<string> {
   const origins = new Set<string>();
   const add = (address: string | null | undefined) => {
@@ -176,6 +208,6 @@ export function secretOrigins(
   };
   add(connection.base_url);
   add(connection.chat_url_override);
-  if (connection.models_endpoint.mode === "custom") add(connection.models_endpoint.url);
+  if (connection.models_endpoint === "custom") add(connection.models_url);
   return origins;
 }

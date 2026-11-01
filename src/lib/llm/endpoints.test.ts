@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { blankConnection } from "./connection";
-import { chatPath, chatUrl, looksLikeOpenAiPath, modelsUrl, secretOrigins } from "./endpoints";
+import { chatPath, chatUrl, isPlainHttpRemote, looksLikeOpenAiPath, modelsUrl, overrideWithoutModel, secretOrigins } from "./endpoints";
 import type { LlmConnection, LlmKind } from "./types";
 
 function conn(kind: LlmKind, base_url: string, patch: Partial<LlmConnection> = {}): LlmConnection {
@@ -61,12 +61,10 @@ describe("chat and models URLs by protocol", () => {
   });
 
   it("models address: custom, or off", () => {
-    expect(url(modelsUrl(conn("openai_compat", "https://h.example/v1", { models_endpoint: { mode: "disabled" } })))).toBe(
-      "none",
-    );
+    expect(url(modelsUrl(conn("openai_compat", "https://h.example/v1", { models_endpoint: "disabled" })))).toBe("none");
     expect(
       url(
-        modelsUrl(conn("openai_compat", "https://h.example/v1", { models_endpoint: { mode: "custom", url: "https://h.example/catalog" } })),
+        modelsUrl(conn("openai_compat", "https://h.example/v1", { models_endpoint: "custom", models_url: "https://h.example/catalog" })),
       ),
     ).toBe("https://h.example/catalog");
   });
@@ -83,7 +81,8 @@ describe("secretOrigins", () => {
     const origins = secretOrigins(
       conn("openai_compat", "https://api.example.com/v1", {
         chat_url_override: "https://gw.example.com/{model}/chat",
-        models_endpoint: { mode: "custom", url: "http://10.0.0.5:8000/models" },
+        models_endpoint: "custom",
+        models_url: "http://10.0.0.5:8000/models",
       }),
     );
     expect([...origins].sort()).toEqual(["http://10.0.0.5:8000", "https://api.example.com", "https://gw.example.com"]);
@@ -93,5 +92,21 @@ describe("secretOrigins", () => {
     const a = secretOrigins(conn("openai_compat", "https://api.example.com"));
     const b = secretOrigins(conn("openai_compat", "https://API.example.com:443/v1/"));
     expect([...a]).toEqual([...b]);
+  });
+});
+
+describe("address hints", () => {
+  it("plain http to the internet", () => {
+    expect(isPlainHttpRemote("http://api.example.com/v1")).toBe(true);
+    expect(isPlainHttpRemote("https://api.example.com/v1")).toBe(false);
+    for (const local of ["http://localhost:11434", "http://127.0.0.1:8000/v1", "http://192.168.1.20:11434", "http://10.0.0.5:8000", "http://nas:8000/v1", "http://gpu.local:8000", "http://[::1]:8000", "http://100.64.1.2:8000"]) {
+      expect(isPlainHttpRemote(local)).toBe(false);
+    }
+  });
+
+  it("an override without {model}", () => {
+    expect(overrideWithoutModel({ chat_url_override: "https://gw.example.com/chat" })).toBe(true);
+    expect(overrideWithoutModel({ chat_url_override: "https://gw.example.com/{model}/chat" })).toBe(false);
+    expect(overrideWithoutModel({ chat_url_override: null })).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
-// In-memory stand-in for the Rust LLM connection commands, for tests (and
-// for developing the UI before the backend lands). Behaves like the planned
-// commands: every change bumps the revision, returns the full view and
-// broadcasts `llm_config_changed` to every listener.
+// In-memory stand-in for the Rust LLM connection commands (contract-llm.md
+// v1), for tests and for developing the UI before the backend lands. Every
+// change bumps the revision, answers like the real command and broadcasts
+// `llm_config_changed` to every listener.
 //
 // Usage in a test:
 //   const backend = vi.hoisted(() => ({ current: null as MockLlmBackend | null }));
@@ -10,17 +10,22 @@
 //   beforeEach(() => { backend.current = createMockLlmBackend(); });
 
 import type { ModelInfo } from "../../types";
-import { blankConnection } from "../connection";
+import { blankConnection, newConnectionId, normalizeConnection } from "../connection";
+import { secretOrigins } from "../endpoints";
+import { computeEffective, KNOWN_TASKS } from "../tasks";
 import type {
+  FetchModelsResult,
   LlmConfigView,
   LlmConnection,
-  LlmTestResult,
-  RouteTarget,
   SecretStatus,
   TaskRoute,
+  TestConnectionResult,
 } from "../types";
 
 type Listener = (event: { event: string; id: number; payload: unknown }) => void;
+
+/** What the tests may set up: the view's stored parts (`effective` is always computed). */
+export type MockState = Partial<Omit<LlmConfigView, "effective" | "known_tasks">>;
 
 export interface MockLlmBackend {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -28,16 +33,16 @@ export interface MockLlmBackend {
   /** The current view (a copy). */
   view: () => LlmConfigView;
   /** Replace part of the state as if another window changed it, and broadcast. */
-  externalChange: (patch: Partial<LlmConfigView>) => LlmConfigView;
+  externalChange: (patch: MockState) => LlmConfigView;
   /** Broadcast an arbitrary payload (e.g. a stale revision). */
   emit: (payload: unknown) => void;
   secrets: Map<string, string>;
   /** Every command received, in order. */
   calls: { cmd: string; args: Record<string, unknown> | undefined }[];
-  /** Models returned by `llm_fetch_models` (or an error to throw). */
-  models: ModelInfo[] | Error;
+  /** Models `llm_fetch_models` finds (or an error result). */
+  models: ModelInfo[] | Partial<FetchModelsResult>;
   /** Result of `llm_test_connection` (a function gets the args). */
-  testResult: LlmTestResult | ((args: Record<string, unknown>) => LlmTestResult);
+  testResult: Partial<TestConnectionResult> | ((args: Record<string, unknown>) => Partial<TestConnectionResult>);
   /** Commands that reject with "command … not found" (simulates a build without them). */
   missing: Set<string>;
 }
@@ -46,26 +51,40 @@ export function mockConnection(patch: Partial<LlmConnection> & Pick<LlmConnectio
   return { ...blankConnection(patch.kind ?? "openai_compat", patch.id), name: patch.id, ...patch };
 }
 
-export function emptyView(patch: Partial<LlmConfigView> = {}): LlmConfigView {
-  return {
+export function emptyView(patch: MockState = {}): LlmConfigView {
+  const base = {
     schema_version: 1,
     revision: 1,
     read_only: false,
-    connections: [],
-    routing: { default: null, tasks: {} },
+    load_warning: null,
+    connections: [] as LlmConnection[],
+    routing: { default: { target: null, params: {} }, tasks: {} },
     response_language: "ui",
     migration: null,
+    known_tasks: [...KNOWN_TASKS],
+    claude_available: true,
     ...patch,
   };
+  return { ...base, effective: computeEffective(base) };
 }
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-function hint(secret: string): string {
-  return secret.slice(-4);
-}
+const hint = (secret: string) => `…${secret.slice(-4)}`;
 
-export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): MockLlmBackend {
+const OK_TEST: TestConnectionResult = {
+  ok: true,
+  url: null,
+  status: 200,
+  latency_ms: 42,
+  model: null,
+  sample: "pong",
+  error: null,
+  error_body: null,
+  hint: null,
+};
+
+export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
   let state = emptyView(initial);
   const listeners = new Map<string, Set<Listener>>();
   let eventId = 0;
@@ -74,7 +93,7 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
     secrets: new Map(),
     calls: [],
     models: [],
-    testResult: { ok: true, url: "", status: 200, latency_ms: 42, sample: "pong", error_body: null },
+    testResult: {},
     missing: new Set(),
 
     view: () => clone(state),
@@ -86,7 +105,8 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
     },
 
     externalChange: (patch) => {
-      state = { ...state, ...clone(patch), revision: state.revision + 1 };
+      const next = { ...state, ...clone(patch), revision: state.revision + 1 };
+      state = { ...next, effective: computeEffective(next) };
       backend.emit(state);
       return clone(state);
     },
@@ -104,14 +124,28 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
 
       /** Saves, bumps the revision, broadcasts, and answers with the view. */
       const commit = () => {
-        state = { ...state, revision: state.revision + 1 };
+        const next = { ...state, revision: state.revision + 1 };
+        state = { ...next, effective: computeEffective(next) };
         backend.emit(state);
         return clone(state);
       };
-
       const status = (id: string): SecretStatus => {
         const secret = backend.secrets.get(id);
         return { present: secret !== undefined, hint: secret ? hint(secret) : null };
+      };
+      const writeSecret = (id: string, secret: string | null) => {
+        if (secret) backend.secrets.set(id, secret);
+        else backend.secrets.delete(id);
+        state = {
+          ...state,
+          connections: state.connections.map((c) =>
+            c.id === id ? { ...c, secret_hint: secret ? hint(secret) : null, secret_ref: secret ? `llm:${id}` : null } : c,
+          ),
+        };
+      };
+      const connectionOf = (): LlmConnection | null => {
+        if (a.draft) return normalizeConnection(a.draft);
+        return state.connections.find((c) => c.id === a.id) ?? null;
       };
 
       switch (cmd) {
@@ -119,52 +153,63 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
           return clone(state);
 
         case "llm_upsert_connection": {
-          const connection = clone(a.connection as LlmConnection);
-          if (!connection?.id) throw "connection id required";
-          const index = state.connections.findIndex((c) => c.id === connection.id);
-          const secret = backend.secrets.get(connection.id);
-          connection.secret_hint = secret ? hint(secret) : null;
+          const input = normalizeConnection(a.connection);
+          const isNew = !input.id;
+          const id = isNew ? newConnectionId() : input.id;
+          const existing = state.connections.find((c) => c.id === id);
+          const connection: LlmConnection = {
+            ...input,
+            id,
+            // Kept by Rust: ignored on input.
+            secret_ref: existing?.secret_ref ?? null,
+            secret_hint: existing?.secret_hint ?? null,
+            model_cache: existing?.model_cache ?? null,
+            verified_at_ms: existing?.verified_at_ms ?? null,
+            created_at_ms: existing?.created_at_ms ?? Date.now(),
+            legacy_type: existing?.legacy_type ?? null,
+          };
           state = {
             ...state,
-            connections:
-              index >= 0
-                ? state.connections.map((c, i) => (i === index ? connection : c))
-                : [...state.connections, connection],
+            connections: existing
+              ? state.connections.map((c) => (c.id === id ? connection : c))
+              : [...state.connections, connection],
           };
-          return commit();
+          // A new origin or kind drops the stored key.
+          if (existing && backend.secrets.has(id)) {
+            const before = secretOrigins(existing);
+            const moved = existing.kind !== connection.kind || [...secretOrigins(connection)].some((o) => !before.has(o));
+            if (moved) writeSecret(id, null);
+          }
+          if (typeof a.secret === "string") writeSecret(id, a.secret);
+          return { id, config: commit() };
         }
 
         case "llm_delete_connection": {
           const id = a.id as string;
+          const cleared: string[] = [];
           const tasks: Record<string, TaskRoute> = {};
           for (const [key, route] of Object.entries(state.routing.tasks)) {
-            tasks[key] = route.target?.connection_id === id ? { ...route, target: null } : route;
+            if (route.target?.connection_id === id) {
+              cleared.push(key);
+              if (Object.keys(route.params).length > 0) tasks[key] = { ...route, target: null };
+            } else {
+              tasks[key] = route;
+            }
+          }
+          let def = state.routing.default;
+          if (def.target?.connection_id === id) {
+            cleared.unshift("default");
+            def = { ...def, target: null };
           }
           backend.secrets.delete(id);
-          state = {
-            ...state,
-            connections: state.connections.filter((c) => c.id !== id),
-            routing: {
-              default: state.routing.default?.connection_id === id ? null : state.routing.default,
-              tasks,
-            },
-          };
-          return commit();
+          state = { ...state, connections: state.connections.filter((c) => c.id !== id), routing: { default: def, tasks } };
+          return { cleared_routes: cleared, config: commit() };
         }
 
         case "llm_set_secret": {
           const id = a.id as string;
-          const secret = (a.secret as string | null) ?? null;
-          if (secret) backend.secrets.set(id, secret);
-          else backend.secrets.delete(id);
-          const index = state.connections.findIndex((c) => c.id === id);
-          if (index >= 0) {
-            state = {
-              ...state,
-              connections: state.connections.map((c, i) => (i === index ? { ...c, secret_hint: secret ? hint(secret) : null } : c)),
-            };
-            commit();
-          }
+          writeSecret(id, (a.secret as string | null) || null);
+          commit();
           return status(id);
         }
 
@@ -175,7 +220,7 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
           const task = a.task as string;
           const route = (a.route as TaskRoute | null) ?? null;
           if (task === "default") {
-            state = { ...state, routing: { ...state.routing, default: (route?.target as RouteTarget | null) ?? null } };
+            state = { ...state, routing: { ...state.routing, default: route ? clone(route) : { target: null, params: {} } } };
           } else {
             const tasks = { ...state.routing.tasks };
             if (route) tasks[task] = clone(route);
@@ -186,41 +231,63 @@ export function createMockLlmBackend(initial: Partial<LlmConfigView> = {}): Mock
         }
 
         case "llm_set_response_language":
-          state = { ...state, response_language: a.language as string };
+          state = { ...state, response_language: a.value as string };
           return commit();
 
         case "llm_fetch_models": {
-          if (backend.models instanceof Error) throw backend.models.message;
-          const id = a.id as string | null;
-          if (id) {
+          const connection = connectionOf();
+          const failure = Array.isArray(backend.models) ? null : backend.models;
+          const result: FetchModelsResult = {
+            ok: !failure,
+            url: connection ? `${connection.base_url}/models` : null,
+            status: failure ? failure.status ?? 500 : 200,
+            latency_ms: 30,
+            models: failure ? [] : clone(backend.models as ModelInfo[]),
+            error: failure?.error ?? null,
+            error_body: failure?.error_body ?? null,
+            hint: failure?.hint ?? null,
+            ...(failure ?? {}),
+          };
+          if (a.id) {
             state = {
               ...state,
               connections: state.connections.map((c) =>
-                c.id === id
-                  ? { ...c, model_cache: { models: clone(backend.models as ModelInfo[]), fetched_at_ms: Date.now(), error: null } }
+                c.id === a.id
+                  ? {
+                      ...c,
+                      model_cache: {
+                        models: result.ok ? result.models : c.model_cache?.models ?? [],
+                        fetched_at_ms: Date.now(),
+                        url: result.url,
+                        error: result.ok ? null : result.error,
+                      },
+                    }
                   : c,
               ),
             };
             commit();
           }
-          return clone(backend.models);
+          return result;
         }
 
         case "llm_test_connection": {
-          const result = typeof backend.testResult === "function" ? backend.testResult(a) : backend.testResult;
-          const draft = a.draft as LlmConnection | undefined;
-          if (result.ok && draft && state.connections.some((c) => c.id === draft.id)) {
+          const connection = connectionOf();
+          const custom = typeof backend.testResult === "function" ? backend.testResult(a) : backend.testResult;
+          const result: TestConnectionResult = {
+            ...OK_TEST,
+            url: connection ? `${connection.base_url}/chat/completions` : null,
+            model: (a.model as string | null) || connection?.default_model || connection?.manual_models[0] || null,
+            ...custom,
+          };
+          if (result.ok && a.id) {
             state = {
               ...state,
-              connections: state.connections.map((c) => (c.id === draft.id ? { ...c, verified_at_ms: Date.now() } : c)),
+              connections: state.connections.map((c) => (c.id === a.id ? { ...c, verified_at_ms: Date.now() } : c)),
             };
             commit();
           }
-          return clone(result);
+          return result;
         }
-
-        case "llm_preview_endpoints":
-          return { chat_url: null, models_url: null, warnings: [] };
 
         default:
           throw `command ${cmd} not found`;
