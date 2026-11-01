@@ -59,4 +59,7 @@ export interface BatchTranslationOutcome {
   total: number;
   alreadyDone: number;
   newlyTranslated: number;
+  /** Lines that failed (shown on the lines); the batch carried on. */
+  failed?: number;
+  firstError?: string | null;
 }

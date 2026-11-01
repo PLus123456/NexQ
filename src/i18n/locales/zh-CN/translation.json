@@ -135,6 +135,7 @@
       "alreadyDone": "{{total}} 个片段都已翻译",
       "someNew": "新翻译了 {{count}} 个片段（{{cached}} 个已有缓存，共 {{total}} 个）",
       "allNew": "已翻译全部 {{total}} 个片段",
+      "partial": "翻译了 {{count}} 个片段，{{failed}} 个失败：{{detail}}",
       "failed": "批量翻译失败：{{detail}}"
     },
     "end": {

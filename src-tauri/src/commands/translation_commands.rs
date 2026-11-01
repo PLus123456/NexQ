@@ -386,16 +386,8 @@ pub async fn translate_batch(
         }));
     }
 
-    // Emit initial progress so UI shows the starting point (e.g. 10/24)
-    if already_done > 0 {
-        let _ = app.emit("batch_translation_progress", serde_json::json!({
-            "meetingId": meeting_id,
-            "completed": already_done,
-            "total": total,
-            "targetLang": target,
-        }));
-    }
-
+    // The provider first: failing after the first progress event would leave
+    // the UI's batch progress (and its Translate all button) stuck.
     let (provider_arc, mut provider_name, llm_settings) = {
         let trans_arc = state.translation.as_ref()
             .ok_or("Translation router not initialized")?;
@@ -409,27 +401,58 @@ pub async fn translate_batch(
         provider_name = llm_provider_label(&app, &LlmTask::TranslationBatch).await;
     }
 
-    // Translate only untranslated segments in chunks of 10
+    // Emit initial progress so UI shows the starting point (e.g. 10/24)
+    if already_done > 0 {
+        let _ = app.emit("batch_translation_progress", serde_json::json!({
+            "meetingId": meeting_id,
+            "completed": already_done,
+            "total": total,
+            "targetLang": target,
+        }));
+    }
+
+    // Translate only untranslated segments in chunks of 10. A failure is
+    // reported on its lines and the batch goes on with the next ones.
     let mut completed = already_done;
+    let mut newly_translated = 0usize;
+    let mut failed = 0usize;
+    let mut first_error: Option<String> = None;
     for chunk in untranslated.chunks(10) {
         let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
 
-        let translations = if let Some(settings) = &llm_settings {
+        // One result per line of the chunk.
+        let translations: Vec<Result<String, String>> = if let Some(settings) = &llm_settings {
             let mut results = Vec::with_capacity(texts.len());
             for text in &texts {
                 results.push(
                     translate_with_llm(&app, &LlmTask::TranslationBatch, settings, text, None, &target, BATCH_LLM_TIMEOUT)
-                        .await?,
+                        .await,
                 );
             }
             results
         } else {
-            provider_arc.translate_batch(&texts, None, &target).await
-                .map_err(|e| e.to_string())?
+            match provider_arc.translate_batch(&texts, None, &target).await {
+                Ok(results) if results.len() == texts.len() => results.into_iter().map(Ok).collect(),
+                Ok(results) => {
+                    let error = format!("{provider_name} returned {} translations for {} lines", results.len(), texts.len());
+                    vec![Err(error); texts.len()]
+                }
+                Err(e) => vec![Err(e.to_string()); texts.len()],
+            }
         };
 
         // Save each translation
         for ((seg_id, orig_text), translated) in chunk.iter().zip(translations.iter()) {
+            let translated = match translated {
+                Ok(translated) => translated,
+                Err(error) => {
+                    emit_segment_error(&app, seg_id, orig_text, error);
+                    failed += 1;
+                    first_error.get_or_insert_with(|| error.clone());
+                    continue;
+                }
+            };
+            newly_translated += 1;
             if let Some(ref db_arc) = state.database {
                 if let Ok(db) = db_arc.lock() {
                     let _ = crate::db::translation::save_translation(
@@ -460,11 +483,17 @@ pub async fn translate_batch(
         }));
     }
 
-    let newly_translated = completed - already_done;
+    if newly_translated == 0 {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    }
     Ok(serde_json::json!({
         "total": total,
         "alreadyDone": already_done,
         "newlyTranslated": newly_translated,
+        "failed": failed,
+        "firstError": first_error,
     }))
 }
 

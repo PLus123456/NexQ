@@ -137,6 +137,7 @@
       "alreadyDone": "All {{total}} segments already translated",
       "someNew": "Translated {{count}} new segments ({{cached}} already cached, {{total}} total)",
       "allNew": "Translated all {{total}} segments",
+      "partial": "Translated {{count}} segments; {{failed}} failed: {{detail}}",
       "failed": "Batch translation failed: {{detail}}"
     },
     "end": {

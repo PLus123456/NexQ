@@ -180,7 +180,12 @@ export function OverlayView() {
       const total = batch.total + recent.translated + recent.failed;
       const newlyTranslated = batch.newlyTranslated + recent.translated;
       const alreadyDone = batch.alreadyDone;
-      if (newlyTranslated === 0 && recent.failed === 0) {
+      if (batch.failed) {
+        showToast(
+          t("overlay.batch.partial", { count: newlyTranslated, failed: batch.failed, detail: batch.firstError ?? "" }),
+          "warning",
+        );
+      } else if (newlyTranslated === 0 && recent.failed === 0) {
         showToast(t("overlay.batch.alreadyDone", { total }), "info");
       } else if (alreadyDone > 0) {
         showToast(t("overlay.batch.someNew", { count: newlyTranslated, cached: alreadyDone, total }), "success");
