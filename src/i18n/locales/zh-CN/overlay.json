@@ -85,7 +85,7 @@
       "labelPending": "问题：{{text}}。点击让 AI 帮忙回答"
     },
     "answered": "已回答",
-    "assist": "助手",
+    "assist": "帮我回答",
     "button": {
       "answeredLabel": "已回答",
       "assistLabel": "让 AI 帮忙回答这个问题"

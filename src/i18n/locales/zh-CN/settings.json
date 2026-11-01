@@ -65,7 +65,7 @@
       "hint": "登录系统时自动启动 {{appName}}",
       "ariaLabel": "切换登录时启动"
     },
-    "movedNotice": "上下文窗口、自动触发和 AI 指令已移到 <strong>AI 动作</strong> 标签页。",
+    "movedNotice": "上下文窗口、自动触发和附加指令已移到 <strong>AI 动作</strong> 标签页。",
     "overlayOpacity": {
       "label": "悬浮窗透明度",
       "hint": "悬浮窗背景的透明程度",
