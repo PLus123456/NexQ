@@ -38,6 +38,17 @@ describe("engine-side translation", () => {
     expect(engineSupportsNativeTranslation(undefined)).toBe(false);
   });
 
+  it("two-way counts only with two different languages", () => {
+    const twoWay = (language_a?: string, language_b?: string) =>
+      partyUsesNativeTranslation(party("Them", { stt_provider: SONIOX, native_translation: { mode: "two_way", language_a, language_b } }));
+    expect(twoWay("zh-CN", "en-US")).toBe(true);
+    expect(twoWay("zh", "ja")).toBe(true);
+    expect(twoWay("zh-CN", undefined)).toBe(false);
+    expect(twoWay("zh-CN", "zh-TW")).toBe(false);
+    expect(twoWay("auto", "en")).toBe(false);
+    expect(twoWay("", "")).toBe(false);
+  });
+
   it("needs both the engine and native_translation switched on", () => {
     expect(partyUsesNativeTranslation(party("Them", { stt_provider: SONIOX, native_translation: nativeOn }))).toBe(true);
     expect(partyUsesNativeTranslation(party("Them", { stt_provider: SONIOX, native_translation: { mode: "off" } }))).toBe(false);
@@ -87,6 +98,22 @@ describe("applyPartyTranslationMode", () => {
     const service = applyPartyTranslationMode("them", "service", { you: false, them: true }, config);
     expect(service.parties.them).toBe(true);
     expect(service.audio?.them.native_translation?.mode).toBe("off");
+  });
+
+  it("a two-way setting without a language pair becomes one-way when the engine is chosen", () => {
+    const config = audio({}, { stt_provider: SONIOX, native_translation: { mode: "two_way", language_a: "zh-CN" } });
+    expect(partyTranslationMode("them", { you: false, them: true }, config)).toBe("service");
+    const out = applyPartyTranslationMode("them", "native", { you: false, them: true }, config);
+    expect(out.audio?.them.native_translation).toEqual({ mode: "one_way", language_a: "zh-CN", target_language: "" });
+    // ...and is switched off when the service is chosen.
+    const service = applyPartyTranslationMode("them", "service", { you: false, them: true }, config);
+    expect(service.audio?.them.native_translation?.mode).toBe("off");
+  });
+
+  it("a working two-way setting is kept when the engine is chosen again", () => {
+    const config = audio({}, { stt_provider: SONIOX, native_translation: { mode: "two_way", language_a: "zh-CN", language_b: "en" } });
+    expect(partyTranslationMode("them", { you: false, them: false }, config)).toBe("native");
+    expect(applyPartyTranslationMode("them", "native", { you: false, them: false }, config).audio).toBeNull();
   });
 
   it("leaves the audio config alone when nothing changes there", () => {

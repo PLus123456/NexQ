@@ -28,7 +28,6 @@ import {
 import { OpusMtModelManager } from "./OpusMtModelManager";
 import { LlmTranslationPanel } from "./translation/LlmTranslationPanel";
 import { PartyTranslationPicker } from "./translation/PartyTranslationPicker";
-import { TRANSLATION_PARTIES, partyTranslationMode } from "../lib/translation/nativeTranslation";
 import { ProviderEndpointField } from "./translation/ProviderEndpointField";
 import {
   ALL_PROVIDERS,
@@ -82,8 +81,6 @@ export function TranslationSettings() {
   const liveSettleMs = useTranslationStore((s) => s.liveSettleMs);
   const setLiveSettleMs = useTranslationStore((s) => s.setLiveSettleMs);
   const backendStatus = useTranslationStore((s) => s.backendStatus);
-  const translateParties = useTranslationStore((s) => s.translateParties);
-  const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
   const syncBackend = useTranslationStore((s) => s.syncBackend);
   const showPostMeetingTranslation = useConfigStore((s) => s.showPostMeetingTranslation);
   const setShowPostMeetingTranslation = useConfigStore((s) => s.setShowPostMeetingTranslation);
@@ -332,10 +329,6 @@ export function TranslationSettings() {
   })();
 
   const activeOption = ALL_PROVIDERS.find((p) => p.value === provider);
-  // The STT engine reads the target when its session starts (Soniox).
-  const nativeInUse = TRANSLATION_PARTIES.some(
-    (party) => partyTranslationMode(party, translateParties, meetingAudioConfig) === "native",
-  );
   const activeStatus = backendStatus?.provider === provider ? backendStatus : null;
 
   return (
@@ -608,9 +601,6 @@ export function TranslationSettings() {
                     ? t("settings.language.opusMtLocked", { name: opusMtActiveModel?.definition.display_name ?? "" })
                     : t("settings.language.targetHint")}
                 </p>
-                {nativeInUse && (
-                  <p className="mt-1 text-xs text-muted-foreground">{t("settings.language.nativeNote")}</p>
-                )}
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-foreground">{t("settings.language.source")}</label>

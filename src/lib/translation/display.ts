@@ -52,7 +52,8 @@ export function lineTranslation(
   let error: string | undefined;
   for (const id of ids) {
     const part = translations.get(id);
-    if (part) parts.push(part);
+    // An empty translation is a withdrawn one (Soniox: the line was already in the target language).
+    if (part && part.translated_text.trim()) parts.push(part);
     if (!error && errors.has(id)) error = errors.get(id);
   }
   const target = parts[0]?.target_lang ?? "";

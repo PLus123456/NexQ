@@ -224,8 +224,7 @@
       "targetHint": "Translate transcripts into this language",
       "opusMtLocked": "Set by the active OPUS-MT model ({{name}}).",
       "source": "Source Language",
-      "sourceHint": "Auto-detect uses each party's recognition language, unless that is set to auto-detect too.",
-      "nativeNote": "Parties the speech engine translates (Soniox) switch to a new target the next time recognition starts."
+      "sourceHint": "Auto-detect uses each party's recognition language, unless that is set to auto-detect too."
     },
     "behavior": {
       "title": "Behavior",
