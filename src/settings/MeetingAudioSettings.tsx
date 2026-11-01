@@ -1,15 +1,16 @@
 // Unified "Meeting Audio" settings tab — per-party device + STT configuration.
 // Two-panel layout: YOU (left) | THEM (right), with monitor + sessions below.
+// Engines, their availability and the Web Speech / Windows Speech exclusion
+// come from lib/stt/providerMeta (through ./stt/sttEngines).
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Trans, currentUiLanguage, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import {
   listAudioDevices,
   setRecordingEnabled,
   getAudioSessions,
-  hasApiKey,
-  listLocalSTTEngines,
   startDeviceMonitor,
   stopDeviceMonitor,
   type DevicePeakLevel,
@@ -19,8 +20,8 @@ import type {
   AudioDevice,
   AudioDeviceList,
   AudioSessionInfo,
-  LocalSTTEngineInfo,
   MeetingAudioConfig,
+  NativeTranslationConfig,
   PartyAudioConfig,
   STTProviderType,
 } from "../lib/types";
@@ -28,143 +29,45 @@ import {
   Mic,
   Volume2,
   RefreshCw,
-  Monitor,
-  Globe,
   HardDrive,
   Cloud,
-  Zap,
   ChevronDown,
   CheckCircle,
   AlertTriangle,
-  Cpu,
   Info,
+  Download,
+  X,
 } from "lucide-react";
 import { BUILT_IN_PRESETS, type MeetingPreset, applyPreset } from "./presets";
-
-// STT provider options — whisper_cpp excluded (batch-only, not for live STT)
-const STT_OPTIONS: {
-  value: STTProviderType;
-  label: string;
-  shortLabel: string;
-  icon: React.ReactNode;
-  requiresKey: boolean;
-  isCloud: boolean;
-  inputOnly?: boolean;
-  requiresDownload?: string;
-}[] = [
-  {
-    value: "web_speech",
-    label: "Web Speech",
-    shortLabel: "Web Speech",
-    icon: <Globe className="h-3.5 w-3.5" />,
-    requiresKey: false,
-    isCloud: false,
-    inputOnly: true,
-  },
-  {
-    value: "windows_native",
-    label: "Windows Speech",
-    shortLabel: "Windows Speech",
-    icon: <Monitor className="h-3.5 w-3.5" />,
-    requiresKey: false,
-    isCloud: false,
-    inputOnly: true,
-  },
-  {
-    value: "sherpa_onnx",
-    label: "Sherpa-ONNX",
-    shortLabel: "Sherpa-ONNX",
-    icon: <HardDrive className="h-3.5 w-3.5" />,
-    requiresKey: false,
-    isCloud: false,
-    requiresDownload: "sherpa_onnx",
-  },
-  {
-    value: "ort_streaming",
-    label: "ORT Streaming",
-    shortLabel: "ORT",
-    icon: <Zap className="h-3.5 w-3.5" />,
-    requiresKey: false,
-    isCloud: false,
-    requiresDownload: "ort_streaming",
-  },
-  {
-    value: "parakeet_tdt",
-    label: "Parakeet TDT (Best Local)",
-    shortLabel: "Parakeet",
-    icon: <Cpu className="h-3.5 w-3.5" />,
-    requiresKey: false,
-    isCloud: false,
-    requiresDownload: "parakeet_tdt",
-  },
-  {
-    value: "deepgram",
-    label: "Deepgram",
-    shortLabel: "Deepgram",
-    icon: <Cloud className="h-3.5 w-3.5" />,
-    requiresKey: true,
-    isCloud: true,
-  },
-  {
-    value: "whisper_api",
-    label: "Whisper API",
-    shortLabel: "Whisper API",
-    icon: <Cloud className="h-3.5 w-3.5" />,
-    requiresKey: true,
-    isCloud: true,
-  },
-  {
-    value: "azure_speech",
-    label: "Azure Speech",
-    shortLabel: "Azure",
-    icon: <Cloud className="h-3.5 w-3.5" />,
-    requiresKey: true,
-    isCloud: true,
-  },
-  {
-    value: "groq_whisper",
-    label: "Groq Whisper",
-    shortLabel: "Groq",
-    icon: <Zap className="h-3.5 w-3.5" />,
-    requiresKey: true,
-    isCloud: true,
-  },
-];
-
-// ── Web Speech / Windows Speech mutual exclusion ──
-// These providers capture from the OS default mic via a single SpeechRecognition instance.
-// Only one can be active across both parties at any time.
-const EXCLUSIVE_PROVIDERS: STTProviderType[] = ["web_speech", "windows_native"];
-
-const EXCLUSIVE_FALLBACK_ORDER: STTProviderType[] = [
-  "deepgram", "groq_whisper", "whisper_api", "azure_speech",
-  "sherpa_onnx", "ort_streaming", "parakeet_tdt",
-];
-
-const STT_LANGUAGES = [
-  { value: "en-US", label: "English (US)" },
-  { value: "en-GB", label: "English (UK)" },
-  { value: "es-ES", label: "Spanish" },
-  { value: "fr-FR", label: "French" },
-  { value: "de-DE", label: "German" },
-  { value: "it-IT", label: "Italian" },
-  { value: "pt-BR", label: "Portuguese (Brazil)" },
-  { value: "ja-JP", label: "Japanese" },
-  { value: "zh-CN", label: "Chinese (Simplified)" },
-  { value: "ko-KR", label: "Korean" },
-  { value: "nl-NL", label: "Dutch" },
-  { value: "hi-IN", label: "Hindi" },
-  { value: "ru-RU", label: "Russian" },
-  { value: "ar-SA", label: "Arabic" },
-  { value: "tr-TR", label: "Turkish" },
-  { value: "pl-PL", label: "Polish" },
-  { value: "cs-CZ", label: "Czech" },
-  { value: "sv-SE", label: "Swedish" },
-];
-
-function isExclusiveProvider(provider: string): boolean {
-  return EXCLUSIVE_PROVIDERS.includes(provider as STTProviderType);
-}
+import { currentPlatform } from "../lib/platform";
+import {
+  isExclusiveProvider,
+  isSttProviderAvailable,
+  localModelIdOnSwitch,
+  sttProviderMeta,
+  sttProvidersFor,
+  type SttProviderMeta,
+} from "../lib/stt/providerMeta";
+import { LanguageCombobox } from "../components/LanguageCombobox";
+import { TRANSLATION_COMMON } from "../lib/languages";
+import { LocalModelManager } from "./LocalModelManager";
+import { PartyLanguageField } from "./stt/PartyLanguageField";
+import {
+  SttEngineIcon,
+  assignPartyEngine,
+  availabilityContext,
+  defaultMeetingAudioConfig,
+  exclusiveFallback,
+  otherParty,
+  partyLabel,
+  presetDescription,
+  presetName,
+  sttEngineLabel,
+  unavailableReason,
+  useSttReadiness,
+  type Party,
+  type SttReadiness,
+} from "./stt/sttEngines";
 
 // ── Party color config — must use full Tailwind class strings (no interpolation) ──
 const PARTY_CONFIG = {
@@ -186,7 +89,25 @@ const PARTY_CONFIG = {
   },
 } as const;
 
+/** Engines whose diarization the in-person toggle below drives. */
+const DIARIZATION_ENGINES: readonly STTProviderType[] = ["deepgram", "azure_speech"];
+
+interface DeviceOption {
+  device: AudioDevice;
+  kind: "input" | "output";
+}
+
+/** "Deepgram & Azure" / "Deepgram和Azure". */
+function formatList(items: string[]): string {
+  try {
+    return new Intl.ListFormat(currentUiLanguage(), { style: "short", type: "conjunction" }).format(items);
+  } catch {
+    return items.join(", ");
+  }
+}
+
 export function MeetingAudioSettings() {
+  const { t } = useT(["stt", "common"]);
   const {
     meetingAudioConfig,
     setMeetingAudioConfig,
@@ -196,8 +117,8 @@ export function MeetingAudioSettings() {
   } = useConfigStore();
   const diarizationEnabled = useConfigStore((s) => s.diarizationEnabled);
   const setDiarizationEnabled = useConfigStore((s) => s.setDiarizationEnabled);
-  const sttLanguage = useConfigStore((s) => s.sttLanguage);
-  const setSTTLanguage = useConfigStore((s) => s.setSTTLanguage);
+  // Remote Whisper can be picked once its server address is set.
+  const hasBaseUrl = useConfigStore((s) => s.openaiCompatSttConfig.base_url.trim() !== "");
 
   const [devices, setDevices] = useState<AudioDeviceList>({
     inputs: [],
@@ -206,29 +127,15 @@ export function MeetingAudioSettings() {
   const [loadingDevices, setLoadingDevices] = useState(true);
   const [sessions, setSessions] = useState<AudioSessionInfo[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
-  const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, boolean>>({});
-  const [localEngines, setLocalEngines] = useState<LocalSTTEngineInfo[]>([]);
-  const activeWhisperModel = useConfigStore((s) => s.activeWhisperModel);
+  const readiness = useSttReadiness();
+  // This platform's engines (Windows Speech only on Windows), in picker order.
+  const offered = useMemo(() => sttProvidersFor(currentPlatform()), []);
 
   const [deviceLevels, setDeviceLevels] = useState<Record<string, number>>({});
   const [devicePeaks, setDevicePeaks] = useState<Record<string, number>>({});
 
-  const config: MeetingAudioConfig = meetingAudioConfig ?? {
-    you: {
-      role: "You",
-      device_id: micDeviceId ?? "default",
-      is_input_device: true,
-      stt_provider: "web_speech",
-    },
-    them: {
-      role: "Them",
-      device_id: systemDeviceId ?? "default",
-      is_input_device: false,
-      stt_provider: "deepgram",
-    },
-    recording_enabled: recordingEnabled,
-    preset_name: null,
-  };
+  const config: MeetingAudioConfig =
+    meetingAudioConfig ?? defaultMeetingAudioConfig({ micDeviceId, systemDeviceId, recordingEnabled });
 
   useEffect(() => {
     if (!meetingAudioConfig) {
@@ -239,8 +146,6 @@ export function MeetingAudioSettings() {
   useEffect(() => {
     loadDevices();
     loadSessions();
-    checkApiKeys();
-    loadLocalEngines();
   }, []);
 
   // Device monitor: runs for the entire component lifetime, independent of recording state.
@@ -297,34 +202,18 @@ export function MeetingAudioSettings() {
     }
   }
 
-  async function checkApiKeys() {
-    const providers = ["deepgram", "whisper_api", "azure_speech", "groq_whisper"];
-    const status: Record<string, boolean> = {};
-    for (const p of providers) {
-      try {
-        status[p] = await hasApiKey(p);
-      } catch {
-        status[p] = false;
-      }
-    }
-    setApiKeyStatus(status);
-  }
-
-  async function loadLocalEngines() {
-    try {
-      const data = await listLocalSTTEngines();
-      setLocalEngines(data);
-    } catch (err) {
-      console.error("Failed to load local STT engines:", err);
-    }
-  }
-
+  /**
+   * Changes one party (from the latest stored config, so two changes in one
+   * tick don't overwrite each other). Anything but the language takes the
+   * config off its preset.
+   */
   const updateParty = useCallback(
-    (party: "you" | "them", updates: Partial<PartyAudioConfig>) => {
+    (party: Party, updates: Partial<PartyAudioConfig>, keepPreset = false) => {
+      const current = useConfigStore.getState().meetingAudioConfig ?? config;
       const newConfig: MeetingAudioConfig = {
-        ...config,
-        [party]: { ...config[party], ...updates },
-        preset_name: null,
+        ...current,
+        [party]: { ...current[party], ...updates },
+        preset_name: keepPreset ? current.preset_name : null,
       };
       setMeetingAudioConfig(newConfig);
     },
@@ -337,72 +226,62 @@ export function MeetingAudioSettings() {
     try {
       await setRecordingEnabled(enabled);
       showToast(
-        enabled ? "Audio recording enabled" : "Audio recording disabled",
+        enabled ? t("stt:meetingAudio.recording.enabled") : t("stt:meetingAudio.recording.disabled"),
         "success"
       );
     } catch (err) {
       console.error("Failed to set recording:", err);
-      showToast("Failed to toggle recording", "error");
+      showToast(t("stt:meetingAudio.recording.toggleFailed"), "error");
     }
   }
 
   function handlePresetSelect(preset: MeetingPreset) {
     const allDevices = [...devices.inputs, ...devices.outputs];
-    const resolved = applyPreset(preset, allDevices);
+    // Keeps each party's language and translation target.
+    const resolved = applyPreset(preset, allDevices, config);
     setMeetingAudioConfig(resolved);
-    showToast(`Preset "${preset.name}" applied`, "success");
+    showToast(t("stt:meetingAudio.presets.applied", { name: presetName(preset) }), "success");
   }
 
-  const allDevices: { device: AudioDevice; group: string }[] = [
-    ...devices.inputs.map((d) => ({ device: d, group: "Microphones" })),
-    ...devices.outputs.map((d) => ({ device: d, group: "Speakers / Output" })),
+  const allDevices: DeviceOption[] = [
+    ...devices.inputs.map((d) => ({ device: d, kind: "input" as const })),
+    ...devices.outputs.map((d) => ({ device: d, kind: "output" as const })),
   ];
+
+  const diarizationEngines = DIARIZATION_ENGINES.filter(
+    (p) => config.you.stt_provider === p || config.them.stt_provider === p
+  );
 
   return (
     <div className="flex flex-col gap-4">
 
       {/* ── Quick Presets ── */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/20 bg-card/40 px-4 py-2.5">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <span className="mr-1 shrink-0 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
-            Presets
-          </span>
-          {BUILT_IN_PRESETS.map((preset) => (
-            <button
-              key={preset.name}
-              onClick={() => handlePresetSelect(preset)}
-              className={`cursor-pointer rounded-lg border px-3 py-1 text-xs font-medium transition-all duration-150 active:scale-95 ${
-                config.preset_name === preset.name
-                  ? "border-primary/50 bg-primary/10 text-primary shadow-sm shadow-primary/10"
-                  : "border-border/30 text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
-              }`}
-            >
-              {preset.name}
-            </button>
-          ))}
-        </div>
-        <label className="flex shrink-0 items-center gap-2 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
-          STT Language
-          <select
-            value={sttLanguage}
-            onChange={(e) => setSTTLanguage(e.target.value)}
-            className="h-8 cursor-pointer rounded-lg border border-border/40 bg-background/60 px-2 text-xs font-medium normal-case tracking-normal text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+        <span className="mr-1 shrink-0 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
+          {t("stt:meetingAudio.presets.label")}
+        </span>
+        {BUILT_IN_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            onClick={() => handlePresetSelect(preset)}
+            title={presetDescription(preset)}
+            className={`cursor-pointer rounded-lg border px-3 py-1 text-xs font-medium transition-all duration-150 active:scale-95 ${
+              config.preset_name === preset.name
+                ? "border-primary/50 bg-primary/10 text-primary shadow-sm shadow-primary/10"
+                : "border-border/30 text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
+            }`}
           >
-            {STT_LANGUAGES.map((lang) => (
-              <option key={lang.value} value={lang.value}>
-                {lang.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            {presetName(preset)}
+          </button>
+        ))}
       </div>
 
       {/* ── Main two-panel: YOU | THEM ── */}
       <div className="grid grid-cols-2 gap-4">
         <PartyPanel
-          label="You"
-          description="Your microphone — used in online meetings"
-          badge="Online meetings only"
+          label={t("common:labels.you")}
+          description={t("stt:meetingAudio.party.you.description")}
+          badge={t("stt:meetingAudio.party.you.badge")}
           role="you"
           icon={<Mic className="h-4 w-4" />}
           party={config.you}
@@ -410,17 +289,20 @@ export function MeetingAudioSettings() {
           peak={devicePeaks[config.you.device_id] ?? 0}
           allDevices={allDevices}
           loadingDevices={loadingDevices}
-          apiKeyStatus={apiKeyStatus}
-          activeWhisperModel={activeWhisperModel}
-          localEngines={localEngines}
+          offered={offered}
+          readiness={readiness}
+          hasBaseUrl={hasBaseUrl}
           otherPartyProvider={config.them.stt_provider}
-          otherPartyLabel="Them"
-          onChange={(updates) => updateParty("you", updates)}
+          onChange={(updates, keepPreset) => updateParty("you", updates, keepPreset)}
         />
         <PartyPanel
-          label="Them"
-          labelSuffix={<span className="text-xs font-semibold uppercase tracking-wide text-purple-400">/&nbsp;Room</span>}
-          description="Remote party (online) or room microphone (in-person)"
+          label={t("common:labels.them")}
+          labelSuffix={
+            <span className="text-xs font-semibold uppercase tracking-wide text-purple-400">
+              /&nbsp;{t("common:labels.room")}
+            </span>
+          }
+          description={t("stt:meetingAudio.party.them.description")}
           role="them"
           icon={<Volume2 className="h-4 w-4" />}
           party={config.them}
@@ -428,70 +310,44 @@ export function MeetingAudioSettings() {
           peak={devicePeaks[config.them.device_id] ?? 0}
           allDevices={allDevices}
           loadingDevices={loadingDevices}
-          apiKeyStatus={apiKeyStatus}
-          activeWhisperModel={activeWhisperModel}
-          localEngines={localEngines}
+          offered={offered}
+          readiness={readiness}
+          hasBaseUrl={hasBaseUrl}
           otherPartyProvider={config.you.stt_provider}
-          otherPartyLabel="You"
-          onChange={(updates) => updateParty("them", updates)}
+          onChange={(updates, keepPreset) => updateParty("them", updates, keepPreset)}
         />
       </div>
 
       {/* ── Diarization Toggle — only shown when Deepgram or Azure is active ── */}
-      {(["deepgram", "azure_speech"] as STTProviderType[]).some(
-        (p) => config.you.stt_provider === p || config.them.stt_provider === p
-      ) && (
+      {diarizationEngines.length > 0 && (
         <div className="flex items-center justify-between rounded-xl border border-border/20 bg-card/40 px-4 py-3">
           <div>
-            <p className="text-xs font-medium text-foreground">Speaker Diarization</p>
+            <p className="text-xs font-medium text-foreground">{t("stt:meetingAudio.diarization.label")}</p>
             <p className="mt-0.5 text-meta text-muted-foreground/70">
-              Separate speakers in in-person mode (supported by{" "}
-              {[
-                config.you.stt_provider === "deepgram" || config.them.stt_provider === "deepgram" ? "Deepgram" : null,
-                config.you.stt_provider === "azure_speech" || config.them.stt_provider === "azure_speech" ? "Azure" : null,
-              ].filter(Boolean).join(" & ")}
-              )
+              {t("stt:meetingAudio.diarization.hint", {
+                engines: formatList(diarizationEngines.map((id) => sttProviderMeta(id)?.label ?? id)),
+              })}
             </p>
           </div>
-          <button
-            onClick={() => setDiarizationEnabled(!diarizationEnabled)}
-            role="switch"
-            aria-checked={diarizationEnabled}
-            aria-label="Toggle speaker diarization"
-            className={`relative h-5 w-9 cursor-pointer rounded-full transition-all duration-200 ${
-              diarizationEnabled ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
-            }`}
-          >
-            <span
-              className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
-                diarizationEnabled ? "translate-x-4 scale-105" : "translate-x-0"
-              }`}
-            />
-          </button>
+          <ToggleSwitch
+            checked={diarizationEnabled}
+            onChange={setDiarizationEnabled}
+            label={t("stt:meetingAudio.diarization.ariaLabel")}
+          />
         </div>
       )}
 
       {/* ── Recording Toggle (full-width row) ── */}
       <div className="flex items-center justify-between rounded-xl border border-border/20 bg-card/40 px-4 py-3">
         <div>
-          <p className="text-xs font-medium text-foreground">Record to file</p>
-          <p className="mt-0.5 text-meta text-muted-foreground/70">Save meeting audio as WAV</p>
+          <p className="text-xs font-medium text-foreground">{t("stt:meetingAudio.recording.label")}</p>
+          <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:meetingAudio.recording.hint")}</p>
         </div>
-        <button
-          onClick={() => handleRecordingToggle(!config.recording_enabled)}
-          role="switch"
-          aria-checked={config.recording_enabled}
-          aria-label="Toggle recording"
-          className={`relative h-5 w-9 cursor-pointer rounded-full transition-all duration-200 ${
-            config.recording_enabled ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
-          }`}
-        >
-          <span
-            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
-              config.recording_enabled ? "translate-x-4 scale-105" : "translate-x-0"
-            }`}
-          />
-        </button>
+        <ToggleSwitch
+          checked={config.recording_enabled}
+          onChange={(enabled) => handleRecordingToggle(enabled)}
+          label={t("stt:meetingAudio.recording.ariaLabel")}
+        />
       </div>
 
       {/* ── Bottom row: Live Monitor | Audio Sessions ── */}
@@ -501,12 +357,17 @@ export function MeetingAudioSettings() {
         <div className="flex flex-col rounded-xl border border-border/20 bg-card/40 p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-foreground">Live Monitor</span>
-              <div className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" title="Monitoring all devices" />
+              <span className="text-xs font-semibold text-foreground">{t("stt:meetingAudio.monitor.title")}</span>
+              <div
+                className="h-1.5 w-1.5 rounded-full bg-success animate-pulse"
+                title={t("stt:meetingAudio.monitor.monitoringAll")}
+              />
             </div>
             <button
               onClick={loadDevices}
               disabled={loadingDevices}
+              aria-label={t("stt:meetingAudio.monitor.refresh")}
+              title={t("stt:meetingAudio.monitor.refresh")}
               className="cursor-pointer rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
             >
               <RefreshCw className={`h-3 w-3 ${loadingDevices ? "animate-spin" : ""}`} />
@@ -535,7 +396,7 @@ export function MeetingAudioSettings() {
             ))}
           </div>
           <p className="mt-2 shrink-0 text-meta text-muted-foreground/60">
-            All devices streaming live (~60 fps)
+            {t("stt:meetingAudio.monitor.streamingAll")}
           </p>
         </div>
 
@@ -545,10 +406,12 @@ export function MeetingAudioSettings() {
           {/* Audio Sessions */}
           <div className="flex flex-col rounded-xl border border-border/20 bg-card/40 p-4">
             <div className="mb-3 flex items-center justify-between">
-              <span className="text-xs font-semibold text-foreground">Audio Sessions</span>
+              <span className="text-xs font-semibold text-foreground">{t("stt:meetingAudio.sessions.title")}</span>
               <button
                 onClick={loadSessions}
                 disabled={loadingSessions}
+                aria-label={t("stt:meetingAudio.sessions.refresh")}
+                title={t("stt:meetingAudio.sessions.refresh")}
                 className="cursor-pointer rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
               >
                 <RefreshCw className={`h-3 w-3 ${loadingSessions ? "animate-spin" : ""}`} />
@@ -556,7 +419,7 @@ export function MeetingAudioSettings() {
             </div>
             {sessions.length === 0 ? (
               <p className="text-xs text-muted-foreground/70">
-                {loadingSessions ? "Scanning audio sessions..." : "No active audio sessions detected"}
+                {loadingSessions ? t("stt:meetingAudio.sessions.scanning") : t("stt:meetingAudio.sessions.empty")}
               </p>
             ) : (
               <div className="space-y-1">
@@ -583,9 +446,15 @@ export function MeetingAudioSettings() {
                               device_id: matchingDevice.id,
                               is_input_device: false,
                             });
-                            showToast(`"Them" source set to ${matchingDevice.name}`, "success");
+                            showToast(
+                              t("stt:meetingAudio.sessions.sourceSet", {
+                                party: t("common:labels.them"),
+                                device: matchingDevice.name,
+                              }),
+                              "success"
+                            );
                           } else {
-                            showToast("Could not find matching output device", "error");
+                            showToast(t("stt:meetingAudio.sessions.noMatchingDevice"), "error");
                           }
                         }}
                         disabled={isSelectedDevice}
@@ -595,7 +464,7 @@ export function MeetingAudioSettings() {
                             : "bg-accent text-foreground hover:bg-primary/10 hover:text-primary"
                         }`}
                       >
-                        {isSelectedDevice ? "Active" : "Use"}
+                        {isSelectedDevice ? t("stt:meetingAudio.sessions.active") : t("stt:meetingAudio.sessions.use")}
                       </button>
                     </div>
                   );
@@ -610,12 +479,50 @@ export function MeetingAudioSettings() {
       <div className="flex items-start gap-3 rounded-xl border border-border/20 bg-card/40 px-4 py-3">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
         <p className="text-xs text-muted-foreground/70">
-          <span className="font-medium text-foreground">Dual-purpose audio:</span>{" "}
-          In <span className="text-sky-400 font-medium">online meetings</span>, "You" captures your mic and "Them" captures remote audio via system loopback.
-          In <span className="text-purple-400 font-medium">in-person meetings</span>, both sources share the room microphone and speaker diarization separates voices.
+          <Trans
+            t={t}
+            i18nKey="stt:meetingAudio.info"
+            components={{
+              strong: <span className="font-medium text-foreground" />,
+              online: <span className="text-sky-400 font-medium" />,
+              onsite: <span className="text-purple-400 font-medium" />,
+            }}
+          />
         </p>
       </div>
     </div>
+  );
+}
+
+// ── Toggle switch ──
+
+function ToggleSwitch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** Accessible name. */
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-all duration-200 ${
+        checked ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
+      }`}
+    >
+      <span
+        className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
+          checked ? "translate-x-4 scale-105" : "translate-x-0"
+        }`}
+      />
+    </button>
   );
 }
 
@@ -633,34 +540,35 @@ function PartyPanel({
   peak,
   allDevices,
   loadingDevices,
-  apiKeyStatus,
-  activeWhisperModel,
-  localEngines,
+  offered,
+  readiness,
+  hasBaseUrl,
   otherPartyProvider,
-  otherPartyLabel,
   onChange,
 }: {
   label: string;
   labelSuffix?: React.ReactNode;
   description?: string;
   badge?: string;
-  role: "you" | "them";
+  role: Party;
   icon: React.ReactNode;
   party: PartyAudioConfig;
   level: number;
   peak: number;
-  allDevices: { device: AudioDevice; group: string }[];
+  allDevices: DeviceOption[];
   loadingDevices: boolean;
-  apiKeyStatus: Record<string, boolean>;
-  activeWhisperModel: string | null;
-  localEngines: LocalSTTEngineInfo[];
+  offered: readonly SttProviderMeta[];
+  readiness: SttReadiness;
+  hasBaseUrl: boolean;
   otherPartyProvider: STTProviderType | null;
-  otherPartyLabel: string;
-  onChange: (updates: Partial<PartyAudioConfig>) => void;
+  /** `keepPreset`: the change doesn't take the config off its preset (language). */
+  onChange: (updates: Partial<PartyAudioConfig>, keepPreset?: boolean) => void;
 }) {
+  const { t } = useT(["stt", "common", "settings"]);
   const c = PARTY_CONFIG[role];
-  const inputDevices = allDevices.filter((d) => d.group === "Microphones");
-  const outputDevices = allDevices.filter((d) => d.group === "Speakers / Output");
+  const inputDevices = allDevices.filter((d) => d.kind === "input");
+  const outputDevices = allDevices.filter((d) => d.kind === "output");
+  const [showModels, setShowModels] = useState(false);
 
   // Amplify then sqrt for perceptual sensitivity — 2.5× gain makes typical peaks fill the bar
   const amplified = Math.min(level * 2.5, 1);
@@ -668,29 +576,26 @@ function PartyPanel({
   const isActive = level > 0.005;
   const barWidth = isActive ? Math.min(100, Math.round(scaledLv * 100)) : 0;
 
+  const engine = sttEngineLabel(party.stt_provider);
+  const meta = sttProviderMeta(party.stt_provider);
+  const isOffered = offered.some((o) => o.id === party.stt_provider);
+  const notReady = meta
+    ? unavailableReason(meta, availabilityContext(readiness, party.is_input_device, hasBaseUrl))
+    : null;
+  const languageId = `meeting-audio-${role}-language`;
+
   function handleDeviceChange(value: string) {
     const [isInput, deviceId]: [boolean, string] = JSON.parse(value);
     onChange({ device_id: deviceId, is_input_device: isInput });
   }
 
   function handleProviderChange(newProvider: STTProviderType) {
-    const updates: Partial<PartyAudioConfig> = { stt_provider: newProvider };
-    if (newProvider === "sherpa_onnx" || newProvider === "ort_streaming" || newProvider === "parakeet_tdt") {
-      // Use per-engine active model, falling back to legacy activeWhisperModel
-      const activeModelPerEngine = useConfigStore.getState().activeModelPerEngine;
-      const DEFAULT_MODEL_PER_ENGINE: Record<string, string> = {
-        sherpa_onnx: "streaming-zipformer-en-20M",
-        ort_streaming: "zipformer-en-20M",
-        parakeet_tdt: "parakeet-tdt-0.6b-v3-int8",
-      };
-      const engineModel = activeModelPerEngine[newProvider]
-        ?? DEFAULT_MODEL_PER_ENGINE[newProvider]
-        ?? activeWhisperModel;
-      if (engineModel) updates.local_model_id = engineModel;
-    } else {
-      // Clear local_model_id for non-local providers to prevent cross-engine contamination
-      updates.local_model_id = undefined;
-    }
+    const { activeModelPerEngine, activeWhisperModel } = useConfigStore.getState();
+    // The engine's model (none for engines without one): no cross-engine model ids.
+    const updates: Partial<PartyAudioConfig> = {
+      stt_provider: newProvider,
+      local_model_id: localModelIdOnSwitch(newProvider, activeModelPerEngine, activeWhisperModel),
+    };
     // Dev log: provider change
     import("../stores/devLogStore").then(({ useDevLogStore }) => {
       useDevLogStore.getState().addEntry(
@@ -699,6 +604,7 @@ function PartyPanel({
         (updates.local_model_id ? ` (model: ${updates.local_model_id})` : "")
       );
     });
+    setShowModels(false);
     onChange(updates);
   }
 
@@ -715,11 +621,9 @@ function PartyPanel({
             <p className={`text-xs font-semibold uppercase tracking-wide ${c.iconColor}`}>{label}</p>
             {labelSuffix}
           </div>
-          {description ? (
-            <p className="mt-0.5 text-meta text-muted-foreground/60">{description}</p>
-          ) : (
-            <p className="mt-0.5 text-meta text-muted-foreground/60">Audio source & recognition</p>
-          )}
+          <p className="mt-0.5 text-meta text-muted-foreground/60">
+            {description ?? t("stt:meetingAudio.party.defaultDescription")}
+          </p>
           {badge && (
             <span className="mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">
               {badge}
@@ -746,7 +650,7 @@ function PartyPanel({
         {/* Source device */}
         <div>
           <label className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
-            Source
+            {t("stt:meetingAudio.source.label")}
           </label>
           <select
             value={JSON.stringify([party.is_input_device, party.device_id])}
@@ -755,22 +659,22 @@ function PartyPanel({
             className="w-full cursor-pointer rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
           >
             <option value={JSON.stringify([role === "you", "default"])}>
-              {loadingDevices ? "Loading..." : "Default"}
+              {loadingDevices ? t("common:status.loading") : t("stt:meetingAudio.source.default")}
             </option>
             {inputDevices.length > 0 && (
-              <optgroup label="Microphones">
+              <optgroup label={t("stt:meetingAudio.source.microphones")}>
                 {inputDevices.map((d) => (
                   <option key={d.device.id} value={JSON.stringify([d.device.is_input, d.device.id])}>
-                    {d.device.name}{d.device.is_default ? " (Default)" : ""}
+                    {d.device.is_default ? t("stt:meetingAudio.source.defaultDevice", { name: d.device.name }) : d.device.name}
                   </option>
                 ))}
               </optgroup>
             )}
             {outputDevices.length > 0 && (
-              <optgroup label="Speakers / Output">
+              <optgroup label={t("stt:meetingAudio.source.outputs")}>
                 {outputDevices.map((d) => (
                   <option key={d.device.id} value={JSON.stringify([d.device.is_input, d.device.id])}>
-                    {d.device.name}{d.device.is_default ? " (Default)" : ""}
+                    {d.device.is_default ? t("stt:meetingAudio.source.defaultDevice", { name: d.device.name }) : d.device.name}
                   </option>
                 ))}
               </optgroup>
@@ -795,18 +699,82 @@ function PartyPanel({
         {/* STT Provider */}
         <div>
           <label className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
-            Speech to Text
+            {t("stt:meetingAudio.engine.label")}
           </label>
           <ProviderSelect
+            role={role}
             value={party.stt_provider}
             isInput={party.is_input_device}
-            apiKeyStatus={apiKeyStatus}
-            localEngines={localEngines}
+            offered={offered}
+            readiness={readiness}
+            hasBaseUrl={hasBaseUrl}
             otherPartyProvider={otherPartyProvider}
-            otherPartyLabel={otherPartyLabel}
             onChange={handleProviderChange}
           />
         </div>
+
+        {/* The party's engine can't run as set up */}
+        {(!isOffered || notReady) && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+              <p className="text-meta leading-relaxed text-amber-200/80">
+                {!isOffered
+                  ? t("stt:meetingAudio.notReady.notOffered", { engine })
+                  : notReady === "needsModel"
+                    ? t("stt:meetingAudio.notReady.needsModel", { engine })
+                    : notReady === "needsBaseUrl"
+                      ? t("stt:meetingAudio.notReady.needsBaseUrl", { engine, tab: t("settings:tabs.stt") })
+                      : notReady === "needsKey"
+                        ? t("stt:meetingAudio.notReady.needsKey", { engine, tab: t("settings:tabs.stt") })
+                        : t("stt:meetingAudio.notReady.needsInput", { engine })}
+              </p>
+            </div>
+            {isOffered && notReady === "needsModel" && meta?.requiresDownload && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowModels((v) => !v)}
+                  aria-expanded={showModels}
+                  className="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-meta font-semibold text-amber-400 hover:bg-amber-500/20"
+                >
+                  {showModels ? <X className="h-3 w-3" /> : <Download className="h-3 w-3" />}
+                  {showModels ? t("stt:meetingAudio.notReady.hideModels") : t("stt:meetingAudio.notReady.downloadModel")}
+                </button>
+                {showModels && (
+                  <div className="mt-2">
+                    <LocalModelManager engineFilter={meta.requiresDownload} compact />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Recognition language */}
+        <div>
+          <label
+            htmlFor={languageId}
+            className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60"
+          >
+            {t("stt:language.label")}
+          </label>
+          <PartyLanguageField
+            id={languageId}
+            aria-label={t("stt:language.partyAriaLabel", { party: partyLabel(role) })}
+            party={party}
+            onChange={(code) => onChange({ language: code }, true)}
+          />
+        </div>
+
+        {/* Soniox translates in the same stream */}
+        {party.stt_provider === "soniox" && (
+          <SonioxTranslationField
+            role={role}
+            value={party.native_translation}
+            onChange={(native_translation) => onChange({ native_translation })}
+          />
+        )}
 
         {/* Device + Provider mismatch warning */}
         {(party.stt_provider === "web_speech" || party.stt_provider === "windows_native") &&
@@ -815,10 +783,12 @@ function PartyPanel({
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
             <p className="text-meta leading-relaxed text-amber-200/80">
-              <span className="font-semibold text-amber-400">Device override active.</span>{" "}
-              {party.stt_provider === "web_speech" ? "Web Speech" : "Windows Speech"} always
-              uses the system default mic. During meetings, your system default will be
-              temporarily switched to the selected device and restored when the meeting ends.
+              <Trans
+                t={t}
+                i18nKey="stt:meetingAudio.deviceOverride"
+                values={{ engine }}
+                components={{ strong: <span className="font-semibold text-amber-400" /> }}
+              />
             </p>
           </div>
         )}
@@ -827,28 +797,113 @@ function PartyPanel({
   );
 }
 
+// ── Soniox native translation ──
+
+/**
+ * Soniox's own translation of this party (`native_translation`). The
+ * translation settings get a fuller control later; same field.
+ */
+function SonioxTranslationField({
+  role,
+  value,
+  onChange,
+}: {
+  role: Party;
+  value: NativeTranslationConfig | undefined;
+  onChange: (value: NativeTranslationConfig) => void;
+}) {
+  const { t } = useT(["stt", "common"]);
+  const mode = value?.mode ?? "off";
+  const on = mode !== "off";
+  const target = value?.target_language ?? "";
+  const targetId = `meeting-audio-${role}-translation-target`;
+
+  function setOn(next: boolean) {
+    onChange({ ...value, mode: next ? "one_way" : "off" });
+  }
+
+  function clearTarget() {
+    const rest: NativeTranslationConfig = { ...(value ?? { mode: "one_way" }) };
+    delete rest.target_language;
+    onChange(rest);
+  }
+
+  return (
+    <div className="rounded-lg border border-border/30 bg-background/30 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">{t("stt:meetingAudio.nativeTranslation.label")}</p>
+          <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:meetingAudio.nativeTranslation.hint")}</p>
+        </div>
+        <ToggleSwitch
+          checked={on}
+          onChange={setOn}
+          label={t("stt:meetingAudio.nativeTranslation.ariaLabel", { party: partyLabel(role) })}
+        />
+      </div>
+      {mode === "one_way" && (
+        <div className="mt-3">
+          <label
+            htmlFor={targetId}
+            className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60"
+          >
+            {t("stt:meetingAudio.nativeTranslation.target.label")}
+          </label>
+          <LanguageCombobox
+            id={targetId}
+            value={target}
+            onChange={(code) => onChange({ ...value, mode: "one_way", target_language: code })}
+            common={TRANSLATION_COMMON}
+            placeholder={t("stt:meetingAudio.nativeTranslation.target.followPlaceholder")}
+          />
+          {target ? (
+            <button
+              type="button"
+              onClick={clearTarget}
+              className="mt-1.5 cursor-pointer text-meta font-medium text-primary hover:underline"
+            >
+              {t("stt:meetingAudio.nativeTranslation.target.follow")}
+            </button>
+          ) : (
+            <p className="mt-1.5 text-meta text-muted-foreground/70">
+              {t("stt:meetingAudio.nativeTranslation.target.followHint")}
+            </p>
+          )}
+        </div>
+      )}
+      {mode === "two_way" && (
+        <p className="mt-2 text-meta text-muted-foreground/70">{t("stt:meetingAudio.nativeTranslation.twoWay")}</p>
+      )}
+    </div>
+  );
+}
+
 // ── Custom STT Provider Dropdown ──
 
 function ProviderSelect({
+  role,
   value,
   isInput,
-  apiKeyStatus,
-  localEngines,
+  offered,
+  readiness,
+  hasBaseUrl,
   otherPartyProvider,
-  otherPartyLabel,
   onChange,
 }: {
+  role: Party;
   value: STTProviderType;
   isInput: boolean;
-  apiKeyStatus: Record<string, boolean>;
-  localEngines: LocalSTTEngineInfo[];
+  offered: readonly SttProviderMeta[];
+  readiness: SttReadiness;
+  hasBaseUrl: boolean;
   otherPartyProvider: STTProviderType | null;
-  otherPartyLabel: string;
   onChange: (val: STTProviderType) => void;
 }) {
+  const { t } = useT(["stt", "common"]);
   const [open, setOpen] = useState(false);
   const [stealTarget, setStealTarget] = useState<STTProviderType | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const otherLabel = partyLabel(otherParty(role));
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -861,76 +916,48 @@ function ProviderSelect({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  function isLocalEngineReady(engineId: string): boolean {
-    if (localEngines.length === 0) return true; // Still loading — don't trigger fallback
-    const eng = localEngines.find((e) => e.engine === engineId);
-    if (!eng) return false;
-    return eng.models.some((m) => !m.id.startsWith("binary-") && m.is_downloaded);
-  }
+  // Unknown status (still loading) counts as available, so a slow check never triggers a fallback.
+  const ctx = availabilityContext(readiness, isInput, hasBaseUrl);
+  const isAvailable = (opt: SttProviderMeta) => isSttProviderAvailable(opt, ctx);
 
-  function isAvailable(opt: typeof STT_OPTIONS[0]): boolean {
-    // Don't show providers that require downloads/keys even if currently selected
-    if (opt.inputOnly && !isInput) return false;
-    if (opt.requiresDownload) return isLocalEngineReady(opt.requiresDownload);
-    // If API key status hasn't loaded yet, assume available to prevent false fallbacks
-    if (opt.requiresKey) return apiKeyStatus[opt.value] ?? true;
-    return true;
-  }
-
-  function isExclusiveLocked(opt: typeof STT_OPTIONS[0]): boolean {
-    if (!isExclusiveProvider(opt.value)) return false;
+  function isExclusiveLocked(opt: SttProviderMeta): boolean {
+    if (!isExclusiveProvider(opt.id)) return false;
     if (!otherPartyProvider) return false;
     return isExclusiveProvider(otherPartyProvider);
   }
 
   function findExclusiveFallback(): STTProviderType | null {
-    for (const provider of EXCLUSIVE_FALLBACK_ORDER) {
-      const opt = STT_OPTIONS.find(o => o.value === provider);
-      if (opt && isAvailable(opt)) return provider;
-    }
-    return null;
+    return exclusiveFallback(offered, isAvailable);
   }
 
   function handleStealConfirm() {
     if (!stealTarget) return;
-    const freshConfig = useConfigStore.getState().meetingAudioConfig;
+    const state = useConfigStore.getState();
+    const freshConfig = state.meetingAudioConfig;
     if (!freshConfig) return;
 
-    const thisRole = freshConfig.you.stt_provider === otherPartyProvider ? "them" : "you";
-    const otherRole = thisRole === "you" ? "them" : "you";
-    const otherStillExclusive = isExclusiveProvider(freshConfig[otherRole].stt_provider);
-
-    if (!otherStillExclusive) {
+    const otherRole = otherParty(role);
+    if (!isExclusiveProvider(freshConfig[otherRole].stt_provider)) {
       onChange(stealTarget);
       setStealTarget(null);
       setOpen(false);
       return;
     }
 
-    const fallback = findExclusiveFallback();
-    if (!fallback) {
-      showToast("No fallback STT engine available. Configure an API key or download a local model first.", "error");
+    const assignment = assignPartyEngine(freshConfig, role, stealTarget, state, findExclusiveFallback());
+    if (!assignment?.fallback) {
+      showToast(t("stt:picker.steal.noFallback"), "error");
       setStealTarget(null);
       return;
     }
-
-    const updatedConfig = { ...freshConfig };
-    updatedConfig[thisRole] = {
-      ...updatedConfig[thisRole],
-      stt_provider: stealTarget,
-      local_model_id: undefined,
-    };
-    updatedConfig[otherRole] = {
-      ...updatedConfig[otherRole],
-      stt_provider: fallback,
-      local_model_id: undefined,
-    };
-    useConfigStore.getState().setMeetingAudioConfig(updatedConfig);
-
-    const stealLabel = STT_OPTIONS.find(o => o.value === stealTarget)?.label ?? stealTarget;
-    const fallbackLabel = STT_OPTIONS.find(o => o.value === fallback)?.label ?? fallback;
+    state.setMeetingAudioConfig(assignment.config);
     showToast(
-      `${stealLabel} moved to ${thisRole === "you" ? "You" : "Them"}. ${otherRole === "you" ? "You" : "Them"} fell back to ${fallbackLabel}.`,
+      t("stt:picker.steal.moved", {
+        engine: sttEngineLabel(stealTarget),
+        party: partyLabel(role),
+        other: partyLabel(otherRole),
+        fallback: sttEngineLabel(assignment.fallback.engine),
+      }),
       "info"
     );
 
@@ -949,46 +976,86 @@ function ProviderSelect({
 
   useEffect(() => {
     if (!initialAvailabilityLoadedRef.current) {
-      const enginesReady = localEngines.length > 0;
-      const keysReady = Object.keys(apiKeyStatus).length > 0;
-      if (enginesReady && keysReady) {
+      if (readiness.localEngines !== null && readiness.keysLoaded) {
         initialAvailabilityLoadedRef.current = true;
       }
       return; // Skip fallback on initial load
     }
-    const currentOpt = STT_OPTIONS.find((o) => o.value === value);
+    const currentOpt = offered.find((o) => o.id === value);
     if (currentOpt && !isAvailable(currentOpt)) {
       // Never fall back to an exclusive provider (Web Speech / Windows Speech):
       // they capture the OS default mic and can only serve one party at a time.
-      const fallback = STT_OPTIONS.find(
-        (o) => o.value !== value && isAvailable(o) && !isExclusiveProvider(o.value)
+      const fallback = offered.find(
+        (o) => o.id !== value && isAvailable(o) && !isExclusiveProvider(o.id)
       );
       if (fallback) {
-        onChange(fallback.value);
+        onChange(fallback.id);
       }
     }
-  }, [localEngines, apiKeyStatus]);
+  }, [readiness.localEngines, readiness.keys]);
 
-  const localOptions = STT_OPTIONS.filter((o) => !o.isCloud && isAvailable(o));
-  const cloudOptions = STT_OPTIONS.filter((o) => o.isCloud && isAvailable(o));
+  const localOptions = offered.filter((o) => !o.isCloud && isAvailable(o));
+  const cloudOptions = offered.filter((o) => o.isCloud && isAvailable(o));
   const hasAny = localOptions.length > 0 || cloudOptions.length > 0;
 
-  const current = STT_OPTIONS.find((o) => o.value === value);
+  const renderOption = (opt: SttProviderMeta, accent: string) => {
+    const locked = isExclusiveLocked(opt);
+    return (
+      <button
+        key={opt.id}
+        type="button"
+        onClick={() => {
+          if (locked) {
+            setStealTarget(opt.id);
+          } else {
+            onChange(opt.id);
+            setOpen(false);
+          }
+        }}
+        className={`flex w-full cursor-pointer items-center gap-2.5 px-3 py-2.5 text-xs transition-colors hover:bg-accent ${
+          locked ? "opacity-50 hover:opacity-70" : ""
+        } ${
+          value === opt.id ? "bg-primary/5 text-primary" : "text-foreground"
+        }`}
+      >
+        <span className={`shrink-0 ${value === opt.id ? "text-primary" : accent}`}>
+          <SttEngineIcon id={opt.id} className="h-3.5 w-3.5" />
+        </span>
+        <span className="flex-1 text-left">
+          {sttEngineLabel(opt.id)}
+          {locked && (
+            <span className="block text-meta text-muted-foreground/50">
+              {t("stt:picker.inUseBy", { party: otherLabel })}
+            </span>
+          )}
+        </span>
+        {value === opt.id && !locked && (
+          <CheckCircle className="h-3 w-3 shrink-0 text-primary" />
+        )}
+      </button>
+    );
+  };
+
+  const fallbackPreview = stealTarget ? findExclusiveFallback() : null;
 
   return (
     <div className="relative" ref={ref}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-haspopup="true"
         className={`flex w-full cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
           open
             ? "border-primary bg-background ring-1 ring-primary/20"
             : "border-border/50 bg-background hover:border-border"
         }`}
       >
-        <span className="shrink-0 text-muted-foreground">{current?.icon}</span>
+        <span className="shrink-0 text-muted-foreground">
+          <SttEngineIcon id={value} className="h-3.5 w-3.5" />
+        </span>
         <span className="flex-1 truncate text-left font-medium">
-          {current?.label ?? value}
+          {sttEngineLabel(value)}
         </span>
         <ChevronDown className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
@@ -1000,44 +1067,10 @@ function ProviderSelect({
               <div className="flex items-center gap-1.5 border-b border-border/20 bg-muted/30 px-3 py-1.5">
                 <HardDrive className="h-2.5 w-2.5 text-emerald-500" />
                 <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground">
-                  Local & Built-in
+                  {t("stt:groups.local")}
                 </span>
               </div>
-              {localOptions.map((opt) => {
-                const locked = isExclusiveLocked(opt);
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => {
-                      if (locked) {
-                        setStealTarget(opt.value);
-                      } else {
-                        onChange(opt.value);
-                        setOpen(false);
-                      }
-                    }}
-                    className={`flex w-full cursor-pointer items-center gap-2.5 px-3 py-2.5 text-xs transition-colors hover:bg-accent ${
-                      locked ? "opacity-50 hover:opacity-70" : ""
-                    } ${
-                      value === opt.value ? "bg-primary/5 text-primary" : "text-foreground"
-                    }`}
-                  >
-                    <span className={`shrink-0 ${value === opt.value ? "text-primary" : "text-emerald-500"}`}>
-                      {opt.icon}
-                    </span>
-                    <span className="flex-1 text-left">
-                      {opt.label}
-                      {locked && (
-                        <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
-                      )}
-                    </span>
-                    {value === opt.value && !locked && (
-                      <CheckCircle className="h-3 w-3 shrink-0 text-primary" />
-                    )}
-                  </button>
-                );
-              })}
+              {localOptions.map((opt) => renderOption(opt, "text-emerald-500"))}
             </div>
           )}
 
@@ -1046,67 +1079,34 @@ function ProviderSelect({
               <div className="flex items-center gap-1.5 border-b border-border/20 bg-muted/30 px-3 py-1.5">
                 <Cloud className="h-2.5 w-2.5 text-blue-500" />
                 <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground">
-                  Cloud
+                  {t("stt:groups.cloud")}
                 </span>
               </div>
-              {cloudOptions.map((opt) => {
-                const locked = isExclusiveLocked(opt);
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => {
-                      if (locked) {
-                        setStealTarget(opt.value);
-                      } else {
-                        onChange(opt.value);
-                        setOpen(false);
-                      }
-                    }}
-                    className={`flex w-full cursor-pointer items-center gap-2.5 px-3 py-2.5 text-xs transition-colors hover:bg-accent ${
-                      locked ? "opacity-50 hover:opacity-70" : ""
-                    } ${
-                      value === opt.value ? "bg-primary/5 text-primary" : "text-foreground"
-                    }`}
-                  >
-                    <span className={`shrink-0 ${value === opt.value ? "text-primary" : "text-blue-500"}`}>
-                      {opt.icon}
-                    </span>
-                    <span className="flex-1 text-left">
-                      {opt.label}
-                      {locked && (
-                        <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
-                      )}
-                    </span>
-                    {value === opt.value && !locked && (
-                      <CheckCircle className="h-3 w-3 shrink-0 text-primary" />
-                    )}
-                  </button>
-                );
-              })}
+              {cloudOptions.map((opt) => renderOption(opt, "text-blue-500"))}
             </div>
           )}
 
           {!hasAny && (
             <p className="px-3 py-3 text-meta text-muted-foreground">
-              No providers ready — configure in STT Keys tab
+              {t("stt:picker.noneReady")}
             </p>
           )}
 
           {stealTarget && (
             <div className="border-t border-border/20 bg-amber-500/5 px-3 py-2.5">
               <p className="text-meta leading-relaxed text-amber-200/80 mb-2">
-                <span className="font-semibold text-amber-400">
-                  {STT_OPTIONS.find(o => o.value === stealTarget)?.label}
-                </span>{" "}
-                can only run on one source at a time. Switch to this party?
-                The other party will fall back to{" "}
-                <span className="font-medium">
-                  {(() => {
-                    const fb = findExclusiveFallback();
-                    return fb ? (STT_OPTIONS.find(o => o.value === fb)?.label ?? fb) : "no available engine";
-                  })()}
-                </span>.
+                <Trans
+                  t={t}
+                  i18nKey="stt:picker.steal.confirm"
+                  values={{
+                    engine: sttEngineLabel(stealTarget),
+                    fallback: fallbackPreview ? sttEngineLabel(fallbackPreview) : t("stt:picker.steal.noEngine"),
+                  }}
+                  components={{
+                    strong: <span className="font-semibold text-amber-400" />,
+                    fallback: <span className="font-medium" />,
+                  }}
+                />
               </p>
               <div className="flex gap-2">
                 <button
@@ -1114,14 +1114,14 @@ function ProviderSelect({
                   onClick={handleStealConfirm}
                   className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-3 py-1 text-meta font-semibold text-amber-400 hover:bg-amber-500/30 cursor-pointer"
                 >
-                  Switch
+                  {t("stt:picker.steal.switch")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setStealTarget(null)}
                   className="rounded-lg bg-muted/30 px-3 py-1 text-meta font-medium text-muted-foreground hover:bg-muted/50 cursor-pointer"
                 >
-                  Cancel
+                  {t("common:actions.cancel")}
                 </button>
               </div>
             </div>
@@ -1169,7 +1169,7 @@ function DeviceLevelRow({
         )}
       </div>
       <span className="w-7 text-right text-meta tabular-nums text-muted-foreground/70">
-        {level > 0.005 ? `${Math.round(scaled * 100)}%` : "\u2014"}
+        {level > 0.005 ? `${Math.round(scaled * 100)}%` : "—"}
       </span>
     </div>
   );
