@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { MeetingSummary } from "../lib/types";
+import type { ParseKeys } from "i18next";
+import type { AIScenario, MeetingSummary } from "../lib/types";
+import { useT } from "../i18n";
 import { formatRelativeTime, formatDurationLong } from "../lib/utils";
 import {
   Trash2,
@@ -13,6 +15,19 @@ import {
   FileText,
   Users,
 } from "lucide-react";
+
+/**
+ * Label of a scenario on the card. The id is shown as plain lowercase words
+ * ("team meeting"); the table stores keys and the label is translated at render time.
+ */
+const SCENARIO_LABEL_KEYS: Record<AIScenario, ParseKeys<"launcher">> = {
+  team_meeting: "card.scenario.teamMeeting",
+  lecture: "card.scenario.lecture",
+  interview: "card.scenario.interview",
+  webinar: "card.scenario.webinar",
+  oral_exam: "card.scenario.oralExam",
+  custom: "card.scenario.custom",
+};
 
 interface MeetingCardProps {
   meeting: MeetingSummary;
@@ -37,6 +52,7 @@ export function MeetingCard({
   isLive = false,
   staggerIndex = 0,
 }: MeetingCardProps) {
+  const { t } = useT(["launcher", "common"]);
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(meeting.title);
   const [isSaving, setIsSaving] = useState(false);
@@ -91,8 +107,8 @@ export function MeetingCard({
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") handleSaveEdit();
-      else if (e.key === "Escape") handleCancelEdit();
+      if (e.key === "Enter") handleSaveEdit(); // i18n-ignore: 按键名
+      else if (e.key === "Escape") handleCancelEdit(); // i18n-ignore: 按键名
     },
     [handleSaveEdit, handleCancelEdit]
   );
@@ -124,15 +140,21 @@ export function MeetingCard({
     [meeting.id, onToggleFavorite]
   );
 
+  /** Scenario id as plain words; an id outside the table keeps the old "id with a space" look. */
+  const scenarioLabel = (scenario: AIScenario): string => {
+    const key = SCENARIO_LABEL_KEYS[scenario];
+    return key ? t(key) : String(scenario).replace("_", " ");
+  };
+
   const durationDisplay = meeting.duration_seconds
     ? formatDurationLong(meeting.duration_seconds * 1000)
     : isLive
-      ? "In progress"
+      ? t("card.inProgress")
       : "—";
 
   const handleCardKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if ((e.key === "Enter" || e.key === " ") && !isEditing) {
+      if ((e.key === "Enter" || e.key === " ") && !isEditing) { // i18n-ignore: 按键名
         e.preventDefault();
         onSelect(meeting.id);
       }
@@ -146,7 +168,7 @@ export function MeetingCard({
       onKeyDown={handleCardKeyDown}
       role="button"
       tabIndex={0}
-      aria-label={`Meeting: ${meeting.title}, ${formatRelativeTime(meeting.start_time)}`}
+      aria-label={t("card.ariaLabel", { title: meeting.title, time: formatRelativeTime(meeting.start_time) })}
       className={`group meeting-card-enter meeting-card-interactive relative cursor-pointer rounded-xl bg-card/40 px-4 py-3 border-l-[3px] ${
         isLive
           ? "border-l-success/50"
@@ -154,7 +176,7 @@ export function MeetingCard({
             ? "border-l-info/30"
             : "border-l-border/20"
       }`}
-      style={{ animationDelay: `${300 + staggerIndex * 50}ms` }}
+      style={{ animationDelay: `${300 + staggerIndex * 50}ms` }} // i18n-ignore: CSS 时长
     >
       <div className="flex items-center gap-3">
         {/* Favorite star */}
@@ -165,7 +187,7 @@ export function MeetingCard({
               ? "text-warning"
               : "text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-warning/70"
           }`}
-          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          aria-label={isFavorite ? t("card.favorite.remove") : t("card.favorite.add")}
           aria-pressed={isFavorite}
         >
           <Star
@@ -208,7 +230,7 @@ export function MeetingCard({
                 }}
                 disabled={isSaving}
                 className="rounded-md p-1 text-success hover:bg-success/10 disabled:opacity-50"
-                aria-label="Save title"
+                aria-label={t("card.rename.save")}
               >
                 <Check className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -220,7 +242,7 @@ export function MeetingCard({
                   handleCancelEdit();
                 }}
                 className="rounded-md p-1 text-muted-foreground hover:bg-secondary"
-                aria-label="Cancel rename"
+                aria-label={t("card.rename.cancel")}
               >
                 <X className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -239,7 +261,7 @@ export function MeetingCard({
 
             {isLive ? (
               <span className="live-ring-pulse rounded-full bg-success/10 px-2 py-0.5 text-meta font-semibold text-success">
-                LIVE
+                {t("card.live")}
               </span>
             ) : (
               <span className="flex items-center gap-0.5 text-meta tabular-nums text-muted-foreground/60">
@@ -266,16 +288,16 @@ export function MeetingCard({
                 className="text-[9px] font-bold tracking-wider px-1 py-0.5 rounded"
                 style={{
                   color: meeting.audio_mode === "online" ? "#4a6cf7" : "#a855f7",
-                  backgroundColor: meeting.audio_mode === "online" ? "rgba(74,108,247,0.12)" : "rgba(168,85,247,0.12)",
+                  backgroundColor: meeting.audio_mode === "online" ? "rgba(74,108,247,0.12)" : "rgba(168,85,247,0.12)", // i18n-ignore: 颜色值
                 }}
               >
-                {meeting.audio_mode === "online" ? "ONLINE" : "IN-PERSON"}
+                {meeting.audio_mode === "online" ? t("card.audioMode.online") : t("card.audioMode.inPerson")}
               </span>
             )}
 
             {meeting.ai_scenario && (
               <span className="text-[9px] font-medium text-muted-foreground/50 truncate max-w-[80px]">
-                {meeting.ai_scenario.replace("_", " ")}
+                {scenarioLabel(meeting.ai_scenario)}
               </span>
             )}
 
@@ -292,18 +314,18 @@ export function MeetingCard({
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
           {showDeleteConfirm ? (
             <div className="flex items-center gap-1 rounded-lg bg-destructive/10 px-2 py-1">
-              <span className="text-meta text-destructive">Delete?</span>
+              <span className="text-meta text-destructive">{t("card.delete.prompt")}</span>
               <button
                 onClick={handleConfirmDelete}
                 className="rounded p-0.5 text-destructive hover:bg-destructive/20"
-                aria-label="Confirm delete"
+                aria-label={t("card.delete.confirm")}
               >
                 <Check className="h-3 w-3" aria-hidden="true" />
               </button>
               <button
                 onClick={handleCancelDelete}
                 className="rounded p-0.5 text-muted-foreground hover:bg-secondary"
-                aria-label="Cancel delete"
+                aria-label={t("card.delete.cancel")}
               >
                 <X className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -313,14 +335,14 @@ export function MeetingCard({
               <button
                 onClick={handleStartEdit}
                 className="rounded-md p-1 text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
-                aria-label="Rename"
+                aria-label={t("common:actions.rename")}
               >
                 <Pencil className="h-3 w-3" aria-hidden="true" />
               </button>
               <button
                 onClick={handleDeleteClick}
                 className="rounded-md p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
-                aria-label="Delete meeting"
+                aria-label={t("card.delete.ariaLabel")}
               >
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
               </button>

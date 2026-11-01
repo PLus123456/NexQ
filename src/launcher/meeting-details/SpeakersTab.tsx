@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { Meeting, SpeakerIdentity } from "../../lib/types";
 import { Users, Mic, Volume2, Check, X, Pencil } from "lucide-react";
+import { formatNumber, useT } from "../../i18n";
 import { formatDurationLong } from "../../lib/utils";
 import { SpeakerTimeline } from "./SpeakerTimeline";
 
@@ -39,6 +40,7 @@ interface SpeakerRowProps {
 }
 
 function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) {
+  const { t } = useT(["launcher", "common"]);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(speaker.display_name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -81,7 +83,7 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
 
   // Detect if it's a built-in label (User/Them) vs a named speaker
   const isFixed = speaker.source === "fixed";
-  const originalLabel = isFixed ? null : `Originally ${speaker.id}`;
+  const originalLabel = isFixed ? null : t("speakers.originally", { id: speaker.id });
 
   return (
     <div className="group flex items-start gap-3 rounded-xl px-3 py-3 hover:bg-secondary/20 transition-colors">
@@ -109,14 +111,14 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
             <button
               onClick={handleSave}
               className="rounded p-0.5 text-success hover:bg-success/10 cursor-pointer"
-              aria-label="Save name"
+              aria-label={t("speakers.row.saveName")}
             >
               <Check className="h-3 w-3" />
             </button>
             <button
               onClick={handleCancel}
               className="rounded p-0.5 text-muted-foreground hover:bg-secondary cursor-pointer"
-              aria-label="Cancel"
+              aria-label={t("common:actions.cancel")}
             >
               <X className="h-3 w-3" />
             </button>
@@ -128,7 +130,7 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
               <button
                 onClick={handleStartEdit}
                 className="rounded p-0.5 text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:bg-secondary hover:text-foreground transition-opacity cursor-pointer"
-                aria-label={`Rename ${speaker.display_name}`}
+                aria-label={t("speakers.row.rename", { name: speaker.display_name })}
               >
                 <Pencil className="h-2.5 w-2.5" />
               </button>
@@ -144,7 +146,7 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
         {/* Stats bar */}
         <div className="mt-2 space-y-1">
           <div className="flex items-center justify-between text-[10px] text-muted-foreground/50">
-            <span>{talkTime} talk time</span>
+            <span>{t("speakers.row.talkTime", { time: talkTime })}</span>
             <span>{pct}%</span>
           </div>
           <div className="h-1 w-full overflow-hidden rounded-full bg-secondary/40">
@@ -155,10 +157,10 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
           </div>
           <div className="flex items-center gap-2.5 text-[10px] text-muted-foreground/40">
             {speaker.stats?.segment_count !== undefined && (
-              <span>{speaker.stats.segment_count} segments</span>
+              <span>{t("speakers.row.segments", { count: speaker.stats.segment_count })}</span>
             )}
             {speaker.stats?.word_count !== undefined && (
-              <span>{speaker.stats.word_count.toLocaleString()} words</span>
+              <span>{t("speakers.row.words", { words: formatNumber(speaker.stats.word_count) })}</span>
             )}
           </div>
         </div>
@@ -167,9 +169,9 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
       {/* Source icon */}
       <div className="shrink-0 text-muted-foreground/30 mt-0.5">
         {speaker.id === "User" || speaker.id === "Interviewer" ? (
-          <Mic className="h-3.5 w-3.5" aria-label="Microphone" />
+          <Mic className="h-3.5 w-3.5" aria-label={t("speakers.row.microphone")} />
         ) : (
-          <Volume2 className="h-3.5 w-3.5" aria-label="System audio" />
+          <Volume2 className="h-3.5 w-3.5" aria-label={t("speakers.row.systemAudio")} />
         )}
       </div>
     </div>
@@ -185,7 +187,10 @@ function resolveSpeakerId(seg: { speaker: string; speaker_id?: string }): string
 }
 
 /** Synthesise speaker stats from the actual transcript segments */
-function syntheticSpeakersFromTranscript(meeting: Meeting): SpeakerIdentity[] {
+function syntheticSpeakersFromTranscript(
+  meeting: Meeting,
+  names: { you: string; them: string },
+): SpeakerIdentity[] {
   const counts: Record<string, { segments: number; words: number; talkMs: number; speaker: string }> = {};
   for (const seg of meeting.transcript) {
     const key = resolveSpeakerId(seg);
@@ -197,7 +202,7 @@ function syntheticSpeakersFromTranscript(meeting: Meeting): SpeakerIdentity[] {
   }
   return Object.entries(counts).map(([id, stats]) => ({
     id,
-    display_name: id === "you" ? "You" : id === "them" ? "Them" : stats.speaker,
+    display_name: id === "you" ? names.you : id === "them" ? names.them : stats.speaker,
     source: "fixed" as const,
     stats: {
       segment_count: stats.segments,
@@ -209,11 +214,15 @@ function syntheticSpeakersFromTranscript(meeting: Meeting): SpeakerIdentity[] {
 }
 
 export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
+  const { t } = useT(["launcher", "common"]);
   // Always recompute stats from transcript (stored talk_time_ms may be 0),
   // then merge display names/colors from stored speakers for renamed speakers.
   const [speakersState, setSpeakersState] = useState<SpeakerIdentity[]>(() => {
     const synthetic = meeting.transcript.length > 0
-      ? syntheticSpeakersFromTranscript(meeting)
+      ? syntheticSpeakersFromTranscript(meeting, {
+          you: t("common:labels.you"),
+          them: t("common:labels.them"),
+        })
       : [];
     if (synthetic.length === 0) return (meeting.speakers ?? []).filter((s) => s.source !== "remote_tag");
     if (meeting.speakers && meeting.speakers.length > 0) {
@@ -257,9 +266,9 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-muted-foreground/50">
         <Users className="mb-3 h-6 w-6" />
-        <p className="text-xs font-medium">No speaker data</p>
+        <p className="text-xs font-medium">{t("speakers.empty.title")}</p>
         <p className="mt-1 text-[11px] text-muted-foreground/40">
-          Speaker data appears after meetings with diarization
+          {t("speakers.empty.hint")}
         </p>
       </div>
     );
@@ -279,7 +288,7 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
       )}
 
       <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-        {speakersState.length} Speaker{speakersState.length !== 1 ? "s" : ""}
+        {t("speakers.count", { count: speakersState.length })}
       </div>
       <div className="space-y-0.5">
         {speakersState.map((speaker, i) => (

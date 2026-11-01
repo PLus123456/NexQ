@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { Meeting } from "../../lib/types";
+import { useT } from "../../i18n";
 import {
   exportMeetingAsMarkdown,
   exportMeetingAsSRT,
@@ -22,6 +23,7 @@ interface ExportOption {
 }
 
 export function ExportDropdown({ meeting }: ExportDropdownProps) {
+  const { t } = useT(["launcher", "common"]);
   const [isOpen, setIsOpen] = useState(false);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -57,23 +59,30 @@ export function ExportDropdown({ meeting }: ExportDropdownProps) {
   }, []);
 
   const scenarioFmt = getScenarioExportFormat(meeting.ai_scenario);
+  // "lecture" / "team meeting" in the UI language; other ids keep their id as words.
+  const scenarioNoun =
+    meeting.ai_scenario === "lecture"
+      ? t("export.scenarios.lecture")
+      : meeting.ai_scenario === "team_meeting"
+        ? t("export.scenarios.teamMeeting")
+        : meeting.ai_scenario?.replace(/_/g, " ");
 
   const baseOptions: ExportOption[] = [
     {
-      label: "Markdown",
-      description: "Full transcript + summary",
+      label: "Markdown", // i18n-ignore: file format name
+      description: t("export.options.markdown.description"),
       icon: <FileText className="h-3.5 w-3.5" />,
       action: () => exportMeetingAsMarkdown(meeting),
     },
     {
-      label: "SRT Subtitles",
-      description: "Timed subtitle file",
+      label: t("export.options.srt.label"),
+      description: t("export.options.srt.description"),
       icon: <Subtitles className="h-3.5 w-3.5" />,
       action: () => exportMeetingAsSRT(meeting),
     },
     {
-      label: "JSON",
-      description: "Structured data export",
+      label: "JSON", // i18n-ignore: file format name
+      description: t("export.options.json.description"),
       icon: <Braces className="h-3.5 w-3.5" />,
       action: () => exportMeetingAsJSON(meeting),
     },
@@ -84,7 +93,7 @@ export function ExportDropdown({ meeting }: ExportDropdownProps) {
         ...baseOptions,
         {
           label: scenarioFmt.label,
-          description: `Formatted for ${meeting.ai_scenario?.replace(/_/g, " ")}`,
+          description: t("export.options.scenario.description", { scenario: scenarioNoun }),
           icon: <Download className="h-3.5 w-3.5" />,
           action: () => exportMeetingScenario(meeting),
           variant: "scenario",
@@ -102,14 +111,14 @@ export function ExportDropdown({ meeting }: ExportDropdownProps) {
         className="flex items-center gap-1.5 rounded-lg border border-border/30 bg-secondary/30 px-3 py-1.5 text-xs font-medium text-foreground/70 transition-all duration-150 hover:bg-secondary/50 hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         aria-haspopup="true"
         aria-expanded={isOpen}
-        aria-label="Export meeting"
+        aria-label={t("export.button.ariaLabel")}
       >
         {isLoading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Download className="h-3.5 w-3.5" />
         )}
-        Export
+        {t("common:actions.export")}
         <ChevronDown
           className={`h-3 w-3 transition-transform duration-150 ${isOpen ? "rotate-180" : ""}`}
         />
@@ -119,11 +128,11 @@ export function ExportDropdown({ meeting }: ExportDropdownProps) {
         <div
           className="absolute right-0 top-full z-50 mt-1.5 w-52 overflow-hidden rounded-xl border border-border/30 bg-card shadow-xl shadow-black/20"
           role="menu"
-          aria-label="Export options"
+          aria-label={t("export.menu.ariaLabel")}
         >
           <div className="px-3 py-2 border-b border-border/20">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-              Export as
+              {t("export.menu.heading")}
             </p>
           </div>
 

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import type { Meeting, MeetingBookmark } from "../../lib/types";
 import type { BookmarkSuggestionsState } from "../../hooks/useBookmarkSuggestions";
 import { updateMeetingBookmark, deleteMeetingBookmark } from "../../lib/ipc";
+import { useT } from "../../i18n";
 import { showToast } from "../../stores/toastStore";
 import { useAudioPlayerStore } from "../../stores/audioPlayerStore";
 import { Bookmark, Trash2, Pencil, Sparkles, Check, X, Loader2 } from "lucide-react";
@@ -15,6 +16,7 @@ interface BookmarksTabProps {
 }
 
 export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark, suggestions }: BookmarksTabProps) {
+  const { t } = useT("launcher");
   const bookmarks = meeting.bookmarks ?? [];
   const meetingStartMs = new Date(meeting.start_time).getTime();
   const hasSuggestions = suggestions && suggestions.suggestions.length > 0;
@@ -24,9 +26,9 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
     return (
       <div className="flex flex-col items-center justify-center py-16 text-muted-foreground/50">
         <Bookmark className="mb-3 h-6 w-6" />
-        <p className="text-xs font-medium">No bookmarks yet</p>
+        <p className="text-xs font-medium">{t("bookmarks.empty.title")}</p>
         <p className="mt-1 text-[11px] text-muted-foreground/40">
-          You can add bookmarks from the Transcript tab
+          {t("bookmarks.empty.hint")}
         </p>
         {suggestions && (
           <button
@@ -38,12 +40,12 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
             {suggestions.isSuggesting ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" />
-                Analyzing...
+                {t("bookmarks.analyzing")}
               </>
             ) : (
               <>
                 <Sparkles className="h-3 w-3" />
-                Suggest Bookmarks
+                {t("bookmarks.suggest.long")}
               </>
             )}
           </button>
@@ -68,7 +70,7 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
       {/* Top bar with count + suggest button */}
       <div className="mb-2 flex items-center justify-between px-1">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-          {bookmarks.length} bookmark{bookmarks.length !== 1 ? "s" : ""}
+          {t("bookmarks.count", { count: bookmarks.length })}
         </span>
         {suggestions && (
           <button
@@ -80,12 +82,12 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
             {suggestions.isSuggesting ? (
               <>
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                Analyzing...
+                {t("bookmarks.analyzing")}
               </>
             ) : (
               <>
                 <Sparkles className="h-2.5 w-2.5" />
-                Suggest
+                {t("bookmarks.suggest.short")}
               </>
             )}
           </button>
@@ -139,6 +141,7 @@ function SuggestionsSection({
   suggestions: BookmarkSuggestionsState;
   meetingStartMs: number;
 }) {
+  const { t } = useT("launcher");
   return (
     <div className="mb-3 rounded-xl border border-dashed border-primary/25 bg-primary/[0.03] p-2.5">
       {/* Header */}
@@ -146,7 +149,7 @@ function SuggestionsSection({
         <div className="flex items-center gap-1.5">
           <Sparkles className="h-3 w-3 text-primary/60" />
           <span className="text-[10px] font-semibold uppercase tracking-wider text-primary/60">
-            AI Suggestions
+            {t("bookmarks.suggestions.title")}
           </span>
           <span className="rounded-full bg-primary/10 px-1.5 py-px text-[9px] font-bold text-primary/70">
             {suggestions.suggestions.length}
@@ -158,7 +161,7 @@ function SuggestionsSection({
           className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium text-success transition-colors hover:bg-success/10 cursor-pointer"
         >
           <Check className="h-2.5 w-2.5" />
-          Accept All
+          {t("bookmarks.suggestions.acceptAll")}
         </button>
       </div>
 
@@ -189,7 +192,7 @@ function SuggestionsSection({
                   type="button"
                   onClick={() => suggestions.acceptSuggestion(index)}
                   className="rounded-md p-1 text-success/60 hover:text-success hover:bg-success/10 transition-colors cursor-pointer"
-                  title="Accept suggestion"
+                  title={t("bookmarks.suggestions.accept")}
                 >
                   <Check className="h-3 w-3" />
                 </button>
@@ -197,7 +200,7 @@ function SuggestionsSection({
                   type="button"
                   onClick={() => suggestions.dismissSuggestion(index)}
                   className="rounded-md p-1 text-muted-foreground/40 hover:text-foreground/60 hover:bg-secondary/30 transition-colors cursor-pointer"
-                  title="Dismiss suggestion"
+                  title={t("bookmarks.suggestions.dismiss")}
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -227,6 +230,7 @@ function BookmarkRow({
   onBookmarkUpdated,
   onNavigateToBookmark,
 }: BookmarkRowProps) {
+  const { t } = useT("launcher");
   const isPlaying = useAudioPlayerStore((s) => s.isPlaying);
   const seekToTimestamp = useAudioPlayerStore((s) => s.seekToTimestamp);
   const [editing, setEditing] = useState(false);
@@ -272,11 +276,11 @@ function BookmarkRow({
       setEditing(false);
     } catch (err) {
       console.error("[BookmarksTab] Failed to update bookmark:", err);
-      showToast("Failed to update bookmark note", "error");
+      showToast(t("bookmarks.toast.updateFailed"), "error");
     } finally {
       setSaving(false);
     }
-  }, [editValue, bookmark.id, bookmark.note, allBookmarks, onBookmarkUpdated]);
+  }, [editValue, bookmark.id, bookmark.note, allBookmarks, onBookmarkUpdated, t]);
 
   const handleDelete = useCallback(async () => {
     try {
@@ -285,9 +289,9 @@ function BookmarkRow({
       onBookmarkUpdated(updated);
     } catch (err) {
       console.error("[BookmarksTab] Failed to delete bookmark:", err);
-      showToast("Failed to delete bookmark", "error");
+      showToast(t("bookmarks.toast.deleteFailed"), "error");
     }
-  }, [bookmark.id, allBookmarks, onBookmarkUpdated]);
+  }, [bookmark.id, allBookmarks, onBookmarkUpdated, t]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -312,7 +316,7 @@ function BookmarkRow({
           if (isPlaying) seekToTimestamp(bookmark.timestamp_ms);
         }}
         className="mt-0.5 shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 transition-colors hover:bg-primary/20 cursor-pointer"
-        title="Go to this moment in transcript"
+        title={t("bookmarks.row.goTo")}
       >
         <span className="tabular-nums text-[10px] font-semibold text-primary">
           {formatTimestamp(relativeMs)}
@@ -331,19 +335,19 @@ function BookmarkRow({
             onKeyDown={handleKeyDown}
             disabled={saving}
             className="w-full rounded-md border border-border/50 bg-background/50 px-2 py-1 text-xs leading-relaxed text-foreground/80 outline-none focus:border-primary/40 focus:ring-1 focus:ring-primary/20 disabled:opacity-50"
-            placeholder="Add a note..."
+            placeholder={t("bookmarks.row.notePlaceholder")}
           />
         ) : (
           <button
             type="button"
             onClick={startEditing}
             className="w-full text-left cursor-pointer rounded-md px-1 py-0.5 -mx-1 transition-colors hover:bg-secondary/30"
-            title="Click to edit note"
+            title={t("bookmarks.row.editHint")}
           >
             {bookmark.note ? (
               <span className="text-xs leading-relaxed text-foreground/80">{bookmark.note}</span>
             ) : (
-              <span className="text-xs italic text-muted-foreground/40">No note — click to add</span>
+              <span className="text-xs italic text-muted-foreground/40">{t("bookmarks.row.noNote")}</span>
             )}
           </button>
         )}
@@ -359,7 +363,7 @@ function BookmarkRow({
             type="button"
             onClick={startEditing}
             className="rounded-md p-1 text-muted-foreground/40 hover:text-foreground/60 hover:bg-secondary/30 transition-colors cursor-pointer"
-            title="Edit note"
+            title={t("bookmarks.row.edit")}
           >
             <Pencil className="h-3 w-3" />
           </button>
@@ -367,7 +371,7 @@ function BookmarkRow({
             type="button"
             onClick={handleDelete}
             className="rounded-md p-1 text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-            title="Delete bookmark"
+            title={t("bookmarks.row.delete")}
           >
             <Trash2 className="h-3 w-3" />
           </button>

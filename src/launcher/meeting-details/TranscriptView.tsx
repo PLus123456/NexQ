@@ -15,6 +15,7 @@ import { TranscriptContextMenu } from "../../overlay/TranscriptContextMenu";
 import { addMeetingBookmark, deleteMeetingBookmark, updateMeetingBookmark } from "../../lib/ipc";
 import { showToast } from "../../stores/toastStore";
 import { useConfigStore } from "../../stores/configStore";
+import { useT } from "../../i18n";
 import { ColorPickerButton } from "../../components/ColorPickerButton";
 import { TranscriptRow } from "./TranscriptRow";
 import { defaultRemoteSpeakerName, remoteKeyOf, remoteSpeakerColor } from "../../lib/speakerLabels";
@@ -84,6 +85,7 @@ const LIST_PADDING_Y = 8; // matches the former `py-2` wrapper
 const OVERSCAN_ROWS = 8;
 
 export function TranscriptView({ segments, mergedSegments, isVisible = true, search, meetingStartTime, recordingOffsetMs = 0, speakers, searchInputRef, bookmarks, meetingId, onBookmarksChanged, initialScrollToIndex, onScrollHandled, translations, translatingSegments, translationDisplayMode, currentTargetLang, showTranslations = true, onTranslateSegment, onRetranslateSegment, showToolbar, translatedCount = 0, totalSegments = 0, mismatchedCount = 0, onDisplayModeChange, onRetranslateAll, onToggleTranslationVisibility, retranslating, onRenameSpeaker }: TranscriptViewProps) {
+  const { t } = useT(["launcher", "common"]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const localSearchInputRef = useRef<HTMLInputElement | null>(null);
   const setInputRef = useCallback((el: HTMLInputElement | null) => {
@@ -294,7 +296,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
         onBookmarksChanged((bookmarks ?? []).filter(b => b.id !== existing.id));
       } catch (err) {
         console.error("[TranscriptView] Delete bookmark failed:", err);
-        showToast("Failed to remove bookmark", "error");
+        showToast(t("transcript.toast.removeBookmarkFailed"), "error");
       }
     } else {
       const newBookmark: MeetingBookmark = {
@@ -308,10 +310,10 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
         onBookmarksChanged([...(bookmarks ?? []), newBookmark]);
       } catch (err) {
         console.error("[TranscriptView] Add bookmark failed:", err);
-        showToast("Failed to add bookmark", "error");
+        showToast(t("transcript.toast.addBookmarkFailed"), "error");
       }
     }
-  }, [meetingId, bookmarks, bookmarkBySegment, onBookmarksChanged]);
+  }, [meetingId, bookmarks, bookmarkBySegment, onBookmarksChanged, t]);
 
   const handleAddNote = useCallback(async (seg: TranscriptSegment) => {
     if (!meetingId || !onBookmarksChanged) return;
@@ -328,12 +330,12 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
         onBookmarksChanged([...(bookmarks ?? []), bm]);
       } catch (err) {
         console.error("[TranscriptView] Add bookmark for note failed:", err);
-        showToast("Failed to create bookmark", "error");
+        showToast(t("transcript.toast.createBookmarkFailed"), "error");
         return;
       }
     }
     setNoteEdit({ bookmarkId: bm.id, note: bm.note ?? "" });
-  }, [meetingId, bookmarks, bookmarkBySegment, onBookmarksChanged]);
+  }, [meetingId, bookmarks, bookmarkBySegment, onBookmarksChanged, t]);
 
   const handleSaveNote = useCallback(async () => {
     if (!noteEdit || !onBookmarksChanged) return;
@@ -345,15 +347,15 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
       );
     } catch (err) {
       console.error("[TranscriptView] Update bookmark note failed:", err);
-      showToast("Failed to save note", "error");
+      showToast(t("transcript.toast.saveNoteFailed"), "error");
     }
     setNoteEdit(null);
-  }, [noteEdit, bookmarks, onBookmarksChanged]);
+  }, [noteEdit, bookmarks, onBookmarksChanged, t]);
 
   const handleCopyText = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
-    showToast("Copied to clipboard", "success");
-  }, []);
+    showToast(t("common:status.copiedToClipboard"), "success");
+  }, [t]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, segmentIndex: number) => {
     e.preventDefault();
@@ -390,7 +392,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground/50">
         <FileText className="mb-3 h-8 w-8" />
-        <p className="text-sm font-medium">No transcript segments</p>
+        <p className="text-sm font-medium">{t("transcript.empty")}</p>
       </div>
     );
   }
@@ -414,18 +416,18 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
               else search.nextMatch();
             }
           }}
-          placeholder="Search transcript..."
+          placeholder={t("transcript.search.placeholder")}
           maxLength={200}
-          aria-label="Search transcript"
+          aria-label={t("transcript.search.label")}
           className="flex-1 bg-transparent text-xs text-foreground/90 placeholder:text-muted-foreground/50 outline-none"
         />
         {search.query && search.totalMatches > 0 && (
           <span className="shrink-0 text-xs tabular-nums font-medium text-muted-foreground/60">
-            {search.currentMatchIndex + 1} of {search.totalMatches}
+            {t("transcript.search.position", { current: search.currentMatchIndex + 1, total: search.totalMatches })}
           </span>
         )}
         {search.query && search.totalMatches === 0 && (
-          <span className="shrink-0 text-xs text-red-400/60">No matches</span>
+          <span className="shrink-0 text-xs text-red-400/60">{t("transcript.search.noMatches")}</span>
         )}
         {search.query && (
           <div className="flex items-center gap-0.5 border-l border-border/20 pl-2">
@@ -534,7 +536,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
       <div className="flex items-center gap-3 mx-2 px-3 py-1.5 border-t border-border/10 text-[10px]">
         {/* Left: Typeset controls */}
         <div className="flex items-center gap-1">
-          <span className="font-semibold text-muted-foreground/60">Text</span>
+          <span className="font-semibold text-muted-foreground/60">{t("transcript.typeset.text")}</span>
           <button
             onClick={() => setTranscriptFontSize(Math.max(10, transcriptFontSize - 1))}
             className="flex h-5 w-5 items-center justify-center rounded text-[9px] font-bold text-muted-foreground/60 hover:bg-secondary/30 cursor-pointer"
@@ -544,11 +546,11 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
             onClick={() => setTranscriptFontSize(Math.min(20, transcriptFontSize + 1))}
             className="flex h-5 w-5 items-center justify-center rounded text-[13px] font-bold text-muted-foreground/60 hover:bg-secondary/30 cursor-pointer"
           >A</button>
-          <ColorPickerButton value={transcriptTextColor} onChange={setTranscriptTextColor} label="Text color" />
+          <ColorPickerButton value={transcriptTextColor} onChange={setTranscriptTextColor} label={t("transcript.typeset.textColor")} />
         </div>
         <div className="h-4 w-px bg-border/10" />
         <div className="flex items-center gap-1">
-          <span className="font-semibold text-muted-foreground/60">Translation</span>
+          <span className="font-semibold text-muted-foreground/60">{t("transcript.typeset.translation")}</span>
           <button
             onClick={() => setTranslationFontSize(Math.max(9, translationFontSize - 1))}
             className="flex h-5 w-5 items-center justify-center rounded text-[9px] font-bold text-muted-foreground/60 hover:bg-secondary/30 cursor-pointer"
@@ -558,7 +560,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
             onClick={() => setTranslationFontSize(Math.min(18, translationFontSize + 1))}
             className="flex h-5 w-5 items-center justify-center rounded text-[13px] font-bold text-muted-foreground/60 hover:bg-secondary/30 cursor-pointer"
           >A</button>
-          <ColorPickerButton value={translationTextColor} onChange={setTranslationTextColor} label="Translation color" />
+          <ColorPickerButton value={translationTextColor} onChange={setTranslationTextColor} label={t("transcript.typeset.translationColor")} />
         </div>
 
         {/* Right: Translation toolbar (coverage, display mode, retranslate, visibility) */}
@@ -588,7 +590,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
                       ? "bg-primary/15 text-primary"
                       : "text-muted-foreground hover:bg-secondary/30"
                   }`}
-                >Inline</button>
+                >{t("transcript.translation.inline")}</button>
                 <button
                   onClick={() => onDisplayModeChange("hover")}
                   className={`px-2 py-0.5 font-semibold transition-colors cursor-pointer ${
@@ -596,7 +598,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
                       ? "bg-primary/15 text-primary"
                       : "text-muted-foreground hover:bg-secondary/30"
                   }`}
-                >Hover</button>
+                >{t("transcript.translation.hover")}</button>
               </div>
             )}
 
@@ -617,7 +619,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
               <button
                 onClick={onToggleTranslationVisibility}
                 className="rounded-md p-1 text-primary/50 hover:bg-primary/10 transition-colors cursor-pointer"
-                title={showTranslations ? "Hide translations" : "Show translations"}
+                title={showTranslations ? t("transcript.translation.hide") : t("transcript.translation.show")}
               >
                 {showTranslations ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
               </button>
@@ -636,7 +638,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
             className="w-full max-w-sm rounded-xl border border-border/30 bg-card p-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-sm font-semibold text-foreground mb-3">Bookmark Note</h3>
+            <h3 className="text-sm font-semibold text-foreground mb-3">{t("transcript.note.title")}</h3>
             <textarea
               ref={noteInputRef}
               value={noteEdit.note}
@@ -645,25 +647,25 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
                 if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) handleSaveNote();
                 if (e.key === "Escape") setNoteEdit(null);
               }}
-              placeholder="Add a note..."
+              placeholder={t("transcript.note.placeholder")}
               rows={3}
               autoFocus
               className="w-full resize-none rounded-lg border border-border/30 bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
             />
             <div className="mt-3 flex items-center justify-between">
-              <span className="text-[10px] text-muted-foreground/40">Ctrl+Enter to save</span>
+              <span className="text-[10px] text-muted-foreground/40">{t("transcript.note.saveHint")}</span>
               <div className="flex gap-2">
                 <button
                   onClick={() => setNoteEdit(null)}
                   className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary transition-colors cursor-pointer"
                 >
-                  Cancel
+                  {t("common:actions.cancel")}
                 </button>
                 <button
                   onClick={handleSaveNote}
                   className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer"
                 >
-                  Save
+                  {t("common:actions.save")}
                 </button>
               </div>
             </div>
@@ -687,6 +689,7 @@ function TimelineScrubber({
   onJump: (index: number) => void;
   meetingStartTime?: number;
 }) {
+  const { t } = useT("launcher");
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{
     x: number;
@@ -743,7 +746,7 @@ function TimelineScrubber({
       segmentIndex: r.idx,
       timestamp: formatTimestamp(elapsedMs),
       speaker: getSpeakerLabel(seg.speaker),
-      text: seg.text.length > 50 ? seg.text.slice(0, 50) + "..." : seg.text,
+      text: seg.text.length > 50 ? seg.text.slice(0, 50) + "..." : seg.text, // i18n-ignore: truncation mark on transcript text
     });
   };
 
@@ -763,8 +766,14 @@ function TimelineScrubber({
   // Duration label for the track
   const durationSec = Math.floor(totalDuration / 1000);
   const durationLabel = durationSec >= 3600
-    ? `${Math.floor(durationSec / 3600)}h ${Math.floor((durationSec % 3600) / 60)}m`
-    : `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`;
+    ? t("transcript.timeline.duration.hoursMinutes", {
+        hours: Math.floor(durationSec / 3600),
+        minutes: Math.floor((durationSec % 3600) / 60),
+      })
+    : t("transcript.timeline.duration.minutesSeconds", {
+        minutes: Math.floor(durationSec / 60),
+        seconds: durationSec % 60,
+      });
 
   return (
     <div className="mx-4 mt-2 mb-1">

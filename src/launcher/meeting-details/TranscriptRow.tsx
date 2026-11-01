@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Bookmark as BookmarkIcon, Globe, RefreshCw } from "lucide-react";
 import type { TranslationResult, TranslationDisplayMode } from "../../lib/types";
 import type { MergedSegment } from "../../lib/mergeSegments";
+import { useT } from "../../i18n";
 
 export interface TranscriptRowProps {
   segment: MergedSegment;
@@ -76,6 +77,7 @@ function TranscriptRowImpl({
   onTranslate,
   onRetranslate,
 }: TranscriptRowProps) {
+  const { t } = useT("launcher");
   const rowRef = useRef<HTMLDivElement | null>(null);
   const setRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -157,7 +159,7 @@ function TranscriptRowImpl({
         {/* Translation — inline, translating, or translate-on-demand button */}
         {isTranslating ? (
           <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px` }}>
-            <span className="text-muted-foreground/40 animate-pulse">Translating...</span>
+            <span className="text-muted-foreground/40 animate-pulse">{t("row.translating")}</span>
           </div>
         ) : translation && translationDisplayMode === "inline" ? (
           <div className="mt-1 flex items-baseline gap-1.5 leading-[1.5]">
@@ -175,7 +177,7 @@ function TranscriptRowImpl({
               <button
                 onClick={(e) => { e.stopPropagation(); onRetranslate(segment.id, segment.text); }}
                 className="shrink-0 flex items-center gap-0.5 rounded px-1 py-px text-[9px] font-semibold text-orange-400 hover:bg-orange-500/[0.08] transition-colors cursor-pointer"
-                title={`Retranslate to ${currentTargetLang?.toUpperCase()}`}
+                title={t("row.retranslateTo", { lang: currentTargetLang?.toUpperCase() })}
               >
                 <RefreshCw className="h-2.5 w-2.5" />
                 {currentTargetLang?.toUpperCase()}
@@ -188,7 +190,7 @@ function TranscriptRowImpl({
             className="mt-1 flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold text-muted-foreground/50 border border-dashed border-border/20 hover:text-primary/70 hover:border-primary/20 hover:bg-primary/[0.03] opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
           >
             <Globe className="h-2.5 w-2.5" />
-            Translate to {currentTargetLang.toUpperCase()}
+            {t("row.translateTo", { lang: currentTargetLang.toUpperCase() })}
           </button>
         ) : null}
 
@@ -211,7 +213,7 @@ function TranscriptRowImpl({
           <button
             onClick={(e) => { e.stopPropagation(); onToggleBookmark(segment.id); }}
             className="rounded p-0.5 hover:bg-accent/50 transition-colors cursor-pointer"
-            title={isBookmarked ? "Remove bookmark" : "Bookmark this line"}
+            title={isBookmarked ? t("row.bookmark.remove") : t("row.bookmark.add")}
           >
             <BookmarkIcon className={`h-3 w-3 ${isBookmarked ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
           </button>
@@ -248,6 +250,7 @@ function SpeakerNameEditor({
   colorHex?: string;
   onRename: (speakerKey: string, name: string) => void;
 }) {
+  const { t } = useT("launcher");
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(label);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -269,7 +272,7 @@ function SpeakerNameEditor({
       <input
         ref={inputRef}
         value={value}
-        aria-label="Speaker name"
+        aria-label={t("row.speaker.nameLabel")}
         maxLength={40}
         onClick={(e) => e.stopPropagation()}
         onChange={(e) => setValue(e.target.value)}
@@ -298,7 +301,7 @@ function SpeakerNameEditor({
       }}
       className={`shrink-0 pt-0.5 text-xs font-bold cursor-text decoration-dotted underline-offset-2 hover:underline ${colorClass}`}
       style={colorHex ? { color: colorHex } : undefined}
-      title="Rename this speaker"
+      title={t("row.speaker.renameHint")}
     >
       {label}
     </button>
