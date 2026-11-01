@@ -83,7 +83,7 @@
     "live": "进行中",
     "inProgress": "进行中",
     "audioMode": {
-      "online": "在线",
+      "online": "线上",
       "inPerson": "现场"
     },
     "scenario": {
@@ -346,7 +346,7 @@
       "tooltip": {
         "noTranscript": "没有转写记录",
         "noModel": "请先配置 AI 模型",
-        "busy": "请等 AI 处理完毕",
+        "busy": "AI 正在处理，请稍候",
         "ready": "提取待办事项"
       }
     }
@@ -400,7 +400,7 @@
     "send": {
       "label": "发送问题",
       "title": "发送（Enter）",
-      "waitTitle": "请等当前的 AI 任务完成"
+      "waitTitle": "请等待当前的 AI 任务完成"
     },
     "hint": "Enter 发送 · Shift+Enter 换行",
     "empty": {
@@ -432,7 +432,7 @@
     "count_other": "{{count}} 位说话人"
   },
   "aiLog": {
-    "empty": "暂无 AI 交互记录",
+    "empty": "没有 AI 交互记录",
     "latency": "{{ms}} 毫秒",
     "askMeeting": "问这场会议"
   }

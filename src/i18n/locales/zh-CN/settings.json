@@ -258,7 +258,7 @@
       "subtitle": "AI 回答时参考哪些数据"
     },
     "transcriptWindow": {
-      "label": "转写窗口",
+      "label": "转写时间窗",
       "help": "AI 回答之前会读取最近多少分钟的对话。\n\n短（1-5 分钟）：聚焦眼前的话题，响应更快，适合简短的会议。\n长（10-30 分钟）：上下文更完整，适合话题多、会回头引用前面内容的复杂讨论。",
       "all": "全部"
     },
@@ -283,7 +283,7 @@
         "assist": "检测到其他参会者提问时，自动给出回答",
         "whatToSay": "建议你接下来该说什么，以第一人称写出",
         "shorten": "把上一条回答压缩成简短、方便直接说出口的版本",
-        "followUp": "建议你可以向其他参会者提出的问题",
+        "followUp": "推荐你可以向其他参会者提出的问题",
         "recap": "总结到目前为止的整场会议，列出要点和待办事项",
         "askQuestion": "你输入任意问题，AI 根据上下文回答"
       }
@@ -299,14 +299,14 @@
       "sources": {
         "label": "上下文来源",
         "transcript": "转写记录",
-        "customInstructions": "自定义指令",
+        "customInstructions": "附加指令",
         "detectedQuestion": "检测到的问题",
         "webSearch": "联网搜索"
       },
       "overrides": {
         "title": "覆盖默认值",
         "toggle": "覆盖",
-        "ragTopK": "知识库 Top-K"
+        "ragTopK": "检索条数（Top-K）"
       }
     },
     "help": {
@@ -334,10 +334,10 @@
       "title": "包含的内容",
       "transcript": "转写记录",
       "ragChunks": "知识库文本块",
-      "customInstructions": "自定义指令",
+      "customInstructions": "附加指令",
       "detectedQuestion": "检测到的问题",
-      "window": "（{{seconds}} 秒窗口）",
-      "defaultWindow": "（默认窗口）",
+      "window": "（最近 {{seconds}} 秒）",
+      "defaultWindow": "（默认时长）",
       "topK": "（前 {{count}} 个）",
       "topKDefault": "（默认数量）"
     },
@@ -370,12 +370,12 @@
     },
     "footer": "更改会自动保存。全局快捷键必须带有 Ctrl 或 Cmd 修饰键。",
     "actions": {
-      "toggleAssist": "触发 AI 助手",
+      "toggleAssist": "调用 AI 助手",
       "startEndMeeting": "开始 / 结束会议",
       "showHide": "显示 / 隐藏悬浮窗",
       "openSettings": "打开设置",
-      "escape": "退出 / 取消",
-      "modeAssist": "模式：AI 助手",
+      "escape": "关闭 / 取消",
+      "modeAssist": "模式：助手",
       "modeSay": "模式：怎么说",
       "modeShorten": "模式：精简",
       "modeFollowUp": "模式：追问",
@@ -402,7 +402,7 @@
       "hint": "会议进行中，无需切换到 {{appName}} 就能让 AI 给出回答。Space 键仅在悬浮窗中有效。"
     },
     "notes": {
-      "windows": "需要 Windows 10 2004 或更高版本。",
+      "windows": "需要 Windows 10 版本 2004 或更高版本。",
       "macos": "在 macOS 14 及更高版本上，部分录制工具（基于 ScreenCaptureKit）仍可能录到窗口。",
       "unsupported": "当前平台不支持。"
     }
@@ -490,7 +490,7 @@
     "none": {
       "hint": "不做降噪，使用服务商的默认设置"
     },
-    "metrics": "VAD 灵敏度 {{sensitivity}}% · 噪声门限 {{gate}} dB"
+    "metrics": "VAD {{sensitivity}}% · 门限 {{gate}} dB"
   },
   "confidence": {
     "title": "置信度高亮",
@@ -501,7 +501,7 @@
     },
     "threshold": {
       "label": "置信度阈值",
-      "hint": "低于此分数的字词会被高亮",
+      "hint": "低于此值的字词会高亮显示",
       "ariaLabel": "置信度阈值",
       "always": "0%（始终）",
       "never": "100%（从不）"
@@ -517,7 +517,7 @@
       "cloneTitle": "复制此场景",
       "createCustom": "新建自定义场景",
       "deleteTitle": "删除此自定义场景",
-      "resetAll": "全部恢复",
+      "resetAll": "全部重置",
       "resetAllTitle": "将所有修改恢复为默认"
     },
     "badges": {

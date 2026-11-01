@@ -14,7 +14,7 @@
     },
     "lecture": {
       "name": "讲座",
-      "description": "提炼要点、定义和问答"
+      "description": "提炼核心概念、定义和问答"
     },
     "interview": {
       "name": "面试",
@@ -59,7 +59,7 @@
     "stealth": {
       "hidden": "共享屏幕时已隐藏",
       "visible": "共享屏幕时可见",
-      "failed": "更改共享屏幕时的可见性失败：{{detail}}"
+      "failed": "无法切换“共享屏幕时隐藏”：{{detail}}"
     }
   },
   "audioPlayer": {
@@ -152,18 +152,18 @@
       "detected": "检测到 {{app}} 会议"
     },
     "nameInput": {
-      "placeholder": "{{app}} — 给这场会议起个名字",
+      "placeholder": "{{app}}：给这场会议起个名字",
       "label": "会议名称"
     },
     "startButton": {
       "label": "开始 {{appName}}"
     },
     "typeButton": {
-      "label": "会议类型：{{type}}"
+      "label": "场景：{{type}}"
     },
     "typeMenu": {
-      "label": "会议类型",
-      "heading": "按以下类型开始"
+      "label": "场景",
+      "heading": "选择场景"
     },
     "typeFallback": "会议",
     "consent": {
@@ -201,7 +201,7 @@
     "meetingAsk": "问会议"
   },
   "endMeetingSave": {
-    "unsavedTranscript_other": "有 {{count}} 条转写内容没能保存。会议还没结束，请再点一次“结束”。"
+    "unsavedTranscript_other": "有 {{count}} 行转写内容没能保存。会议还没结束，请再点一次“结束”。"
   },
   "export": {
     "labels": {
@@ -210,7 +210,7 @@
       "mode": "模式：",
       "scenario": "场景：",
       "segments": "片段数：",
-      "attendees": "参会人员："
+      "attendees": "参会者："
     },
     "headings": {
       "summary": "会议总结",

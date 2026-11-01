@@ -12,7 +12,7 @@
       "ariaLabel": "AI 回答内容"
     },
     "empty": {
-      "hint": "按 <kbd>Space</kbd> 获取 AI 协助"
+      "hint": "按 <kbd>Space</kbd> 调用 AI 助手"
     },
     "typeset": {
       "label": "AI 文字",
@@ -94,7 +94,7 @@
   },
   "scope": {
     "label": {
-      "default": "动作默认",
+      "default": "按动作默认",
       "sinceLastAny": "上次回答以来",
       "sinceLastSame": "上次同一动作以来",
       "minutes": "最近 {{minutes}} 分钟",
@@ -104,9 +104,9 @@
       "sinceLastSame": "上次同一动作以来"
     },
     "optionHint": {
-      "default": "各动作自己的转写窗口",
+      "default": "各动作自己的转写时间窗",
       "defaultClaude": "Claude 根据整场会议自行判断",
-      "sinceLastAny": "任一动作回答之后的新发言",
+      "sinceLastAny": "最近一次回答（不限动作）后的新发言",
       "sinceLastSame": "该动作上次运行之后的新发言",
       "all": "目前为止的全部发言"
     },
@@ -139,7 +139,7 @@
     },
     "note": {
       "claude": "Claude 的实时会话里已经有整场会议的内容，每次请求只发送新增的转写内容。这里只是告诉它该关注哪一段。",
-      "settings": "每个动作的转写窗口可在 <settings>设置 → AI 动作</settings> 中调整。"
+      "settings": "每个动作的转写时间窗可在<settings>设置 → AI 动作</settings>中调整。"
     },
     "sticky": {
       "label": "后续动作继续沿用"

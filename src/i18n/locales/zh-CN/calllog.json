@@ -11,7 +11,7 @@
       },
       "instructions": {
         "label": "指",
-        "title": "自定义指令"
+        "title": "附加指令"
       },
       "question": {
         "label": "问",
@@ -33,7 +33,7 @@
     "clearAll": "全部清除",
     "export": {
       "title": "导出转写记录",
-      "translatedTxt": "译文转写记录（.txt）",
+      "translatedTxt": "翻译后的转写记录（.txt）",
       "bilingualTxt": "双语转写记录（.txt）",
       "bilingualMd": "双语转写记录（.md）",
       "clipboard": "复制到剪贴板",
@@ -103,7 +103,7 @@
     },
     "rag": {
       "title": "知识库文本块",
-      "noRelevantBadge": "0 个相关",
+      "noRelevantBadge": "无相关文本块",
       "query": "查询：",
       "chunkRef": "{{source}}（文本块 {{index}}）",
       "filtered_other": "已过滤 {{count}} 个文本块（低于阈值）",
