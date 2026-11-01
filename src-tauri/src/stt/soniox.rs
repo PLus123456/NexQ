@@ -72,8 +72,12 @@ pub struct SonioxSessionOptions {
     pub language: String,
     /// The other party's language (hints for "auto").
     pub other_language: Option<String>,
-    /// One-way translation target (two-letter); None = no translation.
+    /// One-way translation target as Soniox takes it (two-letter); None = no translation.
     pub translation_target: Option<String>,
+    /// The same target as the translation settings name it ("zh-CN"): the
+    /// `target_lang` of the translations sent and saved, so the meeting's other
+    /// translations (same code) match them. None = `translation_target`.
+    pub translation_target_code: Option<String>,
     /// Prefix of the transcript segment ids this party emits ("them_ab12_"),
     /// so translations carry the full id of their line.
     pub segment_id_prefix: String,
@@ -181,6 +185,11 @@ impl STTProvider for SonioxSTT {
             segment_id_prefix: self.options.segment_id_prefix.clone(),
             diarize: self.options.diarize,
             translation_target: self.options.translation_target.clone(),
+            translation_target_code: self
+                .options
+                .translation_target_code
+                .clone()
+                .filter(|code| !code.trim().is_empty()),
             sink,
             result_tx,
             seen_speakers: Default::default(),
@@ -442,6 +451,7 @@ struct Session {
     segment_id_prefix: String,
     diarize: bool,
     translation_target: Option<String>,
+    translation_target_code: Option<String>,
     sink: Arc<dyn SessionSink>,
     result_tx: mpsc::Sender<TranscriptResult>,
     /// Diarized speakers already announced for this party.
@@ -762,7 +772,7 @@ impl Session {
             original_text: t.original_text,
             translated_text: t.translated_text,
             source_lang: t.source_language.unwrap_or_else(|| "auto".to_string()),
-            target_lang: t.target_language,
+            target_lang: self.translation_target_code.clone().unwrap_or(t.target_language),
             provider: "soniox",
             is_final: t.is_final,
         }
@@ -954,6 +964,7 @@ mod tests {
             language: "auto".into(),
             other_language: Some("zh-CN".into()),
             translation_target: target.map(str::to_string),
+            translation_target_code: target.map(|t| format!("{}-CN", t)),
             segment_id_prefix: "them_ab12_".into(),
             client_reference_id: Some("nexq:m1:them".into()),
             diarize: true,
@@ -1117,7 +1128,8 @@ mod tests {
         assert_eq!(settled.segment_id, "them_ab12_sx1_1");
         assert_eq!(settled.translated_text, "你好世界");
         assert_eq!(settled.original_text, "Hello world");
-        assert_eq!(settled.target_lang, "zh");
+        // The settings' code ("zh-CN"), not the two-letter one sent to Soniox.
+        assert_eq!(settled.target_lang, "zh-CN");
         assert_eq!(settled.provider, "soniox");
 
         let (auth, start, frames) = server.await.unwrap();

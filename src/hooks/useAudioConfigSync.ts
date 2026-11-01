@@ -11,11 +11,33 @@ import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useDevLogStore } from "../stores/devLogStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { useTranslationStore } from "../stores/translationStore";
 import { stopCapture, startCapturePerParty } from "../lib/ipc";
+import { sttProviderMeta } from "../lib/stt/providerMeta";
+import type { MeetingAudioConfig } from "../lib/types";
+
+/**
+ * What the running capture depends on: the audio config, plus the translation
+ * target when a party's engine translates into it (Soniox with no target of
+ * its own reads the translation settings' target when its session starts).
+ */
+export function captureKey(config: MeetingAudioConfig, translationTarget: string): string {
+  const followsTarget = (["you", "them"] as const).some((role) => {
+    const party = config[role];
+    const native = party.native_translation;
+    return (
+      !!sttProviderMeta(party.stt_provider)?.supportsNativeTranslation &&
+      native?.mode === "one_way" &&
+      !native.target_language?.trim()
+    );
+  });
+  return JSON.stringify(followsTarget ? { config, translationTarget } : config);
+}
 
 export function useAudioConfigSync() {
   const isRecording = useMeetingStore((s) => s.isRecording);
   const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
+  const translationTarget = useTranslationStore((s) => s.targetLang);
 
   // What Rust currently has running — only updated after successful restart
   const appliedConfigRef = useRef<string | null>(null);
@@ -29,7 +51,7 @@ export function useAudioConfigSync() {
   useEffect(() => {
     if (!isRecording || !meetingAudioConfig) return;
 
-    const configKey = JSON.stringify(meetingAudioConfig);
+    const configKey = captureKey(meetingAudioConfig, translationTarget);
 
     // On first run (meeting just started), record the applied config
     if (appliedConfigRef.current === null) {
@@ -78,7 +100,7 @@ export function useAudioConfigSync() {
         return;
       }
 
-      const latestKey = JSON.stringify(latestConfig);
+      const latestKey = captureKey(latestConfig, useTranslationStore.getState().targetLang);
 
       // If the latest config matches what's already running, skip
       if (appliedConfigRef.current === latestKey) {
@@ -111,7 +133,7 @@ export function useAudioConfigSync() {
 
         log("info", "config", "Hot-swap: starting new capture pipeline...");
         await startCapturePerParty(freshConfig.you, freshConfig.them);
-        const freshKey = JSON.stringify(freshConfig);
+        const freshKey = captureKey(freshConfig, useTranslationStore.getState().targetLang);
         appliedConfigRef.current = freshKey;
         pendingConfigRef.current = freshKey;
         log("info", "config", "Hot-swap complete — new STT pipeline active");
@@ -125,7 +147,7 @@ export function useAudioConfigSync() {
         restartingRef.current = false;
       }
     }, 300);
-  }, [isRecording, meetingAudioConfig]);
+  }, [isRecording, meetingAudioConfig, translationTarget]);
 
   // Reset when meeting ends
   useEffect(() => {

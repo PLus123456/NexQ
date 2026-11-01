@@ -1766,6 +1766,8 @@ async fn create_stt_provider_for_party(
             let key = get_credential_key(state, SONIOX_KEY_SLOT);
             let cfg = app.state::<SttPlusState>().soniox_snapshot();
             let translation_target = soniox_translation_target(config, state);
+            let translation_target_code = translation_target.as_ref().map(|(code, _)| code.clone());
+            let translation_target = translation_target.map(|(_, soniox)| soniox);
             let meeting_ref = state
                 .live_meeting
                 .lock()
@@ -1777,6 +1779,7 @@ async fn create_stt_provider_for_party(
                 language: stt_language.clone(),
                 other_language: Some(party_lang(other, state)),
                 translation_target: translation_target.clone(),
+                translation_target_code,
                 segment_id_prefix: party.segment_prefix(session_prefix),
                 client_reference_id: Some(format!("nexq:{}:{}", meeting_ref, party_role.to_lowercase())),
                 diarize: party == Party::Them && cfg.enable_speaker_diarization,
@@ -1871,9 +1874,11 @@ fn party_lang(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Stri
     crate::stt::language::party_language(config.language.as_deref(), &get_stt_language(state))
 }
 
-/// Soniox one-way translation target of a party (two-letter), when its
-/// `native_translation` is on: its own target, else the translation settings'.
-fn soniox_translation_target(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Option<String> {
+/// Soniox one-way translation target of a party when its `native_translation`
+/// is on: its own target, else the translation settings'. Returns the code as
+/// the settings name it ("zh-CN", used for the translations it produces) and
+/// the two-letter code Soniox takes ("zh").
+fn soniox_translation_target(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Option<(String, String)> {
     let translation = config.native_translation.as_ref().filter(|t| t.is_one_way())?;
     let target = translation
         .target_language
@@ -1885,7 +1890,9 @@ fn soniox_translation_target(config: &crate::audio::PartyAudioConfig, state: &Ap
                 .as_ref()
                 .and_then(|tr| tr.lock().ok().map(|router| router.default_target_lang().to_string()))
         })?;
-    crate::stt::language::base_code(&target)
+    let target = target.trim().to_string();
+    let soniox = crate::stt::language::base_code(&target)?;
+    Some((target, soniox))
 }
 
 /// Read an API key directly from the credential store (Windows Credential Manager).
@@ -2134,14 +2141,14 @@ mod tests {
         assert_eq!(soniox_translation_target(&them, &state), None);
 
         them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
-        assert_eq!(soniox_translation_target(&them, &state).as_deref(), Some("zh"));
+        assert_eq!(soniox_translation_target(&them, &state), Some(("zh-CN".to_string(), "zh".to_string())));
 
         them.native_translation = Some(NativeTranslationConfig {
             mode: "one_way".into(),
             target_language: Some("ja".into()),
             ..Default::default()
         });
-        assert_eq!(soniox_translation_target(&them, &state).as_deref(), Some("ja"));
+        assert_eq!(soniox_translation_target(&them, &state), Some(("ja".to_string(), "ja".to_string())));
 
         them.native_translation = Some(NativeTranslationConfig { mode: "off".into(), target_language: Some("ja".into()), ..Default::default() });
         assert_eq!(soniox_translation_target(&them, &state), None);
