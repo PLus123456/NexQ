@@ -1,7 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import { ExternalLink, Loader2, RefreshCw, Terminal } from "lucide-react";
-import { API_BILLED_NOTE, NPM_ONLY_NOTE } from "../lib/agentUsage";
+import type { TFunction } from "i18next";
+import { ModelCombobox, type ModelOption } from "../components/ModelCombobox";
+// `translate` is the global `t`, for helpers that run outside a component;
+// components use the `t` of `useT` so they re-render on a language change.
+import { t as translate, useT } from "../i18n";
+import { apiBilledNote, npmOnlyNote } from "../lib/agentUsage";
 import { getApiKey, listModels, openClaudeLoginTerminal } from "../lib/ipc";
 import {
   STATIC_CLAUDE_MODELS,
@@ -15,16 +20,45 @@ import type { ClaudeCliConfig, ClaudeCliStatus, ClaudeModelInfo } from "../lib/t
 import { isSessionRunning, useAgentStore } from "../stores/agentStore";
 import { CLAUDE_FALLBACK_PROVIDERS, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
+import { useLlmConfig } from "../stores/llmConnectionsStore";
+import { ClaudeFallbackRoute } from "./llm/ClaudeFallbackRoute";
+
+type T = TFunction<["llm", "common"]>;
 
 export const CLAUDE_INSTALL_URL = "https://code.claude.com/docs/en/setup";
 
+/** Product name: the same in every UI language. */
+const CLAUDE = "Claude"; // i18n-ignore
+
+/**
+ * Effort levels, lowest first. `labelKey` (namespace-prefixed, because the
+ * global `t` translates it) is translated when shown: see `effortLabel`.
+ */
 export const CLAUDE_EFFORTS = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra high" },
-  { value: "max", label: "Max" },
+  { value: "low", labelKey: "llm:claudeCli.effort.low" },
+  { value: "medium", labelKey: "llm:claudeCli.effort.medium" },
+  { value: "high", labelKey: "llm:claudeCli.effort.high" },
+  { value: "xhigh", labelKey: "llm:claudeCli.effort.xhigh" },
+  { value: "max", labelKey: "llm:claudeCli.effort.max" },
 ] as const;
+
+// The two model tiers' texts, as keys translated when shown.
+const TIER_KEYS = {
+  fast: {
+    name: "claudeCli.models.tiers.fast.name",
+    hint: "claudeCli.models.tiers.fast.hint",
+    modelLabel: "claudeCli.models.tiers.fast.modelLabel",
+    effortLabel: "claudeCli.models.tiers.fast.effortLabel",
+    thinkingLabel: "claudeCli.models.tiers.fast.thinkingLabel",
+  },
+  deep: {
+    name: "claudeCli.models.tiers.deep.name",
+    hint: "claudeCli.models.tiers.deep.hint",
+    modelLabel: "claudeCli.models.tiers.deep.modelLabel",
+    effortLabel: "claudeCli.models.tiers.deep.effortLabel",
+    thinkingLabel: "claudeCli.models.tiers.deep.thinkingLabel",
+  },
+} as const;
 
 const FALLBACK_LABELS: Record<string, string> = {
   ollama: "Ollama",
@@ -46,8 +80,10 @@ export function claudeModelLabel(model: string, models: ClaudeModelInfo[] = curr
   return findClaudeModel(models, model)?.display_name || model;
 }
 
+/** "Low" / "Extra high" in the UI language; an unknown level as it is. */
 function effortLabel(effort: string): string {
-  return CLAUDE_EFFORTS.find((x) => x.value === effort)?.label ?? effort;
+  const level = CLAUDE_EFFORTS.find((x) => x.value === effort);
+  return level ? translate(level.labelKey) : effort;
 }
 
 /** "Sonnet · Medium" with the effort the session actually gets; just "Haiku" without effort. */
@@ -95,62 +131,76 @@ function planLabel(plan: string | null): string | null {
 }
 
 /** Short state shown on the provider row. */
-const ROW_LABEL: Record<ConnectionState, string> = {
-  checking: "Checking…",
-  failed: "Couldn't check",
-  connected: "Connected",
-  api_billed: "API account",
-  logged_out: "Not logged in",
-  unknown: "Login state unknown",
-  not_installed: "Not installed",
-  npm_only: "Needs native install",
-};
-
-/** Full state line of the details panel. */
-function statusLine(state: ConnectionState, status: ClaudeCliStatus | undefined): string {
+function rowLabel(state: ConnectionState, t: T): string {
   switch (state) {
     case "checking":
-      return "Looking for Claude Code…";
+      return t("claudeCli.rowState.checking");
     case "failed":
-      return "Couldn't check for Claude Code";
-    case "not_installed":
-      return "Not installed";
-    case "npm_only":
-      return NPM_ONLY_NOTE;
-    case "unknown":
-      return "Installed — login state unavailable";
+      return t("claudeCli.rowState.failed");
+    case "connected":
+      return t("common:status.connected");
+    case "api_billed":
+      return t("claudeCli.rowState.apiBilled");
     case "logged_out":
-      return "Not logged in";
+      return t("claudeCli.rowState.loggedOut");
+    case "unknown":
+      return t("claudeCli.rowState.unknown");
+    case "not_installed":
+      return t("claudeCli.rowState.notInstalled");
+    case "npm_only":
+      return t("claudeCli.rowState.npmOnly");
+  }
+}
+
+/** Full state line of the details panel. */
+function statusLine(state: ConnectionState, status: ClaudeCliStatus | undefined, t: T): string {
+  switch (state) {
+    case "checking":
+      return t("claudeCli.statusLine.checking");
+    case "failed":
+      return t("claudeCli.statusLine.failed");
+    case "not_installed":
+      return t("claudeCli.statusLine.notInstalled");
+    case "npm_only":
+      return npmOnlyNote();
+    case "unknown":
+      return t("claudeCli.statusLine.unknown");
+    case "logged_out":
+      return t("claudeCli.statusLine.loggedOut");
     case "connected": {
       const auth = status?.auth;
       const plan = planLabel(auth?.subscription_type ?? null);
-      return [auth?.email ?? "Logged in", plan].filter(Boolean).join(" · ");
+      return [auth?.email ?? t("claudeCli.statusLine.loggedIn"), plan].filter(Boolean).join(" · ");
     }
     case "api_billed":
-      return [status?.auth?.email ?? "Logged in", "API account"].join(" · ");
+      return [status?.auth?.email ?? t("claudeCli.statusLine.loggedIn"), t("claudeCli.statusLine.apiAccount")].join(" · ");
   }
 }
 
 /** Outcome of the last check, shown next to Check connection; color only where it means something. */
-function checkResult(state: ConnectionState, error: string | undefined): { text: string; className: string } | null {
+function checkResult(
+  state: ConnectionState,
+  error: string | undefined,
+  t: T,
+): { text: string; className: string } | null {
   if (state === "checking") return null;
   // The last check itself failed: say so, not the state an earlier check found.
-  if (error) return { text: `Couldn't check: ${error}`, className: "text-warning" };
+  if (error) return { text: t("claudeCli.checkResult.failedWithDetail", { detail: error }), className: "text-warning" };
   switch (state) {
     case "connected":
-      return { text: "✓ Connected", className: "text-success" };
+      return { text: t("claudeCli.checkResult.connected"), className: "text-success" };
     case "api_billed":
-      return { text: "API account, not your subscription", className: "text-warning" };
+      return { text: t("claudeCli.checkResult.apiBilled"), className: "text-warning" };
     case "logged_out":
-      return { text: "Not logged in", className: "text-warning" };
+      return { text: t("claudeCli.checkResult.loggedOut"), className: "text-warning" };
     case "unknown":
-      return { text: "Login state unavailable", className: "text-warning" };
+      return { text: t("claudeCli.checkResult.unknown"), className: "text-warning" };
     case "npm_only":
-      return { text: "npm install found — needs the native installer", className: "text-warning" };
+      return { text: t("claudeCli.checkResult.npmOnly"), className: "text-warning" };
     case "not_installed":
-      return { text: "Not installed", className: "text-muted-foreground" };
+      return { text: t("claudeCli.checkResult.notInstalled"), className: "text-muted-foreground" };
     case "failed":
-      return { text: "Couldn't check", className: "text-warning" };
+      return { text: t("claudeCli.checkResult.failed"), className: "text-warning" };
   }
 }
 
@@ -180,6 +230,11 @@ interface ClaudeCliSettingsProps {
   /** Claude CLI is the active provider. */
   active: boolean;
   onSelect: () => void;
+  /**
+   * Shown inside the connection editor: no provider rows and no "Use Claude"
+   * banner (the editor has its own "Make default"); the details always show.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -187,7 +242,8 @@ interface ClaudeCliSettingsProps {
  * driven through the user's own login (Beta), plus placeholder rows for
  * Gemini CLI and Codex CLI.
  */
-export function ClaudeCliSettings({ selected, active, onSelect }: ClaudeCliSettingsProps) {
+export function ClaudeCliSettings({ selected, active, onSelect, embedded = false }: ClaudeCliSettingsProps) {
+  const { t } = useT(["llm", "common"]);
   const status = useAgentStore((s) => s.status);
   const checking = useAgentStore((s) => s.checking);
   const statusFailed = useAgentStore((s) => !!s.statusError);
@@ -200,68 +256,74 @@ export function ClaudeCliSettings({ selected, active, onSelect }: ClaudeCliSetti
   }, [initAgentStore, refreshStatus]);
 
   const state = connectionState(status, statusFailed && !checking);
+  const stateLabel = rowLabel(state, t);
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/50 p-5">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-primary/80">Subscription (local CLI)</h3>
+        <h3 className="text-sm font-semibold text-primary/80">{t("claudeCli.title")}</h3>
         <span className="rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-meta font-semibold uppercase tracking-wider text-warning">
-          Beta
+          {t("claudeCli.beta")}
         </span>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Uses your own Claude login on this PC. NexQ never sees your credentials.
-      </p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("claudeCli.credentialsNote")}</p>
 
-      <div className="mt-4 grid grid-cols-3 gap-2.5">
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-pressed={selected}
-          aria-label={`Claude, ${ROW_LABEL[state]}${active ? ", active" : ""}`}
-          className={`relative flex flex-col items-start rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer ${
-            selected
-              ? "border-primary bg-primary/5 ring-1 ring-primary/20"
-              : "border-border/50 hover:border-border hover:bg-accent/50"
-          }`}
-        >
-          <div className="flex w-full items-center gap-1.5">
-            <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium">Claude</span>
-            {active && <span className="ml-auto text-meta font-medium text-primary/80">Active</span>}
-          </div>
-          <span className="mt-1.5 flex w-full items-center gap-1.5 text-meta text-muted-foreground">
-            <span
-              data-testid="claude-status-dot"
-              data-state={state}
-              aria-hidden="true"
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[state]}`}
-            />
-            <span className="truncate">{ROW_LABEL[state]}</span>
-          </span>
-        </button>
-        {["Gemini CLI", "Codex CLI"].map((label) => (
+      {!embedded && (
+        <div className="mt-4 grid grid-cols-3 gap-2.5">
           <button
-            key={label}
             type="button"
-            disabled
-            className="flex flex-col items-start rounded-xl border border-dashed border-border/40 p-3 text-left opacity-60 cursor-not-allowed"
+            onClick={onSelect}
+            aria-pressed={selected}
+            aria-label={
+              active
+                ? t("claudeCli.providerRow.ariaLabelActive", { state: stateLabel })
+                : t("claudeCli.providerRow.ariaLabel", { state: stateLabel })
+            }
+            className={`relative flex flex-col items-start rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer ${
+              selected
+                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                : "border-border/50 hover:border-border hover:bg-accent/50"
+            }`}
           >
             <div className="flex w-full items-center gap-1.5">
-              <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
-              <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium">{CLAUDE}</span>
+              {active && <span className="ml-auto text-meta font-medium text-primary/80">{t("claudeCli.active")}</span>}
             </div>
-            <span className="mt-1.5 text-meta text-muted-foreground/70">Coming soon</span>
+            <span className="mt-1.5 flex w-full items-center gap-1.5 text-meta text-muted-foreground">
+              <span
+                data-testid="claude-status-dot"
+                data-state={state}
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[state]}`}
+              />
+              <span className="truncate">{stateLabel}</span>
+            </span>
           </button>
-        ))}
-      </div>
+          {/* Product names: the same in every language. */}
+          {["Gemini CLI", "Codex CLI"].map((label) => (
+            <button
+              key={label}
+              type="button"
+              disabled
+              className="flex flex-col items-start rounded-xl border border-dashed border-border/40 p-3 text-left opacity-60 cursor-not-allowed"
+            >
+              <div className="flex w-full items-center gap-1.5">
+                <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
+                <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              </div>
+              <span className="mt-1.5 text-meta text-muted-foreground/70">{t("claudeCli.comingSoon")}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
-      {selected && (
+      {(selected || embedded) && (
         <ClaudeDetails
           status={status}
           state={state}
           checking={checking}
-          active={active}
+          active={active || embedded}
           refreshStatus={refreshStatus}
         />
       )}
@@ -282,6 +344,7 @@ function ClaudeDetails({
   active: boolean;
   refreshStatus: () => Promise<void>;
 }) {
+  const { t } = useT(["llm", "common"]);
   const [awaitingLogin, setAwaitingLogin] = useState(false);
   const [activating, setActivating] = useState(false);
   const checkedAt = useAgentStore((s) => s.checkedAt);
@@ -289,7 +352,7 @@ function ClaudeDetails({
   const refreshModels = useAgentStore((s) => s.refreshModels);
   const modelsRefreshing = useAgentStore((s) => s.modelsRefreshing);
   const now = useNow(15_000);
-  const result = checkResult(state, statusError);
+  const result = checkResult(state, statusError, t);
   // A check covers both the connection and the model list.
   const busy = checking || modelsRefreshing;
 
@@ -307,7 +370,7 @@ function ClaudeDetails({
     try {
       await useConfigStore.getState().activateLLMProvider("claude_cli");
     } catch (e) {
-      showToast(`Couldn't switch to Claude: ${e instanceof Error ? e.message : String(e)}`, "error");
+      showToast(t("claudeCli.errors.switchFailed", { detail: e instanceof Error ? e.message : String(e) }), "error");
     } finally {
       setActivating(false);
     }
@@ -340,7 +403,7 @@ function ClaudeDetails({
       await openClaudeLoginTerminal();
       setAwaitingLogin(true);
     } catch (e) {
-      showToast(`Couldn't open a terminal: ${e instanceof Error ? e.message : String(e)}`, "error");
+      showToast(t("claudeCli.errors.openTerminalFailed", { detail: e instanceof Error ? e.message : String(e) }), "error");
     }
   };
 
@@ -348,9 +411,7 @@ function ClaudeDetails({
     <div className="mt-4 space-y-4 border-t border-border/20 pt-4">
       {!active && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-          <p className="text-xs text-muted-foreground">
-            Not in use — answers come from your current provider until you switch.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("claudeCli.inactive.hint")}</p>
           <button
             type="button"
             onClick={handleActivate}
@@ -358,7 +419,7 @@ function ClaudeDetails({
             className={`${BUTTON_CLASS} shrink-0 border-primary/30 text-primary`}
           >
             {activating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Use Claude
+            {t("claudeCli.inactive.useClaude")}
           </button>
         </div>
       )}
@@ -367,7 +428,7 @@ function ClaudeDetails({
       <div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-foreground">{statusLine(state, status)}</p>
+            <p className="text-xs font-medium text-foreground">{statusLine(state, status, t)}</p>
             {status?.installed && (
               <p className="mt-0.5 truncate font-mono text-meta text-muted-foreground/70" title={status.binary_path ?? undefined}>
                 {[status.version && `v${status.version}`, status.binary_path].filter(Boolean).join(" — ")}
@@ -382,12 +443,15 @@ function ClaudeDetails({
                 title={result.text}
               >
                 {result.text}
-                <span className="text-muted-foreground"> · checked {formatCheckedAgo(checkedAt, Math.max(now, checkedAt))}</span>
+                <span className="text-muted-foreground">
+                  {" · "}
+                  {t("claudeCli.connection.checkedAgo", { ago: formatCheckedAgo(checkedAt, Math.max(now, checkedAt)) })}
+                </span>
               </span>
             )}
             <button type="button" onClick={handleCheck} disabled={busy} className={BUTTON_CLASS}>
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              {busy ? "Checking…" : "Check connection"}
+              {busy ? t("claudeCli.connection.checking") : t("claudeCli.connection.check")}
             </button>
           </div>
         </div>
@@ -399,9 +463,7 @@ function ClaudeDetails({
             }`}
           >
             <p className="text-xs text-muted-foreground">
-              {state === "npm_only"
-                ? "NexQ runs Claude Code's native app, not the npm package. Install it with the native installer, log in once, then check the connection."
-                : "Claude Code isn't installed on this PC. Install it, log in once, then check the connection."}
+              {state === "npm_only" ? t("claudeCli.install.npmOnly") : t("claudeCli.install.notInstalled")}
             </p>
             <a
               href={CLAUDE_INSTALL_URL}
@@ -410,12 +472,15 @@ function ClaudeDetails({
               onClick={(e) => {
                 e.preventDefault();
                 open(CLAUDE_INSTALL_URL).catch((err) =>
-                  showToast(`Couldn't open the browser: ${err instanceof Error ? err.message : String(err)}`, "error")
+                  showToast(
+                    t("claudeCli.errors.openBrowserFailed", { detail: err instanceof Error ? err.message : String(err) }),
+                    "error",
+                  )
                 );
               }}
               className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
             >
-              Install Claude Code
+              {t("claudeCli.install.link")}
               <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -425,25 +490,19 @@ function ClaudeDetails({
           <div className="mt-3 rounded-lg border border-warning/20 bg-warning/5 px-4 py-3">
             {state === "api_billed" ? (
               <>
-                <p className="text-xs font-medium text-warning">{API_BILLED_NOTE}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  It still works, at API prices. To use your subscription, log in with your Claude account
-                  in a terminal (run /login there).
-                </p>
+                <p className="text-xs font-medium text-warning">{apiBilledNote()}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{t("claudeCli.login.apiBilledDetail")}</p>
               </>
             ) : (
-              <p className="text-xs text-muted-foreground">
-                Log in once in a terminal: Claude opens there and walks you through it. Your login stays
-                between you and Claude.
-              </p>
+              <p className="text-xs text-muted-foreground">{t("claudeCli.login.hint")}</p>
             )}
             <div className="mt-2.5 flex items-center gap-3">
               <button type="button" onClick={handleOpenLogin} className={BUTTON_CLASS}>
                 <Terminal className="h-3.5 w-3.5" />
-                Open terminal to log in
+                {t("claudeCli.login.openTerminal")}
               </button>
               {awaitingLogin && (
-                <span className="text-meta text-muted-foreground">Waiting for login…</span>
+                <span className="text-meta text-muted-foreground">{t("claudeCli.login.waiting")}</span>
               )}
             </div>
           </div>
@@ -457,6 +516,7 @@ function ClaudeDetails({
 }
 
 function ModelSettings() {
+  const { t } = useT(["llm", "common"]);
   const config = useConfigStore((s) => s.claudeCliConfig);
   const setConfig = useConfigStore((s) => s.setClaudeCliConfig);
   const sessionRunning = useAgentStore((s) => Object.values(s.sessions).some(isSessionRunning));
@@ -478,22 +538,20 @@ function ModelSettings() {
   };
 
   const rows = [
-    { tier: "Fast", hint: "Live answers and quick actions", model: "fast_model", effort: "fast_effort", thinking: "fast_thinking" },
-    { tier: "Deep", hint: "Recaps and past meetings", model: "deep_model", effort: "deep_effort", thinking: "deep_thinking" },
+    { tier: "fast", model: "fast_model", effort: "fast_effort", thinking: "fast_thinking" },
+    { tier: "deep", model: "deep_model", effort: "deep_effort", thinking: "deep_thinking" },
   ] as const;
 
   return (
     <div>
       <div className="flex items-baseline justify-between">
-        <h4 className="text-xs font-semibold text-foreground">Models</h4>
+        <h4 className="text-xs font-semibold text-foreground">{t("claudeCli.models.title")}</h4>
         {changed && sessionRunning ? (
-          <span className="text-meta text-muted-foreground">Applies to the next session</span>
+          <span className="text-meta text-muted-foreground">{t("claudeCli.models.appliesNextSession")}</span>
         ) : (
           modelsError && (
             <span className="text-meta text-muted-foreground" title={modelsError}>
-              {catalog === null
-                ? "Model list unavailable — showing the standard models"
-                : "Couldn't refresh model list — showing last known"}
+              {catalog === null ? t("claudeCli.models.listUnavailable") : t("claudeCli.models.refreshFailed")}
             </span>
           )
         )}
@@ -509,22 +567,23 @@ function ModelSettings() {
           const levels = info ? info.effort_levels : CLAUDE_EFFORTS.map((x) => x.value);
           // Shown as the session will run it; the saved effort is kept as chosen.
           const effort = effectiveEffort(info, config[row.effort]) ?? "";
+          const keys = TIER_KEYS[row.tier];
           return (
             <div key={row.tier} className="flex items-start gap-3">
               <div className="w-40 shrink-0 pt-0.5">
-                <p className="text-xs font-medium text-foreground">{row.tier}</p>
-                <p className="text-meta text-muted-foreground/70">{row.hint}</p>
+                <p className="text-xs font-medium text-foreground">{t(keys.name)}</p>
+                <p className="text-meta text-muted-foreground/70">{t(keys.hint)}</p>
               </div>
               <div className="min-w-0 flex-1">
                 <select
-                  aria-label={`${row.tier} model`}
+                  aria-label={t(keys.modelLabel)}
                   value={saved}
                   title={info?.description || undefined}
                   onChange={(e) => update({ [row.model]: e.target.value })}
                   className={`${SELECT_CLASS} w-full ${unavailable ? "border-warning/50" : ""}`}
                 >
                   {!listed && <option value={saved}>{info?.display_name || saved}</option>}
-                  <optgroup label="Latest">
+                  <optgroup label={t("claudeCli.models.groups.latest")}>
                     {latest.map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
@@ -532,7 +591,7 @@ function ModelSettings() {
                     ))}
                   </optgroup>
                   {pinned.length > 0 && (
-                    <optgroup label="Pinned versions">
+                    <optgroup label={t("claudeCli.models.groups.pinned")}>
                       {pinned.map((o) => (
                         <option key={o.value} value={o.value}>
                           {o.label}
@@ -541,7 +600,7 @@ function ModelSettings() {
                     </optgroup>
                   )}
                 </select>
-                {unavailable && <p className="mt-1 text-meta text-warning">No longer available</p>}
+                {unavailable && <p className="mt-1 text-meta text-warning">{t("claudeCli.models.noLongerAvailable")}</p>}
                 <ThinkingToggle
                   tier={row.tier}
                   checked={config[row.thinking]}
@@ -549,15 +608,15 @@ function ModelSettings() {
                 />
               </div>
               <select
-                aria-label={`${row.tier} effort`}
+                aria-label={t(keys.effortLabel)}
                 value={effort}
                 disabled={noEffort}
-                title={noEffort ? "This model doesn't take an effort level" : undefined}
+                title={noEffort ? t("claudeCli.models.effortUnsupported") : undefined}
                 onChange={(e) => update({ [row.effort]: e.target.value })}
                 className={`${SELECT_CLASS} w-36`}
               >
                 {noEffort ? (
-                  <option value="">Not supported</option>
+                  <option value="">{t("claudeCli.models.effortNotSupported")}</option>
                 ) : (
                   levels.map((level) => (
                     <option key={level} value={level}>
@@ -575,15 +634,24 @@ function ModelSettings() {
 }
 
 /** Per-tier extended thinking: off answers fastest, on reasons more first. */
-function ThinkingToggle({ tier, checked, onChange }: { tier: string; checked: boolean; onChange: (on: boolean) => void }) {
-  const hintId = `claude-thinking-hint-${tier.toLowerCase()}`;
+function ThinkingToggle({
+  tier,
+  checked,
+  onChange,
+}: {
+  tier: keyof typeof TIER_KEYS;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  const { t } = useT(["llm", "common"]);
+  const hintId = `claude-thinking-hint-${tier}`;
   return (
     <div className="mt-2 flex items-center gap-2.5">
       <button
         type="button"
         role="switch"
         aria-checked={checked}
-        aria-label={`${tier} extended thinking`}
+        aria-label={t(TIER_KEYS[tier].thinkingLabel)}
         aria-describedby={hintId}
         onClick={() => onChange(!checked)}
         className={`relative h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
@@ -596,15 +664,22 @@ function ThinkingToggle({ tier, checked, onChange }: { tier: string; checked: bo
           }`}
         />
       </button>
-      <span className="text-xs text-foreground">Extended thinking</span>
+      <span className="text-xs text-foreground">{t("claudeCli.thinking.label")}</span>
       <span id={hintId} className="truncate text-meta text-muted-foreground/70">
-        Off: fastest replies · On: deeper reasoning, slower
+        {t("claudeCli.thinking.hint")}
       </span>
     </div>
   );
 }
 
+/** The fallback: a connection + model (the `claude_fallback` route) with LLM connections, else a provider type. */
 function FallbackSettings() {
+  const { view } = useLlmConfig();
+  return view ? <ClaudeFallbackRoute view={view} /> : <ProviderFallbackSettings />;
+}
+
+function ProviderFallbackSettings() {
+  const { t } = useT(["llm", "common"]);
   const config = useConfigStore((s) => s.claudeCliConfig);
   const lastModelByProvider = useConfigStore((s) => s.lastModelByProvider);
   const setFallback = useConfigStore((s) => s.setClaudeCliFallback);
@@ -627,7 +702,7 @@ function FallbackSettings() {
         const list = await listModels(JSON.stringify({ provider_type: provider, ...(key && { api_key: key }) }));
         if (!cancelled) setModels(list.map((m) => m.id));
       } catch {
-        // No list (server down, no key): the saved model and the default stay available.
+        // No list (server down, no key): the saved model stays, and any id can be typed.
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -637,19 +712,21 @@ function FallbackSettings() {
     };
   }, [provider]);
 
-  const modelOptions = Array.from(
-    new Set([config.fallback_model, ...models].filter((m): m is string => !!m)),
-  );
+  // The fetched ids, with the saved model first when the list doesn't hold it
+  // (not fetched yet, or an id the user typed).
+  const modelOptions = useMemo<ModelOption[]>(() => {
+    const fetched = models.map((id): ModelOption => ({ id, source: "fetched" }));
+    const saved = config.fallback_model;
+    return saved && !models.includes(saved) ? [{ id: saved, source: "manual" }, ...fetched] : fetched;
+  }, [config.fallback_model, models]);
 
   return (
     <div>
-      <h4 className="text-xs font-semibold text-foreground">Fallback</h4>
-      <p className="mt-0.5 text-meta text-muted-foreground/70">
-        Answers while Claude is unavailable (not logged in, usage limit, crash).
-      </p>
+      <h4 className="text-xs font-semibold text-foreground">{t("claudeCli.fallback.title")}</h4>
+      <p className="mt-0.5 text-meta text-muted-foreground/70">{t("claudeCli.fallback.hint")}</p>
       <div className="mt-2 flex items-center gap-3">
         <select
-          aria-label="Fallback provider"
+          aria-label={t("claudeCli.fallback.providerLabel")}
           value={provider ?? ""}
           onChange={(e) => {
             const next = e.target.value || null;
@@ -657,27 +734,23 @@ function FallbackSettings() {
           }}
           className={`${SELECT_CLASS} flex-1`}
         >
-          <option value="">None</option>
+          <option value="">{t("common:labels.none")}</option>
           {CLAUDE_FALLBACK_PROVIDERS.map((p) => (
             <option key={p} value={p}>
               {FALLBACK_LABELS[p] ?? p}
             </option>
           ))}
         </select>
-        <select
-          aria-label="Fallback model"
+        <ModelCombobox
+          aria-label={t("claudeCli.fallback.modelLabel")}
+          placeholder={t("claudeCli.fallback.modelPlaceholder")}
           value={config.fallback_model ?? ""}
+          onChange={(m) => setFallback(provider, m || null)}
+          options={modelOptions}
+          loading={loading}
           disabled={!provider}
-          onChange={(e) => setFallback(provider, e.target.value || null)}
-          className={`${SELECT_CLASS} flex-1`}
-        >
-          <option value="">{loading ? "Loading models…" : "Provider's first model"}</option>
-          {modelOptions.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+          className="min-w-0 flex-1"
+        />
       </div>
     </div>
   );

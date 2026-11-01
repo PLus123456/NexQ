@@ -1,23 +1,39 @@
 // Pure helpers for Claude session status and usage, shared by the footer chip,
-// the AI Log header and the fallback toast.
+// the AI Log header and the fallback toast. Text is translated when the helper
+// runs (never at module level), so it follows the UI language.
 
+import { formatNumber, t } from "../i18n";
 import type { AgentSessionStatus, ClaudeCliStatus, SessionUsage } from "./types";
 
+/**
+ * @deprecated A module-level string does not follow a language change. Use
+ * `apiBilledNote()`. Kept only for files that still import the constant.
+ */
+export const API_BILLED_NOTE = "This Claude login bills an API account, not your subscription."; // i18n-ignore
+
+/**
+ * @deprecated A module-level string does not follow a language change. Use
+ * `npmOnlyNote()`. Kept only for files that still import the constant.
+ */
+export const NPM_ONLY_NOTE = "Found an npm install of Claude Code — NexQ needs the native installer"; // i18n-ignore
+
 /** Shown wherever a login that bills an API account would read as connected. */
-export const API_BILLED_NOTE = "This Claude login bills an API account, not your subscription.";
+export function apiBilledNote(): string {
+  return t("llm:agentUsage.notes.apiBilled");
+}
 
 /** Shown when only an npm install of Claude Code (`claude.cmd`) was found. */
-export const NPM_ONLY_NOTE = "Found an npm install of Claude Code — NexQ needs the native installer";
+export function npmOnlyNote(): string {
+  return t("llm:agentUsage.notes.npmOnly");
+}
 
 /** The Claude login bills an API account (usable, but not the subscription). */
 export function isApiBilled(status: ClaudeCliStatus | undefined | null): boolean {
   return status?.auth?.login === "api_billed";
 }
 
-const NUMBER = new Intl.NumberFormat("en-US");
-
 export function formatTokens(n: number): string {
-  return NUMBER.format(Math.round(n));
+  return formatNumber(Math.round(n));
 }
 
 export function formatCost(usd: number): string {
@@ -47,29 +63,33 @@ export function promptTokens(u: Pick<SessionUsage, "input_tokens" | "cache_read_
 /** "850 ms" / "1.2 s" / "31 s" / "2 min 5 s" */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 1000) return t("llm:agentUsage.duration.milliseconds", { milliseconds: Math.round(ms) });
   const s = ms / 1000;
-  if (s < 10) return `${(Math.round(s * 10) / 10).toFixed(1)} s`;
-  if (s < 60) return `${Math.round(s)} s`;
+  if (s < 10) return t("llm:agentUsage.duration.seconds", { seconds: (Math.round(s * 10) / 10).toFixed(1) });
+  if (s < 60) return t("llm:agentUsage.duration.seconds", { seconds: Math.round(s) });
   const m = Math.floor(s / 60);
   const rest = Math.round(s - m * 60);
-  return rest > 0 ? `${m} min ${rest} s` : `${m} min`;
+  return rest > 0
+    ? t("llm:agentUsage.duration.minutesSeconds", { minutes: m, seconds: rest })
+    : t("llm:agentUsage.duration.minutes", { minutes: m });
 }
 
 /** "Last answer: 1.2 s total, first words after 600 ms" */
 export function lastAnswerTooltip(latencyMs: number, firstTokenMs: number | null): string {
-  const total = `Last answer: ${formatDuration(latencyMs)} total`;
-  return firstTokenMs != null ? `${total}, first words after ${formatDuration(firstTokenMs)}` : total;
+  const total = formatDuration(latencyMs);
+  return firstTokenMs != null
+    ? t("llm:agentUsage.lastAnswer.totalWithFirstWords", { total, firstWords: formatDuration(firstTokenMs) })
+    : t("llm:agentUsage.lastAnswer.total", { total });
 }
 
 /** "just now" / "40 s ago" / "2 min ago" / "3 h ago" */
 export function formatAgo(atMs: number, nowMs: number): string {
   const s = Math.max(0, Math.round((nowMs - atMs) / 1000));
-  if (s < 10) return "just now";
-  if (s < 60) return `${s} s ago`;
+  if (s < 10) return t("llm:agentUsage.ago.justNow");
+  if (s < 60) return t("llm:agentUsage.ago.seconds", { seconds: s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} min ago`;
-  return `${Math.floor(m / 60)} h ago`;
+  if (m < 60) return t("llm:agentUsage.ago.minutes", { minutes: m });
+  return t("llm:agentUsage.ago.hours", { hours: Math.floor(m / 60) });
 }
 
 /** Average wall time per answered request (ms), or null before the first one. */
@@ -85,33 +105,46 @@ export function avgFirstTokenMs(u: SessionUsage): number | null {
 /** "45,210 in (38,000 cached)": every prompt token, and how many came from the cache. */
 export function formatPromptTokens(u: Pick<SessionUsage, "input_tokens" | "cache_read_tokens" | "cache_write_tokens">): string {
   const cached = u.cache_read_tokens ?? 0;
-  return `${formatTokens(promptTokens(u))} in${cached > 0 ? ` (${formatTokens(cached)} cached)` : ""}`;
+  const tokens = formatTokens(promptTokens(u));
+  return cached > 0
+    ? t("llm:agentUsage.promptTokens.cached", { tokens, cached: formatTokens(cached) })
+    : t("llm:agentUsage.promptTokens.plain", { tokens });
 }
 
 /** "in 45,210 (38,000 cached) · out 1,240 (thinking 300)" */
 export function formatTokenUsage(u: SessionUsage): string {
   const cached = u.cache_read_tokens ?? 0;
   const thinking = u.thinking_tokens ?? 0;
-  return (
-    `in ${formatTokens(promptTokens(u))}${cached > 0 ? ` (${formatTokens(cached)} cached)` : ""}` +
-    ` · out ${formatTokens(u.output_tokens)}${thinking > 0 ? ` (thinking ${formatTokens(thinking)})` : ""}`
-  );
+  const tokensIn = formatTokens(promptTokens(u));
+  const tokensOut = formatTokens(u.output_tokens);
+  const input =
+    cached > 0
+      ? t("llm:agentUsage.tokenUsage.inCached", { tokens: tokensIn, cached: formatTokens(cached) })
+      : t("llm:agentUsage.tokenUsage.in", { tokens: tokensIn });
+  const output =
+    thinking > 0
+      ? t("llm:agentUsage.tokenUsage.outThinking", { tokens: tokensOut, thinking: formatTokens(thinking) })
+      : t("llm:agentUsage.tokenUsage.out", { tokens: tokensOut });
+  return `${input} · ${output}`;
 }
 
 /** "3 requests · 45,210 in (38,000 cached) / 1,240 out · avg 1.4 s" */
 export function formatUsageSummary(u: SessionUsage): string {
   const parts = [
-    `${u.requests} request${u.requests === 1 ? "" : "s"}`,
-    `${formatPromptTokens(u)} / ${formatTokens(u.output_tokens)} out`,
+    t("llm:agentUsage.summary.requests", { count: u.requests }),
+    t("llm:agentUsage.summary.tokens", { prompt: formatPromptTokens(u), output: formatTokens(u.output_tokens) }),
   ];
   const avg = avgLatencyMs(u);
-  if (avg != null) parts.push(`avg ${formatDuration(avg)}`);
+  if (avg != null) parts.push(t("llm:agentUsage.summary.average", { duration: formatDuration(avg) }));
   return parts.join(" · ");
 }
 
 /** The cost line shown wherever usage appears. */
 export function formatCostEstimate(u: SessionUsage, apiBilled = false): string {
-  return `≈ ${formatCost(u.cost_usd)} estimate — ${apiBilled ? "billed to your API account" : "included in your subscription"}`;
+  const cost = formatCost(u.cost_usd);
+  return apiBilled
+    ? t("llm:agentUsage.costEstimate.apiBilled", { cost })
+    : t("llm:agentUsage.costEstimate.subscription", { cost });
 }
 
 /** Live-scope sessions of one meeting (fast and/or deep). */
@@ -158,13 +191,13 @@ export function scopeUsage(list: AgentSessionStatus[]): SessionUsage {
 /** Text fallback for a limit error when the backend sent no `error_kind`. */
 export function isRateLimitText(text: string | null | undefined): boolean {
   if (!text) return false;
-  const t = text.toLowerCase();
+  const lower = text.toLowerCase();
   return (
-    t.includes("rate limit") ||
-    t.includes("usage limit") ||
-    (t.includes("limit reached") && !t.includes("context")) ||
-    t.includes("too many requests") ||
-    t.includes("per minute")
+    lower.includes("rate limit") ||
+    lower.includes("usage limit") ||
+    (lower.includes("limit reached") && !lower.includes("context")) ||
+    lower.includes("too many requests") ||
+    lower.includes("per minute")
   );
 }
 

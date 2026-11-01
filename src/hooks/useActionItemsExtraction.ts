@@ -10,6 +10,7 @@ import { useMeetingStore, pastMeetingIdFor } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
 import { assistSegments } from "../lib/assistSegments";
 import { showToast } from "../stores/toastStore";
+import { t } from "../i18n";
 import type { Meeting, ActionItem } from "../lib/types";
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ export function useActionItemsExtraction(
             const items = parseActionItemsJSON(contentRef.current);
 
             if (items.length === 0) {
-              showToast("No action items found in this meeting", "info");
+              showToast(t("llm:actionItems.toast.noneFound"), "info");
             } else {
               // Persist to DB — Rust struct requires meeting_id on each item
               const itemsWithMeetingId = items.map((item) => ({
@@ -158,7 +159,7 @@ export function useActionItemsExtraction(
               );
 
               onItemsExtracted(items);
-              showToast(`Found ${items.length} action item${items.length !== 1 ? "s" : ""}`, "success");
+              showToast(t("llm:actionItems.toast.found", { count: items.length }), "success");
 
               // Refresh sidebar so counts update
               useMeetingStore.getState().loadRecentMeetings();
@@ -168,9 +169,7 @@ export function useActionItemsExtraction(
               "[actionItemsExtraction] Parse/save failed:",
               err
             );
-            setError(
-              "Couldn't parse action items from AI response. Try again."
-            );
+            setError(t("llm:actionItems.errors.parseFailed"));
           }
         }
 

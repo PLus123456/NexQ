@@ -6,21 +6,27 @@ import { ModelCard } from "./ModelCard";
 import { FilterBar, type SortOption } from "./FilterBar";
 import { RecentlyUsedSection } from "./RecentlyUsedSection";
 import { FavoritesSection } from "./FavoritesSection";
+import { useT } from "../../i18n";
 
 interface OpenRouterModelCatalogProps {
   models: OpenRouterModel[];
+  /** The model shown as chosen; without it, the active / browsed OpenRouter model. */
+  selectedId?: string;
+  /** Picking a model calls this instead of switching the active model (LLM connections). */
+  onSelect?: (id: string) => void;
 }
 
 const VISIBLE_BATCH = 50;
 
-export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) {
+export function OpenRouterModelCatalog({ models, selectedId: chosenId, onSelect }: OpenRouterModelCatalogProps) {
+  const { t } = useT("llm");
   const llmModel = useConfigStore((s) => s.llmModel);
   const llmProvider = useConfigStore((s) => s.llmProvider);
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
   const rememberModel = useConfigStore((s) => s.rememberModel);
   const browsedModel = useConfigStore((s) => s.lastModelByProvider.openrouter);
   // Active: the active model. Browsed: the model picked for OpenRouter.
-  const selectedId = llmProvider === "openrouter" ? llmModel : browsedModel ?? "";
+  const selectedId = chosenId ?? (llmProvider === "openrouter" ? llmModel : browsedModel ?? "");
   const favorites = useConfigStore((s) => s.openrouterFavorites);
   const recentlyUsed = useConfigStore((s) => s.openrouterRecentlyUsed);
   const toggleFavorite = useConfigStore((s) => s.toggleOpenRouterFavorite);
@@ -50,6 +56,10 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
   const handleSelect = useCallback(
     async (id: string) => {
       addRecentlyUsed(id);
+      if (onSelect) {
+        onSelect(id);
+        return;
+      }
       if (llmProvider !== "openrouter") {
         rememberModel("openrouter", id);
         return;
@@ -61,7 +71,7 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
         console.error("[OpenRouterCatalog] Failed to set active model:", err);
       }
     },
-    [llmProvider, setConfigModel, rememberModel, addRecentlyUsed]
+    [llmProvider, setConfigModel, rememberModel, addRecentlyUsed, onSelect]
   );
 
   // Filter + sort pipeline (uses debounced search)
@@ -113,10 +123,10 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
 
   // Active filter summary
   const activeFilters: string[] = [];
-  if (freeOnly) activeFilters.push("free");
-  if (filterTools) activeFilters.push("tools");
-  if (filterReasoning) activeFilters.push("reasoning");
-  if (filterWebSearch) activeFilters.push("web search");
+  if (freeOnly) activeFilters.push(t("openrouter.activeFilters.free"));
+  if (filterTools) activeFilters.push(t("openrouter.activeFilters.tools"));
+  if (filterReasoning) activeFilters.push(t("openrouter.activeFilters.reasoning"));
+  if (filterWebSearch) activeFilters.push(t("openrouter.activeFilters.webSearch"));
 
   const resetFilters = () => {
     setSearch("");
@@ -166,23 +176,23 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
       {/* All Models */}
       <div>
         <h4 className="text-[11px] uppercase tracking-wider text-muted-foreground/40 mb-1 pl-0.5">
-          All Models
+          {t("openrouter.allModels")}
         </h4>
         <p className="text-[11px] text-muted-foreground/30 mb-2 pl-0.5">
-          {filtered.length} models
-          {activeFilters.length > 0 && ` · filtered: ${activeFilters.join(", ")}`}
+          {t("openrouter.count", { count: filtered.length })}
+          {activeFilters.length > 0 && t("openrouter.filteredBy", { filters: activeFilters.join(t("openrouter.listSeparator")) })}
         </p>
 
         {filtered.length === 0 ? (
           <div className="rounded-lg border border-border/20 bg-accent/10 px-4 py-6 text-center">
             <p className="text-sm text-muted-foreground/50">
-              No models match your filters
+              {t("openrouter.noMatches")}
             </p>
             <button
               onClick={resetFilters}
               className="mt-2 text-xs text-primary hover:underline cursor-pointer"
             >
-              Reset filters
+              {t("openrouter.resetFilters")}
             </button>
           </div>
         ) : (
@@ -202,7 +212,7 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
                 onClick={() => setVisibleCount((c) => c + VISIBLE_BATCH)}
                 className="py-2 text-xs text-muted-foreground/40 hover:text-muted-foreground/60 cursor-pointer"
               >
-                Show more ({filtered.length - visibleCount} remaining)
+                {t("openrouter.showMore", { remaining: filtered.length - visibleCount })}
               </button>
             )}
           </div>

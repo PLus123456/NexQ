@@ -1,6 +1,8 @@
 // Claude CLI model catalog helpers: picker grouping, effort clamping (mirrors
-// Rust `cli_agent::models::effective_effort`) and check-time wording.
+// Rust `cli_agent::models::effective_effort`) and check-time wording. Model
+// names are product names, the same in every UI language.
 
+import { t } from "../i18n";
 import type { ClaudeModelInfo } from "./types";
 
 /** Effort levels the CLI accepts for `--effort`, lowest first. */
@@ -100,10 +102,10 @@ export function effectiveEffort(model: ClaudeModelInfo | undefined, saved: strin
 /** "just now", "5 min ago", "2 h ago", "3 d ago". */
 export function formatCheckedAgo(at: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - at) / 1000));
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return t("llm:agentUsage.ago.justNow");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return t("llm:agentUsage.ago.minutes", { minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  return `${Math.floor(hours / 24)} d ago`;
+  if (hours < 24) return t("llm:agentUsage.ago.hours", { hours });
+  return t("llm:agentUsage.ago.days", { days: Math.floor(hours / 24) });
 }

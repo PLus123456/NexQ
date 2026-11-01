@@ -189,11 +189,14 @@ export async function getLLMProviders(): Promise<string[]> {
   return JSON.parse(result);
 }
 
+/** `connectionId`: use that LLM connection's key (else the old `openrouter` slot). */
 export async function listOpenRouterModels(
-  forceRefresh: boolean
+  forceRefresh: boolean,
+  connectionId?: string
 ): Promise<OpenRouterModel[]> {
   const result = await invoke<string>("list_openrouter_models", {
     forceRefresh,
+    ...(connectionId ? { connectionId } : {}),
   });
   return JSON.parse(result);
 }

@@ -5,7 +5,7 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
 import { GeneralSettings } from "./GeneralSettings";
 import { AboutSettings } from "./AboutSettings";
-import { LLMSettings } from "./LLMSettings";
+import { LlmSettingsPage } from "./llm/LlmSettingsPage";
 import { STTSettings } from "./STTSettings";
 import { HotkeySettings } from "./HotkeySettings";
 import { MeetingAudioSettings } from "./MeetingAudioSettings";
@@ -158,7 +158,7 @@ export function SettingsOverlay({ isModal = false }: SettingsOverlayProps) {
       case "meeting_audio":
         return <MeetingAudioSettings />;
       case "llm":
-        return <LLMSettings />;
+        return <LlmSettingsPage />;
       case "ai_actions":
         return <AIActionsSettings />;
       case "context_strategy":

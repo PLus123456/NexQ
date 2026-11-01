@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import type { OpenRouterModel } from "../../lib/types";
 import { X } from "lucide-react";
 
@@ -16,6 +17,7 @@ export function RecentlyUsedSection({
   onRemove,
   onClearAll,
 }: RecentlyUsedSectionProps) {
+  const { t } = useT("llm");
   const recentModels = recentIds
     .map((id) => models.find((m) => m.id === id))
     .filter(Boolean) as OpenRouterModel[];
@@ -26,13 +28,13 @@ export function RecentlyUsedSection({
     <div>
       <div className="flex items-center justify-between mb-2">
         <h4 className="text-[11px] uppercase tracking-wider text-muted-foreground/40 pl-0.5">
-          Recently Used
+          {t("openrouter.recent.title")}
         </h4>
         <button
           onClick={onClearAll}
           className="text-[10px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors cursor-pointer"
         >
-          Clear all
+          {t("openrouter.recent.clearAll")}
         </button>
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -48,7 +50,7 @@ export function RecentlyUsedSection({
               {m.name}
               <span className={`text-[10px] ${m.is_free ? "text-green-500" : "text-muted-foreground/40"}`}>
                 {m.is_free
-                  ? "Free"
+                  ? t("openrouter.price.free")
                   : `$${m.pricing.prompt < 1 ? m.pricing.prompt.toFixed(2) : m.pricing.prompt.toFixed(0)}/$${m.pricing.completion < 1 ? m.pricing.completion.toFixed(2) : m.pricing.completion.toFixed(0)}`}
               </span>
             </button>
@@ -57,6 +59,7 @@ export function RecentlyUsedSection({
                 e.stopPropagation();
                 onRemove(m.id);
               }}
+              aria-label={t("openrouter.recent.remove", { name: m.name })}
               className="pr-2 pl-0.5 py-1.5 text-muted-foreground/20 hover:text-muted-foreground/60 transition-colors cursor-pointer"
             >
               <X className="h-3 w-3" />

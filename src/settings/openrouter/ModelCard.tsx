@@ -1,4 +1,5 @@
 import type { OpenRouterModel } from "../../lib/types";
+import { useT } from "../../i18n";
 import { Star } from "lucide-react";
 
 // Meeting cost estimate: 30-min meeting ≈ 15K input, 2K output tokens
@@ -27,8 +28,8 @@ function formatContext(ctx: number | null): string {
   return `${Math.round(ctx / 1000)}K`;
 }
 
-function formatPrice(price: number): string {
-  if (price === 0) return "Free";
+function formatPrice(price: number, free: string): string {
+  if (price === 0) return free;
   if (price < 0.01) return `$${price.toFixed(4)}`;
   if (price < 1) return `$${price.toFixed(2)}`;
   return `$${price.toFixed(price % 1 === 0 ? 0 : 2)}`;
@@ -55,6 +56,7 @@ export function ModelCard({
   onSelect,
   onToggleFavorite,
 }: ModelCardProps) {
+  const { t } = useT("llm");
   const meetingCost = estimateMeetingCost(model.pricing);
   const goodForMeetings = isGoodForMeetings(model);
 
@@ -93,33 +95,33 @@ export function ModelCard({
         </span>
         {isNew(model.created) && (
           <span className="text-[9px] px-1.5 py-px rounded bg-emerald-500/12 text-emerald-500 shrink-0">
-            NEW
+            {t("openrouter.badges.new")}
           </span>
         )}
         {model.is_free && (
           <span className="text-[9px] px-1.5 py-px rounded bg-green-500/15 text-green-500 font-semibold shrink-0">
-            FREE
+            {t("openrouter.badges.free")}
           </span>
         )}
         {goodForMeetings && (
           <span className="text-[9px] px-1.5 py-px rounded bg-primary/12 text-primary shrink-0">
-            Good for meetings
+            {t("openrouter.badges.goodForMeetings")}
           </span>
         )}
         <div className="ml-auto flex gap-1 shrink-0">
           {model.supports_tools && (
             <span className="text-[9px] px-1.5 py-px rounded bg-yellow-500/12 text-yellow-500">
-              tools
+              {t("openrouter.badges.tools")}
             </span>
           )}
           {model.supports_reasoning && (
             <span className="text-[9px] px-1.5 py-px rounded bg-emerald-500/12 text-emerald-500">
-              reasoning
+              {t("openrouter.badges.reasoning")}
             </span>
           )}
           {model.supports_web_search && (
             <span className="text-[9px] px-1.5 py-px rounded bg-pink-500/12 text-pink-500">
-              web
+              {t("openrouter.badges.web")}
             </span>
           )}
         </div>
@@ -133,37 +135,37 @@ export function ModelCard({
       {/* Row 3: Stats */}
       <div className="flex items-center gap-3.5 text-[11px] text-muted-foreground/65">
         {model.is_free ? (
-          <span className="text-green-500 font-semibold">Free</span>
+          <span className="text-green-500 font-semibold">{t("openrouter.price.free")}</span>
         ) : (
           <>
             <span>
-              <b className="font-semibold">{formatPrice(model.pricing.prompt)}</b>
-              <span className="opacity-50">/M in</span>
+              <b className="font-semibold">{formatPrice(model.pricing.prompt, t("openrouter.price.free"))}</b>
+              <span className="opacity-50">{t("openrouter.stats.perMillionIn")}</span>
             </span>
             <span>
-              <b className="font-semibold">{formatPrice(model.pricing.completion)}</b>
-              <span className="opacity-50">/M out</span>
+              <b className="font-semibold">{formatPrice(model.pricing.completion, t("openrouter.price.free"))}</b>
+              <span className="opacity-50">{t("openrouter.stats.perMillionOut")}</span>
             </span>
           </>
         )}
         <span>
           <b className="font-semibold">{formatContext(model.context_length)}</b>
-          <span className="opacity-50"> ctx</span>
+          <span className="opacity-50">{t("openrouter.stats.context")}</span>
         </span>
         {model.max_completion_tokens && (
           <span>
             <b className="font-semibold">
               {formatContext(model.max_completion_tokens)}
             </b>
-            <span className="opacity-50"> max</span>
+            <span className="opacity-50">{t("openrouter.stats.maxOutput")}</span>
           </span>
         )}
         <span className="ml-auto text-[10px]">
           {model.is_free ? (
-            <span className="text-green-500 font-medium">Free / meeting</span>
+            <span className="text-green-500 font-medium">{t("openrouter.meeting.free")}</span>
           ) : (
             <span className="text-primary font-medium">
-              ~${meetingCost < 0.01 ? meetingCost.toFixed(4) : meetingCost.toFixed(2)} / meeting
+              {t("openrouter.meeting.cost", { cost: meetingCost < 0.01 ? meetingCost.toFixed(4) : meetingCost.toFixed(2) })}
             </span>
           )}
         </span>
