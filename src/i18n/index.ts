@@ -1,8 +1,10 @@
 // UI translations (i18next + react-i18next).
 //
-// - React components: `const { t } = useT("settings")`, then `t("about.title")`
-//   or `t("common:actions.save")`. (Named `useT` because `useTranslation` is
-//   already the transcript-translation hook in src/hooks.)
+// - React components: `const { t } = useT("settings")`, then `t("about.title")`.
+//   Keys of other namespaces need them listed: `useT(["settings", "common"])`
+//   allows `t("common:actions.save")` (the first namespace is the default).
+//   Named `useT` because `useTranslation` is already the transcript-translation
+//   hook in src/hooks. Markup inside a string: `<Trans>` (re-exported here).
 // - Outside React: `t("settings:updates.toast.title")`, called at use time,
 //   never at module top level (it would not follow language changes).
 // - Dates and numbers: `formatDate()` / `formatNumber()` follow the UI language.
@@ -13,6 +15,8 @@
 
 import i18next from "i18next";
 import { initReactI18next, useTranslation } from "react-i18next";
+
+export { Trans } from "react-i18next";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
@@ -27,6 +31,11 @@ export type UiLanguage = "zh-CN" | "en";
 export type UiLanguageSetting = "system" | UiLanguage;
 
 export const UI_LANGUAGES: readonly UiLanguage[] = ["zh-CN", "en"];
+/** Each UI language's name in that language (shown the same in every UI language). */
+export const UI_LANGUAGE_NAMES: Readonly<Record<UiLanguage, string>> = {
+  "zh-CN": "简体中文",
+  en: "English",
+};
 export const UI_LANGUAGE_KEY = "uiLanguage";
 const FALLBACK_LANGUAGE: UiLanguage = "en";
 const STORE_FILE = "config.json";

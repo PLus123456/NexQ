@@ -1,1 +1,173 @@
-{}
+{
+  "shell": {
+    "title": "设置",
+    "navigation": "设置导航",
+    "runWizard": {
+      "label": "重新运行首次设置",
+      "ariaLabel": "重新运行首次设置"
+    },
+    "close": {
+      "title": "关闭（Esc）",
+      "ariaLabel": "关闭设置"
+    },
+    "back": {
+      "title": "返回主窗口",
+      "ariaLabel": "返回主窗口"
+    }
+  },
+  "groups": {
+    "meeting": "会议",
+    "providers": "服务商",
+    "intelligence": "智能",
+    "system": "系统"
+  },
+  "tabs": {
+    "meetingAudio": "音频与设备",
+    "llm": "AI 模型",
+    "stt": "语音识别",
+    "translation": "翻译",
+    "aiActions": "AI 动作",
+    "contextStrategy": "上下文策略",
+    "scenarios": "AI 场景",
+    "noisePresets": "降噪预设",
+    "confidence": "置信度",
+    "hotkeys": "快捷键",
+    "general": "通用",
+    "about": "关于"
+  },
+  "general": {
+    "language": {
+      "label": "界面语言",
+      "hint": "所有窗口和托盘菜单立即切换",
+      "options": {
+        "system": "跟随系统"
+      }
+    },
+    "theme": {
+      "label": "主题",
+      "hint": "选择你喜欢的外观",
+      "options": {
+        "dark": "深色",
+        "light": "浅色",
+        "system": "跟随系统"
+      }
+    },
+    "behavior": {
+      "title": "行为"
+    },
+    "autoSummary": {
+      "label": "自动会议总结",
+      "hint": "会议结束时自动生成会议总结",
+      "ariaLabel": "切换自动会议总结"
+    },
+    "startOnLogin": {
+      "label": "登录时启动",
+      "hint": "登录系统时自动启动 {{appName}}",
+      "ariaLabel": "切换登录时启动"
+    },
+    "movedNotice": "上下文窗口、自动触发和 AI 指令已移到 <strong>AI 动作</strong> 标签页。",
+    "overlayOpacity": {
+      "label": "悬浮窗透明度",
+      "hint": "悬浮窗背景的透明程度",
+      "transparent": "透明",
+      "solid": "不透明"
+    }
+  },
+  "about": {
+    "tagline": "AI 会议助手与实时面试辅助",
+    "credit": "基于 <upstream>naxhq/NexQ</upstream>（MIT 许可证）开发，原版权 © 2026 Vahid Alizadeh",
+    "meta": {
+      "buildDate": "构建日期",
+      "developer": "开发者",
+      "architecture": "架构",
+      "license": "许可证"
+    },
+    "updates": {
+      "off": {
+        "title": "自用版已关闭自动更新",
+        "detail": "{{appName}} 不会检查或安装更新，需要更新时请从源码重新构建。"
+      },
+      "idle": {
+        "title": "已是最新版本",
+        "lastChecked": "上次检查：{{time}}",
+        "notChecked": "尚未检查"
+      },
+      "checking": {
+        "title": "正在检查更新…",
+        "detail": "正在连接 GitHub"
+      },
+      "downloading": {
+        "title": "正在下载更新",
+        "titleVersion": "正在下载 v{{version}}",
+        "detail": "在后台下载"
+      },
+      "ready": {
+        "title": "v{{version}} 已可安装",
+        "installsOnQuit": "退出 {{appName}} 时安装",
+        "restartToInstall": "重启后安装"
+      },
+      "error": {
+        "checkFailed": "检查更新失败",
+        "downloadFailed": "下载失败"
+      },
+      "available": {
+        "title": "发现新版本 v{{version}}",
+        "detail": "自动更新已关闭"
+      },
+      "checkForUpdates": "检查更新",
+      "restartNow": "立即重启",
+      "download": "下载",
+      "skipVersion": "跳过这个版本",
+      "auto": {
+        "label": "自动更新",
+        "hint": "在后台下载，退出时安装",
+        "ariaLabel": "切换自动更新"
+      },
+      "timeSince": {
+        "justNow": "刚刚",
+        "minutes_other": "{{count}} 分钟前",
+        "hours_other": "{{count}} 小时前"
+      }
+    },
+    "coexistence": {
+      "title": "不要同时运行两个版本",
+      "detail": "官方版 NexQ 和 {{appName}} 同时运行会互相干扰：后启动的那个注册不了全局快捷键，会议检测弹窗也会两边都弹出。"
+    },
+    "diagnostics": {
+      "title": "诊断",
+      "description": "{{appName}} 会在这台电脑上记录日志，用于排查问题。API Key 会自动从日志中移除；反馈问题时请附上日志。",
+      "openLogFolder": "打开日志文件夹",
+      "copyRecentLog": "复制最近的日志",
+      "copyFailed": "复制日志失败：{{detail}}",
+      "verbose": {
+        "label": "详细日志",
+        "hint": "复现问题时记录更多细节，用完记得关掉。",
+        "ariaLabel": "切换详细日志"
+      }
+    },
+    "links": {
+      "github": "GitHub",
+      "changelog": "更新日志",
+      "reportIssue": "反馈问题",
+      "documentation": "文档"
+    },
+    "footer": "{{appName}} 是一款开源桌面应用。所有处理都可以通过 Ollama 或 LM Studio 在本地完成，也可以选择连接云端 AI 服务商。"
+  },
+  "updates": {
+    "toast": {
+      "ready": "{{appName}} v{{version}} 已就绪",
+      "restartOrQuit": "可以在底栏重启安装，或者退出时自动安装。",
+      "restartToInstall": "在底栏重启即可安装。",
+      "whatsNew": "更新内容"
+    },
+    "restartDialog": {
+      "title": "结束会议并更新？",
+      "message": "会议会先保存，然后 {{appName}} 重启到新版本。",
+      "confirm": "结束并更新"
+    },
+    "errors": {
+      "meetingNotSaved": "会议没能保存完，已推迟更新。",
+      "notInstalled": "更新未安装：{{detail}}"
+    }
+  }
+}

@@ -189,7 +189,10 @@ function checkNamespace(ns) {
       if (want.join() !== got.join()) {
         errors.push(`${file}: "${key}" uses {{${got.join("}}, {{")}}} but ${SOURCE_LANGUAGE} uses {{${want.join("}}, {{")}}}`);
       }
-      if (/\bNexQ\b/.test(text)) warnings.push(`${file}: "${key}" names the product; use {{appName}}`);
+      // A hard-coded product name the English doesn't have (mentions of the official NexQ are fine).
+      if (/\bNexQ\b/.test(text) && !/\bNexQ\b/.test(source[sourceKey])) {
+        warnings.push(`${file}: "${key}" names the product; use {{appName}}`);
+      }
     }
   }
   return counts;

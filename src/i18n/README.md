@@ -5,8 +5,9 @@ the source language; Simplified Chinese (`zh-CN`) is the second one.
 
 ```
 src/i18n/
-  index.ts        initI18n(), useT(), t(), changeUiLanguage(), useUiLanguage(),
-                  currentUiLanguage(), formatDate(), formatNumber()
+  index.ts        initI18n(), useT(), t(), Trans, changeUiLanguage(), useUiLanguage(),
+                  currentUiLanguage(), UI_LANGUAGES, UI_LANGUAGE_NAMES,
+                  formatDate(), formatNumber()
   resources.ts    static imports of every namespace (P0 only)
   i18next.d.ts    typed keys, generated from the en resources
   locales/
@@ -21,14 +22,22 @@ scripts/i18n-check.mjs   key check + hard-coded text report
 import { useT } from "../i18n";
 
 function SaveButton() {
-  const { t } = useT("settings");                 // default namespace: common
+  // The first namespace is the default; list every namespace the component uses.
+  const { t } = useT(["settings", "common"]);
   return <button title={t("general.save.hint")}>{t("common:actions.save")}</button>;
 }
 ```
 
 - React components: `useT(namespace)`. It is react-i18next's `useTranslation`
   under another name, because `src/hooks/useTranslation.ts` is the transcript
-  translation feature.
+  translation feature. The key types only allow the namespaces you pass:
+  `useT("settings")` rejects `t("common:…")`, so write
+  `useT(["settings", "common"])`. `useT()` alone means `common`.
+- Markup inside a translated string: `<Trans t={t} i18nKey="…" components={{
+  strong: <strong />, upstream: <a href={…} /> }} />` with
+  `"…<strong>AI Actions</strong>…"` in the JSON. Name the tags after what they
+  are (`strong`, `upstream`), **never after HTML void elements** (`link`,
+  `img`, `br`, `input`, `meta`…): those render empty.
 - Outside React (stores, toasts, dialogs): `import { t } from "../i18n"` and
   call `t("settings:updates.toast.ready", { version })` **when the text is
   needed**. Never at module top level: the value would not follow a language
@@ -38,9 +47,12 @@ function SaveButton() {
   options?)` follow the UI language. Don't hard-code `"en-US"`.
 - The language setting: `useUiLanguage()` → `{ setting, language }`;
   `changeUiLanguage("system" | "zh-CN" | "en")` stores it in `config.json`
-  (`uiLanguage`), switches every window and the tray.
-- Tests run in English (`src/test/setup.ts`), so the `en` values must stay the
-  original English text.
+  (`uiLanguage`), switches every window and the tray. `UI_LANGUAGE_NAMES` has
+  each language's own name ("简体中文", "English") for language pickers.
+- Tests run in English (`src/test/setup.ts`; the setting starts as `"en"`, not
+  `"system"`), so the `en` values must stay the original English text. A test
+  that switches with `await changeUiLanguage("zh-CN")` must switch back to
+  `"en"` afterwards (`afterEach`).
 
 ## Namespaces and owners
 

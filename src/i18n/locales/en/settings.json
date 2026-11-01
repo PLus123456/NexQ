@@ -1,1 +1,175 @@
-{}
+{
+  "shell": {
+    "title": "Settings",
+    "navigation": "Settings navigation",
+    "runWizard": {
+      "label": "Run Setup Wizard",
+      "ariaLabel": "Run setup wizard"
+    },
+    "close": {
+      "title": "Close (Esc)",
+      "ariaLabel": "Close settings"
+    },
+    "back": {
+      "title": "Back to Launcher",
+      "ariaLabel": "Back to launcher"
+    }
+  },
+  "groups": {
+    "meeting": "Meeting",
+    "providers": "Providers",
+    "intelligence": "Intelligence",
+    "system": "System"
+  },
+  "tabs": {
+    "meetingAudio": "Audio & Devices",
+    "llm": "LLM Providers",
+    "stt": "STT Providers",
+    "translation": "Translation",
+    "aiActions": "AI Actions",
+    "contextStrategy": "Context Strategy",
+    "scenarios": "AI Scenarios",
+    "noisePresets": "Noise Presets",
+    "confidence": "Confidence",
+    "hotkeys": "Hotkeys",
+    "general": "General",
+    "about": "About"
+  },
+  "general": {
+    "language": {
+      "label": "Interface language",
+      "hint": "Applies to all windows and the tray immediately",
+      "options": {
+        "system": "Follow system"
+      }
+    },
+    "theme": {
+      "label": "Theme",
+      "hint": "Choose your preferred appearance",
+      "options": {
+        "dark": "Dark",
+        "light": "Light",
+        "system": "System"
+      }
+    },
+    "behavior": {
+      "title": "Behavior"
+    },
+    "autoSummary": {
+      "label": "Auto-Summary",
+      "hint": "Generate meeting summary when meeting ends",
+      "ariaLabel": "Toggle auto-summary"
+    },
+    "startOnLogin": {
+      "label": "Start on Login",
+      "hint": "Launch {{appName}} automatically when you log in",
+      "ariaLabel": "Toggle start on login"
+    },
+    "movedNotice": "Context Window, Auto-Trigger, and AI instructions have moved to the <strong>AI Actions</strong> tab.",
+    "overlayOpacity": {
+      "label": "Overlay Transparency",
+      "hint": "How transparent the overlay background is",
+      "transparent": "Transparent",
+      "solid": "Solid"
+    }
+  },
+  "about": {
+    "tagline": "AI Meeting Assistant & Real-Time Interview Copilot",
+    "credit": "Based on <upstream>NexQ</upstream> by Vahid Alizadeh (MIT License)",
+    "meta": {
+      "buildDate": "Build Date",
+      "developer": "Developer",
+      "architecture": "Architecture",
+      "license": "License"
+    },
+    "updates": {
+      "off": {
+        "title": "Automatic updates are off in this build",
+        "detail": "{{appName}} doesn't check for or install updates. Rebuild it from source to update."
+      },
+      "idle": {
+        "title": "You're up to date",
+        "lastChecked": "Last checked {{time}}",
+        "notChecked": "Not checked yet"
+      },
+      "checking": {
+        "title": "Checking for updates…",
+        "detail": "Connecting to GitHub"
+      },
+      "downloading": {
+        "title": "Downloading update",
+        "titleVersion": "Downloading v{{version}}",
+        "detail": "In the background"
+      },
+      "ready": {
+        "title": "v{{version}} ready to install",
+        "installsOnQuit": "Installs when you quit {{appName}}",
+        "restartToInstall": "Restart to install"
+      },
+      "error": {
+        "checkFailed": "Update check failed",
+        "downloadFailed": "Download failed"
+      },
+      "available": {
+        "title": "v{{version}} available",
+        "detail": "Automatic updates are off"
+      },
+      "checkForUpdates": "Check for updates",
+      "restartNow": "Restart now",
+      "download": "Download",
+      "skipVersion": "Skip this version",
+      "auto": {
+        "label": "Automatic updates",
+        "hint": "Download in the background and install when you quit",
+        "ariaLabel": "Toggle automatic updates"
+      },
+      "timeSince": {
+        "justNow": "just now",
+        "minutes_one": "{{count}} min ago",
+        "minutes_other": "{{count}} min ago",
+        "hours_one": "{{count}}h ago",
+        "hours_other": "{{count}}h ago"
+      }
+    },
+    "coexistence": {
+      "title": "Don't run both versions at once",
+      "detail": "The official NexQ and {{appName}} interfere when they run at the same time: the one launched second can't register the global shortcuts, and both show meeting-detection prompts."
+    },
+    "diagnostics": {
+      "title": "Diagnostics",
+      "description": "{{appName}} keeps a log on this computer to help diagnose problems. API keys are removed automatically; attach it when you report an issue.",
+      "openLogFolder": "Open log folder",
+      "copyRecentLog": "Copy recent log",
+      "copyFailed": "Couldn't copy the log: {{detail}}",
+      "verbose": {
+        "label": "Verbose logging",
+        "hint": "Records more detail while you reproduce a problem. Turn it off afterwards.",
+        "ariaLabel": "Toggle verbose logging"
+      }
+    },
+    "links": {
+      "github": "GitHub",
+      "changelog": "Changelog",
+      "reportIssue": "Report Issue",
+      "documentation": "Documentation"
+    },
+    "footer": "{{appName}} is an open desktop application. All processing can run locally with Ollama or LM Studio, or optionally connect to cloud AI providers."
+  },
+  "updates": {
+    "toast": {
+      "ready": "{{appName}} v{{version}} is ready",
+      "restartOrQuit": "Restart from the footer, or it installs when you quit.",
+      "restartToInstall": "Restart from the footer to install.",
+      "whatsNew": "What's new"
+    },
+    "restartDialog": {
+      "title": "End meeting and update?",
+      "message": "Your meeting will be saved, then {{appName}} restarts on the new version.",
+      "confirm": "End & update"
+    },
+    "errors": {
+      "meetingNotSaved": "Couldn't finish saving the meeting. Update postponed.",
+      "notInstalled": "Update not installed: {{detail}}"
+    }
+  }
+}
