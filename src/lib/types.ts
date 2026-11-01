@@ -470,7 +470,10 @@ export type STTProviderType =
   | "sherpa_onnx"
   | "ort_streaming"
   | "windows_native"
-  | "parakeet_tdt";
+  | "parakeet_tdt"
+  // NexQ Plus: remote Whisper (OpenAI-compatible) and Soniox real-time
+  | "openai_compat"
+  | "soniox";
 
 // == LOCAL STT ENGINE TYPES ==
 

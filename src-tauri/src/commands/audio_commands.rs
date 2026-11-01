@@ -1760,6 +1760,29 @@ async fn create_stt_provider_for_party(
                 }
             }
         }
+        STTProviderType::OpenAICompat => {
+            use crate::stt::plus_config::{SttPlusState, OPENAI_COMPAT_STT_KEY_SLOT};
+            let key = get_credential_key(state, OPENAI_COMPAT_STT_KEY_SLOT);
+            let shared = app.state::<SttPlusState>().openai_compat.clone();
+            let mut p = crate::stt::openai_compat::OpenAICompatSTT::new(shared, key);
+            p.set_language(&stt_language);
+            p.set_app_handle(app.clone());
+            p.set_party(party_role);
+            Ok(Some(Box::new(p)))
+        }
+        STTProviderType::Soniox => {
+            use crate::stt::plus_config::{SttPlusState, SONIOX_KEY_SLOT};
+            let key = get_credential_key(state, SONIOX_KEY_SLOT);
+            let cfg = app.state::<SttPlusState>().soniox_snapshot();
+            let options = crate::stt::soniox::SonioxSessionOptions {
+                party: party_role.to_string(),
+                language: stt_language.clone(),
+                ..Default::default()
+            };
+            let mut p = crate::stt::soniox::SonioxSTT::new(cfg, key, options);
+            p.set_app_handle(app.clone());
+            Ok(Some(Box::new(p)))
+        }
     }
 }
 

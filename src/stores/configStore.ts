@@ -19,6 +19,12 @@ import type {
   ContextScopeSetting,
 } from "../lib/types";
 import { clampMinutes, DEFAULT_CONTEXT_SCOPE, SCOPE_KINDS } from "../lib/contextScope";
+import {
+  DEFAULT_OPENAI_COMPAT_STT_CONFIG,
+  DEFAULT_SONIOX_CONFIG,
+  type OpenAICompatSttConfig,
+  type SonioxConfig,
+} from "../lib/stt/types";
 
 const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
   model: "nova-3",
@@ -153,6 +159,25 @@ export const DEFAULT_MEETING_DETECTION: MeetingDetectionConfig = {
   check_interval_secs: 3,
 };
 
+/** Saved fields over the defaults (tolerates fields added later). */
+function withDefaults<T extends object>(defaults: T, saved: Partial<T> | null | undefined): T {
+  return { ...defaults, ...(saved ?? {}) };
+}
+
+function pushOpenAICompatSttConfig(config: OpenAICompatSttConfig): void {
+  import("../lib/stt/ipc").then(({ updateOpenAICompatSttConfig }) =>
+    updateOpenAICompatSttConfig(config).catch((e) =>
+      console.warn("[configStore] Failed to update remote STT config:", e),
+    ),
+  );
+}
+
+function pushSonioxConfig(config: SonioxConfig): void {
+  import("../lib/stt/ipc").then(({ updateSonioxConfig }) =>
+    updateSonioxConfig(config).catch((e) => console.warn("[configStore] Failed to update Soniox config:", e)),
+  );
+}
+
 function pushMeetingDetection(config: MeetingDetectionConfig): void {
   import("../lib/ipc").then(({ setMeetingDetectionConfig }) =>
     setMeetingDetectionConfig(config).catch((e) =>
@@ -234,6 +259,11 @@ interface ConfigState {
 
   // Groq Whisper config
   groqConfig: GroqConfig;
+
+  // NexQ Plus: remote Whisper (OpenAI-compatible) and Soniox settings; the
+  // backend gets a copy on load and on every change. Keys live in the keychain.
+  openaiCompatSttConfig: OpenAICompatSttConfig;
+  sonioxConfig: SonioxConfig;
 
   // Universal pause threshold for transcript line-breaking (ms)
   pauseThresholdMs: number;
@@ -358,6 +388,8 @@ interface ConfigState {
   setWhisperDualPass: (config: WhisperDualPassConfig) => void;
   setDeepgramConfig: (config: DeepgramConfig) => void;
   setGroqConfig: (config: GroqConfig) => void;
+  setOpenAICompatSttConfig: (config: OpenAICompatSttConfig) => void;
+  setSonioxConfig: (config: SonioxConfig) => void;
   setPauseThresholdMs: (ms: number) => void;
   setAutoTrigger: (enabled: boolean) => void;
   setAutoSummary: (enabled: boolean) => void;
@@ -441,6 +473,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   whisperDualPass: { shortChunkSecs: 1.0, longChunkSecs: 3.0, pauseSecs: 1.5 },
   deepgramConfig: DEFAULT_DEEPGRAM_CONFIG,
   groqConfig: DEFAULT_GROQ_CONFIG,
+  openaiCompatSttConfig: DEFAULT_OPENAI_COMPAT_STT_CONFIG,
+  sonioxConfig: DEFAULT_SONIOX_CONFIG,
   pauseThresholdMs: 3000,
   autoTrigger: true,
   autoSummary: true,
@@ -746,6 +780,16 @@ export const useConfigStore = create<ConfigState>((set) => ({
         .catch((e) => console.warn("[configStore] Failed to update Groq config:", e))
     );
   },
+  setOpenAICompatSttConfig: (config) => {
+    set({ openaiCompatSttConfig: config });
+    persistValue("openaiCompatSttConfig", config);
+    pushOpenAICompatSttConfig(config);
+  },
+  setSonioxConfig: (config) => {
+    set({ sonioxConfig: config });
+    persistValue("sonioxConfig", config);
+    pushSonioxConfig(config);
+  },
   setPauseThresholdMs: (ms) => {
     set({ pauseThresholdMs: ms });
     persistValue("pauseThresholdMs", ms);
@@ -964,6 +1008,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const verifiedCloudProviders = await store.get<string[]>("verifiedCloudProviders");
       const deepgramConfig = await store.get<DeepgramConfig>("deepgramConfig");
       const groqConfig = await store.get<GroqConfig>("groqConfig");
+      const openaiCompatSttConfig = withDefaults(
+        DEFAULT_OPENAI_COMPAT_STT_CONFIG,
+        await store.get<Partial<OpenAICompatSttConfig>>("openaiCompatSttConfig"),
+      );
+      const sonioxConfig = withDefaults(DEFAULT_SONIOX_CONFIG, await store.get<Partial<SonioxConfig>>("sonioxConfig"));
       const pauseThresholdMs = await store.get<number>("pauseThresholdMs");
       const activeModelPerEngine = await store.get<Record<string, string>>("activeModelPerEngine");
       const rememberedMeetingSetup = await store.get<{ audioMode: AudioMode; scenario: AIScenario } | null>("rememberedMeetingSetup");
@@ -1144,6 +1193,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(verifiedCloudProviders != null && { verifiedCloudProviders }),
         ...(deepgramConfig != null && { deepgramConfig }),
         ...(groqConfig != null && { groqConfig }),
+        openaiCompatSttConfig,
+        sonioxConfig,
         ...(pauseThresholdMs != null && { pauseThresholdMs }),
         ...(rememberedMeetingSetup !== undefined && { rememberedMeetingSetup: rememberedMeetingSetup ?? null }),
         ...(diarizationEnabled != null && { diarizationEnabled }),
@@ -1268,6 +1319,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<MeetingDetectionConfig>("meetingDetection", (val) => {
         if (val != null) set({ meetingDetection: { ...DEFAULT_MEETING_DETECTION, ...val } });
       });
+      // The window that changed these already pushed them to the backend.
+      store.onKeyChange<Partial<OpenAICompatSttConfig>>("openaiCompatSttConfig", (val) => {
+        if (val != null) set({ openaiCompatSttConfig: withDefaults(DEFAULT_OPENAI_COMPAT_STT_CONFIG, val) });
+      });
+      store.onKeyChange<Partial<SonioxConfig>>("sonioxConfig", (val) => {
+        if (val != null) set({ sonioxConfig: withDefaults(DEFAULT_SONIOX_CONFIG, val) });
+      });
 
       // The backend detector stays idle until it has the saved settings.
       pushMeetingDetection(meetingDetection);
@@ -1314,6 +1372,10 @@ export const useConfigStore = create<ConfigState>((set) => ({
         updateGroqConfig(loadedGroqConfig)
           .catch((e) => console.warn("[configStore] Failed to sync Groq config on load:", e))
       );
+
+      // Sync the remote STT and Soniox settings (the backend starts with the defaults).
+      pushOpenAICompatSttConfig(openaiCompatSttConfig);
+      pushSonioxConfig(sonioxConfig);
 
       // Sync persisted pause threshold to Rust backend on startup.
       const loadedPauseThreshold = pauseThresholdMs ?? 3000;

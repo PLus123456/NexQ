@@ -251,6 +251,7 @@ pub fn run() {
             app_state.stt = Some(Arc::new(Mutex::new(stt_router)));
             log::info!("STT router initialized");
             // == PLUS INIT: p2-stt ==
+            app.manage(stt::plus_config::SttPlusState::default());
 
             // -- Initialize LLMRouter with auto-detected provider --
             let mut llm_router = llm::LLMRouter::new();
@@ -550,6 +551,10 @@ pub fn run() {
             stt_commands::set_pause_threshold,
             stt_commands::get_pause_threshold,
             // == PLUS COMMANDS: p2-stt ==
+            stt_commands::update_openai_compat_stt_config,
+            stt_commands::update_soniox_config,
+            stt_commands::probe_openai_compat_stt,
+            stt_commands::probe_soniox,
             // == COMMANDS: llm ==
             llm_commands::set_llm_provider,
             llm_commands::list_models,

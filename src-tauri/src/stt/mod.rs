@@ -15,6 +15,12 @@ pub mod sherpa_offline;
 pub mod ort_streaming;
 // Pause-based segment merging for all STT providers
 pub mod segment_accumulator;
+// NexQ Plus: per-party languages, remote OpenAI-compatible STT, Soniox
+pub mod language;
+pub mod openai_compat;
+pub mod plus_config;
+pub mod soniox;
+pub mod soniox_protocol;
 
 use provider::{STTProvider, STTProviderType, TranscriptResult};
 use serde::Serialize;
@@ -224,7 +230,11 @@ impl STTRouter {
                 p.set_language(&self.language); // must be after set_config — set_config overwrites language
                 Box::new(p)
             }
-            STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
+            STTProviderType::SherpaOnnx
+            | STTProviderType::OrtStreaming
+            | STTProviderType::ParakeetTdt
+            | STTProviderType::OpenAICompat
+            | STTProviderType::Soniox => {
                 // These are created per-party in start_capture_per_party, not via STTRouter.
                 self.active_provider = None;
                 log::info!("STTRouter: {:?} selected (provider created per-party)", provider_type);
@@ -531,6 +541,10 @@ impl STTRouter {
                     .test_connection()
                     .await
                     .map_err(|e| format!("Connection test failed: {}", e))
+            }
+            STTProviderType::OpenAICompat | STTProviderType::Soniox => {
+                // Configured and tested in their own settings cards (probe commands).
+                Err(format!("Test {} from its settings card", provider_type.as_str()))
             }
             STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
                 // Local engines — always "available" if a model is downloaded.
