@@ -88,8 +88,93 @@
     }
   },
   "components": {
-    "endpointFields": {},
-    "languageCombobox": {},
-    "modelCombobox": {}
+    "endpointFields": {
+      "baseUrl": {
+        "label": "接口地址（Base URL）",
+        "placeholder": "例如 https://api.example.com/v1"
+      },
+      "preview": {
+        "label": "实际请求地址"
+      },
+      "notices": {
+        "alreadyFull": "已识别为完整地址，不再追加 {{path}}。",
+        "trimmed": "已识别为完整地址，已去掉末尾的 {{path}}。",
+        "versionHint": "大多数 OpenAI 兼容服务需要 /v1 之类的版本前缀。",
+        "addVersionPrefix": "补上 /v1"
+      },
+      "errors": {
+        "missingScheme": "地址需要以 http:// 或 https:// 开头。",
+        "useSuggestion": "改用 {{suggestion}}",
+        "unsupportedScheme": "不支持 {{scheme}}://，请使用 http:// 或 https://。",
+        "invalidUrl": "地址格式不正确。"
+      },
+      "auth": {
+        "label": "认证方式",
+        "modes": {
+          "none": "无",
+          "bearer": "Bearer Token",
+          "header": "自定义请求头"
+        },
+        "headerName": {
+          "label": "请求头名称",
+          "placeholder": "例如 api-key"
+        },
+        "prefix": {
+          "label": "值前缀（可选）",
+          "placeholder": "例如 Token"
+        },
+        "sentAs": "发送为",
+        "keyPlaceholder": "<API Key>",
+        "errors": {
+          "nameRequired": "请填写请求头名称。",
+          "invalidName": "请求头名称无效：不能包含空格、冒号等分隔符。"
+        }
+      },
+      "secret": {
+        "label": "API Key",
+        "placeholder": "输入 API Key",
+        "saved": "已保存",
+        "savedWithHint": "已保存 …{{hint}}",
+        "hint": "安全保存在本机，保存后不再显示。",
+        "show": "显示 API Key",
+        "hide": "隐藏 API Key"
+      },
+      "headers": {
+        "label": "自定义请求头",
+        "hint": "每次请求都会带上。不要在这里填密钥，密钥请填在 API Key 里。",
+        "namePlaceholder": "名称",
+        "valuePlaceholder": "值",
+        "add": "添加请求头",
+        "remove": "删除请求头",
+        "removeNamed": "删除请求头 {{name}}",
+        "invalidName": "请求头名称无效。",
+        "invalidValue": "值里不能有换行或控制字符。"
+      }
+    },
+    "languageCombobox": {
+      "placeholder": "选择或输入语言代码",
+      "toggle": "显示语言列表",
+      "commonGroup": "常用语言",
+      "moreGroup": "更多语言",
+      "useAsTyped": "按原样使用“{{value}}”",
+      "noMatches": "没有匹配的语言"
+    },
+    "modelCombobox": {
+      "placeholder": "选择或输入模型 ID",
+      "toggle": "显示模型列表",
+      "refresh": "刷新模型列表",
+      "loading": "正在拉取模型…",
+      "fetchFailed": "拉取模型列表失败：{{detail}}",
+      "empty": "还没有模型，可直接输入模型 ID",
+      "fetchList": "拉取列表",
+      "noMatches": "没有匹配的模型，按回车直接使用“{{value}}”",
+      "notInList": "不在列表中，将按原样发送。",
+      "groups": {
+        "manual": "手动添加",
+        "fetched": "已拉取",
+        "suggested": "推荐",
+        "other": "其他"
+      }
+    }
   }
 }

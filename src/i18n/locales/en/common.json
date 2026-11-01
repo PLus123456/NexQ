@@ -90,8 +90,93 @@
     }
   },
   "components": {
-    "endpointFields": {},
-    "languageCombobox": {},
-    "modelCombobox": {}
+    "endpointFields": {
+      "baseUrl": {
+        "label": "Base URL",
+        "placeholder": "e.g. https://api.example.com/v1"
+      },
+      "preview": {
+        "label": "Actual request URL"
+      },
+      "notices": {
+        "alreadyFull": "Recognized as a full URL, so {{path}} isn't added again.",
+        "trimmed": "Recognized as a full URL: removed {{path}} from the end.",
+        "versionHint": "Most OpenAI-compatible services need a version prefix such as /v1.",
+        "addVersionPrefix": "Add /v1"
+      },
+      "errors": {
+        "missingScheme": "The address must start with http:// or https://.",
+        "useSuggestion": "Use {{suggestion}}",
+        "unsupportedScheme": "{{scheme}}:// isn't supported. Use http:// or https://.",
+        "invalidUrl": "This isn't a valid address."
+      },
+      "auth": {
+        "label": "Authentication",
+        "modes": {
+          "none": "None",
+          "bearer": "Bearer token",
+          "header": "Custom header"
+        },
+        "headerName": {
+          "label": "Header name",
+          "placeholder": "e.g. api-key"
+        },
+        "prefix": {
+          "label": "Value prefix (optional)",
+          "placeholder": "e.g. Token"
+        },
+        "sentAs": "Sent as",
+        "keyPlaceholder": "<API Key>",
+        "errors": {
+          "nameRequired": "Enter a header name.",
+          "invalidName": "Not a valid header name: no spaces, colons or other separators."
+        }
+      },
+      "secret": {
+        "label": "API Key",
+        "placeholder": "Enter the API key",
+        "saved": "Saved",
+        "savedWithHint": "Saved …{{hint}}",
+        "hint": "Stored securely on this computer and never shown again.",
+        "show": "Show API key",
+        "hide": "Hide API key"
+      },
+      "headers": {
+        "label": "Custom request headers",
+        "hint": "Sent with every request. Don't put keys here: use the API Key field.",
+        "namePlaceholder": "Name",
+        "valuePlaceholder": "Value",
+        "add": "Add header",
+        "remove": "Remove header",
+        "removeNamed": "Remove header {{name}}",
+        "invalidName": "Not a valid header name.",
+        "invalidValue": "The value can't contain line breaks or control characters."
+      }
+    },
+    "languageCombobox": {
+      "placeholder": "Select or type a language code",
+      "toggle": "Show languages",
+      "commonGroup": "Common languages",
+      "moreGroup": "More languages",
+      "useAsTyped": "Use “{{value}}” as typed",
+      "noMatches": "No matching languages"
+    },
+    "modelCombobox": {
+      "placeholder": "Select or type a model ID",
+      "toggle": "Show models",
+      "refresh": "Refresh the model list",
+      "loading": "Fetching models…",
+      "fetchFailed": "Couldn't fetch the model list: {{detail}}",
+      "empty": "No models yet — type a model ID",
+      "fetchList": "Fetch the list",
+      "noMatches": "No matching models — press Enter to use “{{value}}” as is",
+      "notInList": "Not in the list — it will be sent as is.",
+      "groups": {
+        "manual": "Manual",
+        "fetched": "Fetched",
+        "suggested": "Suggested",
+        "other": "Other"
+      }
+    }
   }
 }
