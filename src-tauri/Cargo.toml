@@ -91,6 +91,11 @@ windows = { version = "0.58", features = [
 # macOS-specific
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.16"
+# whisper.cpp on the GPU (Metal). Cargo merges these features into the common
+# whisper-rs declaration above, so other targets stay CPU-only. Shaders are
+# embedded (GGML_METAL_EMBED_LIBRARY), so neither the Metal compiler nor a
+# bundled .metallib is needed. Runtime opt-out + CPU fallback: stt/whisper_cpp.rs.
+whisper-rs = { version = "0.16", features = ["metal"] }
 # Used by src/commands/stealth_commands.rs to set the overlay NSWindow's
 # `sharingType` to NSWindowSharingNone (equivalent of Windows' WDA_EXCLUDEFROMCAPTURE).
 objc2 = "0.6"

@@ -15,6 +15,12 @@ pub mod sherpa_offline;
 pub mod ort_streaming;
 // Pause-based segment merging for all STT providers
 pub mod segment_accumulator;
+// NexQ Plus: per-party languages, remote OpenAI-compatible STT, Soniox
+pub mod language;
+pub mod openai_compat;
+pub mod plus_config;
+pub mod soniox;
+pub mod soniox_protocol;
 
 use provider::{STTProvider, STTProviderType, TranscriptResult};
 use serde::Serialize;
@@ -22,6 +28,26 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
 use crate::audio::{AudioChunk, AudioSource};
+
+/// Append `piece` to a transcript line: a space between words, none next to
+/// CJK text (Chinese / Japanese chunks must not come out as "我们 今天 开会").
+pub fn push_joined(line: &mut String, piece: &str) {
+    let piece = piece.trim();
+    if piece.is_empty() {
+        return;
+    }
+    let is_cjk = |c: char| {
+        matches!(c as u32, 0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+    };
+    let needs_space = match (line.chars().last(), piece.chars().next()) {
+        (Some(last), Some(first)) => !last.is_whitespace() && !is_cjk(last) && !is_cjk(first),
+        _ => false,
+    };
+    if needs_space {
+        line.push(' ');
+    }
+    line.push_str(piece);
+}
 
 /// Emit an STT debug event to the frontend and log it.
 /// Use this for pipeline diagnostics that should appear in the DevLog panel.
@@ -224,7 +250,11 @@ impl STTRouter {
                 p.set_language(&self.language); // must be after set_config — set_config overwrites language
                 Box::new(p)
             }
-            STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
+            STTProviderType::SherpaOnnx
+            | STTProviderType::OrtStreaming
+            | STTProviderType::ParakeetTdt
+            | STTProviderType::OpenAICompat
+            | STTProviderType::Soniox => {
                 // These are created per-party in start_capture_per_party, not via STTRouter.
                 self.active_provider = None;
                 log::info!("STTRouter: {:?} selected (provider created per-party)", provider_type);
@@ -531,6 +561,10 @@ impl STTRouter {
                     .test_connection()
                     .await
                     .map_err(|e| format!("Connection test failed: {}", e))
+            }
+            STTProviderType::OpenAICompat | STTProviderType::Soniox => {
+                // Configured and tested in their own settings cards (probe commands).
+                Err(format!("Test {} from its settings card", provider_type.as_str()))
             }
             STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
                 // Local engines — always "available" if a model is downloaded.

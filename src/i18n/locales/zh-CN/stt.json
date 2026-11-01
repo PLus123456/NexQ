@@ -1,1 +1,681 @@
-{}
+{
+  "engines": {
+    "web_speech": {
+      "label": "Web Speech",
+      "description": "浏览器内置，免费"
+    },
+    "windows_native": {
+      "label": "Windows Speech",
+      "description": "系统内置，无需下载"
+    },
+    "sherpa_onnx": {
+      "label": "Sherpa-ONNX",
+      "description": "本地流式识别，离线，免费"
+    },
+    "ort_streaming": {
+      "label": "ORT Streaming",
+      "description": "本地运行，GPU 加速"
+    },
+    "whisper_cpp": {
+      "label": "Whisper.cpp",
+      "description": "本地实时 Whisper，离线，多语言"
+    },
+    "parakeet_tdt": {
+      "label": "Parakeet TDT",
+      "description": "准确度最高，离线，多语言"
+    },
+    "deepgram": {
+      "label": "Deepgram",
+      "description": "实时流式识别，质量最好"
+    },
+    "whisper_api": {
+      "label": "Whisper API",
+      "description": "OpenAI 的 Whisper 模型"
+    },
+    "azure_speech": {
+      "label": "Azure Speech",
+      "description": "Azure 认知服务"
+    },
+    "groq_whisper": {
+      "label": "Groq Whisper",
+      "description": "超快的 Whisper 推理"
+    },
+    "openai_compat": {
+      "label": "远程 Whisper（OpenAI 兼容）",
+      "description": "自建 Whisper 服务，如 speaches、vLLM、LocalAI"
+    },
+    "soniox": {
+      "label": "Soniox",
+      "description": "实时识别，同步翻译"
+    }
+  },
+  "groups": {
+    "local": "本地与内置",
+    "localHint": "免费 · 无需 API Key",
+    "cloud": "云端",
+    "cloudHint": "需要 API Key"
+  },
+  "units": {
+    "secondsSuffix": "（秒）",
+    "millisecondsSuffix": "（毫秒）"
+  },
+  "advancedSettings": "高级设置",
+  "presets": {
+    "free": {
+      "name": "免费",
+      "description": "我用 Web Speech，对方用 Parakeet TDT——免费、保护隐私（需下载一次模型）"
+    },
+    "soniox_them": {
+      "name": "对方用 Soniox",
+      "description": "Soniox 实时识别并翻译对方的发言；我用本机的 Whisper.cpp"
+    },
+    "best_quality": {
+      "name": "最佳质量",
+      "description": "Deepgram 云端识别——最快、最准"
+    },
+    "fully_offline": {
+      "name": "完全离线",
+      "description": "Sherpa-ONNX——无需联网"
+    },
+    "all_cloud": {
+      "name": "全部云端",
+      "description": "双方都用 Deepgram"
+    },
+    "local_whisper": {
+      "name": "仅本地（Whisper）",
+      "description": "双方都用 Whisper.cpp——离线、免费"
+    },
+    "in_person": {
+      "name": "现场会议",
+      "description": "双方都用麦克风输入——Web Speech + Whisper.cpp"
+    }
+  },
+  "language": {
+    "label": "识别语言",
+    "partyAriaLabel": "{{party}}的识别语言",
+    "autoUnavailable": {
+      "webSpeech": "Web Speech 不能自动检测语言（会改用系统语言）。",
+      "needsLanguage": "{{engine}} 需要指定一种语言。"
+    },
+    "hints": {
+      "autoUsesSystemLanguage": "Web Speech 不能自动检测语言，会使用系统语言。请选择一种语言。",
+      "autoFallsBackToEnglish": "{{engine}} 不能自动检测语言，会按英语识别。请选择一种语言。",
+      "ignored": "{{engine}} 忽略语言设置，由模型决定。",
+      "whisperCppAuto": "Whisper.cpp 对每个短片段单独检测语言，可能来回切换。知道语言时最好明确选择。",
+      "deepgramAuto": "自动检测需要 Nova 2 或 Nova 3 模型，{{model}} 会按英语识别。",
+      "parakeetCtcEnglishOnly": "Parakeet CTC 110M 只支持英语。俄语等其他语言请使用 Parakeet TDT 0.6B v3。"
+    }
+  },
+  "picker": {
+    "inUseBy": "{{party}}正在使用",
+    "noneReady": "没有可用的识别引擎，请先在“语音识别”设置里配置",
+    "steal": {
+      "confirm": "<strong>{{engine}}</strong> 同一时间只能用于一路音频。要改给这一路使用吗？另一路将改用 <fallback>{{fallback}}</fallback>。",
+      "noEngine": "（无可用引擎）",
+      "switch": "切换",
+      "noFallback": "没有可替换的识别引擎。请先配置 API Key 或下载本地模型。",
+      "moved": "{{engine}} 已改给{{party}}使用，{{other}}改用 {{fallback}}。"
+    }
+  },
+  "meetingAudio": {
+    "presets": {
+      "label": "预设",
+      "applied": "已应用预设“{{name}}”"
+    },
+    "party": {
+      "you": {
+        "description": "你的麦克风，用于线上会议",
+        "badge": "仅线上会议"
+      },
+      "them": {
+        "description": "远端参会者（线上）或现场麦克风（现场会议）"
+      },
+      "defaultDescription": "音频源与识别"
+    },
+    "source": {
+      "label": "音频源",
+      "default": "默认",
+      "defaultDevice": "{{name}}（默认）",
+      "microphones": "麦克风",
+      "outputs": "扬声器 / 输出"
+    },
+    "engine": {
+      "label": "语音识别"
+    },
+    "notReady": {
+      "notOffered": "这台电脑不能使用 {{engine}}，请换一个识别引擎。",
+      "needsModel": "{{engine}} 需要先下载模型才能识别。",
+      "needsBaseUrl": "{{engine}} 还没有填写服务器地址，请到“{{tab}}”里设置。",
+      "needsKey": "{{engine}} 还没有保存 API Key，请到“{{tab}}”里添加。",
+      "needsInput": "{{engine}} 只能识别麦克风音频。",
+      "downloadModel": "下载模型",
+      "hideModels": "收起模型列表"
+    },
+    "deviceOverride": "<strong>将临时切换默认设备。</strong>{{engine}} 总是使用系统默认麦克风。会议期间会把系统默认麦克风临时切换为所选设备，会议结束后恢复。",
+    "nativeTranslation": {
+      "label": "用 Soniox 翻译",
+      "hint": "Soniox 一边识别一边翻译，原文和译文在同一条流里返回。",
+      "ariaLabel": "用 Soniox 翻译{{party}}的发言",
+      "target": {
+        "label": "翻译成",
+        "followPlaceholder": "跟随翻译设置",
+        "follow": "改为跟随翻译设置的目标语言",
+        "followHint": "留空时使用翻译设置里的目标语言。"
+      },
+      "twoWay": "双向翻译请在翻译设置里配置。"
+    },
+    "diarization": {
+      "label": "说话人分离",
+      "hint": "在现场会议模式下区分不同说话人（{{engines}} 支持）",
+      "ariaLabel": "切换说话人分离"
+    },
+    "recording": {
+      "label": "录音保存为文件",
+      "hint": "把会议音频保存为 WAV",
+      "ariaLabel": "切换录音",
+      "enabled": "已开启录音",
+      "disabled": "已关闭录音",
+      "toggleFailed": "切换录音失败"
+    },
+    "monitor": {
+      "title": "实时监测",
+      "monitoringAll": "正在监测所有设备",
+      "refresh": "刷新设备列表",
+      "streamingAll": "所有设备实时显示电平（约 60 帧/秒）"
+    },
+    "sessions": {
+      "title": "音频会话",
+      "refresh": "刷新音频会话",
+      "scanning": "正在扫描音频会话…",
+      "empty": "没有检测到活动的音频会话",
+      "active": "使用中",
+      "use": "使用",
+      "sourceSet": "“{{party}}”的音频源已设为 {{device}}",
+      "noMatchingDevice": "找不到对应的输出设备"
+    },
+    "info": "<strong>同一套音频，两种用法：</strong><online>线上会议</online>时，“我”采集你的麦克风，“对方”通过系统回环（内录）采集远端声音；<onsite>现场会议</onsite>时，两路共用现场麦克风，由说话人分离区分不同的人。"
+  },
+  "settings": {
+    "badges": {
+      "ready": "就绪",
+      "noModel": "无模型",
+      "noKey": "无 Key",
+      "keySaved": "已存 Key",
+      "noServer": "无地址",
+      "untested": "未测试"
+    },
+    "useFor": {
+      "label": "用于",
+      "ariaLabel": "{{engine}} 用于",
+      "unavailable": "{{party}}：{{reason}}",
+      "reasons": {
+        "needsInput": "只能识别麦克风音频。",
+        "needsModel": "请先下载模型。",
+        "needsBaseUrl": "请先填写服务器地址。",
+        "needsKey": "请先保存 API Key。"
+      },
+      "swap": "<strong>{{engine}}</strong> 同一时间只能用于一路音频。要改给{{party}}使用吗？{{other}}将改用 <fallback>{{fallback}}</fallback>。"
+    },
+    "models": {
+      "title": "{{engine}} 模型",
+      "hint": "下载模型后点击<strong>启用</strong>，即可使用这个识别引擎。"
+    },
+    "apiKey": {
+      "title": "API Key",
+      "storedPlaceholder": "已保存 Key，输入新 Key 可替换",
+      "placeholder": "输入 {{engine}} 的 API Key",
+      "show": "显示 API Key",
+      "hide": "隐藏 API Key",
+      "saveAndTest": "保存并测试",
+      "testing": "正在测试连接…",
+      "success": "连接成功，识别引擎已就绪",
+      "failed": "连接失败，Key 未保存",
+      "stored": "API Key 已验证并安全保存",
+      "prompt": "输入 Key 后点击“保存并测试”"
+    },
+    "azureRegion": {
+      "title": "Azure 区域",
+      "hint": "Speech 服务资源所在的 Azure 区域（例如 eastus、westeurope、southeastasia）"
+    },
+    "languages": {
+      "title": "识别语言",
+      "hint": "我和对方可以分别设置语言。支持的识别引擎可以选择“自动检测”。"
+    },
+    "connection": {
+      "title": "连接",
+      "noModel": "还没有下载模型，请先在下方下载。",
+      "modelsReady_other": "就绪，有 {{count}} 个模型可用",
+      "ready": "就绪",
+      "failed": "连接失败"
+    }
+  },
+  "pause": {
+    "title": "换行停顿时长",
+    "hint": "超过这个时长没有识别到新词，就另起一行。值越小行越多，值越大段落越长。对所有识别引擎生效。",
+    "min": "0.5 秒（行更多）",
+    "max": "5.0 秒（段落更长）"
+  },
+  "deepgram": {
+    "title": "Deepgram 设置",
+    "priceLine": "${{price}}/分钟 · {{model}}",
+    "pricePerMinute": "${{price}}/分钟",
+    "presetsLabel": "预设",
+    "model": "模型",
+    "newTag": "新",
+    "features": "功能",
+    "models": {
+      "nova3": "准确度最高，最新模型",
+      "nova2": "准确度高，使用广泛",
+      "nova": "上一代模型",
+      "enhanced": "准确度高，偏保守",
+      "base": "最快、最省钱",
+      "whisperLarge": "OpenAI Whisper large",
+      "whisperMedium": "OpenAI Whisper medium",
+      "whisperSmall": "OpenAI Whisper small",
+      "whisperTiny": "最小、最快的 Whisper",
+      "whisperBase": "OpenAI Whisper base"
+    },
+    "presets": {
+      "default": {
+        "label": "默认",
+        "description": "适合大多数会议的均衡设置"
+      },
+      "lowLatency": {
+        "label": "低延迟",
+        "description": "响应最快，后处理最少"
+      },
+      "highAccuracy": {
+        "label": "高准确度",
+        "description": "转写质量最好，智能格式化"
+      },
+      "meeting": {
+        "label": "会议",
+        "description": "识别说话人，格式化输出"
+      },
+      "economy": {
+        "label": "经济",
+        "description": "Nova 2 模型，费用更低"
+      }
+    },
+    "toggles": {
+      "smartFormat": {
+        "label": "智能格式化",
+        "description": "格式化日期、时间、数字，并自动分段"
+      },
+      "interimResults": {
+        "label": "中间结果",
+        "description": "边说边显示部分转写（感觉延迟更低）"
+      },
+      "punctuate": {
+        "label": "标点",
+        "description": "为转写记录加上标点和大小写"
+      },
+      "vadEvents": {
+        "label": "VAD 事件",
+        "description": "语音开始和结束时发出事件（改善断句）"
+      },
+      "diarize": {
+        "label": "区分远端说话人",
+        "description": "给通话另一端的每个人加标签（说话人 1、2…），不会用于你的麦克风。"
+      },
+      "numerals": {
+        "label": "数字",
+        "description": "把口述的数字转成阿拉伯数字（“nine hundred” → “900”）"
+      },
+      "profanityFilter": {
+        "label": "脏话过滤",
+        "description": "从转写记录中去掉脏话"
+      },
+      "dictation": {
+        "label": "听写",
+        "description": "把口述的标点命令转成符号（“period” → “.”）"
+      }
+    },
+    "endpointing": {
+      "label": "断句（Endpointing）",
+      "threshold": "静音阈值",
+      "min": "10ms（快）",
+      "max": "2000ms（慢）",
+      "hint": "检测到这么长的静音就返回转写结果。10–999ms 效果最好。",
+      "disabled": "已关闭，使用服务端默认断句"
+    },
+    "keyterms": {
+      "label": "关键词提示",
+      "hint": "提高特定词语的识别率（产品名、行业术语）。最多 100 个关键词。",
+      "placeholder": "添加关键词或短语…",
+      "remove": "移除 {{term}}",
+      "empty": "没有关键词，模型使用默认识别"
+    }
+  },
+  "groq": {
+    "title": "Groq Whisper 设置",
+    "priceLine": "${{price}}/小时 · {{speed}} 实时速度",
+    "pricePerHour": "${{price}}/小时",
+    "batchHint": "批量模式：音频每攒够 {{seconds}} 秒发送一次，预计总延迟 {{min}}–{{max}} 秒。",
+    "presetsLabel": "预设",
+    "model": "模型",
+    "fastTag": "快",
+    "bestTag": "最佳",
+    "models": {
+      "largeV3": "准确度最高，支持 99+ 种语言",
+      "largeV3Turbo": "又快又便宜，性价比最高"
+    },
+    "presets": {
+      "default": {
+        "label": "默认",
+        "description": "均衡：快速模型，每批 5 秒"
+      },
+      "lowLatency": {
+        "label": "低延迟",
+        "description": "每批缩短到 3 秒，反馈更快"
+      },
+      "highAccuracy": {
+        "label": "高准确度",
+        "description": "最佳模型，每批 8 秒，上下文更多"
+      },
+      "verbose": {
+        "label": "详细",
+        "description": "词级时间戳 + 片段数据"
+      }
+    },
+    "batch": {
+      "label": "批次时长",
+      "accumulation": "音频累积时间",
+      "min": "2 秒（快，上下文少）",
+      "max": "15 秒（慢，上下文多）",
+      "hint": "越短响应越快，但每次请求的上下文越少。最低按 10 秒计费。"
+    },
+    "temperature": {
+      "label": "Temperature（温度）",
+      "min": "0（稳定）",
+      "max": "1（发散）",
+      "hint": "值越低结果越稳定。转写建议用 0。"
+    },
+    "responseFormat": {
+      "label": "返回格式",
+      "text": "纯文本",
+      "hints": {
+        "verboseJson": "包含片段和词级时间戳、置信度以及无语音概率",
+        "text": "只输出纯文本，没有元数据",
+        "json": "标准 JSON，含 text 字段"
+      }
+    },
+    "timestamps": {
+      "label": "时间戳粒度",
+      "segment": {
+        "label": "片段时间戳",
+        "description": "包含每个片段的起止时间"
+      },
+      "word": {
+        "label": "词级时间戳",
+        "description": "包含每个词的起止时间"
+      }
+    },
+    "prompt": {
+      "label": "提示词（Prompt）",
+      "hint": "引导转写风格、拼写或上下文。最多 224 个 token，语言要和音频一致。",
+      "placeholder": "例如：{{appName}}、Tauri、WASAPI、转写……",
+      "tokens_other": "约 {{count}} 个 token（上限 224）"
+    }
+  },
+  "dualPass": {
+    "title": "转写调优",
+    "hint": "双通道：快速通道立即显示文字，校正通道随后修正。修改立即生效。",
+    "fastPass": {
+      "label": "快速通道间隔",
+      "hint": "越短出字越快，但准确度越低"
+    },
+    "correction": {
+      "label": "校正间隔",
+      "hint": "越长，校正时的上下文越多"
+    },
+    "pause": {
+      "label": "换行停顿",
+      "hint": "静音多久后另起一行"
+    },
+    "gpu": {
+      "label": "使用 GPU（Metal）",
+      "hint": "在 Mac 上用图形芯片运行 Whisper.cpp，失败时自动改用 CPU。下次开始识别时生效。"
+    }
+  },
+  "probe": {
+    "codes": {
+      "ok": "连接成功，服务器已响应。",
+      "okModels_other": "连接成功，服务器列出了 {{count}} 个模型。",
+      "no_base_url": "请先填写服务器地址。",
+      "invalid_url": "服务器地址无效。",
+      "no_key": "服务器需要 API Key：请选择 Bearer Token 并保存 Key。",
+      "unauthorized": "服务器拒绝了 API Key（401）。",
+      "forbidden": "服务器拒绝访问（403）。",
+      "not_found": "这个地址下没有找到服务（404）。请检查版本前缀，例如 /v1。",
+      "http_error": "服务器返回了错误。",
+      "timeout": "服务器没有及时响应。",
+      "network": "无法连接到服务器。",
+      "bad_response": "无法理解服务器的响应。"
+    },
+    "soniox": {
+      "ok": "Key 可用。",
+      "okModels_other": "Key 可用，有 {{count}} 个实时模型。",
+      "noKey": "请先保存 Soniox API Key。",
+      "unauthorized": "API Key 无效（401），请检查 Key 和它所属的区域。",
+      "forbidden": "Key 有效，但没有“列出模型”权限（403）。实时识别可能仍然可用。"
+    },
+    "unknownCode": "测试结果：{{code}}",
+    "status": "HTTP {{status}}",
+    "latency": "{{ms}} 毫秒",
+    "url": "请求地址",
+    "detail": "服务器响应"
+  },
+  "openaiCompat": {
+    "description": "把音频发送到你自己的 OpenAI 兼容转写服务器：faster-whisper-server / speaches、vLLM、LocalAI 等。",
+    "baseUrl": {
+      "placeholder": "例如 http://192.168.1.10:8000/v1",
+      "hint": "不会自动补上 /v1，请按服务器的实际路径填写版本前缀。"
+    },
+    "auth": {
+      "noneHint": "不发送 API Key。服务器需要密钥时请选择 Bearer Token。",
+      "removeConfirm": "已保存的 Key 会随每个请求发送。要删除它，改为不带 Key 发送请求吗？",
+      "removeKey": "删除已保存的 Key"
+    },
+    "model": {
+      "label": "模型",
+      "hint": "服务器要求的模型 ID。点击刷新可以列出服务器上的模型。"
+    },
+    "prompt": {
+      "label": "提示词（Prompt）",
+      "placeholder": "例如人名、产品名、专业术语",
+      "hint": "帮助拼写和理解上下文，请用音频的语言书写。"
+    },
+    "segment": {
+      "label": "分段时长",
+      "hint": "单次请求发送的最长音频。"
+    },
+    "pauseSplit": {
+      "label": "停顿切分",
+      "hint": "静音达到这个时长，就提前结束当前片段。"
+    },
+    "timeout": {
+      "label": "请求超时",
+      "hint": "等待单次转写的最长时间。"
+    },
+    "maxInFlight": {
+      "label": "同时请求数",
+      "hint": "结果总是按顺序返回。"
+    },
+    "urlOverride": {
+      "label": "完整转写地址",
+      "placeholder": "例如 https://gateway.example.com/whisper/v1/audio/transcriptions",
+      "hint": "适用于路径特殊的网关：转写请求改用这个地址。留空时为接口地址 + /audio/transcriptions。"
+    },
+    "temperature": {
+      "label": "Temperature（温度）",
+      "hint": "转写建议用 0。"
+    },
+    "responseFormat": {
+      "label": "返回格式",
+      "hint": "大多数服务器用 json 即可；也支持 text 和 verbose_json。"
+    }
+  },
+  "soniox": {
+    "description": "实时识别，并在同一条流里同步翻译。我和对方各用一个会话。",
+    "key": {
+      "label": "API Key",
+      "placeholder": "输入 Soniox API Key",
+      "savedPlaceholder": "已保存，输入新 Key 可替换",
+      "saved": "已安全保存在本机，不会再显示。",
+      "notSaved": "还没有保存 Key。"
+    },
+    "region": {
+      "label": "区域",
+      "hint": "请选择 Key 所属 Soniox 项目的区域：Key 只能在自己的区域使用。",
+      "options": {
+        "us": "美国",
+        "eu": "欧盟",
+        "jp": "日本",
+        "in": "印度"
+      }
+    },
+    "model": {
+      "label": "模型",
+      "hint": "实时识别模型。点击刷新可以列出这个 Key 能用的模型。"
+    },
+    "endpointDelay": {
+      "label": "断句延迟",
+      "value": "{{ms}} 毫秒",
+      "min": "500 毫秒（更快）",
+      "max": "3000 毫秒（断句更少）",
+      "hint": "说话停下后，Soniox 等多久才结束这句话。字幕场景建议 1000–1500 毫秒。"
+    },
+    "diarization": {
+      "label": "区分远端说话人",
+      "hint": "给对方那边的每个人加标签（S1、S2…），只用于“对方”。"
+    },
+    "strictHints": {
+      "label": "严格语言限制",
+      "hint": "尽量只输出所选语言。关闭时也会识别其他语言。"
+    },
+    "wsUrl": {
+      "label": "自定义 WebSocket 地址",
+      "hint": "用于网关。留空时使用所选区域的地址。"
+    },
+    "restUrl": {
+      "label": "自定义 REST 地址",
+      "hint": "用于网关（测试 Key 和获取模型列表）。留空时使用所选区域的地址。"
+    },
+    "extraParams": {
+      "label": "额外的 start 参数（JSON）",
+      "placeholder": "{\"context\": {\"terms\": [\"Kubernetes\"]}}",
+      "hint": "合并进 start 消息的 JSON 对象，用来传当前版本还不认识的新字段。API Key 和音频格式不会从这里读取。",
+      "errors": {
+        "invalidJson": "不是有效的 JSON。",
+        "notObject": "必须是 JSON 对象，例如 {\"context\": …}。",
+        "apiKey": "不要在这里写 api_key：Key 来自上面的 API Key 输入框。"
+      }
+    },
+    "testKey": "测试 Key",
+    "cost": "Soniox 每识别一路约 0.12 美元/小时；开启翻译会按输出 token 另外计费。"
+  },
+  "quickSetup": {
+    "intro": "选择 {{appName}} 用什么识别你和对方的发言，以及识别语言。之后随时可以在设置里修改。",
+    "recommended": {
+      "title": "推荐：对方用 Soniox，我用 Whisper.cpp",
+      "hint": "Soniox 实时识别并翻译对方的发言；你的麦克风音频留在本机处理。",
+      "apply": "使用推荐",
+      "applied": "已采用"
+    },
+    "engineLabel": "识别引擎",
+    "engineAriaLabel": "{{party}}的识别引擎",
+    "groups": {
+      "featured": "推荐",
+      "others": "其他识别引擎"
+    },
+    "option": {
+      "micOnly": "{{engine}}（仅麦克风）",
+      "inUseBy": "{{engine}}（{{party}}正在使用）"
+    },
+    "models": {
+      "title": "{{engine}} 模型",
+      "hint": "下载一个模型，第一个下载的会自动启用。"
+    },
+    "keyHint": "{{engine}} 需要 API Key，请到“设置 → {{tab}}”里添加。",
+    "test": "测试",
+    "result": {
+      "ok": "两路都已就绪。",
+      "error": "请处理下面的问题，然后再测试一次。"
+    },
+    "checks": {
+      "notOffered": "这台电脑不能使用 {{engine}}。",
+      "needsInput": "{{engine}} 只能识别麦克风音频。",
+      "needsModel": "请先下载 {{engine}} 模型。",
+      "modelReady": "{{engine}} 模型已下载。",
+      "builtIn": "{{engine}} 为系统内置。",
+      "keySaved": "已保存 {{engine}} 的 API Key。",
+      "needsKey": "{{engine}} 还没有保存 API Key，请到“设置 → {{tab}}”里添加。"
+    },
+    "summary": {
+      "each": "对方 {{them}}，我 {{you}}",
+      "both": "双方都用 {{engine}}"
+    },
+    "moreOptions": "更多识别引擎和选项在设置里。"
+  },
+  "localModels": {
+    "loading": "正在加载本地模型…",
+    "active": "使用中",
+    "accuracy": "准确度：",
+    "speed": "速度：",
+    "cancelDownload": "取消下载",
+    "setActive": "设为当前模型",
+    "activate": "启用",
+    "delete": "删除模型",
+    "download": "下载",
+    "extracting": "正在解压…",
+    "verifying": "正在校验…",
+    "toasts": {
+      "autoActivated": "已为 {{engine}} 启用模型“{{model}}”",
+      "activated": "已为 {{engine}} 启用“{{model}}”",
+      "deleted": "已删除 {{model}}",
+      "deleteFailed": "删除失败：{{detail}}",
+      "downloadFailed": "下载失败：{{detail}}"
+    }
+  },
+  "statusBar": {
+    "llmTitle": "AI 模型：{{provider}} / {{model}}",
+    "partyEngine": "{{party}}：{{engine}}",
+    "youTitle": "我的语音识别：{{engine}}{{state}}",
+    "themTitle": "对方的语音识别：{{engine}}{{state}}",
+    "receiving": "（正在接收音频）",
+    "silent": "（无声音）",
+    "streaming": "生成中",
+    "indicator": "{{label}}：{{state}}",
+    "active": "活动",
+    "inactive": "空闲",
+    "callLog": {
+      "title": "AI 调用日志",
+      "ariaLabel": "切换 AI 调用日志"
+    },
+    "settings": {
+      "title": "设置",
+      "ariaLabel": "打开设置"
+    },
+    "end": {
+      "label": "结束",
+      "ariaLabel": "结束会议"
+    },
+    "meetingEnded": "会议已结束",
+    "endFailed": "结束会议失败"
+  },
+  "noTranscript": {
+    "message": "<strong>“{{party}}”这一路没有转写结果。</strong>{{appName}} 已收到 {{seconds}} 秒音频，但 {{engine}} 还没有返回任何文字。",
+    "unknownEngine": "识别引擎",
+    "openDevLog": "打开开发日志",
+    "changeEngine": "更换识别引擎",
+    "dismiss": "关闭“{{party}}”的转写提醒"
+  },
+  "status": {
+    "error": "语音识别（{{party}}）：{{message}}",
+    "connected": "语音识别：{{engine}} 已连接（{{party}}）"
+  },
+  "configStore": {
+    "claudeSettingsNotApplied": "Claude 设置未生效：{{detail}}"
+  }
+}

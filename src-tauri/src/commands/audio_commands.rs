@@ -73,6 +73,143 @@ fn accumulator_segment_json(id: &str, speaker: &str, output: &AccumulatorOutput)
     seg
 }
 
+/// The `segment` of a transcript event for a line an engine segmented itself.
+fn direct_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::TranscriptResult) -> serde_json::Value {
+    let mut seg = serde_json::json!({
+        "id": id,
+        "text": result.text,
+        "speaker": speaker,
+        "timestamp_ms": result.timestamp_ms,
+        "is_final": result.is_final,
+        "confidence": result.confidence
+    });
+    if let Some(ref tag) = result.speaker_tag {
+        seg["speaker_tag"] = serde_json::json!(tag);
+        if let Some(speaker_id) = crate::stt::provider::diarized_speaker_id(tag) {
+            seg["speaker_id"] = serde_json::json!(speaker_id);
+        }
+    }
+    seg
+}
+
+/// A side of the meeting with its own device and STT pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Party {
+    You,
+    Them,
+}
+
+impl Party {
+    /// Label used by providers, status events and logs.
+    fn role(self) -> &'static str {
+        match self {
+            Party::You => "You",
+            Party::Them => "Them",
+        }
+    }
+
+    /// Speaker of the party's transcript lines.
+    fn speaker(self) -> &'static str {
+        match self {
+            Party::You => "User",
+            Party::Them => "Them",
+        }
+    }
+
+    /// Start of the party's segment ids, e.g. "them_ab12_".
+    fn segment_prefix(self, session_prefix: &str) -> String {
+        match self {
+            Party::You => format!("you_{}_", session_prefix),
+            Party::Them => format!("them_{}_", session_prefix),
+        }
+    }
+}
+
+/// Engines that cut their own lines, bypassing the SegmentAccumulator:
+/// whisper.cpp's dual pass manages its line breaks, and Soniox emits one line
+/// per endpoint so that each of its translations matches exactly one line.
+fn self_segmenting(provider: &str) -> bool {
+    matches!(provider, "whisper_cpp" | "soniox")
+}
+
+/// Forward a party's STT results as `transcript_update` / `transcript_final`.
+/// Other engines' results are merged into paragraphs by the SegmentAccumulator
+/// (pause threshold read live). "Them" finals also go to the intelligence engine.
+fn spawn_party_emitter(
+    app: &AppHandle,
+    party: Party,
+    provider: &str,
+    session_prefix: &str,
+    mut rx: mpsc::Receiver<crate::stt::provider::TranscriptResult>,
+) {
+    use std::sync::atomic::Ordering;
+
+    let app = app.clone();
+    let id_prefix = party.segment_prefix(session_prefix);
+    let accumulate = !self_segmenting(provider);
+    let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
+    let intel_arc = match party {
+        Party::Them => app.state::<AppState>().intelligence.clone(),
+        Party::You => None,
+    };
+    let mut tally = TranscriptTally::new(party.role(), provider);
+
+    let push_final = move |text: &str, timestamp_ms: u64| {
+        if let Some(ref intel) = intel_arc {
+            if let Ok(mut engine) = intel.lock() {
+                engine.push_transcript(text.to_string(), "Them".to_string(), timestamp_ms, true);
+            }
+        }
+    };
+    let emit = move |app: &AppHandle, segment: serde_json::Value, is_final: bool| {
+        let event_name = if is_final { "transcript_final" } else { "transcript_update" };
+        let _ = app.emit(event_name, &serde_json::json!({ "segment": segment }));
+    };
+
+    tokio::spawn(async move {
+        if accumulate {
+            // Accumulator path: merge same-speaker segments
+            let mut accumulator =
+                crate::stt::segment_accumulator::SegmentAccumulator::new(pause_threshold.load(Ordering::Relaxed));
+            while let Some(result) = rx.recv().await {
+                tally.record(result.is_final);
+                accumulator.set_pause_threshold(pause_threshold.load(Ordering::Relaxed));
+                for output in accumulator.feed_result(result) {
+                    let seg_id = format!("{}{}", id_prefix, output.id);
+                    emit(&app, accumulator_segment_json(&seg_id, party.speaker(), &output), output.is_final);
+                    if output.is_final {
+                        push_final(&output.text, output.timestamp_ms);
+                    }
+                }
+            }
+            // Flush remaining accumulated segment on meeting end
+            if let Some(output) = accumulator.flush() {
+                let seg_id = format!("{}{}", id_prefix, output.id);
+                emit(&app, accumulator_segment_json(&seg_id, party.speaker(), &output), true);
+                push_final(&output.text, output.timestamp_ms);
+            }
+        } else {
+            // Direct path: the engine's own segment ids, else a line counter
+            let mut counter = 0u64;
+            while let Some(result) = rx.recv().await {
+                tally.record(result.is_final);
+                let seg_id = match result.segment_id {
+                    Some(ref custom_id) => format!("{}{}", id_prefix, custom_id),
+                    None if result.is_final => {
+                        counter += 1;
+                        format!("{}{}", id_prefix, counter)
+                    }
+                    None => format!("{}{}", id_prefix, counter + 1),
+                };
+                emit(&app, direct_segment_json(&seg_id, party.speaker(), &result), result.is_final);
+                if result.is_final {
+                    push_final(&result.text, result.timestamp_ms);
+                }
+            }
+        }
+    });
+}
+
 /// List all available audio input and output devices.
 #[command]
 pub async fn list_audio_devices() -> Result<String, String> {
@@ -1008,16 +1145,26 @@ pub async fn start_capture_per_party(
         }
     }
 
+    // Unique session prefix to avoid segment ID collisions across mid-meeting restarts.
+    // Each restart of start_capture_per_party gets a distinct prefix, so segment IDs
+    // like "you_a3_1" won't collide with "you_b7_1" from a previous session.
+    // Computed before the providers exist: Soniox tags its translations with
+    // the full id of the line they belong to.
+    let session_prefix = format!("{:x}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() % 0xFFFF);
+
     // ── Create STT provider for "You" party (if not web_speech) ──
-    let you_stt = create_stt_provider_for_party(&you, &state, &app, "You").await?;
+    let you_stt = create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?;
 
     // ── Create STT provider for "Them" party (if not web_speech) ──
-    let them_stt = create_stt_provider_for_party(&them, &state, &app, "Them").await?;
+    let them_stt = create_stt_provider_for_party(&them, &you, &state, &app, Party::Them, &session_prefix).await?;
 
     // Start STT streams
-    let (you_stt_tx, mut you_stt_rx) =
+    let (you_stt_tx, you_stt_rx) =
         mpsc::channel::<crate::stt::provider::TranscriptResult>(256);
-    let (them_stt_tx, mut them_stt_rx) =
+    let (them_stt_tx, them_stt_rx) =
         mpsc::channel::<crate::stt::provider::TranscriptResult>(256);
 
     let mut you_stt_provider = you_stt;
@@ -1071,186 +1218,12 @@ pub async fn start_capture_per_party(
         }
     }
 
-    // Unique session prefix to avoid segment ID collisions across mid-meeting restarts.
-    // Each restart of start_capture_per_party gets a distinct prefix, so segment IDs
-    // like "you_a3_1" won't collide with "you_b7_1" from a previous session.
-    let session_prefix = format!("{:x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() % 0xFFFF);
-
-    // Emit transcript events from "You" STT (speaker = "User")
-    // Uses SegmentAccumulator for cloud providers (Deepgram, Groq, etc.)
-    // Skips accumulator for web_speech (browser handles segmentation)
-    // and whisper_cpp (dual-pass engine manages its own line breaking).
+    // Transcript events: "You" lines are spoken by "User", "Them" lines by "Them".
     if you_stt_provider.is_some() {
-        let stt_app = app.clone();
-        let prefix = session_prefix.clone();
-        let use_accumulator = you.stt_provider != "web_speech"
-            && you.stt_provider != "whisper_cpp";
-        let mut tally = TranscriptTally::new("You", &you.stt_provider);
-        let pause_threshold = if use_accumulator {
-            Some(app.state::<AppState>().pause_threshold_ms.clone())
-        } else {
-            None
-        };
-        tokio::spawn(async move {
-            if let Some(pause_threshold) = pause_threshold {
-                // Accumulator path: merge same-speaker segments
-                use std::sync::atomic::Ordering;
-                let threshold = pause_threshold.load(Ordering::Relaxed);
-                let mut accumulator =
-                    crate::stt::segment_accumulator::SegmentAccumulator::new(threshold);
-
-                while let Some(result) = you_stt_rx.recv().await {
-                    tally.record(result.is_final);
-                    let current_threshold = pause_threshold.load(Ordering::Relaxed);
-                    accumulator.set_pause_threshold(current_threshold);
-
-                    let outputs = accumulator.feed_result(result);
-                    for output in outputs {
-                        let event_name = if output.is_final {
-                            "transcript_final"
-                        } else {
-                            "transcript_update"
-                        };
-                        let seg_id = format!("you_{}_{}", prefix, output.id);
-                        let payload = serde_json::json!({
-                            "segment": {
-                                "id": seg_id,
-                                "text": output.text,
-                                "speaker": "User",
-                                "timestamp_ms": output.timestamp_ms,
-                                "is_final": output.is_final,
-                                "confidence": output.confidence
-                            }
-                        });
-                        let _ = stt_app.emit(event_name, &payload);
-                    }
-                }
-
-                // Flush remaining accumulated segment on meeting end
-                if let Some(output) = accumulator.flush() {
-                    let seg_id = format!("you_{}_{}", prefix, output.id);
-                    let payload = serde_json::json!({
-                        "segment": {
-                            "id": seg_id,
-                            "text": output.text,
-                            "speaker": "User",
-                            "timestamp_ms": output.timestamp_ms,
-                            "is_final": true,
-                            "confidence": output.confidence
-                        }
-                    });
-                    let _ = stt_app.emit("transcript_final", &payload);
-                }
-            } else {
-                // Direct path: web_speech / whisper_cpp handle their own segmentation
-                let mut counter = 0u64;
-                while let Some(result) = you_stt_rx.recv().await {
-                    tally.record(result.is_final);
-                    let seg_id = if let Some(ref custom_id) = result.segment_id {
-                        format!("you_{}_{}", prefix, custom_id)
-                    } else {
-                        if result.is_final {
-                            counter += 1;
-                        }
-                        if result.is_final {
-                            format!("you_{}_{}", prefix, counter)
-                        } else {
-                            format!("you_{}_{}", prefix, counter + 1)
-                        }
-                    };
-                    let event_name = if result.is_final {
-                        "transcript_final"
-                    } else {
-                        "transcript_update"
-                    };
-                    let payload = serde_json::json!({
-                        "segment": {
-                            "id": seg_id,
-                            "text": result.text,
-                            "speaker": "User",
-                            "timestamp_ms": result.timestamp_ms,
-                            "is_final": result.is_final,
-                            "confidence": result.confidence
-                        }
-                    });
-                    let _ = stt_app.emit(event_name, &payload);
-                }
-            }
-        });
+        spawn_party_emitter(&app, Party::You, &you.stt_provider, &session_prefix, you_stt_rx);
     }
-
-    // Emit transcript events from "Them" STT (speaker = "Them")
-    // Uses SegmentAccumulator to merge consecutive same-speaker segments
-    // within the configurable pause threshold, producing longer lines.
     if them_stt_provider.is_some() {
-        let stt_app = app.clone();
-        let prefix = session_prefix.clone();
-        let intel_arc = app.state::<AppState>().intelligence.clone();
-        let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
-        let mut tally = TranscriptTally::new("Them", &them.stt_provider);
-        tokio::spawn(async move {
-            use std::sync::atomic::Ordering;
-            let threshold = pause_threshold.load(Ordering::Relaxed);
-            let mut accumulator =
-                crate::stt::segment_accumulator::SegmentAccumulator::new(threshold);
-
-            while let Some(result) = them_stt_rx.recv().await {
-                tally.record(result.is_final);
-                // Live-update threshold from settings changes
-                let current_threshold = pause_threshold.load(Ordering::Relaxed);
-                accumulator.set_pause_threshold(current_threshold);
-
-                let outputs = accumulator.feed_result(result);
-                for output in outputs {
-                    let event_name = if output.is_final {
-                        "transcript_final"
-                    } else {
-                        "transcript_update"
-                    };
-                    // Namespace IDs to avoid collision with "You" accumulator
-                    let seg_id = format!("them_{}_{}", prefix, output.id);
-                    let seg = accumulator_segment_json(&seg_id, "Them", &output);
-                    let payload = serde_json::json!({ "segment": seg });
-                    let _ = stt_app.emit(event_name, &payload);
-
-                    // Push final segments to the intelligence engine
-                    if output.is_final {
-                        if let Some(ref intel) = intel_arc {
-                            if let Ok(mut engine) = intel.lock() {
-                                engine.push_transcript(
-                                    output.text.clone(),
-                                    "Them".to_string(),
-                                    output.timestamp_ms,
-                                    true,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Flush remaining accumulated segment on meeting end
-            if let Some(output) = accumulator.flush() {
-                let seg_id = format!("them_{}_{}", prefix, output.id);
-                let seg = accumulator_segment_json(&seg_id, "Them", &output);
-                let payload = serde_json::json!({ "segment": seg });
-                let _ = stt_app.emit("transcript_final", &payload);
-
-                if let Some(ref intel) = intel_arc {
-                    if let Ok(mut engine) = intel.lock() {
-                        engine.push_transcript(
-                            output.text.clone(),
-                            "Them".to_string(),
-                            output.timestamp_ms,
-                            true,
-                        );
-                    }
-                }
-            }
-        });
+        spawn_party_emitter(&app, Party::Them, &them.stt_provider, &session_prefix, them_stt_rx);
     }
 
     // Grab the recorder handle for WAV recording (with mic/system mixing)
@@ -1483,17 +1456,24 @@ pub async fn start_capture_per_party(
 /// API keys are read directly from the credential store (not the STTRouter)
 /// because per-party mode never calls set_stt_provider(), so the router's
 /// cached keys are always None.
+///
+/// The language is the party's own (`config.language`, possibly "auto"),
+/// else the global STT language; `other` is the other party's config.
 async fn create_stt_provider_for_party(
     config: &crate::audio::PartyAudioConfig,
+    other: &crate::audio::PartyAudioConfig,
     state: &AppState,
     app: &AppHandle,
-    party_role: &str,
+    party: Party,
+    session_prefix: &str,
 ) -> Result<Option<Box<dyn STTProvider>>, String> {
+    use crate::stt::language;
     use crate::stt::provider::STTProviderType;
 
+    let party_role = party.role();
     let stt_type = STTProviderType::from_str(&config.stt_provider)
         .ok_or_else(|| format!("Unknown STT provider: {}", config.stt_provider))?;
-    let stt_language = get_stt_language(state);
+    let stt_language = party_lang(config, state);
 
     crate::stt::emit_stt_debug(app, "info", "stt",
         &format!("[{}] Creating provider: {} (lang: {}, model: {})",
@@ -1509,10 +1489,14 @@ async fn create_stt_provider_for_party(
                 .or_else(|_| find_any_downloaded_model(state, "whisper_cpp"));
             match model_result {
                 Ok(model_path) => {
-                    let lang = get_stt_language(state);
                     let whisper_config = state.whisper_config.clone();
                     let mut p = crate::stt::whisper_cpp::WhisperCppSTT::new(model_path, whisper_config);
-                    p.set_language(&lang);
+                    p.set_language(&language::whisper_cpp_language(&stt_language));
+                    let use_gpu = app
+                        .state::<crate::stt::plus_config::SttPlusState>()
+                        .whisper_use_gpu
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    p.set_use_gpu(use_gpu);
                     Ok(Some(Box::new(p)))
                 }
                 Err(e) => {
@@ -1525,9 +1509,17 @@ async fn create_stt_provider_for_party(
                 }
             }
         }
+        #[cfg(not(target_os = "windows"))]
+        STTProviderType::WindowsNative => {
+            // Only an energy detector off Windows ("[speech: N s]" placeholders): no engine.
+            crate::stt::emit_stt_debug(app, "error", "stt",
+                &format!("[{}] Windows Speech only works on Windows — choose another engine in Settings.", party_role));
+            Ok(None)
+        }
+        #[cfg(target_os = "windows")]
         STTProviderType::WindowsNative => {
             use crate::stt::windows_native::WindowsNativeSTT;
-            let lang = get_stt_language(state);
+            let lang = language::without_auto(&stt_language);
             let mut provider = if config.is_input_device {
                 // IPolicyConfig already overrides system default to the selected device,
                 // so DirectMic mode correctly captures from non-default devices too
@@ -1542,7 +1534,6 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(provider)))
         }
         STTProviderType::Deepgram => {
-            let lang = get_stt_language(state);
             let key = get_credential_key(state, "deepgram");
             log::info!("Deepgram key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
             let dg_config = get_deepgram_config(state);
@@ -1550,14 +1541,14 @@ async fn create_stt_provider_for_party(
                 Some(k) => crate::stt::deepgram::DeepgramSTT::with_api_key(k),
                 None => crate::stt::deepgram::DeepgramSTT::new(),
             };
-            p.set_language(&lang);
+            p.set_language(&language::deepgram_language(&stt_language, &dg_config.model));
             p.set_config(dg_config);
             p.set_app_handle(app.clone());
             p.set_party(party_role);
             Ok(Some(Box::new(p)))
         }
         STTProviderType::WhisperApi => {
-            let lang = get_stt_language(state);
+            let lang = stt_language.clone();
             let key = get_credential_key(state, "whisper_api");
             log::info!("WhisperApi key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
             let mut p = match key.as_deref() {
@@ -1568,7 +1559,7 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(p)))
         }
         STTProviderType::AzureSpeech => {
-            let lang = get_stt_language(state);
+            let lang = language::without_auto(&stt_language);
             let key = get_credential_key(state, "azure_speech");
             let region = get_credential_key(state, "azure_speech_region");
             log::info!("Azure key for '{}': {}, region: {}", party_role,
@@ -1582,17 +1573,17 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(p)))
         }
         STTProviderType::GroqWhisper => {
-            let lang = get_stt_language(state);
             let key = get_credential_key(state, "groq_whisper");
             log::info!("Groq key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
             let mut p = match key.as_deref() {
                 Some(k) => crate::stt::groq_whisper::GroqWhisperSTT::with_api_key(k),
                 None => crate::stt::groq_whisper::GroqWhisperSTT::new(),
             };
-            p.set_language(&lang);
             // Use shared config Arc — provider reads latest config on each API call,
-            // so settings changes take effect immediately without restarting
+            // so settings changes take effect immediately without restarting.
+            // The party's language overrides the shared config's (per instance).
             p.set_shared_config(state.shared_groq_config.clone());
+            p.set_language(&stt_language);
             p.set_app_handle(app.clone());
             p.set_party(party_role);
             Ok(Some(Box::new(p)))
@@ -1611,7 +1602,7 @@ async fn create_stt_provider_for_party(
             let model_result = get_local_model_path(state, "sherpa_onnx", model_id);
             match model_result {
                 Ok(model_dir) => {
-                    let lang = get_stt_language(state);
+                    let lang = stt_language.clone();
                     // Check if this is a non-transducer model (SenseVoice, etc.)
                     // by trying offline discovery first.
                     let offline_files = crate::stt::local_engines::model_discovery::discover_offline_model_files(&model_dir);
@@ -1670,7 +1661,7 @@ async fn create_stt_provider_for_party(
             let model_result = get_local_model_path(state, "ort_streaming", model_id);
             match model_result {
                 Ok(model_dir) => {
-                    let lang = get_stt_language(state);
+                    let lang = stt_language.clone();
                     crate::stt::emit_stt_debug(app, "info", "stt",
                         &format!("[{}] ORT loading model '{}' from {} (lang={})",
                             party_role, model_id, model_dir.display(), lang));
@@ -1705,7 +1696,7 @@ async fn create_stt_provider_for_party(
                 .or_else(|_| find_any_downloaded_model(state, "parakeet_tdt"));
             match model_result {
                 Ok(model_dir) => {
-                    let lang = get_stt_language(state);
+                    let lang = stt_language.clone();
                     // Auto-detect model type: transducer (encoder/decoder/joiner) vs CTC (model.onnx)
                     let transducer = crate::stt::local_engines::model_discovery::discover_model_files(&model_dir);
                     if transducer.is_ok() {
@@ -1759,6 +1750,46 @@ async fn create_stt_provider_for_party(
                     Ok(None)
                 }
             }
+        }
+        STTProviderType::OpenAICompat => {
+            use crate::stt::plus_config::{SttPlusState, OPENAI_COMPAT_STT_KEY_SLOT};
+            let key = get_credential_key(state, OPENAI_COMPAT_STT_KEY_SLOT);
+            let shared = app.state::<SttPlusState>().openai_compat.clone();
+            let mut p = crate::stt::openai_compat::OpenAICompatSTT::new(shared, key);
+            p.set_language(&stt_language);
+            p.set_app_handle(app.clone());
+            p.set_party(party_role);
+            Ok(Some(Box::new(p)))
+        }
+        STTProviderType::Soniox => {
+            use crate::stt::plus_config::{SttPlusState, SONIOX_KEY_SLOT};
+            let key = get_credential_key(state, SONIOX_KEY_SLOT);
+            let cfg = app.state::<SttPlusState>().soniox_snapshot();
+            let translation_target = soniox_translation_target(config, state);
+            let translation_target_code = translation_target.as_ref().map(|(code, _)| code.clone());
+            let translation_target = translation_target.map(|(_, soniox)| soniox);
+            let meeting_ref = state
+                .live_meeting
+                .lock()
+                .ok()
+                .and_then(|m| m.as_ref().map(|m| m.id.clone()))
+                .unwrap_or_else(|| session_prefix.to_string());
+            let options = crate::stt::soniox::SonioxSessionOptions {
+                party: party_role.to_string(),
+                language: stt_language.clone(),
+                other_language: Some(party_lang(other, state)),
+                translation_target: translation_target.clone(),
+                translation_target_code,
+                segment_id_prefix: party.segment_prefix(session_prefix),
+                client_reference_id: Some(format!("nexq:{}:{}", meeting_ref, party_role.to_lowercase())),
+                diarize: party == Party::Them && cfg.enable_speaker_diarization,
+            };
+            crate::stt::emit_stt_debug(app, "info", "soniox",
+                &format!("[{}] model={}, region={}, translation={}", party_role, cfg.model, cfg.region,
+                    translation_target.as_deref().unwrap_or("off")));
+            let mut p = crate::stt::soniox::SonioxSTT::new(cfg, key, options);
+            p.set_app_handle(app.clone());
+            Ok(Some(Box::new(p)))
         }
     }
 }
@@ -1835,6 +1866,33 @@ fn get_stt_language(state: &AppState) -> String {
         .as_ref()
         .and_then(|stt| stt.lock().ok().map(|r| r.language.clone()))
         .unwrap_or_else(|| "en-US".to_string())
+}
+
+/// A party's recognition language: its own setting ("auto" included), else
+/// the global STT language.
+fn party_lang(config: &crate::audio::PartyAudioConfig, state: &AppState) -> String {
+    crate::stt::language::party_language(config.language.as_deref(), &get_stt_language(state))
+}
+
+/// Soniox one-way translation target of a party when its `native_translation`
+/// is on: its own target, else the translation settings'. Returns the code as
+/// the settings name it ("zh-CN", used for the translations it produces) and
+/// the two-letter code Soniox takes ("zh").
+fn soniox_translation_target(config: &crate::audio::PartyAudioConfig, state: &AppState) -> Option<(String, String)> {
+    let translation = config.native_translation.as_ref().filter(|t| t.is_one_way())?;
+    let target = translation
+        .target_language
+        .clone()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| {
+            state
+                .translation
+                .as_ref()
+                .and_then(|tr| tr.lock().ok().map(|router| router.default_target_lang().to_string()))
+        })?;
+    let target = target.trim().to_string();
+    let soniox = crate::stt::language::base_code(&target)?;
+    Some((target, soniox))
 }
 
 /// Read an API key directly from the credential store (Windows Credential Manager).
@@ -2022,3 +2080,114 @@ pub async fn get_mute_status(app: AppHandle) -> Result<String, String> {
     serde_json::to_string(&status).map_err(|e| format!("Failed to serialize: {}", e))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::{NativeTranslationConfig, PartyAudioConfig, PartyRole};
+    use std::sync::{Arc, Mutex};
+
+    fn party(provider: &str, language: Option<&str>) -> PartyAudioConfig {
+        PartyAudioConfig {
+            role: PartyRole::Them,
+            device_id: "default".into(),
+            is_input_device: false,
+            stt_provider: provider.into(),
+            local_model_id: None,
+            language: language.map(str::to_string),
+            native_translation: None,
+        }
+    }
+
+    /// AppState with a router at `global` and translation target `target`.
+    fn state(global: &str, target: Option<&str>) -> AppState {
+        let mut state = AppState::new();
+        let mut router = crate::stt::STTRouter::new();
+        router.set_language(global);
+        state.stt = Some(Arc::new(Mutex::new(router)));
+        if let Some(target) = target {
+            let mut translation = crate::translation::TranslationRouter::new();
+            translation.set_default_target_lang(target.to_string());
+            state.translation = Some(Arc::new(Mutex::new(translation)));
+        }
+        state
+    }
+
+    #[test]
+    fn a_party_uses_its_own_language_else_the_global_one() {
+        let state = state("ja-JP", None);
+        assert_eq!(party_lang(&party("deepgram", Some("zh-CN")), &state), "zh-CN");
+        assert_eq!(party_lang(&party("deepgram", Some("auto")), &state), "auto");
+        assert_eq!(party_lang(&party("deepgram", None), &state), "ja-JP");
+    }
+
+    #[test]
+    fn older_configs_without_the_new_fields_still_parse() {
+        let old = r#"{"role":"You","device_id":"default","is_input_device":true,"stt_provider":"web_speech"}"#;
+        let cfg: PartyAudioConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.language, None);
+        assert_eq!(cfg.native_translation, None);
+        let new = r#"{"role":"Them","device_id":"x","is_input_device":false,"stt_provider":"soniox",
+                      "language":"auto","native_translation":{"mode":"one_way","target_language":"zh-CN"}}"#;
+        let cfg: PartyAudioConfig = serde_json::from_str(new).unwrap();
+        assert_eq!(cfg.language.as_deref(), Some("auto"));
+        assert!(cfg.native_translation.unwrap().is_one_way());
+    }
+
+    #[test]
+    fn soniox_translates_only_when_on_and_follows_the_translation_target() {
+        let state = state("en-US", Some("zh-CN"));
+        let mut them = party("soniox", Some("en-US"));
+        assert_eq!(soniox_translation_target(&them, &state), None);
+
+        them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &state), Some(("zh-CN".to_string(), "zh".to_string())));
+
+        them.native_translation = Some(NativeTranslationConfig {
+            mode: "one_way".into(),
+            target_language: Some("ja".into()),
+            ..Default::default()
+        });
+        assert_eq!(soniox_translation_target(&them, &state), Some(("ja".to_string(), "ja".to_string())));
+
+        them.native_translation = Some(NativeTranslationConfig { mode: "off".into(), target_language: Some("ja".into()), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &state), None);
+
+        // No translation router and no target of its own: nothing to translate into.
+        let bare = super::tests::state("en-US", None);
+        them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
+        assert_eq!(soniox_translation_target(&them, &bare), None);
+    }
+
+    #[test]
+    fn soniox_and_whisper_cpp_segment_their_own_lines() {
+        assert!(self_segmenting("soniox"));
+        assert!(self_segmenting("whisper_cpp"));
+        assert!(!self_segmenting("deepgram"));
+        assert!(!self_segmenting("openai_compat"));
+        assert_eq!(Party::Them.segment_prefix("ab12"), "them_ab12_");
+        assert_eq!(Party::You.segment_prefix("ab12"), "you_ab12_");
+        assert_eq!((Party::You.speaker(), Party::Them.speaker()), ("User", "Them"));
+    }
+
+    #[test]
+    fn direct_lines_carry_the_diarization_tag() {
+        let result = crate::stt::provider::TranscriptResult {
+            text: "Hi".into(),
+            is_final: true,
+            confidence: 0.9,
+            timestamp_ms: 42,
+            speaker: None,
+            language: Some("en".into()),
+            segment_id: Some("sx1_1".into()),
+            duration_ms: Some(300),
+            speaker_tag: Some("S2".into()),
+        };
+        let seg = direct_segment_json("them_ab12_sx1_1", "Them", &result);
+        assert_eq!(seg["id"], "them_ab12_sx1_1");
+        assert_eq!(seg["speaker"], "Them");
+        assert_eq!(seg["speaker_tag"], "S2");
+        assert_eq!(seg["speaker_id"], "speaker_1");
+        assert_eq!(seg["is_final"], true);
+    }
+}

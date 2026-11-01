@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ModelDownloadProgress } from "../lib/types";
 import { downloadLocalSTTModel, cancelModelDownload } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
+import { t } from "../i18n";
 
 interface DownloadState {
   [key: string]: ModelDownloadProgress;
@@ -51,9 +52,11 @@ export function useModelDownload() {
         }
         return { ...prev, [key]: progress };
       });
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => console.warn("Failed to listen for model downloads:", err));
 
     return () => {
       unlisten?.();
@@ -65,9 +68,9 @@ export function useModelDownload() {
       try {
         await downloadLocalSTTModel(engine, modelId);
       } catch (err: any) {
-        const msg = typeof err === "string" ? err : err?.message ?? "Unknown error";
+        const msg = typeof err === "string" ? err : err?.message ?? t("common:errors.unknown");
         console.error("Failed to start download:", msg);
-        showToast(`Download failed: ${msg}`, "error");
+        showToast(t("stt:localModels.toasts.downloadFailed", { detail: msg }), "error");
       }
     },
     []

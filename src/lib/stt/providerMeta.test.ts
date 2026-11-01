@@ -9,10 +9,15 @@ import {
   STT_PROVIDERS,
   STT_PROVIDER_OPTIONS,
   isExclusiveProvider,
+  isSttProviderAvailable,
   localModelIdOnSwitch,
   resolveLocalModelId,
+  sttKeySlot,
   sttProviderMeta,
+  sttProvidersFor,
+  type SttAvailabilityContext,
 } from "./providerMeta";
+import { currentPlatform } from "../platform";
 
 // Every STTProviderType: tsc fails here when an id is added to or removed from the union.
 const ALL_IDS = Object.keys({
@@ -26,6 +31,8 @@ const ALL_IDS = Object.keys({
   ort_streaming: true,
   windows_native: true,
   parakeet_tdt: true,
+  openai_compat: true,
+  soniox: true,
 } satisfies Record<STTProviderType, true>);
 
 describe("STT_PROVIDERS", () => {
@@ -53,26 +60,60 @@ describe("STT_PROVIDERS", () => {
       ort_streaming: "ORT Streaming",
       parakeet_tdt: "Parakeet TDT",
       windows_native: "Windows Speech",
+      openai_compat: "Remote Whisper",
+      soniox: "Soniox",
     });
   });
 
-  it("needs an API key for the cloud engines only", () => {
+  it("needs an API key for the keyed cloud engines; remote Whisper's key is optional", () => {
     const keyed = STT_PROVIDERS.filter((p) => p.requiresApiKey).map((p) => p.id);
-    expect(keyed.sort()).toEqual(["azure_speech", "deepgram", "groq_whisper", "whisper_api"]);
+    expect(keyed.sort()).toEqual(["azure_speech", "deepgram", "groq_whisper", "soniox", "whisper_api"]);
+    const remote = sttProviderMeta("openai_compat")!;
+    expect(remote.requiresBaseUrl).toBe(true);
+    expect(sttKeySlot(remote)).toBe("openai_compat_stt");
+    expect(sttKeySlot(sttProviderMeta("soniox")!)).toBe("soniox");
   });
 
-  it("runs Windows Speech on Windows only, and no engine translates by itself yet", () => {
+  it("runs Windows Speech on Windows only; only Soniox translates by itself", () => {
     expect(sttProviderMeta("windows_native")?.platforms).toEqual(["windows"]);
     for (const p of STT_PROVIDERS) {
       expect(p.platforms.length).toBeGreaterThan(0);
-      expect(p.supportsNativeTranslation).toBe(false);
+      expect(p.supportsNativeTranslation).toBe(p.id === "soniox");
     }
+  });
+
+  it("says which engines detect the language", () => {
+    const support = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.languageSupport]));
+    expect(support).toMatchObject({
+      soniox: "auto", openai_compat: "auto", whisper_cpp: "auto", groq_whisper: "auto",
+      whisper_api: "auto", deepgram: "auto", sherpa_onnx: "auto",
+      web_speech: "noAuto", windows_native: "noAuto", azure_speech: "noAuto",
+      ort_streaming: "ignored", parakeet_tdt: "ignored",
+    });
+  });
+});
+
+describe("platforms", () => {
+  it("never offers Windows Speech on macOS", () => {
+    const mac = sttProvidersFor("macos").map((p) => p.id);
+    expect(mac).not.toContain("windows_native");
+    expect(mac).toContain("web_speech");
+    expect(sttProvidersFor("windows").map((p) => p.id)).toContain("windows_native");
+    expect(sttProvidersFor("linux").map((p) => p.id)).not.toContain("web_speech");
+  });
+
+  it("hides nothing on an unknown platform", () => {
+    expect(sttProvidersFor("unknown").length).toBe(STT_PROVIDERS.filter((p) => !p.hidden).length);
+  });
+
+  it("builds the picker for the platform the app runs on", () => {
+    expect(STT_PROVIDER_OPTIONS.map((o) => o.id)).toEqual(sttProvidersFor(currentPlatform()).map((p) => p.id));
   });
 });
 
 describe("STT_PROVIDER_OPTIONS", () => {
-  it("is the quick-swap picker list from before the extraction", () => {
-    const picker = STT_PROVIDER_OPTIONS.map((o) => ({
+  it("is the quick-swap picker list (Windows) with whisper.cpp and the Plus engines added", () => {
+    const picker = sttProvidersFor("windows").map((o) => ({
       value: o.id,
       label: o.pickerLabel,
       icon: o.icon,
@@ -86,11 +127,14 @@ describe("STT_PROVIDER_OPTIONS", () => {
       { value: "windows_native", label: "Windows Speech", icon: "monitor", requiresKey: false, isCloud: false, inputOnly: true },
       { value: "sherpa_onnx", label: "Sherpa-ONNX", icon: "hardDrive", requiresKey: false, isCloud: false, requiresDownload: "sherpa_onnx" },
       { value: "ort_streaming", label: "ORT Streaming", icon: "zap", requiresKey: false, isCloud: false, requiresDownload: "ort_streaming" },
+      { value: "whisper_cpp", label: "Whisper.cpp", icon: "hardDrive", requiresKey: false, isCloud: false, requiresDownload: "whisper_cpp" },
       { value: "parakeet_tdt", label: "Parakeet TDT", icon: "cpu", requiresKey: false, isCloud: false, requiresDownload: "parakeet_tdt" },
       { value: "deepgram", label: "Deepgram", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "whisper_api", label: "Whisper API", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "azure_speech", label: "Azure Speech", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "groq_whisper", label: "Groq Whisper", icon: "zap", requiresKey: true, isCloud: true },
+      { value: "openai_compat", label: "Remote Whisper", icon: "cloud", requiresKey: false, isCloud: true },
+      { value: "soniox", label: "Soniox", icon: "cloud", requiresKey: true, isCloud: true },
     ]);
   });
 });
@@ -106,11 +150,11 @@ describe("exclusive engines", () => {
 
   it("fall back, in order, to picker engines that aren't exclusive", () => {
     expect(EXCLUSIVE_FALLBACK_ORDER).toEqual([
-      "deepgram", "groq_whisper", "whisper_api", "azure_speech",
-      "sherpa_onnx", "ort_streaming", "parakeet_tdt",
+      "deepgram", "soniox", "groq_whisper", "whisper_api", "azure_speech",
+      "sherpa_onnx", "ort_streaming", "parakeet_tdt", "whisper_cpp",
     ]);
     for (const id of EXCLUSIVE_FALLBACK_ORDER) {
-      expect(STT_PROVIDER_OPTIONS.some((o) => o.id === id)).toBe(true);
+      expect(sttProvidersFor("macos").some((o) => o.id === id)).toBe(true);
       expect(isExclusiveProvider(id)).toBe(false);
     }
   });
@@ -149,8 +193,39 @@ describe("local models", () => {
     expect(localModelIdOnSwitch("parakeet_tdt", active, "ggml-base")).toBe("parakeet-tdt-0.6b-v3-int8");
     // An empty active model isn't replaced by the default (??), so nothing is stored.
     expect(localModelIdOnSwitch("sherpa_onnx", { sherpa_onnx: "" }, "ggml-base")).toBeUndefined();
-    expect(localModelIdOnSwitch("whisper_cpp", active, "ggml-base")).toBeUndefined();
+    // whisper.cpp: its active model, else the active Whisper model.
+    expect(localModelIdOnSwitch("whisper_cpp", active, "ggml-base")).toBe("active-whisper-engine");
+    expect(localModelIdOnSwitch("whisper_cpp", {}, "ggml-base")).toBe("ggml-base");
+    expect(localModelIdOnSwitch("whisper_cpp", {}, null)).toBeUndefined();
     expect(localModelIdOnSwitch("deepgram", active, "ggml-base")).toBeUndefined();
     expect(localModelIdOnSwitch("web_speech", {}, null)).toBeUndefined();
+  });
+});
+
+describe("availability", () => {
+  const ctx = (over: Partial<SttAvailabilityContext> = {}): SttAvailabilityContext => ({
+    isInput: true,
+    isEngineReady: () => true,
+    hasKey: () => true,
+    hasBaseUrl: false,
+    ...over,
+  });
+  const meta = (id: string) => sttProviderMeta(id)!;
+
+  it("needs a microphone for the input-only engines", () => {
+    expect(isSttProviderAvailable(meta("web_speech"), ctx({ isInput: false }))).toBe(false);
+    expect(isSttProviderAvailable(meta("web_speech"), ctx())).toBe(true);
+  });
+
+  it("needs a downloaded model, a key, or a server address", () => {
+    expect(isSttProviderAvailable(meta("whisper_cpp"), ctx({ isEngineReady: () => false }))).toBe(false);
+    expect(isSttProviderAvailable(meta("soniox"), ctx({ hasKey: (slot) => slot !== "soniox" }))).toBe(false);
+    expect(isSttProviderAvailable(meta("openai_compat"), ctx({ hasKey: () => false, hasBaseUrl: true }))).toBe(true);
+    expect(isSttProviderAvailable(meta("openai_compat"), ctx({ hasBaseUrl: false }))).toBe(false);
+  });
+
+  it("counts an unknown status as available", () => {
+    expect(isSttProviderAvailable(meta("deepgram"), ctx({ hasKey: () => undefined }))).toBe(true);
+    expect(isSttProviderAvailable(meta("parakeet_tdt"), ctx({ isEngineReady: () => undefined }))).toBe(true);
   });
 });

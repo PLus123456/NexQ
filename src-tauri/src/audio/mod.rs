@@ -34,11 +34,37 @@ pub struct PartyAudioConfig {
     pub device_id: String,
     pub is_input_device: bool,
     /// "web_speech" | "whisper_cpp" | "deepgram" | "whisper_api" | "azure_speech" | "groq_whisper"
+    /// | "openai_compat" | "soniox" | ...
     pub stt_provider: String,
     /// Model ID for local STT engines (e.g., "base", "small", "medium").
     /// Only used when stt_provider is a local engine like "whisper_cpp".
     #[serde(default)]
     pub local_model_id: Option<String>,
+    /// NexQ Plus: recognition language of this party, a language code or
+    /// "auto". None (configs from before) = the global STT language.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// NexQ Plus: translation done by the STT engine itself (Soniox). None = off.
+    #[serde(default)]
+    pub native_translation: Option<NativeTranslationConfig>,
+}
+
+/// NexQ Plus: per-party engine-side translation (`PartyAudioConfig.native_translation`).
+/// An empty `target_language` follows the translation settings' target.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NativeTranslationConfig {
+    /// "off" | "one_way" | "two_way". Anything else counts as "off".
+    pub mode: String,
+    pub target_language: Option<String>,
+    pub language_a: Option<String>,
+    pub language_b: Option<String>,
+}
+
+impl NativeTranslationConfig {
+    pub fn is_one_way(&self) -> bool {
+        self.mode == "one_way"
+    }
 }
 
 /// Information about an active audio session on the system (per-app awareness).

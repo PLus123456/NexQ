@@ -1,10 +1,13 @@
-// STT Settings — provider selector with inline model management per provider.
-// Badges: always-ready=green, no model/key=red, downloaded-not-active=amber,
-//         cloud-key-stored=amber, cloud-tested=green.
+// STT Settings — engine cards with inline configuration per engine.
+// Clicking a card picks the engine to configure; "Use for" puts it on You / Them.
+// Badges: ready=green, no model/key/server=red, key saved or server set but
+//         not tested yet=amber, tested=green.
 
-import { useState, useEffect, useCallback } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import type { ParseKeys } from "i18next";
+import { Trans, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
+import { showToast } from "../stores/toastStore";
 import {
   setSTTProvider,
   testSTTConnection,
@@ -12,7 +15,7 @@ import {
   deleteApiKey,
 } from "../lib/ipc";
 import { storeApiKey, getApiKey, hasApiKey } from "../lib/ipc";
-import type { STTProviderType, LocalSTTEngineInfo, DeepgramConfig, GroqConfig } from "../lib/types";
+import type { STTProviderType, DeepgramConfig, GroqConfig } from "../lib/types";
 import {
   CheckCircle,
   XCircle,
@@ -20,187 +23,87 @@ import {
   Eye,
   EyeOff,
   Cloud,
-  Server,
-  Globe,
   Wifi,
   HardDrive,
-  Monitor,
-  Zap,
   Trash2,
   ChevronDown,
   ChevronUp,
   Settings2,
-  Cpu,
 } from "lucide-react";
 import { LocalModelManager } from "./LocalModelManager";
+import { currentPlatform } from "../lib/platform";
+import {
+  isSttProviderAvailable,
+  sttKeySlot,
+  sttProviderMeta,
+  sttProvidersFor,
+  type SttProviderMeta,
+} from "../lib/stt/providerMeta";
+import { OpenAICompatSttSettings } from "./stt/OpenAICompatSttSettings";
+import { SonioxSettings } from "./stt/SonioxSettings";
+import { PartyLanguageField } from "./stt/PartyLanguageField";
+import {
+  PARTIES,
+  SttEngineIcon,
+  assignPartyEngine,
+  availabilityContext,
+  defaultMeetingAudioConfig,
+  exclusiveFallback,
+  isModelReady,
+  needsExclusiveSwap,
+  otherParty,
+  partyLabel,
+  sttEngineDescription,
+  sttEngineLabel,
+  unavailableReason,
+  useSttReadiness,
+  type Party,
+} from "./stt/sttEngines";
 
-// ── Provider definitions ──
+/** Engines with their own settings panel (and key handling) instead of the generic key panel. */
+const OWN_PANEL_ENGINES: readonly STTProviderType[] = ["openai_compat", "soniox"];
 
-interface ProviderOption {
-  value: STTProviderType;
-  label: string;
-  description: string;
-  requiresApiKey: boolean;
-  isLocal: boolean;
-  credentialKey: string;
-  needsRegion?: boolean;
-  /** Engine ID whose models must be downloaded + activated for readiness */
-  requiresModels?: string;
-  /** Always ready (no download / key needed) */
-  alwaysReady?: boolean;
-  /** Batch-only: cannot be used for live streaming; shown with badge */
-  batchOnly?: boolean;
-}
-
-const PROVIDER_OPTIONS: ProviderOption[] = [
-  {
-    value: "web_speech",
-    label: "Web Speech",
-    description: "Browser-native, free",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    alwaysReady: true,
-  },
-  {
-    value: "windows_native",
-    label: "Windows Speech",
-    description: "Built-in, zero download",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    alwaysReady: true,
-  },
-  {
-    value: "sherpa_onnx",
-    label: "Sherpa-ONNX",
-    description: "Local streaming, offline, free",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    requiresModels: "sherpa_onnx",
-  },
-  {
-    value: "ort_streaming",
-    label: "ORT Streaming",
-    description: "Local, GPU-accelerated",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    requiresModels: "ort_streaming",
-  },
-  {
-    value: "whisper_cpp",
-    label: "Whisper.cpp",
-    description: "Batch transcription of recorded meetings",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    requiresModels: "whisper_cpp",
-    batchOnly: true,
-  },
-  {
-    value: "parakeet_tdt",
-    label: "Parakeet TDT",
-    description: "Best accuracy, offline, multilingual",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-    requiresModels: "parakeet_tdt",
-  },
-  {
-    value: "deepgram",
-    label: "Deepgram",
-    description: "Real-time streaming, best quality",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "deepgram",
-  },
-  {
-    value: "whisper_api",
-    label: "Whisper API",
-    description: "OpenAI Whisper model",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "whisper_api",
-  },
-  {
-    value: "azure_speech",
-    label: "Azure Speech",
-    description: "Azure Cognitive Services",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "azure_speech",
-    needsRegion: true,
-  },
-  {
-    value: "groq_whisper",
-    label: "Groq Whisper",
-    description: "Ultra-fast Whisper inference",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "groq_whisper",
-  },
-];
-
-const LANGUAGES = [
-  { value: "en-US", label: "English (US)" },
-  { value: "en-GB", label: "English (UK)" },
-  { value: "es-ES", label: "Spanish" },
-  { value: "fr-FR", label: "French" },
-  { value: "de-DE", label: "German" },
-  { value: "it-IT", label: "Italian" },
-  { value: "pt-BR", label: "Portuguese (Brazil)" },
-  { value: "ja-JP", label: "Japanese" },
-  { value: "zh-CN", label: "Chinese (Simplified)" },
-  { value: "ko-KR", label: "Korean" },
-  { value: "nl-NL", label: "Dutch" },
-  { value: "hi-IN", label: "Hindi" },
-  { value: "ru-RU", label: "Russian" },
-  { value: "ar-SA", label: "Arabic" },
-  { value: "tr-TR", label: "Turkish" },
-  { value: "pl-PL", label: "Polish" },
-  { value: "cs-CZ", label: "Czech" },
-  { value: "sv-SE", label: "Swedish" },
-];
+/** Engines the legacy backend router doesn't know (`set_stt_provider` isn't called for them). */
+const NO_LEGACY_ROUTER_ENGINES: readonly STTProviderType[] = ["openai_compat", "soniox"];
 
 // ── Deepgram Models ──
 
 interface DeepgramModelInfo {
   id: string;
-  label: string;
+  /** Model name (product name, not translated). */
+  name: string;
   tier: "latest" | "standard" | "economy" | "whisper";
-  description: string;
+  descriptionKey: ParseKeys<"stt">;
   costPerMin: number;
 }
 
 const DEEPGRAM_MODELS: DeepgramModelInfo[] = [
-  { id: "nova-3", label: "Nova 3", tier: "latest", description: "Best accuracy, latest model", costPerMin: 0.0059 },
-  { id: "nova-2", label: "Nova 2", tier: "standard", description: "Great accuracy, widely used", costPerMin: 0.0043 },
-  { id: "nova", label: "Nova", tier: "standard", description: "Previous generation", costPerMin: 0.0043 },
-  { id: "enhanced", label: "Enhanced", tier: "standard", description: "High accuracy, conservative", costPerMin: 0.0043 },
-  { id: "base", label: "Base", tier: "economy", description: "Fastest, most economical", costPerMin: 0.0043 },
-  { id: "whisper-large", label: "Whisper Large", tier: "whisper", description: "OpenAI Whisper large", costPerMin: 0.0048 },
-  { id: "whisper-medium", label: "Whisper Medium", tier: "whisper", description: "OpenAI Whisper medium", costPerMin: 0.0048 },
-  { id: "whisper-small", label: "Whisper Small", tier: "whisper", description: "OpenAI Whisper small", costPerMin: 0.0048 },
-  { id: "whisper-tiny", label: "Whisper Tiny", tier: "whisper", description: "Smallest, fastest Whisper", costPerMin: 0.0048 },
-  { id: "whisper-base", label: "Whisper Base", tier: "whisper", description: "OpenAI Whisper base", costPerMin: 0.0048 },
+  { id: "nova-3", name: "Nova 3", tier: "latest", descriptionKey: "deepgram.models.nova3", costPerMin: 0.0059 },
+  { id: "nova-2", name: "Nova 2", tier: "standard", descriptionKey: "deepgram.models.nova2", costPerMin: 0.0043 },
+  { id: "nova", name: "Nova", tier: "standard", descriptionKey: "deepgram.models.nova", costPerMin: 0.0043 },
+  { id: "enhanced", name: "Enhanced", tier: "standard", descriptionKey: "deepgram.models.enhanced", costPerMin: 0.0043 },
+  { id: "base", name: "Base", tier: "economy", descriptionKey: "deepgram.models.base", costPerMin: 0.0043 },
+  { id: "whisper-large", name: "Whisper Large", tier: "whisper", descriptionKey: "deepgram.models.whisperLarge", costPerMin: 0.0048 },
+  { id: "whisper-medium", name: "Whisper Medium", tier: "whisper", descriptionKey: "deepgram.models.whisperMedium", costPerMin: 0.0048 },
+  { id: "whisper-small", name: "Whisper Small", tier: "whisper", descriptionKey: "deepgram.models.whisperSmall", costPerMin: 0.0048 },
+  { id: "whisper-tiny", name: "Whisper Tiny", tier: "whisper", descriptionKey: "deepgram.models.whisperTiny", costPerMin: 0.0048 },
+  { id: "whisper-base", name: "Whisper Base", tier: "whisper", descriptionKey: "deepgram.models.whisperBase", costPerMin: 0.0048 },
 ];
 
 // ── Deepgram Presets ──
 
 interface DeepgramPreset {
   id: string;
-  label: string;
-  description: string;
+  labelKey: ParseKeys<"stt">;
+  descriptionKey: ParseKeys<"stt">;
   config: DeepgramConfig;
 }
 
 const DEEPGRAM_PRESETS: DeepgramPreset[] = [
   {
     id: "default",
-    label: "Default",
-    description: "Balanced settings for most meetings",
+    labelKey: "deepgram.presets.default.label",
+    descriptionKey: "deepgram.presets.default.description",
     config: {
       model: "nova-3", smart_format: false, interim_results: true,
       endpointing: 300, punctuate: true, diarize: true,
@@ -210,8 +113,8 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
   },
   {
     id: "low_latency",
-    label: "Low Latency",
-    description: "Fastest response, minimal post-processing",
+    labelKey: "deepgram.presets.lowLatency.label",
+    descriptionKey: "deepgram.presets.lowLatency.description",
     config: {
       model: "nova-3", smart_format: false, interim_results: true,
       endpointing: 150, punctuate: false, diarize: false,
@@ -221,8 +124,8 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
   },
   {
     id: "high_accuracy",
-    label: "High Accuracy",
-    description: "Best transcript quality, smart formatting",
+    labelKey: "deepgram.presets.highAccuracy.label",
+    descriptionKey: "deepgram.presets.highAccuracy.description",
     config: {
       model: "nova-3", smart_format: true, interim_results: true,
       endpointing: 500, punctuate: true, diarize: true,
@@ -232,8 +135,8 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
   },
   {
     id: "meeting_mode",
-    label: "Meeting",
-    description: "Speaker detection, formatted output",
+    labelKey: "deepgram.presets.meeting.label",
+    descriptionKey: "deepgram.presets.meeting.description",
     config: {
       model: "nova-3", smart_format: true, interim_results: true,
       endpointing: 400, punctuate: true, diarize: true,
@@ -243,8 +146,8 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
   },
   {
     id: "economy",
-    label: "Economy",
-    description: "Nova 2 model, lower cost",
+    labelKey: "deepgram.presets.economy.label",
+    descriptionKey: "deepgram.presets.economy.description",
     config: {
       model: "nova-2", smart_format: false, interim_results: true,
       endpointing: 300, punctuate: true, diarize: false,
@@ -274,20 +177,39 @@ type ConnectionStatus = "idle" | "testing" | "success" | "error";
 type BadgeVariant = "ready" | "warning" | "error";
 interface BadgeState { text: string; variant: BadgeVariant }
 
+/** A pending "Use for" that moves the other party off Web Speech / Windows Speech. */
+interface PendingSwap {
+  party: Party;
+  engine: STTProviderType;
+  fallback: STTProviderType | null;
+}
+
 export function STTSettings() {
+  const { t } = useT(["stt", "common"]);
   const sttProvider = useConfigStore((s) => s.sttProvider);
   const setConfigSTTProvider = useConfigStore((s) => s.setSTTProvider);
   const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
   const setMeetingAudioConfig = useConfigStore((s) => s.setMeetingAudioConfig);
-  const sttLanguage = useConfigStore((s) => s.sttLanguage);
-  const setSTTLanguage = useConfigStore((s) => s.setSTTLanguage);
-  const activeWhisperModel = useConfigStore((s) => s.activeWhisperModel);
+  const micDeviceId = useConfigStore((s) => s.micDeviceId);
+  const systemDeviceId = useConfigStore((s) => s.systemDeviceId);
+  const recordingEnabled = useConfigStore((s) => s.recordingEnabled);
   // Persisted: providers whose key has been saved + tested successfully
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
+  const hasBaseUrl = useConfigStore((s) => s.openaiCompatSttConfig.base_url.trim() !== "");
 
-  const [selectedProvider, setSelectedProvider] =
-    useState<STTProviderType>(sttProvider);
+  // This platform's engines (Windows Speech only on Windows), in picker order.
+  const offered = useMemo(() => sttProvidersFor(currentPlatform()), []);
+  const readiness = useSttReadiness();
+
+  const partyConfig =
+    meetingAudioConfig ?? defaultMeetingAudioConfig({ micDeviceId, systemDeviceId, recordingEnabled });
+
+  // The engine whose settings are shown: You's, else Them's, else the first one.
+  const [selectedProvider, setSelectedProvider] = useState<STTProviderType>(() => {
+    const candidates = [partyConfig.you.stt_provider, partyConfig.them.stt_provider, sttProvider];
+    return candidates.find((id) => offered.some((o) => o.id === id)) ?? offered[0]?.id ?? "web_speech";
+  });
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [hasStoredKey, setHasStoredKey] = useState(false);
@@ -296,83 +218,42 @@ export function STTSettings() {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
+  const [pendingSwap, setPendingSwap] = useState<PendingSwap | null>(null);
 
   const [azureRegion, setAzureRegion] = useState("eastus");
-  const [hasStoredRegion, setHasStoredRegion] = useState(false);
+  const [, setHasStoredRegion] = useState(false);
 
-  const [localEngines, setLocalEngines] = useState<LocalSTTEngineInfo[]>([]);
-  const activeParakeetModel = useConfigStore((s) =>
-    s.activeModelPerEngine.parakeet_tdt ?? "parakeet-tdt-0.6b-v3-int8"
-  );
-  const parakeetCtcEnglishOnly =
-    activeParakeetModel.includes("ctc-110m") && !sttLanguage.toLowerCase().startsWith("en");
-
-  const currentProviderOption = PROVIDER_OPTIONS.find(
-    (p) => p.value === selectedProvider
-  );
-
-  // ── Load readiness state ──
-
-  const loadLocalEngines = useCallback(async () => {
-    try {
-      const data = await listLocalSTTEngines();
-      setLocalEngines(data);
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    loadLocalEngines();
-  }, [loadLocalEngines]);
-
-  // Refresh engine readiness whenever any model download completes
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<{ status: string }>("model_download_progress", (event) => {
-      if (event.payload.status === "complete") {
-        loadLocalEngines();
-      }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, [loadLocalEngines]);
+  const currentProviderOption: SttProviderMeta | undefined =
+    offered.find((p) => p.id === selectedProvider) ?? sttProviderMeta(selectedProvider);
+  const hasOwnPanel = OWN_PANEL_ENGINES.includes(selectedProvider);
+  /** The generic key panel: cloud engines without their own panel. */
+  const usesKeyPanel = !!currentProviderOption?.requiresApiKey && !hasOwnPanel;
+  const needsRegion = selectedProvider === "azure_speech";
+  const credentialKey = currentProviderOption ? sttKeySlot(currentProviderOption) : "";
+  const selectedLabel = sttEngineLabel(selectedProvider);
 
   // ── Badge & readiness logic ──
 
-  function getEngineDownloadedModels(engineId: string) {
-    const engine = localEngines.find((e) => e.engine === engineId);
-    if (!engine) return [];
-    return engine.models.filter(
-      (m) => !m.id.startsWith("binary-") && m.is_downloaded
-    );
-  }
-
-  function getBadgeState(p: ProviderOption): BadgeState {
-    if (p.alwaysReady) return { text: "Ready", variant: "ready" };
-
-    // Batch-only: green "Batch" if model downloaded, amber "Batch" if not
-    if (p.batchOnly) {
-      const downloaded = p.requiresModels
-        ? getEngineDownloadedModels(p.requiresModels)
-        : [];
-      return { text: "Batch", variant: downloaded.length > 0 ? "ready" : "warning" };
+  function getBadgeState(p: SttProviderMeta): BadgeState {
+    const ready: BadgeState = { text: t("stt:settings.badges.ready"), variant: "ready" };
+    if (p.requiresDownload) {
+      return isModelReady(readiness.localEngines, p.requiresDownload)
+        ? ready
+        : { text: t("stt:settings.badges.noModel"), variant: "error" };
     }
-
+    if (p.requiresBaseUrl) {
+      if (!hasBaseUrl) return { text: t("stt:settings.badges.noServer"), variant: "error" };
+      return verifiedCloudProviders.includes(p.id)
+        ? ready
+        : { text: t("stt:settings.badges.untested"), variant: "warning" };
+    }
     if (p.requiresApiKey) {
       // Verified = key was saved+tested successfully (persisted across page navigations)
-      if (verifiedCloudProviders.includes(p.value)) return { text: "Ready", variant: "ready" };
-      return { text: "No Key", variant: "error" };
+      if (verifiedCloudProviders.includes(p.id)) return ready;
+      if (readiness.keys[sttKeySlot(p)]) return { text: t("stt:settings.badges.keySaved"), variant: "warning" };
+      return { text: t("stt:settings.badges.noKey"), variant: "error" };
     }
-
-    if (p.requiresModels) {
-      const downloaded = getEngineDownloadedModels(p.requiresModels);
-      if (downloaded.length === 0) return { text: "No Model", variant: "error" };
-      return { text: "Ready", variant: "ready" };
-    }
-
-    return { text: "Ready", variant: "ready" };
-  }
-
-  function isProviderReady(p: ProviderOption): boolean {
-    return getBadgeState(p).variant === "ready";
+    return ready;
   }
 
   // ── Key loading (load stored key display when switching providers) ──
@@ -385,24 +266,22 @@ export function STTSettings() {
       setKeyDirty(false);
       setConnectionStatus("idle");
       setStatusMessage("");
+      setPendingSwap(null);
 
-      if (!currentProviderOption?.requiresApiKey) return;
-
-      const credKey = currentProviderOption.credentialKey;
-      if (!credKey) return;
+      if (!usesKeyPanel || !credentialKey) return;
 
       try {
-        const keyExists = await hasApiKey(credKey);
+        const keyExists = await hasApiKey(credentialKey);
         setHasStoredKey(keyExists);
         if (keyExists) {
-          const stored = await getApiKey(credKey);
+          const stored = await getApiKey(credentialKey);
           if (stored) setApiKey(stored);
         }
       } catch (e) {
         console.warn("Failed to load STT API key:", e);
       }
 
-      if (currentProviderOption.needsRegion) {
+      if (needsRegion) {
         try {
           const regionExists = await hasApiKey("azure_speech_region");
           setHasStoredRegion(regionExists);
@@ -416,43 +295,89 @@ export function STTSettings() {
       }
     };
     loadKeyForProvider();
-  }, [selectedProvider, currentProviderOption?.credentialKey, currentProviderOption?.requiresApiKey, currentProviderOption?.needsRegion]);
+  }, [selectedProvider, credentialKey, usesKeyPanel, needsRegion]);
 
   // ── Handlers ──
 
-  const handleProviderChange = useCallback(
-    async (provider: STTProviderType) => {
-      setSelectedProvider(provider);
-      setConnectionStatus("idle");
-      setStatusMessage("");
-      try {
-        await setSTTProvider(provider);
-        setConfigSTTProvider(provider);
-        // Sync meetingAudioConfig so useAudioConfigSync hot-swaps the live capture.
-        if (meetingAudioConfig) {
-          setMeetingAudioConfig({
-            ...meetingAudioConfig,
-            you: { ...meetingAudioConfig.you, stt_provider: provider },
-          });
+  /** The party's availability inputs (its device kind decides input-only engines). */
+  const partyContext = useCallback(
+    (party: Party) => availabilityContext(readiness, partyConfig[party].is_input_device, hasBaseUrl),
+    [readiness, partyConfig, hasBaseUrl]
+  );
+
+  /** Puts `engine` on `party` (after the swap confirmation for exclusive engines). */
+  const applyUseFor = useCallback(
+    (party: Party, engine: STTProviderType, fallback: STTProviderType | null) => {
+      const state = useConfigStore.getState();
+      const base = state.meetingAudioConfig ?? defaultMeetingAudioConfig(state);
+      const assignment = assignPartyEngine(base, party, engine, state, fallback);
+      if (!assignment) {
+        showToast(t("stt:picker.steal.noFallback"), "error");
+        return;
+      }
+      // Sync meetingAudioConfig so useAudioConfigSync hot-swaps the live capture.
+      setMeetingAudioConfig(assignment.config);
+      // "You" also drives the legacy single-engine setting (backward compat).
+      if (party === "you" || assignment.fallback?.party === "you") {
+        const youEngine = assignment.config.you.stt_provider;
+        setConfigSTTProvider(youEngine);
+        if (!NO_LEGACY_ROUTER_ENGINES.includes(youEngine)) {
+          setSTTProvider(youEngine).catch((e) => console.error("Failed to set STT provider:", e));
         }
-      } catch (e) {
-        console.error("Failed to set STT provider:", e);
+      }
+      if (assignment.fallback) {
+        showToast(
+          t("stt:picker.steal.moved", {
+            engine: sttEngineLabel(engine),
+            party: partyLabel(party),
+            other: partyLabel(assignment.fallback.party),
+            fallback: sttEngineLabel(assignment.fallback.engine),
+          }),
+          "info"
+        );
       }
     },
-    [setConfigSTTProvider, meetingAudioConfig, setMeetingAudioConfig]
+    [setMeetingAudioConfig, setConfigSTTProvider, t]
+  );
+
+  const handleUseFor = useCallback(
+    (party: Party) => {
+      const engine = selectedProvider;
+      const state = useConfigStore.getState();
+      const base = state.meetingAudioConfig ?? defaultMeetingAudioConfig(state);
+      if (needsExclusiveSwap(base, party, engine)) {
+        const other = otherParty(party);
+        const fallback = exclusiveFallback(offered, (meta) => isSttProviderAvailable(meta, partyContext(other)));
+        setPendingSwap({ party, engine, fallback });
+        return;
+      }
+      setPendingSwap(null);
+      applyUseFor(party, engine, null);
+    },
+    [selectedProvider, offered, partyContext, applyUseFor]
+  );
+
+  const setPartyLanguage = useCallback(
+    (party: Party, code: string) => {
+      const state = useConfigStore.getState();
+      const base = state.meetingAudioConfig ?? defaultMeetingAudioConfig(state);
+      // The language isn't part of a preset: keep preset_name.
+      setMeetingAudioConfig({ ...base, [party]: { ...base[party], language: code } });
+    },
+    [setMeetingAudioConfig]
   );
 
   /** Save & Test: test key first, only persist on success. */
   const handleSaveAndTest = useCallback(async () => {
-    if (!apiKey.trim() || !currentProviderOption?.credentialKey) return;
+    if (!apiKey.trim() || !credentialKey) return;
 
     setConnectionStatus("testing");
-    setStatusMessage("Testing connection...");
+    setStatusMessage(t("stt:settings.apiKey.testing"));
 
     try {
       // Temporarily store so the backend can read it during test
-      await storeApiKey(currentProviderOption.credentialKey, apiKey.trim());
-      if (currentProviderOption.needsRegion && azureRegion.trim()) {
+      await storeApiKey(credentialKey, apiKey.trim());
+      if (needsRegion && azureRegion.trim()) {
         await storeApiKey("azure_speech_region", azureRegion.trim());
         setHasStoredRegion(true);
       }
@@ -462,32 +387,33 @@ export function STTSettings() {
         setHasStoredKey(true);
         setKeyDirty(false);
         setConnectionStatus("success");
-        setStatusMessage("Connection successful — provider is ready");
+        setStatusMessage(t("stt:settings.apiKey.success"));
         // Persist the verified state
         const updated = Array.from(new Set([...verifiedCloudProviders, selectedProvider]));
         setVerifiedCloudProviders(updated);
       } else {
         // Remove the key we temporarily stored — test failed
-        await deleteApiKey(currentProviderOption.credentialKey).catch(() => {});
+        await deleteApiKey(credentialKey).catch(() => {});
         setHasStoredKey(false);
         setConnectionStatus("error");
-        setStatusMessage("Connection failed — key not saved");
+        setStatusMessage(t("stt:settings.apiKey.failed"));
         const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
         setVerifiedCloudProviders(updated);
       }
     } catch (e) {
-      await deleteApiKey(currentProviderOption.credentialKey!).catch(() => {});
+      await deleteApiKey(credentialKey).catch(() => {});
       setHasStoredKey(false);
       setConnectionStatus("error");
-      setStatusMessage(`Test failed: ${e}`);
+      setStatusMessage(t("common:errors.testFailed", { detail: String(e) }));
       const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
       setVerifiedCloudProviders(updated);
     }
-  }, [apiKey, azureRegion, selectedProvider, currentProviderOption, verifiedCloudProviders, setVerifiedCloudProviders]);
+    readiness.refresh();
+  }, [apiKey, azureRegion, selectedProvider, credentialKey, needsRegion, verifiedCloudProviders, setVerifiedCloudProviders, readiness, t]);
 
   const handleClearApiKey = useCallback(async () => {
-    if (!currentProviderOption?.credentialKey) return;
-    try { await deleteApiKey(currentProviderOption.credentialKey); } catch { /* ok */ }
+    if (!credentialKey) return;
+    try { await deleteApiKey(credentialKey); } catch { /* ok */ }
     setApiKey("");
     setHasStoredKey(false);
     setKeyDirty(false);
@@ -495,7 +421,8 @@ export function STTSettings() {
     setStatusMessage("");
     const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
     setVerifiedCloudProviders(updated);
-  }, [currentProviderOption?.credentialKey, selectedProvider, verifiedCloudProviders, setVerifiedCloudProviders]);
+    readiness.refresh();
+  }, [credentialKey, selectedProvider, verifiedCloudProviders, setVerifiedCloudProviders, readiness]);
 
   const handleSaveRegion = useCallback(async () => {
     if (!azureRegion.trim()) return;
@@ -510,39 +437,40 @@ export function STTSettings() {
   /** Test Connection — only for local/always-ready providers; cloud uses handleSaveAndTest. */
   const handleTestConnection = useCallback(async () => {
     setConnectionStatus("testing");
-    setStatusMessage("Testing...");
+    setStatusMessage(t("common:status.testing"));
 
     try {
-      if (currentProviderOption?.requiresModels) {
+      const engineId = currentProviderOption?.requiresDownload;
+      if (engineId) {
         const engines = await listLocalSTTEngines();
-        setLocalEngines(engines);
-        const eng = engines.find((e) => e.engine === currentProviderOption.requiresModels);
+        const eng = engines.find((e) => e.engine === engineId);
         const downloaded = eng?.models.filter((m) => m.is_downloaded && !m.id.startsWith("binary-")) ?? [];
+        readiness.refresh();
         if (downloaded.length === 0) {
           setConnectionStatus("error");
-          setStatusMessage("No model downloaded. Download a model below first.");
+          setStatusMessage(t("stt:settings.connection.noModel"));
           return;
         }
         setConnectionStatus("success");
-        setStatusMessage(`Ready — ${downloaded.length} model${downloaded.length > 1 ? "s" : ""} available`);
+        setStatusMessage(t("stt:settings.connection.modelsReady", { count: downloaded.length }));
         return;
       }
 
       const success = await testSTTConnection(selectedProvider);
       setConnectionStatus(success ? "success" : "error");
-      setStatusMessage(success ? "Ready" : "Connection failed");
+      setStatusMessage(success ? t("stt:settings.connection.ready") : t("stt:settings.connection.failed"));
     } catch (e) {
       setConnectionStatus("error");
-      setStatusMessage(`Test failed: ${e}`);
+      setStatusMessage(t("common:errors.testFailed", { detail: String(e) }));
     }
-  }, [selectedProvider, currentProviderOption]);
+  }, [selectedProvider, currentProviderOption, readiness, t]);
 
   // Does the selected provider need an inline model panel?
-  const showModelPanel = !!currentProviderOption?.requiresModels;
-  const modelEngineId = currentProviderOption?.requiresModels;
+  const modelEngineId = currentProviderOption?.requiresDownload;
 
-  const localProviders = PROVIDER_OPTIONS.filter((p) => p.isLocal);
-  const cloudProviders = PROVIDER_OPTIONS.filter((p) => !p.isLocal);
+  const localProviders = offered.filter((p) => !p.isCloud);
+  const cloudProviders = offered.filter((p) => p.isCloud);
+  const usedBy = (id: STTProviderType) => PARTIES.filter((party) => partyConfig[party].stt_provider === id);
 
   return (
     <div className="space-y-6">
@@ -554,18 +482,18 @@ export function STTSettings() {
             <div className="flex h-5 w-5 items-center justify-center rounded bg-success/10">
               <HardDrive className="h-3 w-3 text-success" />
             </div>
-            <span className="text-xs font-semibold text-foreground">Local & Built-in</span>
-            <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">Free · No API Key</span>
+            <span className="text-xs font-semibold text-foreground">{t("stt:groups.local")}</span>
+            <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">{t("stt:groups.localHint")}</span>
           </div>
           <div className="grid grid-cols-3 gap-2">
             {localProviders.map((p) => (
               <ProviderCard
-                key={p.value}
+                key={p.id}
                 provider={p}
-                isSelected={selectedProvider === p.value}
-                isActive={sttProvider === p.value}
+                isSelected={selectedProvider === p.id}
+                usedBy={usedBy(p.id)}
                 badge={getBadgeState(p)}
-                onClick={() => handleProviderChange(p.value)}
+                onClick={() => setSelectedProvider(p.id)}
               />
             ))}
           </div>
@@ -577,55 +505,143 @@ export function STTSettings() {
             <div className="flex h-5 w-5 items-center justify-center rounded bg-info/10">
               <Cloud className="h-3 w-3 text-info" />
             </div>
-            <span className="text-xs font-semibold text-foreground">Cloud</span>
-            <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">Requires API Key</span>
+            <span className="text-xs font-semibold text-foreground">{t("stt:groups.cloud")}</span>
+            <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">{t("stt:groups.cloudHint")}</span>
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             {cloudProviders.map((p) => (
               <ProviderCard
-                key={p.value}
+                key={p.id}
                 provider={p}
-                isSelected={selectedProvider === p.value}
-                isActive={sttProvider === p.value}
+                isSelected={selectedProvider === p.id}
+                usedBy={usedBy(p.id)}
                 badge={getBadgeState(p)}
-                onClick={() => handleProviderChange(p.value)}
+                onClick={() => setSelectedProvider(p.id)}
               />
             ))}
           </div>
         </div>
       </div>
 
-      {/* Inline Model Panel — shown when the selected provider needs models */}
-      {showModelPanel && modelEngineId && (
+      {/* The selected engine: who uses it, "Use for" */}
+      {currentProviderOption && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-1 text-sm font-semibold text-primary/80 flex items-center gap-1.5">
-            <HardDrive className="h-4 w-4" />
-            {currentProviderOption?.label} Models
-            {currentProviderOption?.batchOnly && (
-              <span className="ml-1 rounded border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-meta font-semibold text-warning uppercase tracking-wide">
-                Batch
-              </span>
-            )}
-          </h3>
-          {currentProviderOption?.batchOnly && (
-            <p className="mb-3 text-xs text-muted-foreground/70">
-              Whisper.cpp is for post-meeting batch transcription only — not live streaming.
-              It will be available in the "Past Meetings" tab.
-            </p>
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <SttEngineIcon id={selectedProvider} className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-primary/80">{selectedLabel}</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">{sttEngineDescription(selectedProvider)}</p>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2" role="group" aria-label={t("stt:settings.useFor.ariaLabel", { engine: selectedLabel })}>
+            <span className="mr-1 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
+              {t("stt:settings.useFor.label")}
+            </span>
+            {PARTIES.map((party) => {
+              const inUse = partyConfig[party].stt_provider === selectedProvider;
+              const reason = inUse ? null : unavailableReason(currentProviderOption, partyContext(party));
+              return (
+                <button
+                  key={party}
+                  type="button"
+                  aria-pressed={inUse}
+                  disabled={!!reason}
+                  onClick={() => {
+                    if (!inUse) handleUseFor(party);
+                  }}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+                    inUse
+                      ? "border-primary/50 bg-primary/10 text-primary cursor-default"
+                      : "border-border/40 bg-card/50 text-muted-foreground hover:border-border/70 hover:text-foreground cursor-pointer active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:text-muted-foreground"
+                  }`}
+                >
+                  {inUse && <CheckCircle className="h-3 w-3" />}
+                  {partyLabel(party)}
+                </button>
+              );
+            })}
+          </div>
+          {PARTIES.map((party) => {
+            if (partyConfig[party].stt_provider === selectedProvider) return null;
+            const reason = unavailableReason(currentProviderOption, partyContext(party));
+            if (!reason) return null;
+            return (
+              <p key={party} className="mt-2 text-meta text-muted-foreground/80">
+                {t("stt:settings.useFor.unavailable", {
+                  party: partyLabel(party),
+                  reason: t(`stt:settings.useFor.reasons.${reason}`),
+                })}
+              </p>
+            );
+          })}
+          {pendingSwap && pendingSwap.engine === selectedProvider && (
+            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+              <p className="mb-2 text-meta leading-relaxed text-amber-200/80">
+                <Trans
+                  t={t}
+                  i18nKey="stt:settings.useFor.swap"
+                  values={{
+                    engine: selectedLabel,
+                    party: partyLabel(pendingSwap.party),
+                    other: partyLabel(otherParty(pendingSwap.party)),
+                    fallback: pendingSwap.fallback
+                      ? sttEngineLabel(pendingSwap.fallback)
+                      : t("stt:picker.steal.noEngine"),
+                  }}
+                  components={{
+                    strong: <span className="font-semibold text-amber-400" />,
+                    fallback: <span className="font-medium" />,
+                  }}
+                />
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    applyUseFor(pendingSwap.party, pendingSwap.engine, pendingSwap.fallback);
+                    setPendingSwap(null);
+                  }}
+                  className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-3 py-1 text-meta font-semibold text-amber-400 hover:bg-amber-500/30 cursor-pointer"
+                >
+                  {t("stt:picker.steal.switch")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingSwap(null)}
+                  className="rounded-lg bg-muted/30 px-3 py-1 text-meta font-medium text-muted-foreground hover:bg-muted/50 cursor-pointer"
+                >
+                  {t("common:actions.cancel")}
+                </button>
+              </div>
+            </div>
           )}
-          {!currentProviderOption?.batchOnly && (
-            <p className="mb-3 text-xs text-muted-foreground">
-              Download a model, then click <strong>Activate</strong> to enable this provider.
-            </p>
-          )}
-          <LocalModelManager engineFilter={modelEngineId} />
         </div>
       )}
 
-      {/* API Key — cloud providers only. Save & Test flow: test first, persist only on success. */}
-      {currentProviderOption?.requiresApiKey && (
+      {/* Inline Model Panel — shown when the selected provider needs models */}
+      {modelEngineId && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-3 text-sm font-semibold text-primary/80">API Key</h3>
+          <h3 className="mb-1 text-sm font-semibold text-primary/80 flex items-center gap-1.5">
+            <HardDrive className="h-4 w-4" />
+            {t("stt:settings.models.title", { engine: selectedLabel })}
+          </h3>
+          <p className="mb-3 text-xs text-muted-foreground">
+            <Trans t={t} i18nKey="stt:settings.models.hint" components={{ strong: <strong /> }} />
+          </p>
+          <LocalModelManager engineFilter={modelEngineId} onModelsChange={readiness.refresh} />
+        </div>
+      )}
+
+      {/* Remote Whisper and Soniox: their own panels (they never read a key back) */}
+      {selectedProvider === "openai_compat" && <OpenAICompatSttSettings onKeyChange={readiness.refresh} />}
+      {selectedProvider === "soniox" && <SonioxSettings onKeyChange={readiness.refresh} />}
+
+      {/* API Key — cloud providers only. Save & Test flow: test first, persist only on success. */}
+      {usesKeyPanel && currentProviderOption && (
+        <div className="rounded-xl border border-border/30 bg-card/50 p-5">
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("stt:settings.apiKey.title")}</h3>
 
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -640,16 +656,17 @@ export function STTSettings() {
                 }}
                 placeholder={
                   hasStoredKey && !keyDirty
-                    ? "Key stored — type to replace"
-                    : `Enter ${currentProviderOption.label} API key`
+                    ? t("stt:settings.apiKey.storedPlaceholder")
+                    : t("stt:settings.apiKey.placeholder", { engine: selectedLabel })
                 }
+                aria-label={t("stt:settings.apiKey.title")}
                 className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 pr-10 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
               <button
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
                 type="button"
-                aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                aria-label={showApiKey ? t("stt:settings.apiKey.hide") : t("stt:settings.apiKey.show")}
                 aria-pressed={showApiKey}
               >
                 {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -668,7 +685,7 @@ export function STTSettings() {
                 ) : (
                   <Wifi className="h-3.5 w-3.5" />
                 )}
-                Save & Test
+                {t("stt:settings.apiKey.saveAndTest")}
               </button>
             )}
 
@@ -679,7 +696,7 @@ export function STTSettings() {
                 className="flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive transition-colors hover:bg-destructive/10"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Clear
+                {t("common:actions.clear")}
               </button>
             )}
           </div>
@@ -700,12 +717,12 @@ export function STTSettings() {
             )}
             {connectionStatus === "idle" && hasStoredKey && !keyDirty && (
               <p className="text-xs text-success/70">
-                API key verified and stored securely
+                {t("stt:settings.apiKey.stored")}
               </p>
             )}
             {connectionStatus === "idle" && !hasStoredKey && (
               <p className="text-xs text-muted-foreground">
-                Enter your key and click Save & Test
+                {t("stt:settings.apiKey.prompt")}
               </p>
             )}
           </div>
@@ -713,10 +730,10 @@ export function STTSettings() {
       )}
 
       {/* Azure Region Input */}
-      {currentProviderOption?.needsRegion && (
+      {needsRegion && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
           <h3 className="mb-3 text-sm font-semibold text-primary/80">
-            Azure Region
+            {t("stt:settings.azureRegion.title")}
           </h3>
           <input
             type="text"
@@ -724,10 +741,11 @@ export function STTSettings() {
             onChange={(e) => setAzureRegion(e.target.value)}
             onBlur={handleSaveRegion}
             placeholder="eastus"
+            aria-label={t("stt:settings.azureRegion.title")}
             className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
           />
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Azure region for your Speech Services resource (e.g., eastus, westeurope, southeastasia)
+            {t("stt:settings.azureRegion.hint")}
           </p>
         </div>
       )}
@@ -744,34 +762,39 @@ export function STTSettings() {
       {/* Whisper.cpp Dual-Pass Settings */}
       {selectedProvider === "whisper_cpp" && <DualPassSettings />}
 
-      {/* Language Selection */}
+      {/* Language Selection — one per party */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <h3 className="mb-3 text-sm font-semibold text-primary/80">
-          Language
+        <h3 className="mb-1 text-sm font-semibold text-primary/80">
+          {t("stt:settings.languages.title")}
         </h3>
-        <select
-          value={sttLanguage}
-          onChange={(e) => setSTTLanguage(e.target.value)}
-          aria-label="STT language"
-          className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
-        >
-          {LANGUAGES.map((lang) => (
-            <option key={lang.value} value={lang.value}>
-              {lang.label}
-            </option>
-          ))}
-        </select>
-        {selectedProvider === "parakeet_tdt" && parakeetCtcEnglishOnly && (
-          <p className="mt-2 text-xs text-warning">
-            Parakeet CTC 110M is English-only. Use Parakeet TDT 0.6B v3 for Russian and other supported languages.
-          </p>
-        )}
+        <p className="mb-3 text-xs text-muted-foreground">{t("stt:settings.languages.hint")}</p>
+        <div className="grid grid-cols-2 gap-4">
+          {PARTIES.map((party) => {
+            const id = `stt-settings-${party}-language`;
+            return (
+              <div key={party}>
+                <label htmlFor={id} className="mb-1.5 flex items-baseline gap-1.5 text-xs font-medium text-foreground">
+                  {partyLabel(party)}
+                  <span className="truncate text-meta font-normal text-muted-foreground/70">
+                    {sttEngineLabel(partyConfig[party].stt_provider)}
+                  </span>
+                </label>
+                <PartyLanguageField
+                  id={id}
+                  aria-label={t("stt:language.partyAriaLabel", { party: partyLabel(party) })}
+                  party={partyConfig[party]}
+                  onChange={(code) => setPartyLanguage(party, code)}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Test Connection — only for local/always-ready providers; cloud uses Save & Test in the key section */}
-      {!currentProviderOption?.requiresApiKey && (
+      {!currentProviderOption?.requiresApiKey && !hasOwnPanel && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-3 text-sm font-semibold text-primary/80">Connection</h3>
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("stt:settings.connection.title")}</h3>
           <div className="flex items-center gap-2">
             <button
               onClick={handleTestConnection}
@@ -783,7 +806,7 @@ export function STTSettings() {
               ) : (
                 <Wifi className="h-3.5 w-3.5" />
               )}
-              Test Connection
+              {t("common:actions.testConnection")}
             </button>
 
             {connectionStatus === "success" && (
@@ -810,16 +833,18 @@ export function STTSettings() {
 function ProviderCard({
   provider,
   isSelected,
-  isActive,
+  usedBy,
   badge,
   onClick,
 }: {
-  provider: ProviderOption;
+  provider: SttProviderMeta;
   isSelected: boolean;
-  isActive: boolean;
+  /** The parties that use this engine now. */
+  usedBy: Party[];
   badge: BadgeState;
   onClick: () => void;
 }) {
+  const label = sttEngineLabel(provider.id);
   return (
     <button
       onClick={onClick}
@@ -832,9 +857,15 @@ function ProviderCard({
     >
       <div className="flex w-full items-start justify-between gap-1 mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          <ProviderIcon value={provider.value} isSelected={isSelected} />
-          <span className={`text-xs font-medium truncate ${isSelected ? "text-primary" : "text-foreground"}`}>
-            {provider.label}
+          <SttEngineIcon
+            id={provider.id}
+            className={`h-3.5 w-3.5 shrink-0 ${isSelected ? "text-primary" : "text-muted-foreground"}`}
+          />
+          <span
+            title={label}
+            className={`text-xs font-medium truncate ${isSelected ? "text-primary" : "text-foreground"}`}
+          >
+            {label}
           </span>
         </div>
         <ProviderBadge
@@ -843,8 +874,24 @@ function ProviderCard({
         />
       </div>
       <span className="text-meta text-muted-foreground/70 line-clamp-1 leading-tight">
-        {provider.batchOnly ? "Batch mode only" : provider.description}
+        {sttEngineDescription(provider.id)}
       </span>
+      {usedBy.length > 0 && (
+        <span className="mt-1.5 flex gap-1">
+          {usedBy.map((party) => (
+            <span
+              key={party}
+              className={`rounded border px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide ${
+                party === "you"
+                  ? "border-sky-500/20 bg-sky-500/10 text-sky-400"
+                  : "border-amber-500/20 bg-amber-500/10 text-amber-400"
+              }`}
+            >
+              {partyLabel(party)}
+            </span>
+          ))}
+        </span>
+      )}
     </button>
   );
 }
@@ -866,48 +913,20 @@ function ProviderBadge({ text, variant }: { text: string; variant: BadgeVariant 
   );
 }
 
-// ── Provider icon helper ──
-
-function ProviderIcon({ value, isSelected }: { value: STTProviderType; isSelected?: boolean }) {
-  const cls = `h-3.5 w-3.5 shrink-0 ${isSelected ? "text-primary" : "text-muted-foreground"}`;
-  switch (value) {
-    case "web_speech":
-      return <Globe className={cls} />;
-    case "windows_native":
-      return <Monitor className={cls} />;
-    case "whisper_cpp":
-    case "sherpa_onnx":
-      return <HardDrive className={cls} />;
-    case "ort_streaming":
-      return <Zap className={cls} />;
-    case "parakeet_tdt":
-      return <Cpu className={cls} />;
-    case "deepgram":
-    case "whisper_api":
-    case "azure_speech":
-      return <Cloud className={cls} />;
-    case "groq_whisper":
-      return <Zap className={cls} />;
-    default:
-      return <Server className={cls} />;
-  }
-}
-
 // ── Universal Pause Threshold Setting ──
 
 function PauseThresholdSetting() {
+  const { t } = useT(["stt", "common"]);
   const pauseThresholdMs = useConfigStore((s) => s.pauseThresholdMs);
   const setPauseThresholdMs = useConfigStore((s) => s.setPauseThresholdMs);
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/50 p-5">
       <h3 className="mb-1 text-sm font-semibold text-primary/80">
-        New Line Pause Duration
+        {t("stt:pause.title")}
       </h3>
       <p className="mb-3 text-xs text-muted-foreground">
-        Start a new transcript line after no words detected for this duration.
-        Lower values create more lines; higher values create longer paragraphs.
-        Applies to all STT providers.
+        {t("stt:pause.hint")}
       </p>
       <div className="flex items-center gap-3">
         <input
@@ -917,6 +936,7 @@ function PauseThresholdSetting() {
           step={100}
           value={pauseThresholdMs}
           onChange={(e) => setPauseThresholdMs(parseInt(e.target.value))}
+          aria-label={t("stt:pause.title")}
           className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
         />
         <span className="min-w-[4rem] text-right text-xs font-mono text-primary tabular-nums">
@@ -924,8 +944,8 @@ function PauseThresholdSetting() {
         </span>
       </div>
       <div className="mt-1.5 flex justify-between text-meta text-muted-foreground/70">
-        <span>0.5s (more lines)</span>
-        <span>5.0s (longer paragraphs)</span>
+        <span>{t("stt:pause.min")}</span>
+        <span>{t("stt:pause.max")}</span>
       </div>
     </div>
   );
@@ -934,6 +954,7 @@ function PauseThresholdSetting() {
 // ── Deepgram Advanced Settings ──
 
 function DeepgramAdvancedSettings() {
+  const { t } = useT(["stt", "common"]);
   const deepgramConfig = useConfigStore((s) => s.deepgramConfig);
   const setDeepgramConfig = useConfigStore((s) => s.setDeepgramConfig);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -942,6 +963,7 @@ function DeepgramAdvancedSettings() {
   const activePresetId = DEEPGRAM_PRESETS.find((p) =>
     configMatchesPreset(deepgramConfig, p.config)
   )?.id ?? "custom";
+  const activePreset = DEEPGRAM_PRESETS.find((p) => p.id === activePresetId);
 
   const applyPreset = (preset: DeepgramPreset) => {
     setDeepgramConfig({ ...preset.config, keyterms: deepgramConfig.keyterms });
@@ -972,20 +994,20 @@ function DeepgramAdvancedSettings() {
           <div className="flex h-5 w-5 items-center justify-center rounded bg-primary/10">
             <Settings2 className="h-3 w-3 text-primary" />
           </div>
-          <span className="text-xs font-semibold text-foreground">Deepgram Settings</span>
-          {activePresetId !== "custom" && (
+          <span className="text-xs font-semibold text-foreground">{t("stt:deepgram.title")}</span>
+          {activePreset && (
             <span className="ml-1 rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-meta font-semibold text-primary uppercase tracking-wide">
-              {DEEPGRAM_PRESETS.find((p) => p.id === activePresetId)?.label}
+              {t(activePreset.labelKey)}
             </span>
           )}
           {activePresetId === "custom" && (
             <span className="ml-1 rounded border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-meta font-semibold text-warning uppercase tracking-wide">
-              Custom
+              {t("common:labels.custom")}
             </span>
           )}
           {activeModel && (
             <span className="ml-auto text-meta text-muted-foreground/60">
-              ${activeModel.costPerMin.toFixed(4)}/min · {activeModel.label}
+              {t("stt:deepgram.priceLine", { price: activeModel.costPerMin.toFixed(4), model: activeModel.name })}
             </span>
           )}
         </div>
@@ -993,20 +1015,20 @@ function DeepgramAdvancedSettings() {
 
       {/* Presets */}
       <div className="px-5 py-3 border-b border-border/20 bg-muted/5">
-        <p className="mb-2 text-meta font-medium text-muted-foreground uppercase tracking-wider">Presets</p>
+        <p className="mb-2 text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:deepgram.presetsLabel")}</p>
         <div className="flex flex-wrap gap-1.5">
           {DEEPGRAM_PRESETS.map((preset) => (
             <button
               key={preset.id}
               onClick={() => applyPreset(preset)}
-              title={preset.description}
+              title={t(preset.descriptionKey)}
               className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-all ${
                 activePresetId === preset.id
                   ? "border-primary bg-primary/10 text-primary"
                   : "border-border/40 bg-card/50 text-muted-foreground hover:border-border/70 hover:text-foreground"
               }`}
             >
-              {preset.label}
+              {t(preset.labelKey)}
             </button>
           ))}
         </div>
@@ -1014,7 +1036,7 @@ function DeepgramAdvancedSettings() {
 
       {/* Model Selection */}
       <div className="px-5 py-3 border-b border-border/20">
-        <label className="mb-1.5 block text-meta font-medium text-muted-foreground uppercase tracking-wider">Model</label>
+        <label className="mb-1.5 block text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:deepgram.model")}</label>
         <div className="grid grid-cols-2 gap-1.5">
           {DEEPGRAM_MODELS.map((model) => {
             const tierColors: Record<string, string> = {
@@ -1036,14 +1058,16 @@ function DeepgramAdvancedSettings() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className={`text-xs font-semibold ${deepgramConfig.model === model.id ? "text-primary" : "text-foreground"}`}>
-                      {model.label}
+                      {model.name}
                     </span>
                     {model.tier === "latest" && (
-                      <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">NEW</span>
+                      <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">{t("stt:deepgram.newTag")}</span>
                     )}
                   </div>
-                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{model.description}</p>
-                  <p className={`text-meta font-mono mt-0.5 ${tierColors[model.tier]}`}>${model.costPerMin.toFixed(4)}/min</p>
+                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{t(model.descriptionKey)}</p>
+                  <p className={`text-meta font-mono mt-0.5 ${tierColors[model.tier]}`}>
+                    {t("stt:deepgram.pricePerMinute", { price: model.costPerMin.toFixed(4) })}
+                  </p>
                 </div>
               </button>
             );
@@ -1053,33 +1077,33 @@ function DeepgramAdvancedSettings() {
 
       {/* Core Feature Toggles */}
       <div className="px-5 py-3 border-b border-border/20">
-        <label className="mb-2 block text-meta font-medium text-muted-foreground uppercase tracking-wider">Features</label>
+        <label className="mb-2 block text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:deepgram.features")}</label>
         <div className="space-y-2">
           <DeepgramToggle
-            label="Smart Format"
+            label={t("stt:deepgram.toggles.smartFormat.label")}
             param="smart_format"
-            description="Formats dates, times, numbers and adds paragraph breaks"
+            description={t("stt:deepgram.toggles.smartFormat.description")}
             checked={deepgramConfig.smart_format}
             onChange={(v) => updateField("smart_format", v)}
           />
           <DeepgramToggle
-            label="Interim Results"
+            label={t("stt:deepgram.toggles.interimResults.label")}
             param="interim_results"
-            description="Show partial transcripts as you speak (lower latency feel)"
+            description={t("stt:deepgram.toggles.interimResults.description")}
             checked={deepgramConfig.interim_results}
             onChange={(v) => updateField("interim_results", v)}
           />
           <DeepgramToggle
-            label="Punctuation"
+            label={t("stt:deepgram.toggles.punctuate.label")}
             param="punctuate"
-            description="Add punctuation and capitalization to the transcript"
+            description={t("stt:deepgram.toggles.punctuate.description")}
             checked={deepgramConfig.punctuate}
             onChange={(v) => updateField("punctuate", v)}
           />
           <DeepgramToggle
-            label="VAD Events"
+            label={t("stt:deepgram.toggles.vadEvents.label")}
             param="vad_events"
-            description="Emit events when speech starts/ends (improves endpointing)"
+            description={t("stt:deepgram.toggles.vadEvents.description")}
             checked={deepgramConfig.vad_events}
             onChange={(v) => updateField("vad_events", v)}
           />
@@ -1090,11 +1114,14 @@ function DeepgramAdvancedSettings() {
       <div className="px-5 py-3 border-b border-border/20">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <span className="text-xs font-medium text-foreground">Endpointing</span>
+            <span className="text-xs font-medium text-foreground">{t("stt:deepgram.endpointing.label")}</span>
             <code className="ml-2 text-meta text-muted-foreground/60">endpointing=NUMBER</code>
           </div>
           <button
             onClick={() => updateField("endpointing", deepgramConfig.endpointing === null ? 300 : null)}
+            role="switch"
+            aria-checked={deepgramConfig.endpointing !== null}
+            aria-label={t("stt:deepgram.endpointing.label")}
             className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${
               deepgramConfig.endpointing !== null ? "bg-primary" : "bg-muted"
             }`}
@@ -1107,7 +1134,7 @@ function DeepgramAdvancedSettings() {
         {deepgramConfig.endpointing !== null && (
           <>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-meta text-muted-foreground">Silence threshold</span>
+              <span className="text-meta text-muted-foreground">{t("stt:deepgram.endpointing.threshold")}</span>
               <span className="text-meta font-mono text-primary tabular-nums">{deepgramConfig.endpointing}ms</span>
             </div>
             <input
@@ -1117,28 +1144,30 @@ function DeepgramAdvancedSettings() {
               step={10}
               value={deepgramConfig.endpointing}
               onChange={(e) => updateField("endpointing", parseInt(e.target.value))}
+              aria-label={t("stt:deepgram.endpointing.threshold")}
               className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary"
             />
             <div className="flex justify-between mt-0.5">
-              <span className="text-meta text-muted-foreground/70">10ms (fast)</span>
-              <span className="text-meta text-muted-foreground/70">2000ms (slow)</span>
+              <span className="text-meta text-muted-foreground/70">{t("stt:deepgram.endpointing.min")}</span>
+              <span className="text-meta text-muted-foreground/70">{t("stt:deepgram.endpointing.max")}</span>
             </div>
             <p className="mt-1 text-meta text-muted-foreground/60">
-              Returns transcript when this much silence is detected. 10–999ms gives best results.
+              {t("stt:deepgram.endpointing.hint")}
             </p>
           </>
         )}
         {deepgramConfig.endpointing === null && (
-          <p className="text-meta text-muted-foreground/60">Disabled — server default endpointing used</p>
+          <p className="text-meta text-muted-foreground/60">{t("stt:deepgram.endpointing.disabled")}</p>
         )}
       </div>
 
       {/* Advanced toggle */}
       <button
         onClick={() => setShowAdvanced(!showAdvanced)}
+        aria-expanded={showAdvanced}
         className="flex w-full items-center justify-between px-5 py-2.5 text-xs text-muted-foreground hover:bg-accent/30 transition-colors"
       >
-        <span className="font-medium">Advanced Settings</span>
+        <span className="font-medium">{t("stt:advancedSettings")}</span>
         {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
       </button>
 
@@ -1147,30 +1176,30 @@ function DeepgramAdvancedSettings() {
           {/* Advanced Feature Toggles */}
           <div className="px-5 py-3 border-b border-border/20 space-y-2">
             <DeepgramToggle
-              label="Tell remote speakers apart"
+              label={t("stt:deepgram.toggles.diarize.label")}
               param="diarize"
-              description="Labels each person on the other side of the call (Speaker 1, 2…). Never applied to your mic."
+              description={t("stt:deepgram.toggles.diarize.description")}
               checked={deepgramConfig.diarize}
               onChange={(v) => updateField("diarize", v)}
             />
             <DeepgramToggle
-              label="Numerals"
+              label={t("stt:deepgram.toggles.numerals.label")}
               param="numerals"
-              description='Convert spoken numbers to digits ("nine hundred" → "900")'
+              description={t("stt:deepgram.toggles.numerals.description")}
               checked={deepgramConfig.numerals}
               onChange={(v) => updateField("numerals", v)}
             />
             <DeepgramToggle
-              label="Profanity Filter"
+              label={t("stt:deepgram.toggles.profanityFilter.label")}
               param="profanity_filter"
-              description="Remove profanity from the transcript"
+              description={t("stt:deepgram.toggles.profanityFilter.description")}
               checked={deepgramConfig.profanity_filter}
               onChange={(v) => updateField("profanity_filter", v)}
             />
             <DeepgramToggle
-              label="Dictation"
+              label={t("stt:deepgram.toggles.dictation.label")}
               param="dictation"
-              description='Format spoken punctuation commands ("period" → ".")'
+              description={t("stt:deepgram.toggles.dictation.description")}
               checked={deepgramConfig.dictation}
               onChange={(v) => updateField("dictation", v)}
             />
@@ -1179,11 +1208,11 @@ function DeepgramAdvancedSettings() {
           {/* Keyterm Prompting */}
           <div className="px-5 py-3">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs font-medium text-foreground">Keyterm Prompting</span>
+              <span className="text-xs font-medium text-foreground">{t("stt:deepgram.keyterms.label")}</span>
               <code className="text-meta text-muted-foreground/60">keyterm=TERM</code>
             </div>
             <p className="mb-2 text-meta text-muted-foreground/70">
-              Boost recognition of specific words or phrases (product names, jargon). Up to 100 keyterms.
+              {t("stt:deepgram.keyterms.hint")}
             </p>
             <div className="flex gap-2 mb-2">
               <input
@@ -1191,7 +1220,8 @@ function DeepgramAdvancedSettings() {
                 value={keytermInput}
                 onChange={(e) => setKeytermInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") addKeyterm(); }}
-                placeholder="Add keyterm or phrase…"
+                placeholder={t("stt:deepgram.keyterms.placeholder")}
+                aria-label={t("stt:deepgram.keyterms.label")}
                 className="flex-1 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
               <button
@@ -1199,7 +1229,7 @@ function DeepgramAdvancedSettings() {
                 disabled={!keytermInput.trim() || deepgramConfig.keyterms.length >= 100}
                 className="rounded-lg border border-border/50 bg-background px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-40"
               >
-                Add
+                {t("common:actions.add")}
               </button>
             </div>
             {deepgramConfig.keyterms.length > 0 && (
@@ -1212,6 +1242,7 @@ function DeepgramAdvancedSettings() {
                     {term}
                     <button
                       onClick={() => removeKeyterm(term)}
+                      aria-label={t("stt:deepgram.keyterms.remove", { term })}
                       className="text-muted-foreground hover:text-destructive transition-colors"
                     >
                       ×
@@ -1221,7 +1252,7 @@ function DeepgramAdvancedSettings() {
               </div>
             )}
             {deepgramConfig.keyterms.length === 0 && (
-              <p className="text-meta text-muted-foreground/70">No keyterms — model uses default recognition</p>
+              <p className="text-meta text-muted-foreground/70">{t("stt:deepgram.keyterms.empty")}</p>
             )}
           </div>
         </div>
@@ -1256,6 +1287,9 @@ function DeepgramToggle({
       </div>
       <button
         onClick={() => onChange(!checked)}
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         className={`shrink-0 relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${
           checked ? "bg-primary" : "bg-muted"
         }`}
@@ -1272,8 +1306,9 @@ function DeepgramToggle({
 
 interface GroqModelInfo {
   id: string;
-  label: string;
-  description: string;
+  /** Model name (product name, not translated). */
+  name: string;
+  descriptionKey: ParseKeys<"stt">;
   costPerHour: number;
   speedFactor: string;
 }
@@ -1281,15 +1316,15 @@ interface GroqModelInfo {
 const GROQ_MODELS: GroqModelInfo[] = [
   {
     id: "whisper-large-v3",
-    label: "Whisper Large v3",
-    description: "Highest accuracy, 99+ languages",
+    name: "Whisper Large v3",
+    descriptionKey: "groq.models.largeV3",
     costPerHour: 0.111,
     speedFactor: "189x",
   },
   {
     id: "whisper-large-v3-turbo",
-    label: "Whisper Large v3 Turbo",
-    description: "Fast + cheap, best price/performance",
+    name: "Whisper Large v3 Turbo",
+    descriptionKey: "groq.models.largeV3Turbo",
     costPerHour: 0.04,
     speedFactor: "216x",
   },
@@ -1297,16 +1332,16 @@ const GROQ_MODELS: GroqModelInfo[] = [
 
 interface GroqPreset {
   id: string;
-  label: string;
-  description: string;
+  labelKey: ParseKeys<"stt">;
+  descriptionKey: ParseKeys<"stt">;
   config: GroqConfig;
 }
 
 const GROQ_PRESETS: GroqPreset[] = [
   {
     id: "default",
-    label: "Default",
-    description: "Balanced — fast model, 5s batches",
+    labelKey: "groq.presets.default.label",
+    descriptionKey: "groq.presets.default.description",
     config: {
       model: "whisper-large-v3-turbo",
       language: "en",
@@ -1319,8 +1354,8 @@ const GROQ_PRESETS: GroqPreset[] = [
   },
   {
     id: "low_latency",
-    label: "Low Latency",
-    description: "Shorter 3s batches for faster feedback",
+    labelKey: "groq.presets.lowLatency.label",
+    descriptionKey: "groq.presets.lowLatency.description",
     config: {
       model: "whisper-large-v3-turbo",
       language: "en",
@@ -1333,8 +1368,8 @@ const GROQ_PRESETS: GroqPreset[] = [
   },
   {
     id: "high_accuracy",
-    label: "High Accuracy",
-    description: "Best model, longer 8s batches for context",
+    labelKey: "groq.presets.highAccuracy.label",
+    descriptionKey: "groq.presets.highAccuracy.description",
     config: {
       model: "whisper-large-v3",
       language: "en",
@@ -1347,8 +1382,8 @@ const GROQ_PRESETS: GroqPreset[] = [
   },
   {
     id: "verbose",
-    label: "Verbose",
-    description: "Word timestamps + segment data",
+    labelKey: "groq.presets.verbose.label",
+    descriptionKey: "groq.presets.verbose.description",
     config: {
       model: "whisper-large-v3-turbo",
       language: "en",
@@ -1375,6 +1410,7 @@ function groqConfigMatchesPreset(config: GroqConfig, preset: GroqConfig): boolea
 // ── Groq Advanced Settings ──
 
 function GroqAdvancedSettings() {
+  const { t } = useT(["stt", "common"]);
   const groqConfig = useConfigStore((s) => s.groqConfig);
   const setGroqConfig = useConfigStore((s) => s.setGroqConfig);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -1382,6 +1418,7 @@ function GroqAdvancedSettings() {
   const activePresetId = GROQ_PRESETS.find((p) =>
     groqConfigMatchesPreset(groqConfig, p.config)
   )?.id ?? "custom";
+  const activePreset = GROQ_PRESETS.find((p) => p.id === activePresetId);
 
   const applyPreset = (preset: GroqPreset) => {
     setGroqConfig({ ...preset.config, prompt: groqConfig.prompt });
@@ -1392,6 +1429,12 @@ function GroqAdvancedSettings() {
   };
 
   const activeModel = GROQ_MODELS.find((m) => m.id === groqConfig.model);
+  const formatHint =
+    groqConfig.response_format === "verbose_json"
+      ? t("stt:groq.responseFormat.hints.verboseJson")
+      : groqConfig.response_format === "text"
+        ? t("stt:groq.responseFormat.hints.text")
+        : t("stt:groq.responseFormat.hints.json");
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/50 overflow-hidden">
@@ -1401,45 +1444,48 @@ function GroqAdvancedSettings() {
           <div className="flex h-5 w-5 items-center justify-center rounded bg-primary/10">
             <Settings2 className="h-3 w-3 text-primary" />
           </div>
-          <span className="text-xs font-semibold text-foreground">Groq Whisper Settings</span>
-          {activePresetId !== "custom" && (
+          <span className="text-xs font-semibold text-foreground">{t("stt:groq.title")}</span>
+          {activePreset && (
             <span className="ml-1 rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-meta font-semibold text-primary uppercase tracking-wide">
-              {GROQ_PRESETS.find((p) => p.id === activePresetId)?.label}
+              {t(activePreset.labelKey)}
             </span>
           )}
           {activePresetId === "custom" && (
             <span className="ml-1 rounded border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-meta font-semibold text-warning uppercase tracking-wide">
-              Custom
+              {t("common:labels.custom")}
             </span>
           )}
           {activeModel && (
             <span className="ml-auto text-meta text-muted-foreground/60">
-              ${activeModel.costPerHour.toFixed(3)}/hr · {activeModel.speedFactor} real-time
+              {t("stt:groq.priceLine", { price: activeModel.costPerHour.toFixed(3), speed: activeModel.speedFactor })}
             </span>
           )}
         </div>
         <p className="mt-1.5 text-meta text-muted-foreground/60 leading-tight">
-          Batch mode — audio is accumulated and sent every {groqConfig.segment_duration_secs}s.
-          Expect {groqConfig.segment_duration_secs + 1}–{groqConfig.segment_duration_secs + 2}s total latency.
+          {t("stt:groq.batchHint", {
+            seconds: groqConfig.segment_duration_secs,
+            min: groqConfig.segment_duration_secs + 1,
+            max: groqConfig.segment_duration_secs + 2,
+          })}
         </p>
       </div>
 
       {/* Presets */}
       <div className="px-5 py-3 border-b border-border/20 bg-muted/5">
-        <p className="mb-2 text-meta font-medium text-muted-foreground uppercase tracking-wider">Presets</p>
+        <p className="mb-2 text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:groq.presetsLabel")}</p>
         <div className="flex flex-wrap gap-1.5">
           {GROQ_PRESETS.map((preset) => (
             <button
               key={preset.id}
               onClick={() => applyPreset(preset)}
-              title={preset.description}
+              title={t(preset.descriptionKey)}
               className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-all ${
                 activePresetId === preset.id
                   ? "border-primary bg-primary/10 text-primary"
                   : "border-border/40 bg-card/50 text-muted-foreground hover:border-border/70 hover:text-foreground"
               }`}
             >
-              {preset.label}
+              {t(preset.labelKey)}
             </button>
           ))}
         </div>
@@ -1447,7 +1493,7 @@ function GroqAdvancedSettings() {
 
       {/* Model Selection */}
       <div className="px-5 py-3 border-b border-border/20">
-        <label className="mb-1.5 block text-meta font-medium text-muted-foreground uppercase tracking-wider">Model</label>
+        <label className="mb-1.5 block text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:groq.model")}</label>
         <div className="grid grid-cols-2 gap-1.5">
           {GROQ_MODELS.map((model) => (
             <button
@@ -1462,18 +1508,20 @@ function GroqAdvancedSettings() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className={`text-xs font-semibold ${groqConfig.model === model.id ? "text-primary" : "text-foreground"}`}>
-                    {model.label}
+                    {model.name}
                   </span>
                   {model.id === "whisper-large-v3-turbo" && (
-                    <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">FAST</span>
+                    <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">{t("stt:groq.fastTag")}</span>
                   )}
                   {model.id === "whisper-large-v3" && (
-                    <span className="rounded bg-info/10 px-1 py-0.5 text-[8px] font-bold text-info">BEST</span>
+                    <span className="rounded bg-info/10 px-1 py-0.5 text-[8px] font-bold text-info">{t("stt:groq.bestTag")}</span>
                   )}
                 </div>
-                <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{model.description}</p>
+                <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{t(model.descriptionKey)}</p>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-meta font-mono text-success">${model.costPerHour.toFixed(3)}/hr</span>
+                  <span className="text-meta font-mono text-success">
+                    {t("stt:groq.pricePerHour", { price: model.costPerHour.toFixed(3) })}
+                  </span>
                   <span className="text-meta text-muted-foreground/70">{model.speedFactor}</span>
                 </div>
               </div>
@@ -1486,12 +1534,12 @@ function GroqAdvancedSettings() {
       <div className="px-5 py-3 border-b border-border/20">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <span className="text-xs font-medium text-foreground">Batch Duration</span>
+            <span className="text-xs font-medium text-foreground">{t("stt:groq.batch.label")}</span>
             <code className="ml-2 text-meta text-muted-foreground/60">segment={groqConfig.segment_duration_secs}s</code>
           </div>
         </div>
         <div className="flex items-center justify-between mb-1">
-          <span className="text-meta text-muted-foreground">Audio accumulation time</span>
+          <span className="text-meta text-muted-foreground">{t("stt:groq.batch.accumulation")}</span>
           <span className="text-meta font-mono text-primary tabular-nums">{groqConfig.segment_duration_secs.toFixed(1)}s</span>
         </div>
         <input
@@ -1501,23 +1549,25 @@ function GroqAdvancedSettings() {
           step={0.5}
           value={groqConfig.segment_duration_secs}
           onChange={(e) => updateField("segment_duration_secs", parseFloat(e.target.value))}
+          aria-label={t("stt:groq.batch.accumulation")}
           className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary"
         />
         <div className="flex justify-between mt-0.5">
-          <span className="text-meta text-muted-foreground/70">2s (fast, less context)</span>
-          <span className="text-meta text-muted-foreground/70">15s (slow, more context)</span>
+          <span className="text-meta text-muted-foreground/70">{t("stt:groq.batch.min")}</span>
+          <span className="text-meta text-muted-foreground/70">{t("stt:groq.batch.max")}</span>
         </div>
         <p className="mt-1 text-meta text-muted-foreground/60">
-          Shorter = faster responses but less context per API call. Minimum billed: 10s.
+          {t("stt:groq.batch.hint")}
         </p>
       </div>
 
       {/* Advanced toggle */}
       <button
         onClick={() => setShowAdvanced(!showAdvanced)}
+        aria-expanded={showAdvanced}
         className="flex w-full items-center justify-between px-5 py-2.5 text-xs text-muted-foreground hover:bg-accent/30 transition-colors"
       >
-        <span className="font-medium">Advanced Settings</span>
+        <span className="font-medium">{t("stt:advancedSettings")}</span>
         {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
       </button>
 
@@ -1527,7 +1577,7 @@ function GroqAdvancedSettings() {
           <div className="px-5 py-3 border-b border-border/20">
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-foreground">Temperature</span>
+                <span className="text-xs font-medium text-foreground">{t("stt:groq.temperature.label")}</span>
                 <code className="text-meta text-muted-foreground/70">temperature={groqConfig.temperature}</code>
               </div>
               <span className="text-meta font-mono text-primary tabular-nums">{groqConfig.temperature.toFixed(1)}</span>
@@ -1539,21 +1589,22 @@ function GroqAdvancedSettings() {
               step={0.1}
               value={groqConfig.temperature}
               onChange={(e) => updateField("temperature", parseFloat(e.target.value))}
+              aria-label={t("stt:groq.temperature.label")}
               className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary"
             />
             <div className="flex justify-between mt-0.5">
-              <span className="text-meta text-muted-foreground/70">0 (deterministic)</span>
-              <span className="text-meta text-muted-foreground/70">1 (creative)</span>
+              <span className="text-meta text-muted-foreground/70">{t("stt:groq.temperature.min")}</span>
+              <span className="text-meta text-muted-foreground/70">{t("stt:groq.temperature.max")}</span>
             </div>
             <p className="mt-1 text-meta text-muted-foreground/60">
-              Lower values give more consistent results. 0 is recommended for transcription.
+              {t("stt:groq.temperature.hint")}
             </p>
           </div>
 
           {/* Response Format */}
           <div className="px-5 py-3 border-b border-border/20">
             <div className="flex items-center gap-1.5 mb-2">
-              <span className="text-xs font-medium text-foreground">Response Format</span>
+              <span className="text-xs font-medium text-foreground">{t("stt:groq.responseFormat.label")}</span>
               <code className="text-meta text-muted-foreground/70">response_format={groqConfig.response_format}</code>
             </div>
             <div className="flex gap-1.5">
@@ -1573,32 +1624,28 @@ function GroqAdvancedSettings() {
                       : "border-border/40 bg-card/50 text-muted-foreground hover:border-border/70 hover:text-foreground"
                   }`}
                 >
-                  {fmt === "json" ? "JSON" : fmt === "verbose_json" ? "Verbose JSON" : "Text"}
+                  {fmt === "json" ? "JSON" : fmt === "verbose_json" ? "Verbose JSON" : t("stt:groq.responseFormat.text")}
                 </button>
               ))}
             </div>
             <p className="mt-1.5 text-meta text-muted-foreground/60">
-              {groqConfig.response_format === "verbose_json"
-                ? "Includes segment/word timestamps, confidence scores, and no-speech probability"
-                : groqConfig.response_format === "text"
-                  ? "Plain text output only — no metadata"
-                  : "Standard JSON with text field"}
+              {formatHint}
             </p>
           </div>
 
           {/* Timestamp Granularities — only for verbose_json */}
           {groqConfig.response_format === "verbose_json" && (
             <div className="px-5 py-3 border-b border-border/20">
-              <span className="text-xs font-medium text-foreground mb-2 block">Timestamp Granularities</span>
+              <span className="text-xs font-medium text-foreground mb-2 block">{t("stt:groq.timestamps.label")}</span>
               <div className="space-y-2">
                 {(["segment", "word"] as const).map((gran) => (
                   <DeepgramToggle
                     key={gran}
-                    label={gran === "segment" ? "Segment Timestamps" : "Word Timestamps"}
+                    label={gran === "segment" ? t("stt:groq.timestamps.segment.label") : t("stt:groq.timestamps.word.label")}
                     param={`timestamp_granularities[]=${gran}`}
                     description={gran === "segment"
-                      ? "Include start/end times for each segment"
-                      : "Include start/end times for each word"}
+                      ? t("stt:groq.timestamps.segment.description")
+                      : t("stt:groq.timestamps.word.description")}
                     checked={groqConfig.timestamp_granularities.includes(gran)}
                     onChange={(v) => {
                       const current = groqConfig.timestamp_granularities;
@@ -1616,22 +1663,23 @@ function GroqAdvancedSettings() {
           {/* Prompt */}
           <div className="px-5 py-3">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs font-medium text-foreground">Prompt</span>
+              <span className="text-xs font-medium text-foreground">{t("stt:groq.prompt.label")}</span>
               <code className="text-meta text-muted-foreground/60">prompt</code>
             </div>
             <p className="mb-2 text-meta text-muted-foreground/70">
-              Guide transcription style, spelling, or context. Up to 224 tokens. Must match audio language.
+              {t("stt:groq.prompt.hint")}
             </p>
             <textarea
               value={groqConfig.prompt}
               onChange={(e) => updateField("prompt", e.target.value)}
-              placeholder="e.g., NexQ, Tauri, WASAPI, transcription..."
+              placeholder={t("stt:groq.prompt.placeholder")}
+              aria-label={t("stt:groq.prompt.label")}
               rows={2}
               className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 resize-none"
             />
             {groqConfig.prompt && (
               <p className="mt-1 text-meta text-muted-foreground/70">
-                ~{Math.ceil(groqConfig.prompt.length / 4)} tokens (max 224)
+                {t("stt:groq.prompt.tokens", { count: Math.ceil(groqConfig.prompt.length / 4) })}
               </p>
             )}
           </div>
@@ -1644,8 +1692,11 @@ function GroqAdvancedSettings() {
 // ── Dual-Pass Settings ──
 
 function DualPassSettings() {
+  const { t } = useT(["stt", "common"]);
   const dualPass = useConfigStore((s) => s.whisperDualPass);
   const setDualPass = useConfigStore((s) => s.setWhisperDualPass);
+  const useGpu = useConfigStore((s) => s.whisperUseGpu);
+  const setUseGpu = useConfigStore((s) => s.setWhisperUseGpu);
 
   const update = (key: keyof typeof dualPass, value: number) => {
     setDualPass({ ...dualPass, [key]: value });
@@ -1654,44 +1705,66 @@ function DualPassSettings() {
   return (
     <div className="rounded-xl border border-border/30 bg-card/50 p-5">
       <h3 className="mb-1 text-sm font-semibold text-primary/80">
-        Transcription Tuning
+        {t("stt:dualPass.title")}
       </h3>
       <p className="mb-4 text-meta text-muted-foreground">
-        Dual-pass: fast pass shows words immediately, correction pass refines.
-        Changes apply instantly.
+        {t("stt:dualPass.hint")}
       </p>
 
       <div className="space-y-4">
         <SliderSetting
-          label="Fast pass interval"
+          label={t("stt:dualPass.fastPass.label")}
           value={dualPass.shortChunkSecs}
           min={0.5}
           max={3.0}
           step={0.1}
           unit="s"
-          hint="Shorter = faster words but less accurate"
+          hint={t("stt:dualPass.fastPass.hint")}
           onChange={(v) => update("shortChunkSecs", v)}
         />
         <SliderSetting
-          label="Correction interval"
+          label={t("stt:dualPass.correction.label")}
           value={dualPass.longChunkSecs}
           min={2.0}
           max={8.0}
           step={0.5}
           unit="s"
-          hint="Longer = more context for correction"
+          hint={t("stt:dualPass.correction.hint")}
           onChange={(v) => update("longChunkSecs", v)}
         />
         <SliderSetting
-          label="Pause for new line"
+          label={t("stt:dualPass.pause.label")}
           value={dualPass.pauseSecs}
           min={0.5}
           max={3.0}
           step={0.1}
           unit="s"
-          hint="Silence before starting a new transcript line"
+          hint={t("stt:dualPass.pause.hint")}
           onChange={(v) => update("pauseSecs", v)}
         />
+      </div>
+
+      <div className="mt-5 flex items-start justify-between gap-3 border-t border-border/20 pt-4">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">{t("stt:dualPass.gpu.label")}</p>
+          <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:dualPass.gpu.hint")}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={useGpu}
+          aria-label={t("stt:dualPass.gpu.label")}
+          onClick={() => setUseGpu(!useGpu)}
+          className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-all duration-200 ${
+            useGpu ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
+              useGpu ? "translate-x-4 scale-105" : "translate-x-0"
+            }`}
+          />
+        </button>
       </div>
     </div>
   );
@@ -1731,6 +1804,7 @@ function SliderSetting({
         step={step}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
+        aria-label={label}
         className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary"
       />
       <p className="mt-0.5 text-meta text-muted-foreground/60">{hint}</p>

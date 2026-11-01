@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::audio::AudioChunk;
+use crate::stt::push_joined;
 use crate::stt::provider::{DualPassConfig, STTProvider, STTProviderType, TranscriptResult};
 use crate::stt::word_diff;
 
@@ -169,11 +170,37 @@ struct FastPassFeedback {
     text: String,
 }
 
+/// Load the model and a decoding state, on the GPU when asked (Metal on
+/// macOS builds) and on the CPU when that fails. Returns whether it is on the GPU.
+fn load_model(
+    model: &str,
+    use_gpu: bool,
+) -> Result<(whisper_rs::WhisperContext, whisper_rs::WhisperState, bool), whisper_rs::WhisperError> {
+    use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+    let load = |gpu: bool| {
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu(gpu);
+        let ctx = WhisperContext::new_with_params(model, params)?;
+        let state = ctx.create_state()?;
+        Ok::<_, whisper_rs::WhisperError>((ctx, state))
+    };
+    if use_gpu {
+        match load(true) {
+            Ok((ctx, state)) => return Ok((ctx, state, true)),
+            Err(e) => log::warn!("WhisperCppSTT: GPU initialization failed ({}), using the CPU", e),
+        }
+    }
+    load(false).map(|(ctx, state)| (ctx, state, false))
+}
+
 // ── WhisperCppSTT ──
 
 pub struct WhisperCppSTT {
     model_path: PathBuf,
     language: String,
+    /// Run on the GPU (Metal on macOS builds); falls back to the CPU if that fails.
+    use_gpu: bool,
     is_streaming: bool,
     result_tx: Option<mpsc::Sender<TranscriptResult>>,
     stop_flag: Arc<AtomicBool>,
@@ -220,6 +247,7 @@ impl WhisperCppSTT {
         Self {
             model_path,
             language: "en".to_string(),
+            use_gpu: true,
             is_streaming: false,
             result_tx: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
@@ -238,6 +266,11 @@ impl WhisperCppSTT {
             inference_thread: None,
             feedback_rx: None,
         }
+    }
+
+    /// Use the GPU when the build has one (Metal on macOS). Default on.
+    pub fn set_use_gpu(&mut self, use_gpu: bool) {
+        self.use_gpu = use_gpu;
     }
 
     fn current_segment_id(&self) -> String {
@@ -259,10 +292,7 @@ impl WhisperCppSTT {
             if let Ok(rx) = rx_mutex.lock() {
                 while let Ok(fb) = rx.try_recv() {
                     if !fb.text.is_empty() {
-                        if !self.fast_text_this_line.is_empty() {
-                            self.fast_text_this_line.push(' ');
-                        }
-                        self.fast_text_this_line.push_str(&fb.text);
+                        push_joined(&mut self.fast_text_this_line, &fb.text);
                     }
                 }
             }
@@ -321,38 +351,29 @@ impl STTProvider for WhisperCppSTT {
         let (fb_tx, fb_rx) = std::sync::mpsc::channel::<FastPassFeedback>();
         let model_path = self.model_path.clone();
         let language = self.language.clone();
+        let use_gpu = self.use_gpu;
         let stop_flag = Arc::clone(&self.stop_flag);
         let tx = result_tx.clone();
 
         let thread = std::thread::spawn(move || {
-            use whisper_rs::{
-                FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-            };
+            use whisper_rs::{FullParams, SamplingStrategy};
 
             // Suppress whisper.cpp verbose output by setting log callback to no-op
             // (whisper-rs 0.16 may not expose this; we rely on params instead)
 
             let model_str = model_path.to_string_lossy().to_string();
-            let ctx = match WhisperContext::new_with_params(
-                &model_str,
-                WhisperContextParameters::default(),
-            ) {
-                Ok(ctx) => ctx,
+            let (_ctx, mut state, on_gpu) = match load_model(&model_str, use_gpu) {
+                Ok(loaded) => loaded,
                 Err(e) => {
                     log::error!("WhisperCppSTT: Failed to load model: {}", e);
                     return;
                 }
             };
 
-            let mut state = match ctx.create_state() {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("WhisperCppSTT: Failed to create state: {}", e);
-                    return;
-                }
-            };
-
-            log::info!("WhisperCppSTT: Model loaded, inference thread ready");
+            log::info!(
+                "WhisperCppSTT: Model loaded on the {}, inference thread ready",
+                if on_gpu { "GPU" } else { "CPU" }
+            );
 
             let mut pending = BinaryHeap::<PrioritizedTask>::new();
             let mut seq_counter = 0u64;
@@ -741,7 +762,87 @@ impl STTProvider for WhisperCppSTT {
     }
 
     fn set_language(&mut self, language: &str) {
-        self.language = language.split('-').next().unwrap_or(language).to_string();
+        // Two-letter code, or "auto" to detect per chunk.
+        self.language = crate::stt::language::whisper_cpp_language(language);
         log::info!("WhisperCppSTT: Language set to {}", self.language);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joins_words_with_spaces_and_cjk_without() {
+        let mut line = String::new();
+        push_joined(&mut line, " Hello");
+        push_joined(&mut line, "world ");
+        assert_eq!(line, "Hello world");
+
+        let mut zh = String::new();
+        push_joined(&mut zh, "我们今天");
+        push_joined(&mut zh, "开会。");
+        push_joined(&mut zh, "OK");
+        assert_eq!(zh, "我们今天开会。OK");
+
+        let mut mixed = String::from("NexQ");
+        push_joined(&mut mixed, "很好用");
+        push_joined(&mut mixed, "");
+        assert_eq!(mixed, "NexQ很好用");
+    }
+
+    /// Metal vs CPU on the same audio (reads files only, never the app's data):
+    ///
+    /// `NEXQ_WHISPER_MODEL=<ggml-*.bin> NEXQ_TEST_WAV=<16 kHz mono 16-bit wav> cargo test --lib whisper_cpp::tests::gpu_vs_cpu -- --ignored --nocapture`
+    ///
+    /// Each backend loads once, warms up on the first 5 s, then transcribes the
+    /// whole file; the printed times go into the P2 report.
+    #[test]
+    #[ignore]
+    fn gpu_vs_cpu_on_the_same_wav() {
+        use whisper_rs::{FullParams, SamplingStrategy};
+
+        let model = std::env::var("NEXQ_WHISPER_MODEL").expect("set NEXQ_WHISPER_MODEL");
+        let wav = std::env::var("NEXQ_TEST_WAV").expect("set NEXQ_TEST_WAV");
+        let reader = hound::WavReader::open(&wav).expect("wav");
+        let spec = reader.spec();
+        assert_eq!((spec.sample_rate, spec.channels), (16_000, 1), "the WAV must be 16 kHz mono");
+        let samples: Vec<f32> = reader
+            .into_samples::<i16>()
+            .map(|s| s.expect("sample") as f32 / 32768.0)
+            .collect();
+        let audio_secs = samples.len() as f32 / 16_000.0;
+        let language = std::env::var("NEXQ_TEST_LANG").unwrap_or_else(|_| "auto".to_string());
+
+        for gpu in [true, false] {
+            let started = Instant::now();
+            let (_ctx, mut state, on_gpu) = load_model(&model, gpu).expect("load model");
+            let load_ms = started.elapsed().as_millis();
+            let mut run = |audio: &[f32]| {
+                let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+                params.set_language(Some(&language));
+                params.set_n_threads(4);
+                params.set_print_progress(false);
+                params.set_print_realtime(false);
+                let t = Instant::now();
+                state.full(params, audio).expect("transcribe");
+                let text: String = (0..state.full_n_segments())
+                    .filter_map(|i| state.get_segment(i).and_then(|seg| seg.to_str().ok().map(str::to_string)))
+                    .collect();
+                (t.elapsed().as_millis(), text)
+            };
+            let _ = run(&samples[..samples.len().min(5 * 16_000)]);
+            let (ms, text) = run(&samples);
+            println!(
+                "{} (asked {}): load {} ms, {:.1} s of audio in {} ms ({:.1}x real time)\n  {}",
+                if on_gpu { "GPU" } else { "CPU" },
+                if gpu { "GPU" } else { "CPU" },
+                load_ms,
+                audio_secs,
+                ms,
+                audio_secs * 1000.0 / ms.max(1) as f32,
+                text.chars().take(200).collect::<String>()
+            );
+        }
     }
 }

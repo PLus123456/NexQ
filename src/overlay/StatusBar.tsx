@@ -14,6 +14,8 @@ import {
   Volume2,
 } from "lucide-react";
 import { useCallback } from "react";
+import { useT } from "../i18n";
+import { STT_LABELS } from "../lib/stt/providerMeta";
 
 // STT provider short labels for compact display
 const STT_SHORT_LABELS: Record<string, string> = {
@@ -24,9 +26,11 @@ const STT_SHORT_LABELS: Record<string, string> = {
   whisper_api: "Whisper",
   azure_speech: "Azure",
   groq_whisper: "GroqSTT",
+  soniox: "Soniox",
 };
 
 export function StatusBar() {
+  const { t } = useT(["stt", "common"]);
   const currentProvider = useStreamStore((s) => s.currentProvider);
   const currentModel = useStreamStore((s) => s.currentModel);
   const latencyMs = useStreamStore((s) => s.latencyMs);
@@ -52,7 +56,10 @@ export function StatusBar() {
 
   // STT display info from meeting audio config — include model name for local engines
   const formatSTTLabel = (provider: string) => {
-    const base = STT_SHORT_LABELS[provider] || provider;
+    const base =
+      STT_SHORT_LABELS[provider] ||
+      (provider === "openai_compat" ? t("stt:engines.openai_compat.label") : STT_LABELS[provider]) ||
+      provider;
     if (provider === "whisper_cpp" && activeWhisperModel) {
       return `${base}/${activeWhisperModel}`;
     }
@@ -68,12 +75,12 @@ export function StatusBar() {
   const handleEndMeeting = useCallback(async () => {
     try {
       await endMeetingFlow();
-      showToast("Meeting ended", "info");
+      showToast(t("stt:statusBar.meetingEnded"), "info");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to end meeting";
+      const msg = err instanceof Error ? err.message : t("stt:statusBar.endFailed");
       showToast(msg, "error");
     }
-  }, [endMeetingFlow]);
+  }, [endMeetingFlow, t]);
 
   return (
     <div className="flex flex-col gap-1">
@@ -86,7 +93,7 @@ export function StatusBar() {
             label={`${displayProvider}/${displayModel.split("/").pop()?.split(":")[0] || displayModel}`}
             active={isStreaming}
             activeColor="text-info"
-            title={`LLM: ${displayProvider} / ${displayModel}`}
+            title={t("stt:statusBar.llmTitle", { provider: displayProvider, model: displayModel })}
           />
 
           <span className="text-border/30">|</span>
@@ -94,10 +101,13 @@ export function StatusBar() {
           {/* You STT indicator */}
           <ServiceIndicator
             icon={<Mic className="h-2.5 w-2.5" />}
-            label={`You: ${youSTT}`}
+            label={t("stt:statusBar.partyEngine", { party: t("common:labels.you"), engine: youSTT })}
             active={micActive}
             activeColor="text-speaker-user"
-            title={`Your STT: ${youSTT} ${micActive ? "(receiving audio)" : "(silent)"}`}
+            title={t("stt:statusBar.youTitle", {
+              engine: youSTT,
+              state: micActive ? t("stt:statusBar.receiving") : t("stt:statusBar.silent"),
+            })}
           />
 
           <span className="text-border/30">|</span>
@@ -105,10 +115,13 @@ export function StatusBar() {
           {/* Them STT indicator */}
           <ServiceIndicator
             icon={<Volume2 className="h-2.5 w-2.5" />}
-            label={`Them: ${themSTT}`}
+            label={t("stt:statusBar.partyEngine", { party: t("common:labels.them"), engine: themSTT })}
             active={systemActive}
             activeColor="text-speaker-interviewer"
-            title={`Their STT: ${themSTT} ${systemActive ? "(receiving audio)" : "(silent)"}`}
+            title={t("stt:statusBar.themTitle", {
+              engine: themSTT,
+              state: systemActive ? t("stt:statusBar.receiving") : t("stt:statusBar.silent"),
+            })}
           />
 
           {/* Latency */}
@@ -117,7 +130,7 @@ export function StatusBar() {
               <span className="text-border/30">|</span>
               <span className="tabular-nums">
                 {isStreaming ? (
-                  <span className="animate-pulse text-primary/80">streaming</span>
+                  <span className="animate-pulse text-primary/80">{t("stt:statusBar.streaming")}</span>
                 ) : (
                   formatDuration(latencyMs ?? 0)
                 )}
@@ -130,26 +143,26 @@ export function StatusBar() {
           <button
             onClick={() => useCallLogStore.getState().toggleOpen()}
             className="rounded-lg p-1.5 transition-colors duration-150 hover:bg-accent hover:text-foreground"
-            title="AI Call Log"
-            aria-label="Toggle AI call log"
+            title={t("stt:statusBar.callLog.title")}
+            aria-label={t("stt:statusBar.callLog.ariaLabel")}
           >
             <Activity className="h-3 w-3" />
           </button>
           <button
             onClick={() => setCurrentView("settings")}
             className="rounded-lg p-1.5 transition-colors duration-150 hover:bg-accent hover:text-foreground"
-            title="Settings"
-            aria-label="Open settings"
+            title={t("stt:statusBar.settings.title")}
+            aria-label={t("stt:statusBar.settings.ariaLabel")}
           >
             <Settings className="h-3 w-3" />
           </button>
           <button
             onClick={handleEndMeeting}
             className="flex items-center gap-1 rounded-lg bg-destructive/10 px-2.5 py-1 font-medium text-destructive/70 transition-all duration-150 hover:bg-destructive/20 hover:text-destructive active:scale-95"
-            aria-label="End meeting"
+            aria-label={t("stt:statusBar.end.ariaLabel")}
           >
             <Square className="h-2.5 w-2.5 fill-current" aria-hidden="true" />
-            End
+            {t("stt:statusBar.end.label")}
           </button>
         </div>
       </div>
@@ -172,6 +185,7 @@ function ServiceIndicator({
   activeColor: string;
   title: string;
 }) {
+  const { t } = useT(["stt", "common"]);
   return (
     <div
       className={`flex items-center gap-1 transition-colors duration-200 ${
@@ -179,7 +193,10 @@ function ServiceIndicator({
       }`}
       title={title}
       role="status"
-      aria-label={`${label}: ${active ? "active" : "inactive"}`}
+      aria-label={t("stt:statusBar.indicator", {
+        label,
+        state: active ? t("stt:statusBar.active") : t("stt:statusBar.inactive"),
+      })}
     >
       {/* Activity dot */}
       <span className="relative flex h-1.5 w-1.5 shrink-0" aria-hidden="true">

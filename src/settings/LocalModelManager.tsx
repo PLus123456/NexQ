@@ -17,14 +17,18 @@ import { useConfigStore } from "../stores/configStore";
 import { listLocalSTTEngines, deleteLocalSTTModel } from "../lib/ipc";
 import type { LocalSTTEngineInfo, LocalSTTModelInfo } from "../lib/types";
 import { showToast } from "../stores/toastStore";
+import { useT } from "../i18n";
 
 interface LocalModelManagerProps {
   compact?: boolean;
   /** If set, only show this engine's models (e.g. "sherpa_onnx") */
   engineFilter?: string;
+  /** Called after the model list was reloaded (download finished, model deleted). */
+  onModelsChange?: () => void;
 }
 
-export function LocalModelManager({ compact, engineFilter }: LocalModelManagerProps) {
+export function LocalModelManager({ compact, engineFilter, onModelsChange }: LocalModelManagerProps) {
+  const { t } = useT(["stt", "common"]);
   const [engines, setEngines] = useState<LocalSTTEngineInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const { downloads, startDownload, cancelDownload } = useModelDownload();
@@ -70,10 +74,14 @@ export function LocalModelManager({ compact, engineFilter }: LocalModelManagerPr
               if (engine.engine === "whisper_cpp") {
                 setActiveWhisperModel(firstDownloaded.id);
               }
-              showToast(`Model "${firstDownloaded.name}" activated for ${engine.name}`, "success");
+              showToast(
+                t("stt:localModels.toasts.autoActivated", { model: firstDownloaded.name, engine: engine.name }),
+                "success",
+              );
             }
           }
         }
+        onModelsChange?.();
       });
     }
   }, [downloads]);
@@ -82,7 +90,7 @@ export function LocalModelManager({ compact, engineFilter }: LocalModelManagerPr
     return (
       <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Loading local models...
+        {t("stt:localModels.loading")}
       </div>
     );
   }
@@ -135,17 +143,21 @@ export function LocalModelManager({ compact, engineFilter }: LocalModelManagerPr
                         setActiveModelForEngine(model.engine, null);
                         if (model.engine === "whisper_cpp") setActiveWhisperModel(null);
                       }
-                      showToast(`Deleted ${model.name}`, "success");
-                      loadEngines();
+                      showToast(t("stt:localModels.toasts.deleted", { model: model.name }), "success");
+                      await loadEngines();
+                      onModelsChange?.();
                     } catch (err) {
-                      showToast(`Failed to delete: ${err}`, "error");
+                      showToast(t("stt:localModels.toasts.deleteFailed", { detail: String(err) }), "error");
                     }
                   }}
                   onSetActive={() => {
                     setActiveModelForEngine(model.engine, model.id);
                     // Keep legacy field in sync for whisper_cpp
                     if (model.engine === "whisper_cpp") setActiveWhisperModel(model.id);
-                    showToast(`Activated "${model.name}" for ${engine.name}`, "success");
+                    showToast(
+                      t("stt:localModels.toasts.activated", { model: model.name, engine: engine.name }),
+                      "success",
+                    );
                   }}
                 />
               );
@@ -245,6 +257,7 @@ function ModelRow({
   onDelete: () => void;
   onSetActive: () => void;
 }) {
+  const { t } = useT(["stt", "common"]);
   const sizeLabel = formatSize(model.size_bytes);
 
   return (
@@ -264,7 +277,7 @@ function ModelRow({
             </span>
             {isActive && (
               <span className="shrink-0 rounded bg-primary/20 px-1.5 py-0.5 text-meta font-semibold text-primary">
-                Active
+                {t("stt:localModels.active")}
               </span>
             )}
           </div>
@@ -273,8 +286,8 @@ function ModelRow({
               <span className="text-meta text-muted-foreground">
                 {sizeLabel}
               </span>
-              <RatingBadge label="Accuracy" value={model.accuracy_rating} max={5} />
-              <RatingBadge label="Speed" value={model.speed_rating} max={5} />
+              <RatingBadge label={t("stt:localModels.accuracy")} value={model.accuracy_rating} max={5} />
+              <RatingBadge label={t("stt:localModels.speed")} value={model.speed_rating} max={5} />
             </div>
           )}
         </div>
@@ -285,7 +298,8 @@ function ModelRow({
             <button
               onClick={onCancel}
               className="rounded-md p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-              title="Cancel download"
+              title={t("stt:localModels.cancelDownload")}
+              aria-label={t("stt:localModels.cancelDownload")}
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -295,10 +309,11 @@ function ModelRow({
                 <button
                   onClick={onSetActive}
                   className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-meta font-medium text-foreground hover:bg-primary/10 hover:text-primary"
-                  title="Set as active model"
+                  title={t("stt:localModels.setActive")}
+                  aria-label={compact ? t("stt:localModels.setActive") : undefined}
                 >
                   <CircleDot className="h-3 w-3" />
-                  {compact ? "" : "Activate"}
+                  {compact ? "" : t("stt:localModels.activate")}
                 </button>
               )}
               {isActive && (
@@ -307,7 +322,8 @@ function ModelRow({
               <button
                 onClick={onDelete}
                 className="rounded-md p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                title="Delete model"
+                title={t("stt:localModels.delete")}
+                aria-label={t("stt:localModels.delete")}
               >
                 <Trash2 className="h-3 w-3" />
               </button>
@@ -315,10 +331,12 @@ function ModelRow({
           ) : (
             <button
               onClick={onDownload}
+              title={compact ? t("stt:localModels.download") : undefined}
+              aria-label={compact ? t("stt:localModels.download") : undefined}
               className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-meta font-medium text-primary hover:bg-primary/20"
             >
               <Download className="h-3 w-3" />
-              {compact ? "" : "Download"}
+              {compact ? "" : t("stt:localModels.download")}
             </button>
           )}
         </div>
@@ -336,9 +354,9 @@ function ModelRow({
           <div className="mt-0.5 flex items-center justify-between text-meta text-muted-foreground">
             <span>
               {progress.status === "extracting"
-                ? "Extracting..."
+                ? t("stt:localModels.extracting")
                 : progress.status === "verifying"
-                  ? "Verifying..."
+                  ? t("stt:localModels.verifying")
                   : `${formatSize(progress.downloaded_bytes)} / ${formatSize(progress.total_bytes)}`}
             </span>
             <span>{Math.round(progress.percent)}%</span>
@@ -352,7 +370,7 @@ function ModelRow({
 function RatingBadge({ label, value, max }: { label: string; value: number; max: number }) {
   return (
     <span className="inline-flex items-center gap-0.5 text-meta text-muted-foreground">
-      {label}:
+      {label}
       {Array.from({ length: max }, (_, i) => (
         <Star
           key={i}

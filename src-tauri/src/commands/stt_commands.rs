@@ -1,6 +1,10 @@
 use tauri::{command, AppHandle, Manager};
 
 use crate::state::AppState;
+use crate::stt::plus_config::{
+    OpenAICompatSttConfig, SonioxConfig, SttPlusState, SttProbeResult, OPENAI_COMPAT_STT_KEY_SLOT,
+    SONIOX_KEY_SLOT,
+};
 use crate::stt::provider::{self, STTProviderType};
 
 /// Switch the active STT provider.
@@ -64,6 +68,9 @@ pub async fn set_stt_provider(app: AppHandle, provider: String) -> Result<(), St
                 STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
                     // Local providers — no API key needed
                 }
+                STTProviderType::OpenAICompat | STTProviderType::Soniox => {
+                    // Per-party only: the key is read from the keychain when the party starts.
+                }
             }
         }
     }
@@ -84,6 +91,23 @@ pub async fn set_stt_provider(app: AppHandle, provider: String) -> Result<(), St
 pub async fn test_stt_connection(app: AppHandle, provider: String) -> Result<bool, String> {
     let provider_type = STTProviderType::from_str(&provider)
         .ok_or_else(|| format!("Unknown STT provider: {}", provider))?;
+
+    // NexQ Plus engines: run their probe (the router has no copy of them).
+    match provider_type {
+        STTProviderType::OpenAICompat => {
+            let cfg = app.state::<SttPlusState>().openai_compat_snapshot();
+            let key = read_key(&app.state::<AppState>(), OPENAI_COMPAT_STT_KEY_SLOT);
+            let result = crate::stt::openai_compat::probe(&cfg, key.as_deref()).await;
+            return if result.ok { Ok(true) } else { Err(probe_error(&result)) };
+        }
+        STTProviderType::Soniox => {
+            let cfg = app.state::<SttPlusState>().soniox_snapshot();
+            let key = read_key(&app.state::<AppState>(), SONIOX_KEY_SLOT);
+            let result = crate::stt::soniox::probe(&cfg, key.as_deref()).await;
+            return if result.ok { Ok(true) } else { Err(probe_error(&result)) };
+        }
+        _ => {}
+    }
 
     let state = app.state::<AppState>();
 
@@ -132,6 +156,7 @@ pub async fn test_stt_connection(app: AppHandle, provider: String) -> Result<boo
                 STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
                     // Local providers — no API key needed
                 }
+                STTProviderType::OpenAICompat | STTProviderType::Soniox => {}
             }
         }
     }
@@ -326,4 +351,88 @@ pub async fn estimate_deepgram_cost(duration_minutes: f32) -> Result<String, Str
     });
     serde_json::to_string(&result)
         .map_err(|e| format!("Failed to serialize cost estimate: {}", e))
+}
+
+// == NexQ Plus: remote STT (OpenAI-compatible) and Soniox ==
+
+/// A keychain entry, or None when missing / unreadable.
+fn read_key(state: &AppState, slot: &str) -> Option<String> {
+    state
+        .credentials
+        .as_ref()
+        .and_then(|cred| cred.lock().ok())
+        .and_then(|cred| cred.get_key(slot).ok().flatten())
+        .filter(|key| !key.trim().is_empty())
+}
+
+/// A failed probe as one line for callers that only take a string.
+fn probe_error(result: &SttProbeResult) -> String {
+    match (result.status, result.detail.is_empty()) {
+        (Some(status), false) => format!("{} (HTTP {}): {}", result.code, status, result.detail),
+        (Some(status), true) => format!("{} (HTTP {})", result.code, status),
+        (None, false) => format!("{}: {}", result.code, result.detail),
+        (None, true) => result.code.clone(),
+    }
+}
+
+/// Replace the remote STT settings. A running engine uses them from its next request.
+#[command]
+pub async fn update_openai_compat_stt_config(app: AppHandle, config_json: String) -> Result<(), String> {
+    let config: OpenAICompatSttConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid remote STT config JSON: {}", e))?;
+    let plus = app.state::<SttPlusState>();
+    let mut cfg = plus
+        .openai_compat
+        .write()
+        .map_err(|_| "Remote STT config lock poisoned".to_string())?;
+    *cfg = config;
+    log::info!("Remote STT config updated via IPC");
+    Ok(())
+}
+
+/// Replace the Soniox settings. They apply when a session (re)connects.
+#[command]
+pub async fn update_soniox_config(app: AppHandle, config_json: String) -> Result<(), String> {
+    let config: SonioxConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid Soniox config JSON: {}", e))?;
+    let plus = app.state::<SttPlusState>();
+    let mut cfg = plus
+        .soniox
+        .write()
+        .map_err(|_| "Soniox config lock poisoned".to_string())?;
+    *cfg = config;
+    log::info!("Soniox config updated via IPC");
+    Ok(())
+}
+
+/// Test a remote STT service with the given (possibly unsaved) settings and
+/// the stored key. Returns `SttProbeResult` JSON (the model list included).
+#[command]
+pub async fn probe_openai_compat_stt(app: AppHandle, config_json: String) -> Result<String, String> {
+    let config: OpenAICompatSttConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid remote STT config JSON: {}", e))?;
+    let key = read_key(&app.state::<AppState>(), OPENAI_COMPAT_STT_KEY_SLOT);
+    let result = crate::stt::openai_compat::probe(&config, key.as_deref()).await;
+    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize probe result: {}", e))
+}
+
+/// Test the stored Soniox key against the region's `/v1/models`. Returns
+/// `SttProbeResult` JSON (real-time model ids included).
+#[command]
+pub async fn probe_soniox(app: AppHandle, config_json: String) -> Result<String, String> {
+    let config: SonioxConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid Soniox config JSON: {}", e))?;
+    let key = read_key(&app.state::<AppState>(), SONIOX_KEY_SLOT);
+    let result = crate::stt::soniox::probe(&config, key.as_deref()).await;
+    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize probe result: {}", e))
+}
+
+/// Run whisper.cpp on the GPU (Metal on macOS) or the CPU. Applies when a
+/// party next starts (a running meeting restarts its capture on config changes).
+#[command]
+pub async fn set_whisper_use_gpu(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    app.state::<SttPlusState>().whisper_use_gpu.store(enabled, Ordering::Relaxed);
+    log::info!("whisper.cpp GPU {}", if enabled { "on" } else { "off" });
+    Ok(())
 }

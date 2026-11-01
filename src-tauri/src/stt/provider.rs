@@ -96,6 +96,10 @@ pub enum STTProviderType {
     /// NVIDIA Parakeet TDT — CTC/TDT architecture via ONNX Runtime.
     /// #1 on Open ASR Leaderboard (~6% WER), native streaming.
     ParakeetTdt,
+    /// NexQ Plus: remote Whisper over an OpenAI-compatible `/audio/transcriptions`.
+    OpenAICompat,
+    /// NexQ Plus: Soniox real-time WebSocket (transcription + one-way translation).
+    Soniox,
 }
 
 impl STTProviderType {
@@ -111,6 +115,8 @@ impl STTProviderType {
             STTProviderType::SherpaOnnx => "sherpa_onnx",
             STTProviderType::OrtStreaming => "ort_streaming",
             STTProviderType::ParakeetTdt => "parakeet_tdt",
+            STTProviderType::OpenAICompat => "openai_compat",
+            STTProviderType::Soniox => "soniox",
         }
     }
 
@@ -126,6 +132,8 @@ impl STTProviderType {
             "sherpa_onnx" => Some(STTProviderType::SherpaOnnx),
             "ort_streaming" => Some(STTProviderType::OrtStreaming),
             "parakeet_tdt" => Some(STTProviderType::ParakeetTdt),
+            "openai_compat" => Some(STTProviderType::OpenAICompat),
+            "soniox" => Some(STTProviderType::Soniox),
             _ => None,
         }
     }

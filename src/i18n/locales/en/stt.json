@@ -1,1 +1,685 @@
-{}
+{
+  "engines": {
+    "web_speech": {
+      "label": "Web Speech",
+      "description": "Browser-native, free"
+    },
+    "windows_native": {
+      "label": "Windows Speech",
+      "description": "Built-in, zero download"
+    },
+    "sherpa_onnx": {
+      "label": "Sherpa-ONNX",
+      "description": "Local streaming, offline, free"
+    },
+    "ort_streaming": {
+      "label": "ORT Streaming",
+      "description": "Local, GPU-accelerated"
+    },
+    "whisper_cpp": {
+      "label": "Whisper.cpp",
+      "description": "Live local Whisper, offline, multilingual"
+    },
+    "parakeet_tdt": {
+      "label": "Parakeet TDT",
+      "description": "Best accuracy, offline, multilingual"
+    },
+    "deepgram": {
+      "label": "Deepgram",
+      "description": "Real-time streaming, best quality"
+    },
+    "whisper_api": {
+      "label": "Whisper API",
+      "description": "OpenAI Whisper model"
+    },
+    "azure_speech": {
+      "label": "Azure Speech",
+      "description": "Azure Cognitive Services"
+    },
+    "groq_whisper": {
+      "label": "Groq Whisper",
+      "description": "Ultra-fast Whisper inference"
+    },
+    "openai_compat": {
+      "label": "Remote Whisper",
+      "description": "Your own Whisper server (OpenAI-compatible)"
+    },
+    "soniox": {
+      "label": "Soniox",
+      "description": "Real-time recognition with live translation"
+    }
+  },
+  "groups": {
+    "local": "Local & Built-in",
+    "localHint": "Free · No API Key",
+    "cloud": "Cloud",
+    "cloudHint": "Requires API Key"
+  },
+  "units": {
+    "secondsSuffix": "(s)",
+    "millisecondsSuffix": "(ms)"
+  },
+  "advancedSettings": "Advanced Settings",
+  "presets": {
+    "free": {
+      "name": "Free",
+      "description": "Web Speech for you, Parakeet TDT for the other side — free and private (one-time model download)"
+    },
+    "soniox_them": {
+      "name": "Soniox for Them",
+      "description": "Soniox transcribes and translates the other side in real time; Whisper.cpp on this Mac for you"
+    },
+    "best_quality": {
+      "name": "Best Quality",
+      "description": "Deepgram cloud — fastest, most accurate"
+    },
+    "fully_offline": {
+      "name": "Fully Offline",
+      "description": "Sherpa-ONNX — no internet needed"
+    },
+    "all_cloud": {
+      "name": "All Cloud",
+      "description": "Deepgram for both parties"
+    },
+    "local_whisper": {
+      "name": "Local Only (Whisper)",
+      "description": "Whisper.cpp for both parties — offline, free"
+    },
+    "in_person": {
+      "name": "In-Person",
+      "description": "Both parties use mic input — Web Speech + Whisper.cpp"
+    }
+  },
+  "language": {
+    "label": "Language",
+    "partyAriaLabel": "Recognition language for {{party}}",
+    "autoUnavailable": {
+      "webSpeech": "Web Speech can't detect the language (it would use the system language).",
+      "needsLanguage": "{{engine}} needs a specific language."
+    },
+    "hints": {
+      "autoUsesSystemLanguage": "Web Speech can't detect the language: it uses the system language. Choose one.",
+      "autoFallsBackToEnglish": "{{engine}} can't detect the language: it falls back to English. Choose one.",
+      "ignored": "{{engine}} ignores the language setting: the model decides.",
+      "whisperCppAuto": "Whisper.cpp detects the language in each short chunk and can switch back and forth. Choose a language if you know it.",
+      "deepgramAuto": "Auto-detect needs a Nova 2 or Nova 3 model; {{model}} transcribes English.",
+      "parakeetCtcEnglishOnly": "Parakeet CTC 110M is English-only. Use Parakeet TDT 0.6B v3 for Russian and other supported languages."
+    }
+  },
+  "picker": {
+    "inUseBy": "In use by {{party}}",
+    "noneReady": "No providers ready — configure in STT Keys tab",
+    "steal": {
+      "confirm": "<strong>{{engine}}</strong> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>{{fallback}}</fallback>.",
+      "noEngine": "no available engine",
+      "switch": "Switch",
+      "noFallback": "No fallback STT engine available. Configure an API key or download a local model first.",
+      "moved": "{{engine}} moved to {{party}}. {{other}} fell back to {{fallback}}."
+    }
+  },
+  "meetingAudio": {
+    "presets": {
+      "label": "Presets",
+      "applied": "Preset \"{{name}}\" applied"
+    },
+    "party": {
+      "you": {
+        "description": "Your microphone — used in online meetings",
+        "badge": "Online meetings only"
+      },
+      "them": {
+        "description": "Remote party (online) or room microphone (in-person)"
+      },
+      "defaultDescription": "Audio source & recognition"
+    },
+    "source": {
+      "label": "Source",
+      "default": "Default",
+      "defaultDevice": "{{name}} (Default)",
+      "microphones": "Microphones",
+      "outputs": "Speakers / Output"
+    },
+    "engine": {
+      "label": "Speech to Text"
+    },
+    "notReady": {
+      "notOffered": "{{engine}} isn't available on this computer. Pick another engine.",
+      "needsModel": "{{engine}} needs a downloaded model before it can transcribe.",
+      "needsBaseUrl": "{{engine}} has no server address yet. Set it in {{tab}}.",
+      "needsKey": "No API key saved for {{engine}}. Add it in {{tab}}.",
+      "needsInput": "{{engine}} only works with a microphone source.",
+      "downloadModel": "Download a model",
+      "hideModels": "Hide models"
+    },
+    "deviceOverride": "<strong>Device override active.</strong> {{engine}} always uses the system default mic. During meetings, your system default will be temporarily switched to the selected device and restored when the meeting ends.",
+    "nativeTranslation": {
+      "label": "Translate with Soniox",
+      "hint": "Soniox translates while it transcribes, in the same stream.",
+      "ariaLabel": "Translate {{party}} with Soniox",
+      "target": {
+        "label": "Translate into",
+        "followPlaceholder": "Same as the Translation settings",
+        "follow": "Use the Translation settings target",
+        "followHint": "Empty: uses the target language of the Translation settings."
+      },
+      "twoWay": "Two-way translation is set in the Translation settings."
+    },
+    "diarization": {
+      "label": "Speaker Diarization",
+      "hint": "Separate speakers in in-person mode (supported by {{engines}})",
+      "ariaLabel": "Toggle speaker diarization"
+    },
+    "recording": {
+      "label": "Record to file",
+      "hint": "Save meeting audio as WAV",
+      "ariaLabel": "Toggle recording",
+      "enabled": "Audio recording enabled",
+      "disabled": "Audio recording disabled",
+      "toggleFailed": "Failed to toggle recording"
+    },
+    "monitor": {
+      "title": "Live Monitor",
+      "monitoringAll": "Monitoring all devices",
+      "refresh": "Refresh devices",
+      "streamingAll": "All devices streaming live (~60 fps)"
+    },
+    "sessions": {
+      "title": "Audio Sessions",
+      "refresh": "Refresh audio sessions",
+      "scanning": "Scanning audio sessions...",
+      "empty": "No active audio sessions detected",
+      "active": "Active",
+      "use": "Use",
+      "sourceSet": "\"{{party}}\" source set to {{device}}",
+      "noMatchingDevice": "Could not find matching output device"
+    },
+    "info": "<strong>Dual-purpose audio:</strong> In <online>online meetings</online>, \"You\" captures your mic and \"Them\" captures remote audio via system loopback. In <onsite>in-person meetings</onsite>, both sources share the room microphone and speaker diarization separates voices."
+  },
+  "settings": {
+    "badges": {
+      "ready": "Ready",
+      "noModel": "No Model",
+      "noKey": "No Key",
+      "keySaved": "Key Saved",
+      "noServer": "No Server",
+      "untested": "Not Tested"
+    },
+    "useFor": {
+      "label": "Use for",
+      "ariaLabel": "Use {{engine}} for",
+      "unavailable": "{{party}}: {{reason}}",
+      "reasons": {
+        "needsInput": "Only works with a microphone source.",
+        "needsModel": "Download a model first.",
+        "needsBaseUrl": "Set the server address first.",
+        "needsKey": "Save an API key first."
+      },
+      "swap": "<strong>{{engine}}</strong> can only run on one source at a time. Use it for {{party}}? {{other}} will fall back to <fallback>{{fallback}}</fallback>."
+    },
+    "models": {
+      "title": "{{engine}} Models",
+      "hint": "Download a model, then click <strong>Activate</strong> to enable this provider."
+    },
+    "apiKey": {
+      "title": "API Key",
+      "storedPlaceholder": "Key stored — type to replace",
+      "placeholder": "Enter {{engine}} API key",
+      "show": "Show API key",
+      "hide": "Hide API key",
+      "saveAndTest": "Save & Test",
+      "testing": "Testing connection...",
+      "success": "Connection successful — provider is ready",
+      "failed": "Connection failed — key not saved",
+      "stored": "API key verified and stored securely",
+      "prompt": "Enter your key and click Save & Test"
+    },
+    "azureRegion": {
+      "title": "Azure Region",
+      "hint": "Azure region for your Speech Services resource (e.g., eastus, westeurope, southeastasia)"
+    },
+    "languages": {
+      "title": "Language",
+      "hint": "Each side can use its own language. Auto-detect works with the engines that support it."
+    },
+    "connection": {
+      "title": "Connection",
+      "noModel": "No model downloaded. Download a model below first.",
+      "modelsReady_one": "Ready — {{count}} model available",
+      "modelsReady_other": "Ready — {{count}} models available",
+      "ready": "Ready",
+      "failed": "Connection failed"
+    }
+  },
+  "pause": {
+    "title": "New Line Pause Duration",
+    "hint": "Start a new transcript line after no words detected for this duration. Lower values create more lines; higher values create longer paragraphs. Applies to all STT providers.",
+    "min": "0.5s (more lines)",
+    "max": "5.0s (longer paragraphs)"
+  },
+  "deepgram": {
+    "title": "Deepgram Settings",
+    "priceLine": "${{price}}/min · {{model}}",
+    "pricePerMinute": "${{price}}/min",
+    "presetsLabel": "Presets",
+    "model": "Model",
+    "newTag": "NEW",
+    "features": "Features",
+    "models": {
+      "nova3": "Best accuracy, latest model",
+      "nova2": "Great accuracy, widely used",
+      "nova": "Previous generation",
+      "enhanced": "High accuracy, conservative",
+      "base": "Fastest, most economical",
+      "whisperLarge": "OpenAI Whisper large",
+      "whisperMedium": "OpenAI Whisper medium",
+      "whisperSmall": "OpenAI Whisper small",
+      "whisperTiny": "Smallest, fastest Whisper",
+      "whisperBase": "OpenAI Whisper base"
+    },
+    "presets": {
+      "default": {
+        "label": "Default",
+        "description": "Balanced settings for most meetings"
+      },
+      "lowLatency": {
+        "label": "Low Latency",
+        "description": "Fastest response, minimal post-processing"
+      },
+      "highAccuracy": {
+        "label": "High Accuracy",
+        "description": "Best transcript quality, smart formatting"
+      },
+      "meeting": {
+        "label": "Meeting",
+        "description": "Speaker detection, formatted output"
+      },
+      "economy": {
+        "label": "Economy",
+        "description": "Nova 2 model, lower cost"
+      }
+    },
+    "toggles": {
+      "smartFormat": {
+        "label": "Smart Format",
+        "description": "Formats dates, times, numbers and adds paragraph breaks"
+      },
+      "interimResults": {
+        "label": "Interim Results",
+        "description": "Show partial transcripts as you speak (lower latency feel)"
+      },
+      "punctuate": {
+        "label": "Punctuation",
+        "description": "Add punctuation and capitalization to the transcript"
+      },
+      "vadEvents": {
+        "label": "VAD Events",
+        "description": "Emit events when speech starts/ends (improves endpointing)"
+      },
+      "diarize": {
+        "label": "Tell remote speakers apart",
+        "description": "Labels each person on the other side of the call (Speaker 1, 2…). Never applied to your mic."
+      },
+      "numerals": {
+        "label": "Numerals",
+        "description": "Convert spoken numbers to digits (\"nine hundred\" → \"900\")"
+      },
+      "profanityFilter": {
+        "label": "Profanity Filter",
+        "description": "Remove profanity from the transcript"
+      },
+      "dictation": {
+        "label": "Dictation",
+        "description": "Format spoken punctuation commands (\"period\" → \".\")"
+      }
+    },
+    "endpointing": {
+      "label": "Endpointing",
+      "threshold": "Silence threshold",
+      "min": "10ms (fast)",
+      "max": "2000ms (slow)",
+      "hint": "Returns transcript when this much silence is detected. 10–999ms gives best results.",
+      "disabled": "Disabled — server default endpointing used"
+    },
+    "keyterms": {
+      "label": "Keyterm Prompting",
+      "hint": "Boost recognition of specific words or phrases (product names, jargon). Up to 100 keyterms.",
+      "placeholder": "Add keyterm or phrase…",
+      "remove": "Remove {{term}}",
+      "empty": "No keyterms — model uses default recognition"
+    }
+  },
+  "groq": {
+    "title": "Groq Whisper Settings",
+    "priceLine": "${{price}}/hr · {{speed}} real-time",
+    "pricePerHour": "${{price}}/hr",
+    "batchHint": "Batch mode — audio is accumulated and sent every {{seconds}}s. Expect {{min}}–{{max}}s total latency.",
+    "presetsLabel": "Presets",
+    "model": "Model",
+    "fastTag": "FAST",
+    "bestTag": "BEST",
+    "models": {
+      "largeV3": "Highest accuracy, 99+ languages",
+      "largeV3Turbo": "Fast + cheap, best price/performance"
+    },
+    "presets": {
+      "default": {
+        "label": "Default",
+        "description": "Balanced — fast model, 5s batches"
+      },
+      "lowLatency": {
+        "label": "Low Latency",
+        "description": "Shorter 3s batches for faster feedback"
+      },
+      "highAccuracy": {
+        "label": "High Accuracy",
+        "description": "Best model, longer 8s batches for context"
+      },
+      "verbose": {
+        "label": "Verbose",
+        "description": "Word timestamps + segment data"
+      }
+    },
+    "batch": {
+      "label": "Batch Duration",
+      "accumulation": "Audio accumulation time",
+      "min": "2s (fast, less context)",
+      "max": "15s (slow, more context)",
+      "hint": "Shorter = faster responses but less context per API call. Minimum billed: 10s."
+    },
+    "temperature": {
+      "label": "Temperature",
+      "min": "0 (deterministic)",
+      "max": "1 (creative)",
+      "hint": "Lower values give more consistent results. 0 is recommended for transcription."
+    },
+    "responseFormat": {
+      "label": "Response Format",
+      "text": "Text",
+      "hints": {
+        "verboseJson": "Includes segment/word timestamps, confidence scores, and no-speech probability",
+        "text": "Plain text output only — no metadata",
+        "json": "Standard JSON with text field"
+      }
+    },
+    "timestamps": {
+      "label": "Timestamp Granularities",
+      "segment": {
+        "label": "Segment Timestamps",
+        "description": "Include start/end times for each segment"
+      },
+      "word": {
+        "label": "Word Timestamps",
+        "description": "Include start/end times for each word"
+      }
+    },
+    "prompt": {
+      "label": "Prompt",
+      "hint": "Guide transcription style, spelling, or context. Up to 224 tokens. Must match audio language.",
+      "placeholder": "e.g., {{appName}}, Tauri, WASAPI, transcription...",
+      "tokens_one": "~{{count}} token (max 224)",
+      "tokens_other": "~{{count}} tokens (max 224)"
+    }
+  },
+  "dualPass": {
+    "title": "Transcription Tuning",
+    "hint": "Dual-pass: fast pass shows words immediately, correction pass refines. Changes apply instantly.",
+    "fastPass": {
+      "label": "Fast pass interval",
+      "hint": "Shorter = faster words but less accurate"
+    },
+    "correction": {
+      "label": "Correction interval",
+      "hint": "Longer = more context for correction"
+    },
+    "pause": {
+      "label": "Pause for new line",
+      "hint": "Silence before starting a new transcript line"
+    },
+    "gpu": {
+      "label": "Use the GPU (Metal)",
+      "hint": "Runs Whisper.cpp on the graphics chip on Macs; falls back to the CPU if that fails. Applies when transcription next starts."
+    }
+  },
+  "probe": {
+    "codes": {
+      "ok": "Connected — the server answered.",
+      "okModels_one": "Connected — the server lists {{count}} model.",
+      "okModels_other": "Connected — the server lists {{count}} models.",
+      "no_base_url": "Enter the server address first.",
+      "invalid_url": "The server address isn't valid.",
+      "no_key": "The server wants an API key: choose Bearer token and save one.",
+      "unauthorized": "The server rejected the API key (401).",
+      "forbidden": "The server refused access (403).",
+      "not_found": "Nothing found at this address (404). Check the version prefix, e.g. /v1.",
+      "http_error": "The server returned an error.",
+      "timeout": "The server didn't answer in time.",
+      "network": "Couldn't reach the server.",
+      "bad_response": "The server's answer wasn't understood."
+    },
+    "soniox": {
+      "ok": "The key works.",
+      "okModels_one": "The key works — {{count}} real-time model available.",
+      "okModels_other": "The key works — {{count}} real-time models available.",
+      "noKey": "Save your Soniox API key first.",
+      "unauthorized": "Invalid API key (401). Check the key and its region.",
+      "forbidden": "The key is valid but can't list models (403). Real-time recognition may still work."
+    },
+    "unknownCode": "Test result: {{code}}",
+    "status": "HTTP {{status}}",
+    "latency": "{{ms}} ms",
+    "url": "Requested",
+    "detail": "Server response"
+  },
+  "openaiCompat": {
+    "description": "Sends audio to your own OpenAI-compatible transcription server: faster-whisper-server / speaches, vLLM, LocalAI…",
+    "baseUrl": {
+      "placeholder": "e.g. http://192.168.1.10:8000/v1",
+      "hint": "No /v1 is added automatically: type the address with the version prefix your server uses."
+    },
+    "auth": {
+      "noneHint": "No API key is sent. Choose Bearer token if your server needs one.",
+      "removeConfirm": "A saved key is sent with every request. Remove it to send requests without a key?",
+      "removeKey": "Remove saved key"
+    },
+    "model": {
+      "label": "Model",
+      "hint": "The model id your server expects. Refresh lists the models the server has."
+    },
+    "prompt": {
+      "label": "Prompt",
+      "placeholder": "e.g. names, product terms, jargon",
+      "hint": "Hints for spelling and context. Write it in the language of the audio."
+    },
+    "segment": {
+      "label": "Segment length",
+      "hint": "Longest audio sent in one request."
+    },
+    "pauseSplit": {
+      "label": "Split on pause",
+      "hint": "Silence that ends a segment early."
+    },
+    "timeout": {
+      "label": "Request timeout",
+      "hint": "How long to wait for one transcription."
+    },
+    "maxInFlight": {
+      "label": "Requests at once",
+      "hint": "Results always come back in order."
+    },
+    "urlOverride": {
+      "label": "Full transcription URL",
+      "placeholder": "e.g. https://gateway.example.com/whisper/v1/audio/transcriptions",
+      "hint": "For gateways with an unusual path: used instead of the address above for transcription. Empty: address + /audio/transcriptions."
+    },
+    "temperature": {
+      "label": "Temperature",
+      "hint": "0 is recommended for transcription."
+    },
+    "responseFormat": {
+      "label": "Response format",
+      "hint": "json works with most servers; text and verbose_json are understood too."
+    }
+  },
+  "soniox": {
+    "description": "Real-time recognition with live translation in the same stream. Each side gets its own session.",
+    "key": {
+      "label": "API Key",
+      "placeholder": "Enter your Soniox API key",
+      "savedPlaceholder": "Saved — type a new key to replace it",
+      "saved": "Saved securely on this computer. It's never shown again.",
+      "notSaved": "No key saved yet."
+    },
+    "region": {
+      "label": "Region",
+      "hint": "Choose the region of the Soniox project your key belongs to: a key only works in its own region.",
+      "options": {
+        "us": "United States",
+        "eu": "European Union",
+        "jp": "Japan",
+        "in": "India"
+      }
+    },
+    "model": {
+      "label": "Model",
+      "hint": "Real-time model. Refresh lists the models your key can use."
+    },
+    "endpointDelay": {
+      "label": "Endpoint delay",
+      "value": "{{ms}} ms",
+      "min": "500 ms (faster)",
+      "max": "3000 ms (fewer splits)",
+      "hint": "How long Soniox waits after speech stops before it ends the sentence. Subtitles work best around 1000–1500 ms."
+    },
+    "diarization": {
+      "label": "Tell remote speakers apart",
+      "hint": "Labels each person on the other side (S1, S2…). Applies to Them only."
+    },
+    "strictHints": {
+      "label": "Strict language hints",
+      "hint": "Keep the output to the chosen languages (best effort). Off: other languages are still recognized."
+    },
+    "wsUrl": {
+      "label": "Custom WebSocket URL",
+      "hint": "For a gateway. Empty: the region's address."
+    },
+    "restUrl": {
+      "label": "Custom REST URL",
+      "hint": "For a gateway (key test and model list). Empty: the region's address."
+    },
+    "extraParams": {
+      "label": "Extra start parameters (JSON)",
+      "placeholder": "{\"context\": {\"terms\": [\"Kubernetes\"]}}",
+      "hint": "A JSON object merged into the start message, for fields this version doesn't know yet. The key and the audio format are never taken from it.",
+      "errors": {
+        "invalidJson": "This isn't valid JSON.",
+        "notObject": "Must be a JSON object, e.g. {\"context\": …}.",
+        "apiKey": "Don't put api_key here: the key comes from the API Key field."
+      }
+    },
+    "testKey": "Test key",
+    "cost": "Costs about $0.12 per hour for each side Soniox transcribes; translation adds output tokens."
+  },
+  "quickSetup": {
+    "intro": "Choose how {{appName}} recognizes you and the other side, and in which language. You can change this any time in Settings.",
+    "recommended": {
+      "title": "Recommended: Soniox for Them, Whisper.cpp for you",
+      "hint": "Soniox transcribes and translates the other side in real time; your microphone stays on this computer.",
+      "apply": "Use this",
+      "applied": "In use"
+    },
+    "engineLabel": "Engine",
+    "engineAriaLabel": "Recognition engine for {{party}}",
+    "groups": {
+      "featured": "Recommended",
+      "others": "Other engines"
+    },
+    "option": {
+      "micOnly": "{{engine}} (microphone only)",
+      "inUseBy": "{{engine}} (used by {{party}})"
+    },
+    "models": {
+      "title": "{{engine}} models",
+      "hint": "Download a model; the first one becomes active."
+    },
+    "keyHint": "{{engine}} needs an API key: add it in Settings → {{tab}}.",
+    "test": "Test",
+    "result": {
+      "ok": "Both sides are ready.",
+      "error": "Fix the problems below, then test again."
+    },
+    "checks": {
+      "notOffered": "{{engine}} isn't available on this computer.",
+      "needsInput": "{{engine}} only works with a microphone source.",
+      "needsModel": "Download a {{engine}} model first.",
+      "modelReady": "{{engine}} model downloaded.",
+      "builtIn": "{{engine}} is built in.",
+      "keySaved": "{{engine}} API key saved.",
+      "needsKey": "No API key saved for {{engine}}: add it in Settings → {{tab}}."
+    },
+    "summary": {
+      "each": "{{them}} for Them, {{you}} for You",
+      "both": "{{engine}} for both sides"
+    },
+    "moreOptions": "More engines and options are in Settings."
+  },
+  "localModels": {
+    "loading": "Loading local models...",
+    "active": "Active",
+    "accuracy": "Accuracy:",
+    "speed": "Speed:",
+    "cancelDownload": "Cancel download",
+    "setActive": "Set as active model",
+    "activate": "Activate",
+    "delete": "Delete model",
+    "download": "Download",
+    "extracting": "Extracting...",
+    "verifying": "Verifying...",
+    "toasts": {
+      "autoActivated": "Model \"{{model}}\" activated for {{engine}}",
+      "activated": "Activated \"{{model}}\" for {{engine}}",
+      "deleted": "Deleted {{model}}",
+      "deleteFailed": "Failed to delete: {{detail}}",
+      "downloadFailed": "Download failed: {{detail}}"
+    }
+  },
+  "statusBar": {
+    "llmTitle": "LLM: {{provider}} / {{model}}",
+    "partyEngine": "{{party}}: {{engine}}",
+    "youTitle": "Your STT: {{engine}} {{state}}",
+    "themTitle": "Their STT: {{engine}} {{state}}",
+    "receiving": "(receiving audio)",
+    "silent": "(silent)",
+    "streaming": "streaming",
+    "indicator": "{{label}}: {{state}}",
+    "active": "active",
+    "inactive": "inactive",
+    "callLog": {
+      "title": "AI Call Log",
+      "ariaLabel": "Toggle AI call log"
+    },
+    "settings": {
+      "title": "Settings",
+      "ariaLabel": "Open settings"
+    },
+    "end": {
+      "label": "End",
+      "ariaLabel": "End meeting"
+    },
+    "meetingEnded": "Meeting ended",
+    "endFailed": "Failed to end meeting"
+  },
+  "noTranscript": {
+    "message": "<strong>No transcript from {{party}}.</strong> {{appName}} has heard {{seconds}}s of audio, but {{engine}} hasn't returned any text.",
+    "unknownEngine": "the provider",
+    "openDevLog": "Open Dev Log",
+    "changeEngine": "Change provider",
+    "dismiss": "Dismiss the {{party}} transcript warning"
+  },
+  "status": {
+    "error": "STT ({{party}}): {{message}}",
+    "connected": "STT: {{engine}} connected ({{party}})"
+  },
+  "configStore": {
+    "claudeSettingsNotApplied": "Claude settings not applied: {{detail}}"
+  }
+}
