@@ -1,1 +1,252 @@
-{}
+{
+  "actionNames": {
+    "assist": "助手",
+    "whatToSay": "怎么说",
+    "shorten": "精简",
+    "followUp": "追问",
+    "recap": "回顾",
+    "askQuestion": "提问"
+  },
+  "scenarios": {
+    "teamMeeting": {
+      "name": "团队会议",
+      "description": "记录决议与待办事项，标明说话人"
+    },
+    "lecture": {
+      "name": "讲座",
+      "description": "提炼要点、定义和问答"
+    },
+    "interview": {
+      "name": "面试",
+      "description": "问题、回答与追问"
+    },
+    "webinar": {
+      "name": "网络研讨会",
+      "description": "演讲要点与观众问答"
+    },
+    "oralExam": {
+      "name": "口试",
+      "description": "备考辅助：老师提问、回答指导、知识盲区"
+    }
+  },
+  "noisePresets": {
+    "quietOffice": {
+      "name": "安静办公室",
+      "description": "噪声低、灵敏度高，能捕捉轻声说话"
+    },
+    "classroom": {
+      "name": "教室",
+      "description": "噪声适中、抗回声，能应对走动声和交谈声"
+    },
+    "conferenceHall": {
+      "name": "会议厅",
+      "description": "噪声大、过滤力度强，适合大房间和混响环境"
+    },
+    "cafe": {
+      "name": "咖啡厅 / 开放空间",
+      "description": "噪声多变、灵敏度均衡，适合附近有音乐和交谈声的环境"
+    }
+  },
+  "reservedShortcuts": {
+    "startEndMeeting": "开始 / 结束会议",
+    "showHideOverlay": "显示 / 隐藏悬浮窗",
+    "openSettings": "打开设置",
+    "devLog": "开发日志",
+    "demoMode": "演示模式"
+  },
+  "shortcuts": {
+    "meetingNotSaved": "会议没能保存完",
+    "stealth": {
+      "hidden": "共享屏幕时已隐藏",
+      "visible": "共享屏幕时可见",
+      "failed": "更改共享屏幕时的可见性失败：{{detail}}"
+    }
+  },
+  "audioPlayer": {
+    "playButton": {
+      "play": "播放",
+      "pause": "暂停"
+    },
+    "volume": {
+      "label": "音量",
+      "title": "音量：{{percent}}%"
+    },
+    "speed": {
+      "label": "切换播放速度",
+      "hint": "点击加快播放速度"
+    },
+    "download": {
+      "label": "下载录音",
+      "fileType": "音频"
+    },
+    "processing": {
+      "label": "正在处理音频…"
+    }
+  },
+  "colorPicker": {
+    "button": {
+      "title": "选择颜色"
+    },
+    "hex": {
+      "placeholder": "自定义"
+    },
+    "colors": {
+      "white": "白色",
+      "warm": "暖灰",
+      "snow": "雪白",
+      "cyan": "青色",
+      "sky": "天蓝",
+      "amber": "琥珀",
+      "orange": "橙色",
+      "emerald": "翠绿",
+      "lime": "青柠",
+      "rose": "玫瑰",
+      "pink": "粉色",
+      "lavender": "薰衣草",
+      "indigo": "靛蓝",
+      "peach": "蜜桃",
+      "teal": "蓝绿"
+    }
+  },
+  "devLog": {
+    "title": "开发日志",
+    "resizeHandle": {
+      "label": "调整开发日志面板大小"
+    },
+    "filter": {
+      "all": "全部"
+    },
+    "copyAll": {
+      "label": "复制全部"
+    },
+    "detach": {
+      "label": "在单独窗口中打开"
+    },
+    "close": {
+      "label": "关闭（Esc）"
+    },
+    "empty": {
+      "waiting": "正在等待语音事件…",
+      "noEntries": "暂无 {{category}} 日志"
+    }
+  },
+  "errorBoundary": {
+    "title": "出了点问题",
+    "detail": "发生了意外错误。"
+  },
+  "streamLatency": {
+    "thinking": "思考中 {{seconds}} 秒",
+    "writing": "生成中 {{seconds}} 秒",
+    "answering": "回答中…"
+  },
+  "toast": {
+    "dismiss": {
+      "label": "关闭通知"
+    },
+    "container": {
+      "label": "通知"
+    }
+  },
+  "meetingPrompt": {
+    "status": {
+      "detected": "检测到 {{app}} 会议"
+    },
+    "nameInput": {
+      "placeholder": "{{app}} — 给这场会议起个名字",
+      "label": "会议名称"
+    },
+    "startButton": {
+      "label": "开始 {{appName}}"
+    },
+    "typeButton": {
+      "label": "会议类型：{{type}}"
+    },
+    "typeMenu": {
+      "label": "会议类型",
+      "heading": "按以下类型开始"
+    },
+    "typeFallback": "会议",
+    "consent": {
+      "hint": "记得告诉大家，这场会议正在转写。"
+    }
+  },
+  "hooks": {
+    "meetingStats": {
+      "duration": {
+        "hoursMinutes": "{{hours}} 小时 {{minutes}} 分",
+        "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
+        "seconds": "{{seconds}} 秒"
+      }
+    }
+  },
+  "speakerLabels": {
+    "defaultName": "说话人 {{n}}"
+  },
+  "time": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{count}} 分钟前",
+    "hoursAgo": "{{count}} 小时前",
+    "daysAgo": "{{count}} 天前"
+  },
+  "modes": {
+    "assist": "助手",
+    "whatToSay": "怎么说",
+    "shorten": "精简",
+    "followUp": "追问",
+    "recap": "回顾",
+    "askQuestion": "提问",
+    "meetingSummary": "总结",
+    "actionItems": "待办",
+    "bookmarkSuggestions": "书签",
+    "meetingAsk": "问会议"
+  },
+  "endMeetingSave": {
+    "unsavedTranscript_other": "有 {{count}} 条转写内容没能保存。会议还没结束，请再点一次“结束”。"
+  },
+  "export": {
+    "labels": {
+      "date": "日期：",
+      "duration": "时长：",
+      "mode": "模式：",
+      "scenario": "场景：",
+      "segments": "片段数：",
+      "attendees": "参会人员："
+    },
+    "headings": {
+      "summary": "会议总结",
+      "actionItems": "待办事项",
+      "bookmarks": "书签",
+      "transcript": "转写记录",
+      "aiInteractions": "AI 交互记录",
+      "keyTakeaways": "核心要点",
+      "topicsCovered": "涵盖的话题",
+      "notes": "笔记",
+      "followUpActions": "后续行动",
+      "agendaItems": "议程",
+      "discussion": "讨论内容"
+    },
+    "docs": {
+      "studyNotes": "学习笔记",
+      "meetingMinutes": "会议纪要",
+      "heading": "{{kind}}：{{title}}"
+    },
+    "scenarios": {
+      "teamMeeting": "团队会议",
+      "lecture": "讲座",
+      "interview": "面试",
+      "webinar": "网络研讨会",
+      "oralExam": "口试",
+      "custom": "自定义"
+    },
+    "noNote": "（无备注）",
+    "startsAt": "开始于 {{time}}",
+    "attendeeSeparator": "、",
+    "filters": {
+      "srt": "SRT 字幕"
+    },
+    "toast": {
+      "exported": "已导出",
+      "failed": "导出失败，请检查磁盘空间"
+    }
+  }
+}

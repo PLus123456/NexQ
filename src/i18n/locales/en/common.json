@@ -29,7 +29,9 @@
     "save": "Save",
     "search": "Search",
     "skip": "Skip",
-    "testConnection": "Test connection"
+    "testConnection": "Test connection",
+    "reset": "Reset",
+    "rename": "Rename"
   },
   "status": {
     "connected": "Connected",
@@ -44,7 +46,8 @@
     "saved": "Saved",
     "saving": "Saving…",
     "success": "Success",
-    "testing": "Testing…"
+    "testing": "Testing…",
+    "copiedToClipboard": "Copied to clipboard"
   },
   "labels": {
     "advanced": "Advanced",
@@ -59,14 +62,19 @@
     "room": "Room",
     "them": "Them",
     "unknown": "Unknown",
-    "you": "You"
+    "you": "You",
+    "all": "All",
+    "online": "Online",
+    "inPerson": "In-Person",
+    "interviewer": "Interviewer"
   },
   "errors": {
     "loadFailed": "Couldn't load: {{detail}}",
     "operationFailed": "Operation failed: {{detail}}",
     "saveFailed": "Couldn't save: {{detail}}",
     "testFailed": "Test failed: {{detail}}",
-    "unknown": "Unknown error"
+    "unknown": "Unknown error",
+    "copyFailed": "Couldn't copy to clipboard"
   },
   "units": {
     "milliseconds": "{{count}} ms",
@@ -178,5 +186,11 @@
         "other": "Other"
       }
     }
+  },
+  "time": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "thisWeek": "This Week",
+    "earlier": "Earlier"
   }
 }

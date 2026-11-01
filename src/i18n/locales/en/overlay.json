@@ -1,1 +1,223 @@
-{}
+{
+  "response": {
+    "tabs": {
+      "ariaLabel": "AI response tabs",
+      "current": "Current"
+    },
+    "history": {
+      "label": "History",
+      "ariaLabel_one": "History, {{count}} answer",
+      "ariaLabel_other": "History, {{count}} answers"
+    },
+    "content": {
+      "ariaLabel": "AI response content"
+    },
+    "empty": {
+      "hint": "Press <kbd>Space</kbd> for AI assistance"
+    },
+    "typeset": {
+      "label": "AI Text",
+      "smaller": "Smaller",
+      "larger": "Larger",
+      "colorLabel": "AI text color",
+      "lineHeight": {
+        "label": "LH",
+        "decrease": "Decrease line height",
+        "increase": "Increase line height"
+      },
+      "margin": {
+        "decrease": "Decrease margin",
+        "increase": "Increase margin"
+      },
+      "align": {
+        "left": {
+          "label": "L",
+          "title": "Align left"
+        },
+        "center": {
+          "label": "C",
+          "title": "Align center"
+        },
+        "right": {
+          "label": "R",
+          "title": "Align right"
+        }
+      }
+    },
+    "timing": {
+      "firstWords": "first words {{duration}}"
+    },
+    "actions": {
+      "copy": "Copy to clipboard",
+      "pin": "Pin response",
+      "unpin": "Unpin"
+    }
+  },
+  "progress": {
+    "phase": {
+      "sending": "Sending…",
+      "waiting": "Waiting for the first words…",
+      "thinking": "Thinking…",
+      "writing": "Writing…"
+    },
+    "answer": "Answer",
+    "ariaLabel": "{{label}}: {{phase}}",
+    "lines": {
+      "none": "no new transcript since last answer",
+      "sent_one": "{{count}} new transcript line sent",
+      "sent_other": "{{count}} new transcript lines sent",
+      "total_one": "{{count}} transcript line",
+      "total_other": "{{count}} transcript lines"
+    }
+  },
+  "format": {
+    "seconds": "{{value}} s"
+  },
+  "history": {
+    "title": "All answers",
+    "close": "Close answer history",
+    "pinned": "Pinned"
+  },
+  "question": {
+    "region": {
+      "ariaLabel": "Detected questions"
+    },
+    "empty": "Listening for questions from the other party",
+    "card": {
+      "labelAnswered": "Question: {{text}}. Answered",
+      "labelPending": "Question: {{text}}. Click to assist"
+    },
+    "answered": "Answered",
+    "assist": "Assist",
+    "button": {
+      "answeredLabel": "Already answered",
+      "assistLabel": "Get AI assistance for this question"
+    },
+    "dismiss": "Dismiss question"
+  },
+  "scope": {
+    "label": {
+      "default": "Action default",
+      "sinceLastAny": "Since last answer",
+      "sinceLastSame": "Since last same",
+      "minutes": "Last {{minutes}} min",
+      "all": "Whole meeting"
+    },
+    "option": {
+      "sinceLastSame": "Since last same action"
+    },
+    "optionHint": {
+      "default": "Each action's own transcript window",
+      "defaultClaude": "Claude decides from the whole meeting",
+      "sinceLastAny": "New talk since any answer",
+      "sinceLastSame": "New talk since this action ran",
+      "all": "Everything said so far"
+    },
+    "actionHint": {
+      "sinceLastAny": "since last answer",
+      "sinceLastSame": "since last {{action}}",
+      "minutes": "last {{minutes}} min",
+      "all": "whole meeting"
+    },
+    "resolved": {
+      "firstAny": "Whole meeting (first answer)",
+      "sinceLastSame": "Since last {{action}}",
+      "firstSame": "Whole meeting (first {{action}})"
+    },
+    "chip": {
+      "ariaLabel": "Transcript scope: {{label}}",
+      "ariaLabelOnce": "Transcript scope: {{label}}, next action only",
+      "titleOnce": "Transcript scope: {{label}} (next action only)",
+      "once": "once"
+    },
+    "dialog": {
+      "title": "Transcript scope",
+      "heading": "Focus the next answers on"
+    },
+    "minutes": {
+      "group": "Minutes",
+      "preset": "Last {{minutes}} minutes",
+      "custom": "Custom minutes ({{min}} to {{max}})",
+      "unit": "min"
+    },
+    "note": {
+      "claude": "Claude's live session already holds the whole meeting; each request sends only new lines. This only tells it where to focus.",
+      "settings": "Each action's window is set in <settings>Settings → AI Actions</settings>."
+    },
+    "sticky": {
+      "label": "Keep for next actions"
+    }
+  },
+  "modes": {
+    "shortcutLabel": "{{name}} ({{shortcut}})",
+    "errors": {
+      "cancelFailed": "Couldn't cancel generation",
+      "generateFailed": "Couldn't generate AI response",
+      "sendFailed": "Couldn't send question"
+    },
+    "ask": {
+      "closeLabel": "Close question input"
+    }
+  },
+  "ask": {
+    "input": {
+      "placeholder": "Ask about the meeting...",
+      "ariaLabel": "Ask a question"
+    },
+    "send": {
+      "title": "Send (Enter)",
+      "ariaLabel": "Send question"
+    },
+    "close": {
+      "title": "Close (Esc)",
+      "ariaLabel": "Close ask input"
+    },
+    "errors": {
+      "sendFailed": "Failed to send question"
+    }
+  },
+  "speakerStats": {
+    "title": "Speaker Stats",
+    "count_one": "{{count}} speaker",
+    "count_other": "{{count}} speakers",
+    "empty": "No speakers tracked yet.",
+    "lastSpoke": {
+      "now": "just now",
+      "seconds": "{{seconds}}s ago",
+      "minutes": "{{minutes}}m ago"
+    },
+    "rename": {
+      "title": "{{name}} — click to rename"
+    },
+    "words": "{{words}}w"
+  },
+  "bookmarks": {
+    "panel": {
+      "empty": "No bookmarks yet. Right-click a line or use Ctrl+B to bookmark.",
+      "title": "Bookmarks ({{total}})",
+      "jump": "Jump to line",
+      "notePlaceholder": "Add note..."
+    },
+    "toast": {
+      "added": "Bookmarked",
+      "addNote": "+ Note",
+      "notePlaceholder": "Add a note..."
+    }
+  },
+  "contextMenu": {
+    "bookmark": "Bookmark",
+    "removeBookmark": "Remove Bookmark",
+    "addNote": "Add Note",
+    "copyText": "Copy Text"
+  },
+  "speakerNaming": {
+    "detected": "New speaker detected:",
+    "name": {
+      "heading": "Name this speaker",
+      "placeholder": "e.g. Professor Smith"
+    },
+    "merge": {
+      "heading": "Actually this is..."
+    }
+  }
+}

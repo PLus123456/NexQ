@@ -29,7 +29,9 @@
     "save": "保存",
     "search": "搜索",
     "skip": "跳过",
-    "testConnection": "测试连接"
+    "testConnection": "测试连接",
+    "reset": "重置",
+    "rename": "重命名"
   },
   "status": {
     "connected": "已连接",
@@ -44,7 +46,8 @@
     "saved": "已保存",
     "saving": "保存中…",
     "success": "成功",
-    "testing": "测试中…"
+    "testing": "测试中…",
+    "copiedToClipboard": "已复制到剪贴板"
   },
   "labels": {
     "advanced": "高级",
@@ -59,14 +62,19 @@
     "room": "现场",
     "them": "对方",
     "unknown": "未知",
-    "you": "我"
+    "you": "我",
+    "all": "全部",
+    "online": "在线",
+    "inPerson": "现场",
+    "interviewer": "面试官"
   },
   "errors": {
     "loadFailed": "加载失败：{{detail}}",
     "operationFailed": "操作失败：{{detail}}",
     "saveFailed": "保存失败：{{detail}}",
     "testFailed": "测试失败：{{detail}}",
-    "unknown": "未知错误"
+    "unknown": "未知错误",
+    "copyFailed": "复制到剪贴板失败"
   },
   "units": {
     "milliseconds": "{{count}} 毫秒",
@@ -176,5 +184,11 @@
         "other": "其他"
       }
     }
+  },
+  "time": {
+    "today": "今天",
+    "yesterday": "昨天",
+    "thisWeek": "本周",
+    "earlier": "更早"
   }
 }
