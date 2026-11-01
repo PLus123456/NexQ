@@ -27,7 +27,7 @@ import type { QuickSetupProps, QuickSetupStatus } from "../quickSetup";
 import { draftOf, draftProblems } from "./draft";
 import { TestResultView } from "./ModelSection";
 import { connectionFromTemplate, findTemplate, QUICK_SETUP_TEMPLATES, type ProviderTemplate } from "./providerTemplates";
-import { useTemplateName } from "./templateNames";
+import { connectionNameFrom, useTemplateName } from "./templateNames";
 import { BUTTON, BUTTON_PRIMARY, CARD, ConnectionIcon, LABEL, LINK_BUTTON } from "./ui";
 
 export function LlmQuickSetup(props: QuickSetupProps) {
@@ -124,7 +124,7 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
   };
 
   const choose = (next: ProviderTemplate) => {
-    const created = connectionFromTemplate(next, templateName(next.id), view.connections.map((c) => c.name));
+    const created = connectionFromTemplate(next, connectionNameFrom(templateName(next.id)), view.connections.map((c) => c.name));
     setConnection(created);
     setSecret(null);
     setFetched(null);

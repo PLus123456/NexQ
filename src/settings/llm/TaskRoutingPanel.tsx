@@ -236,7 +236,7 @@ function TaskRow({ row, view }: { row: Row; view: LlmConfigView }) {
       </div>
 
       <div className="mt-1.5 flex items-start justify-between gap-3 pl-10">
-        <p className={cn("min-w-0 break-words text-meta", warn ? "text-warning" : "text-muted-foreground")}>
+        <p className={`min-w-0 break-words text-meta ${warn ? "text-warning" : "text-muted-foreground"}`}>
           <span className="sr-only">{t("routing.effective.label")} </span>
           {effectiveText}
         </p>

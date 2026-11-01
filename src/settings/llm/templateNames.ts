@@ -14,3 +14,12 @@ export function useTemplateName(): (id: TemplateId) => string {
 export function templateName(id: TemplateId): string {
   return translate(`llm:templates.items.${id}.name`);
 }
+
+/**
+ * A new connection's name from its template's display name, without the
+ * explanation in parentheses: "DeepSeek（深度求索）" → "DeepSeek",
+ * "Custom (OpenAI-compatible)" → "Custom".
+ */
+export function connectionNameFrom(displayName: string): string {
+  return displayName.replace(/\s*[（(][^（）()]*[）)]\s*$/, "").trim() || displayName;
+}

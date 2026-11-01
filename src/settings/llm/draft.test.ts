@@ -3,6 +3,7 @@ import { mockConnection } from "../../lib/llm/testing/mockLlmBackend";
 import { connectionToSave, draftOf, draftProblems, isDirty, needsSecretReentry, secretToSave } from "./draft";
 import { parseExtraBody } from "./ParamsFields";
 import { connectionFromTemplate, findTemplate, PROVIDER_TEMPLATES } from "./providerTemplates";
+import { connectionNameFrom } from "./templateNames";
 
 const saved = mockConnection({
   id: "c_00000001",
@@ -106,5 +107,15 @@ describe("provider templates", () => {
     expect(anthropic.auth).toEqual({ mode: "header", header_name: "x-api-key", prefix: "" });
     expect(anthropic.compat.temperature).toBe("omit");
     expect(connectionFromTemplate(findTemplate("claude_cli")!, "Claude", []).models_endpoint).toBe("disabled");
+  });
+});
+
+describe("connectionNameFrom", () => {
+  it("drops the explanation in parentheses", () => {
+    expect(connectionNameFrom("DeepSeek（深度求索）")).toBe("DeepSeek");
+    expect(connectionNameFrom("通义千问（百炼，兼容模式）")).toBe("通义千问");
+    expect(connectionNameFrom("Custom (OpenAI-compatible)")).toBe("Custom");
+    expect(connectionNameFrom("Ollama")).toBe("Ollama");
+    expect(connectionNameFrom("（只有括号）")).toBe("（只有括号）");
   });
 });

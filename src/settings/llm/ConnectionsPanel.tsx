@@ -11,7 +11,7 @@ import { ConnectionList, type ConnectionListItem } from "./ConnectionList";
 import { draftOf, isDirty, type ConnectionDraft } from "./draft";
 import { connectionFromTemplate, type ProviderTemplate } from "./providerTemplates";
 import { TemplatePicker } from "./TemplatePicker";
-import { useTemplateName } from "./templateNames";
+import { connectionNameFrom, useTemplateName } from "./templateNames";
 import { CARD } from "./ui";
 
 /** The default connection, else the first one. */
@@ -65,7 +65,7 @@ export function ConnectionsPanel({ view }: { view: LlmConfigView }) {
     }
     const connection = connectionFromTemplate(
       template,
-      templateName(template.id),
+      connectionNameFrom(templateName(template.id)),
       items.map((item) => item.connection.name),
     );
     setDraft(connection.id, draftOf(connection, true));
