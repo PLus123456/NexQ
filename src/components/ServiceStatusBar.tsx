@@ -26,6 +26,8 @@ import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
 import { Trans, useT } from "../i18n";
+import { useLlmConfig } from "../stores/llmConnectionsStore";
+import { effectiveRoute } from "../lib/llm/tasks";
 
 // ── Human-friendly provider labels (product names; only "Custom" is translated) ──
 const LLM_LABELS: Record<string, string> = {
@@ -148,10 +150,16 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   // While an answer streams, name what serves it (it can be a fallback);
   // otherwise the active provider. The stream store keeps the last stream's
   // provider until the meeting ends, so it must not outlive the stream.
-  const shownProvider = (isStreaming && streamProvider) || llmProvider;
-  const shownModel = (isStreaming && streamModel) || llmModel;
-  const llmProviderLabel = llmLabel(shownProvider, t("common:labels.custom"));
+  // With LLM connections, the default connection's own name ("DeepSeek")
+  // instead of its old provider type; without them (older backend), as before.
+  const { view: llmView } = useLlmConfig();
+  const defaultRoute = llmView ? effectiveRoute(llmView, "default") : null;
+  const usable = defaultRoute && !defaultRoute.error ? defaultRoute : null;
+  const shownProvider = (isStreaming && streamProvider) || usable?.connection_name || llmProvider;
+  const shownModel = (isStreaming && streamModel) || (usable ? usable.model ?? "" : llmModel);
+  const llmProviderLabel = usable && !isStreaming ? shownProvider : llmLabel(shownProvider, t("common:labels.custom"));
   const llmModelLabel = formatModel(shownModel);
+  const claudeIsDefault = usable ? usable.kind === "claude_cli" : llmProvider === "claude_cli";
 
   const youSttProvider = meetingAudioConfig?.you.stt_provider ?? "web_speech";
   const youLocalModel = resolveLocalModelId(
@@ -187,7 +195,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
     <div className={`flex flex-wrap items-center gap-2.5 ${compact ? "px-3 py-2" : "px-5 py-2.5"}`}>
       {/* LLM — always interactive */}
       <div className="relative">
-        {llmProvider === "claude_cli" ? (
+        {claudeIsDefault ? (
           <AgentStatusChip
             compact={compact}
             pickerOpen={pickerOpen === "llm"}

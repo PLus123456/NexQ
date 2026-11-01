@@ -44,6 +44,8 @@ import { useSpeakerStore } from "../stores/speakerStore";
 import { useStreamStore } from "../stores/streamStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
+import { resetLlmConnectionsStoreForTests, useLlmConnectionsStore } from "../stores/llmConnectionsStore";
+import { emptyView, mockConnection } from "../lib/llm/testing/mockLlmBackend";
 
 const LOGGED_IN: ClaudeCliStatus = {
   installed: true,
@@ -100,6 +102,7 @@ beforeEach(() => {
   useStreamStore.setState({ isStreaming: false, currentProvider: "", currentModel: "" });
   useUpdaterStore.getState().reset();
   useToastStore.setState({ toasts: [] });
+  resetLlmConnectionsStoreForTests();
 });
 
 afterEach(async () => {
@@ -122,6 +125,15 @@ describe("ServiceStatusBar text", () => {
     fireEvent.click(screen.getByTitle("Mute You"));
     expect(screen.getByTitle("Unmute You")).toBeInTheDocument();
     expect(screen.getByTitle("Mute Them")).toBeInTheDocument();
+  });
+
+  it("names the default LLM connection, not its old provider type", () => {
+    const deepseek = mockConnection({ id: "c_1", name: "DeepSeek", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-chat" });
+    useLlmConnectionsStore.getState().applyView(
+      emptyView({ revision: 5, connections: [deepseek], routing: { default: { target: { connection_id: "c_1", model: null }, params: {} }, tasks: {} } }),
+    );
+    render(<ServiceStatusBar />);
+    expect(screen.getByTitle("LLM: DeepSeek / deepseek-chat")).toBeInTheDocument();
   });
 
   it("names the room and counts the speakers in in-person mode", () => {
