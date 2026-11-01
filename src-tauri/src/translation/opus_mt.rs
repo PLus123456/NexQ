@@ -223,6 +223,7 @@ impl TranslationProvider for OpusMtTranslator {
                 language_count: 0,
                 response_ms: 0,
                 error: Some("Models directory not configured".into()),
+                sample: None,
             });
         };
 
@@ -232,6 +233,7 @@ impl TranslationProvider for OpusMtTranslator {
                 language_count: 0,
                 response_ms: 0,
                 error: Some("Models directory not found".into()),
+                sample: None,
             });
         }
 
@@ -251,6 +253,7 @@ impl TranslationProvider for OpusMtTranslator {
                 language_count: 0,
                 response_ms: 0,
                 error: Some("No models downloaded".into()),
+                sample: None,
             });
         }
 
@@ -263,6 +266,7 @@ impl TranslationProvider for OpusMtTranslator {
             language_count: model_count,
             response_ms: 0,
             error: None,
+            sample: None,
         })
     }
 }

@@ -23,8 +23,10 @@ import {
 import { useTranslationStore } from "../stores/translationStore";
 import type { OpusMtModelStatus } from "../lib/types";
 import { showToast } from "../stores/toastStore";
+import { useT } from "../i18n";
 
 export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (models?: OpusMtModelStatus[]) => void }) {
+  const { t } = useT(["translation", "common"]);
   const [models, setModels] = useState<OpusMtModelStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterLang, setFilterLang] = useState("all");
@@ -58,7 +60,7 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
         loadModels();
       } else if (d.status === "error") {
         const modelId = key.replace("opus_mt:", "");
-        showToast(`Download failed for ${modelId}`, "error");
+        showToast(t("opusMt.toast.downloadFailedFor", { modelId }), "error");
       }
     }
   }, [downloads, loadModels]);
@@ -68,11 +70,11 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
       try {
         await downloadOpusMtModel(modelId);
       } catch (err: any) {
-        const msg = typeof err === "string" ? err : err?.message ?? "Unknown error";
-        showToast(`Download failed: ${msg}`, "error");
+        const msg = typeof err === "string" ? err : err?.message ?? t("common:errors.unknown");
+        showToast(t("opusMt.toast.downloadFailed", { detail: msg }), "error");
       }
     },
-    []
+    [t]
   );
 
   const handleCancel = useCallback(
@@ -90,14 +92,14 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
     async (modelId: string) => {
       try {
         await deleteOpusMtModel(modelId);
-        showToast("Model deleted", "success");
+        showToast(t("opusMt.toast.deleted"), "success");
         const fresh = await loadModels();
         onModelsChanged?.(fresh);
       } catch (err: any) {
-        showToast(`Delete failed: ${err}`, "error");
+        showToast(t("opusMt.toast.deleteFailed", { detail: String(err) }), "error");
       }
     },
-    [loadModels]
+    [loadModels, t]
   );
 
   const handleActivate = useCallback(
@@ -114,14 +116,14 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
           setTargetLang(model.definition.target_lang);
         }
 
-        showToast("Model activated — translation will load on first use", "success");
+        showToast(t("opusMt.toast.activated"), "success");
         const fresh = await loadModels();
         onModelsChanged?.(fresh);
       } catch (err: any) {
-        showToast(`Activation failed: ${err}`, "error");
+        showToast(t("opusMt.toast.activationFailed", { detail: String(err) }), "error");
       }
     },
-    [loadModels, setStoreProvider]
+    [loadModels, setStoreProvider, t]
   );
 
   // Get unique source languages for filter
@@ -145,7 +147,7 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
     return (
       <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Loading models...
+        {t("opusMt.loading")}
       </div>
     );
   }
@@ -154,9 +156,9 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
     <div className="rounded-xl border border-border/30 bg-card/50 p-4">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-primary/80">OPUS-MT Models</h3>
+          <h3 className="text-sm font-semibold text-primary/80">{t("opusMt.title")}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {downloadedCount} downloaded · {models.length} available
+            {t("opusMt.summary", { downloaded: downloadedCount, total: models.length })}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -165,7 +167,7 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
             onChange={(e) => setFilterLang(e.target.value)}
             className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs text-foreground focus:border-primary focus:outline-none cursor-pointer"
           >
-            <option value="all">All Languages</option>
+            <option value="all">{t("opusMt.filter.all")}</option>
             {sourceLanguages.map(([code, name]) => (
               <option key={code} value={code}>
                 {name} →
@@ -180,7 +182,7 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
         <div className="mb-3 flex items-center gap-2 rounded-lg border border-success/20 bg-success/5 px-3 py-2">
           <CheckCircle className="h-3.5 w-3.5 text-success shrink-0" />
           <span className="text-xs font-medium text-success">
-            Active: {activeModel.definition.display_name}
+            {t("opusMt.activeBanner", { name: activeModel.definition.display_name })}
           </span>
         </div>
       )}
@@ -213,7 +215,7 @@ export function OpusMtModelManager({ onModelsChanged }: { onModelsChanged?: (mod
 
       {filteredModels.length === 0 && (
         <p className="py-4 text-center text-xs text-muted-foreground">
-          No models found for this filter.
+          {t("opusMt.empty")}
         </p>
       )}
     </div>
@@ -237,6 +239,7 @@ function ModelRow({
   onDelete: () => void;
   onActivate: () => void;
 }) {
+  const { t } = useT("translation");
   const def = model.definition;
   const sizeMB = Math.round(def.size_bytes / 1_000_000);
 
@@ -278,7 +281,7 @@ function ModelRow({
           <button
             onClick={onCancel}
             className="p-0.5 text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
-            title="Cancel download"
+            title={t("opusMt.row.cancelDownload")}
           >
             <X className="h-3 w-3" />
           </button>
@@ -291,7 +294,7 @@ function ModelRow({
           {model.is_active && (
             <span className="inline-flex items-center gap-1 rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success">
               <CheckCircle className="h-2.5 w-2.5" />
-              Active
+              {t("opusMt.row.active")}
             </span>
           )}
 
@@ -299,10 +302,10 @@ function ModelRow({
             <button
               onClick={onActivate}
               className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-              title="Set as active model"
+              title={t("opusMt.row.activate.title")}
             >
               <Zap className="h-2.5 w-2.5" />
-              Activate
+              {t("opusMt.row.activate.label")}
             </button>
           )}
 
@@ -310,10 +313,10 @@ function ModelRow({
             <button
               onClick={onDownload}
               className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-accent transition-colors cursor-pointer"
-              title="Download model"
+              title={t("opusMt.row.download.title")}
             >
               <Download className="h-2.5 w-2.5" />
-              Download
+              {t("opusMt.row.download.label")}
             </button>
           )}
 
@@ -321,7 +324,7 @@ function ModelRow({
             <button
               onClick={onDelete}
               className="p-1 text-muted-foreground/50 hover:text-destructive transition-colors cursor-pointer"
-              title="Delete model"
+              title={t("opusMt.row.delete")}
             >
               <Trash2 className="h-3 w-3" />
             </button>

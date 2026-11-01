@@ -1,1 +1,320 @@
-{}
+{
+  "selection": {
+    "translate": "翻译",
+    "translating": "翻译中…"
+  },
+  "postMeeting": {
+    "title": "翻译",
+    "displayMode": {
+      "inline": "行内",
+      "hover": "悬停"
+    },
+    "retranslateMismatched_other": "重新翻译 {{count}} 个不匹配的片段",
+    "hide": "隐藏翻译",
+    "show": "显示翻译"
+  },
+  "opusMt": {
+    "title": "OPUS-MT 模型",
+    "summary": "已下载 {{downloaded}} 个 · 共 {{total}} 个可用",
+    "filter": {
+      "all": "全部语言"
+    },
+    "loading": "正在加载模型…",
+    "activeBanner": "当前使用：{{name}}",
+    "empty": "没有符合筛选条件的模型。",
+    "row": {
+      "cancelDownload": "取消下载",
+      "active": "使用中",
+      "activate": {
+        "label": "启用",
+        "title": "设为当前模型"
+      },
+      "download": {
+        "label": "下载",
+        "title": "下载模型"
+      },
+      "delete": "删除模型"
+    },
+    "toast": {
+      "downloadFailedFor": "{{modelId}} 下载失败",
+      "downloadFailed": "下载失败：{{detail}}",
+      "deleted": "模型已删除",
+      "deleteFailed": "删除失败：{{detail}}",
+      "activated": "模型已启用，翻译将在首次使用时加载",
+      "activationFailed": "启用失败：{{detail}}"
+    }
+  },
+  "transcript": {
+    "empty": {
+      "capturing": "正在采集音频",
+      "hint": "检测到语音后会立即显示在这里",
+      "startMeeting": "开始会议后即可看到字幕"
+    },
+    "search": {
+      "placeholder": "搜索字幕…",
+      "label": "搜索字幕",
+      "matches_other": "{{count}} 处匹配",
+      "clear": "清除搜索"
+    },
+    "typeset": {
+      "text": "原文",
+      "textColor": "原文颜色",
+      "translation": "译文",
+      "translationColor": "译文颜色"
+    },
+    "scrollToLatest": "回到最新",
+    "audio": {
+      "mute": "静音：{{label}}",
+      "unmute": "取消静音：{{label}}",
+      "level": "{{label}}的音量",
+      "muted": "已静音"
+    }
+  },
+  "line": {
+    "renameHint": "点击重命名",
+    "confidence": "置信度：{{percent}}%",
+    "translating": "翻译中…",
+    "translationFailed": "翻译失败",
+    "latestFailed": "最新的内容没有翻译成功：{{detail}}",
+    "bookmark": {
+      "add": "给这一行加书签",
+      "remove": "移除书签"
+    }
+  },
+  "overlay": {
+    "recording": {
+      "label": "正在录音",
+      "badge": "录音"
+    },
+    "mode": {
+      "online": "线上",
+      "inPerson": "现场"
+    },
+    "mute": {
+      "muteYou": "麦克风静音（我）",
+      "unmuteYou": "取消麦克风静音（我）",
+      "muteThem": "对方静音",
+      "unmuteThem": "取消对方静音"
+    },
+    "layout": {
+      "focusAi": "只看 AI 面板",
+      "focusTranscript": "只看字幕",
+      "split": "并排显示"
+    },
+    "panels": {
+      "speakerStats": "说话人统计（S）",
+      "bookmarks": "书签（K）",
+      "callLog": "AI 调用日志",
+      "devLog": "调试日志（Ctrl+Shift+L）",
+      "transcript": "字幕",
+      "expandTranscript": "展开字幕面板",
+      "expandTranscriptTitle": "展开字幕",
+      "ai": "AI",
+      "expandAi": "展开 AI 面板"
+    },
+    "stealth": {
+      "hidden": "共享屏幕时已隐藏，点击显示（{{shortcut}}）",
+      "visible": "共享屏幕时可见，点击隐藏（{{shortcut}}）"
+    },
+    "transparency": "透明度：{{percent}}%（点击切换）",
+    "settings": "设置",
+    "minimize": "最小化到主窗口（Ctrl+B 可恢复）",
+    "translate": {
+      "label": "翻译",
+      "toggle": "开关实时翻译",
+      "notReady": "翻译服务未就绪：{{detail}}",
+      "noParty": "没有选择要翻译哪一方，请在“设置 → 翻译”里选择。",
+      "noServiceParty": "没有哪一方由翻译服务翻译（已关闭，或由识别引擎直接翻译）。",
+      "inline": "行内",
+      "hover": "悬停",
+      "all": "全部翻译",
+      "allTitle": "翻译之前所有的字幕片段",
+      "allRunning": "翻译中…",
+      "target": "目标语言：{{language}}"
+    },
+    "batch": {
+      "alreadyDone": "{{total}} 个片段都已翻译",
+      "someNew": "新翻译了 {{count}} 个片段（{{cached}} 个已有缓存，共 {{total}} 个）",
+      "allNew": "已翻译全部 {{total}} 个片段",
+      "partial": "翻译了 {{count}} 个片段，{{failed}} 个失败：{{detail}}",
+      "failed": "批量翻译失败：{{detail}}"
+    },
+    "end": {
+      "label": "结束会议",
+      "button": "结束",
+      "ended": "会议已结束",
+      "failed": "无法结束会议"
+    }
+  },
+  "errors": {
+    "translateFailed": "翻译失败：{{detail}}"
+  },
+  "providers": {
+    "opusMt": {
+      "description": "100+ 种语言 · 完全离线 · 隐私"
+    },
+    "llm": {
+      "label": "LLM 翻译",
+      "description": "使用为翻译选择的 AI 模型"
+    },
+    "microsoft": {
+      "description": "179 种语言 · 每月免费 200 万字符"
+    },
+    "google": {
+      "description": "133 种语言 · 每月免费 20 美元额度"
+    },
+    "deepl": {
+      "description": "31 种语言 · 每月免费 50 万字符"
+    }
+  },
+  "settings": {
+    "banner": {
+      "active": "当前：{{provider}} · {{language}}",
+      "hint": "转写记录会用这个服务商翻译",
+      "ready": "已就绪",
+      "notReady": "未就绪：{{detail}}"
+    },
+    "groups": {
+      "local": "本地与离线",
+      "localTag": "免费 · 无需 API Key · 隐私",
+      "cloud": "云服务",
+      "cloudTag": "需要 API Key"
+    },
+    "badge": {
+      "ready": "就绪",
+      "available": "可用",
+      "models_other": "{{count}} 个模型",
+      "noModels": "没有模型",
+      "notReady": "未就绪",
+      "hasKey": "已有 Key",
+      "noKey": "没有 Key",
+      "customEndpoint": "自定义地址",
+      "activeDot": "当前服务商：{{badge}}"
+    },
+    "apiKey": {
+      "title": "API Key",
+      "storedPlaceholder": "已保存 Key，输入新的即可替换",
+      "placeholder": "输入 {{provider}} 的 API Key",
+      "optionalPlaceholder": "输入 {{provider}} 的 API Key（用自定义地址时可不填）",
+      "show": "显示 API Key",
+      "hide": "隐藏 API Key",
+      "saveAndTest": "保存并测试",
+      "test": "测试连接",
+      "clear": "清除",
+      "clearTitle": "删除已保存的 API Key",
+      "help": "免费申请 API Key",
+      "stored": "API Key 已安全保存",
+      "enterAndTest": "输入 Key 后点击“保存并测试”",
+      "testing": "正在测试连接…",
+      "connected": "已连接，支持 {{count}} 种语言（{{ms}} 毫秒）",
+      "connectedNoList": "已连接（{{ms}} 毫秒）",
+      "failed": "连接失败"
+    },
+    "region": {
+      "label": "Azure 区域",
+      "hint": "你的 Azure 翻译资源所在的区域"
+    },
+    "makeActive": "设为当前翻译服务商：{{provider}}",
+    "language": {
+      "title": "语言",
+      "target": "目标语言",
+      "targetHint": "把转写记录翻译成这种语言",
+      "opusMtLocked": "由当前的 OPUS-MT 模型决定（{{name}}）。",
+      "source": "源语言",
+      "sourceHint": "选“自动检测”时，用每一路的识别语言；那一路也是自动检测时由服务自己判断。",
+      "nativeNote": "由识别引擎直接翻译的一路（Soniox）在下次开始识别时才换成新的目标语言。"
+    },
+    "behavior": {
+      "title": "行为",
+      "autoStart": {
+        "label": "会议开始时自动翻译",
+        "description": "开会时直接打开实时翻译。悬浮窗里的“翻译”按钮也会改这个设置。"
+      },
+      "selection": {
+        "label": "划词翻译工具栏",
+        "description": "在转写记录里选中文字时显示翻译按钮"
+      },
+      "postMeeting": {
+        "label": "会后回顾时显示翻译",
+        "description": "查看历史会议时显示翻译工具栏和已保存的译文"
+      },
+      "cache": {
+        "label": "缓存翻译结果",
+        "description": "在本机保存译文，相同内容不再重复翻译"
+      },
+      "settle": {
+        "label": "翻译前的等待时间",
+        "description": "实时字幕的一行停止变化这么久之后才翻译（说话人开始新的一行时立即翻译）。",
+        "unit": "秒"
+      }
+    }
+  },
+  "endpoint": {
+    "label": "服务地址",
+    "optional": "（可选）",
+    "preview": "实际请求地址：",
+    "trimmed": "已识别为完整地址：{{path}} 会由应用自己加上。",
+    "hint": {
+      "deepl": "留空用官方接口（按 Key 自动选免费版或专业版）。也可以填 DeepLX 等兼容服务以 /v2 结尾的前缀。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。",
+      "microsoft": "留空用全球终结点。也可以填资源终结点（https://<资源名>.cognitiveservices.azure.com/translator/text/v3.0）或 https://api.translator.azure.cn。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。",
+      "google": "留空用官方的 Cloud Translation v2 接口，也可以填提供同样接口的反向代理。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。"
+    }
+  },
+  "llm": {
+    "title": "LLM 翻译",
+    "modelNote": "模型在“AI 模型 → 任务路由 → 实时翻译”里选择。实时翻译建议选快模型并关闭思考。",
+    "openModelSettings": "打开 AI 模型设置",
+    "systemPrompt": {
+      "label": "系统提示词",
+      "hint": "留空使用框里显示的默认提示词。{source}、{target}、{glossary} 会被替换。"
+    },
+    "userTemplate": {
+      "label": "消息模板",
+      "hint": "留空使用默认模板。{source}、{target}、{glossary} 和 {text}（要翻译的这一行）会被替换；语言以名称给出。"
+    },
+    "glossary": {
+      "label": "术语表",
+      "placeholder": "Kubernetes => Kubernetes\nsprint => 冲刺\nOKR => 目标与关键成果",
+      "hint": "每行一条：原文 => 译文。只有一行里出现的词条才会随这一行发送。"
+    },
+    "editDefault": "在默认基础上修改",
+    "resetPrompts": "恢复默认提示词",
+    "test": "测试翻译",
+    "testOk": "模型翻译了一句测试文本（{{ms}} 毫秒）："
+  },
+  "parties": {
+    "title": "翻译哪一路",
+    "engine": "识别引擎：{{engine}}",
+    "groupLabel": "{{party}}这一路怎么翻译",
+    "mode": {
+      "off": "不翻译",
+      "native": "识别引擎直接翻译",
+      "service": "翻译服务"
+    },
+    "nativeUnavailable": "{{engine}} 不能自己翻译。在语音识别设置里给这一路换成能翻译的引擎（Soniox）后可选。",
+    "hint": "识别引擎直接翻译：由引擎（Soniox）在识别时一起翻译成上面的目标语言，这一路不再调用翻译服务。"
+  },
+  "quickSetup": {
+    "title": "翻译",
+    "intro": "开会时实时翻译字幕。以后可以在“设置 → 翻译”里修改这些设置。",
+    "enable": "开会时翻译字幕",
+    "parties": "翻译",
+    "native": {
+      "label": "让 {{engine}} 在识别时直接翻译",
+      "hint": "最快，不需要另外的翻译服务。其他各路用下面的翻译服务。"
+    },
+    "provider": "翻译服务",
+    "llmHint": "使用上一步设置的 AI 模型",
+    "customEndpoint": "使用自定义服务地址",
+    "testNeeded": "测试一下服务即可完成这一步。",
+    "testOk": "可以使用（{{ms}} 毫秒）",
+    "moreSettings": "更多设置：服务地址、提示词、术语表",
+    "testedBefore": "已测试通过",
+    "summary": {
+      "off": "不翻译",
+      "native": "{{engine}} 直接翻译成{{language}}",
+      "service": "{{provider}} → {{language}}",
+      "mixed": "{{engine}} 和 {{provider}} → {{language}}"
+    }
+  }
+}

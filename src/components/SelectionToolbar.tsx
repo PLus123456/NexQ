@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useTranslationStore } from "../stores/translationStore";
+import { errorMessage, useTranslationStore } from "../stores/translationStore";
+import { showToast } from "../stores/toastStore";
 import { translateText } from "../lib/ipc";
 import type { TranslationResult } from "../lib/types";
 import { Languages, Copy } from "lucide-react";
+import { useT } from "../i18n";
 import { TranslationPopup } from "./TranslationPopup";
 
 export function SelectionToolbar() {
+  const { t } = useT("translation");
   const enabled = useTranslationStore((s) => s.selectionToolbarEnabled);
   const targetLang = useTranslationStore((s) => s.targetLang);
   const sourceLang = useTranslationStore((s) => s.sourceLang);
@@ -76,6 +79,7 @@ export function SelectionToolbar() {
       setTranslationResult(result);
     } catch (err) {
       console.error("[SelectionToolbar] Translation failed:", err);
+      showToast(t("errors.translateFailed", { detail: errorMessage(err) }), "error");
     } finally {
       setIsTranslating(false);
     }
@@ -102,7 +106,7 @@ export function SelectionToolbar() {
           className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
         >
           <Languages className="h-3 w-3" />
-          {isTranslating ? "..." : "Translate"}
+          {isTranslating ? t("selection.translating") : t("selection.translate")}
         </button>
         <button
           onClick={handleCopy}

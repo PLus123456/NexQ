@@ -1,18 +1,16 @@
-// Translation Settings — provider selector with API key management, language config, and behavior toggles.
+// Translation Settings — provider selector with API key and service address,
+// LLM prompts, languages, who to translate, and behavior toggles.
 // Follows the STT/LLM settings pattern: provider grid, API key input, test connection, make active.
 
-import { useState, useEffect, useCallback } from "react";
-import { useTranslationStore } from "../stores/translationStore";
+import { useState, useEffect, useCallback, useId } from "react";
+import { useTranslationStore, errorMessage } from "../stores/translationStore";
 import { useConfigStore } from "../stores/configStore";
-import {
-  setTranslationProvider,
-  testTranslationConnection,
-  getTranslationLanguages,
-  storeApiKey,
-  getApiKey,
-  hasApiKey,
-} from "../lib/ipc";
-import type { TranslationProviderType, TranslationLanguage, TranslationConnectionStatus } from "../lib/types";
+import { storeApiKey, getApiKey, hasApiKey, deleteApiKey, listOpusMtModels } from "../lib/ipc";
+import { testTranslationProvider } from "../lib/translation/ipc";
+import type { TranslationProviderType, OpusMtModelStatus } from "../lib/types";
+import { TRANSLATION_COMMON, languageLabel } from "../lib/languages";
+import { LanguageCombobox } from "../components/LanguageCombobox";
+import { useT } from "../i18n";
 import {
   Globe,
   Cloud,
@@ -25,144 +23,23 @@ import {
   EyeOff,
   Loader2,
   Wifi,
-  Zap,
-  Info,
+  AlertTriangle,
 } from "lucide-react";
 import { OpusMtModelManager } from "./OpusMtModelManager";
-import { listOpusMtModels } from "../lib/ipc";
-import type { OpusMtModelStatus } from "../lib/types";
-
-// ── Provider definitions ──
-
-interface ProviderOption {
-  value: TranslationProviderType;
-  label: string;
-  description: string;
-  requiresApiKey: boolean;
-  isLocal: boolean;
-  credentialKey: string;
-  needsRegion?: boolean;
-  helpUrl?: string;
-  helpLabel?: string;
-}
-
-const LOCAL_PROVIDERS: ProviderOption[] = [
-  {
-    value: "opus-mt",
-    label: "OPUS-MT",
-    description: "100+ langs · Fully offline · Private",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-  },
-  {
-    value: "llm",
-    label: "LLM Translation",
-    description: "Uses your active LLM provider",
-    requiresApiKey: false,
-    isLocal: true,
-    credentialKey: "",
-  },
-];
-
-const CLOUD_PROVIDERS: ProviderOption[] = [
-  {
-    value: "microsoft",
-    label: "Microsoft Translator",
-    description: "179 langs · 2M free/mo",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "translation_microsoft",
-    needsRegion: true,
-    helpUrl: "https://learn.microsoft.com/en-us/azure/cognitive-services/translator/quickstart-text-rest-api",
-    helpLabel: "Get a free API key",
-  },
-  {
-    value: "google",
-    label: "Google Translate",
-    description: "133 langs · $20 free/mo",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "translation_google",
-    helpUrl: "https://cloud.google.com/translate/docs/setup",
-    helpLabel: "Get a free API key",
-  },
-  {
-    value: "deepl",
-    label: "DeepL",
-    description: "31 langs · 500K free/mo",
-    requiresApiKey: true,
-    isLocal: false,
-    credentialKey: "translation_deepl",
-    helpUrl: "https://www.deepl.com/pro-api",
-    helpLabel: "Get a free API key",
-  },
-];
-
-const ALL_PROVIDERS: ProviderOption[] = [...LOCAL_PROVIDERS, ...CLOUD_PROVIDERS];
-
-// ── Languages (comprehensive default list) ──
-
-const DEFAULT_TARGET_LANGUAGES = [
-  { code: "af", name: "Afrikaans" },
-  { code: "ar", name: "Arabic" },
-  { code: "bn", name: "Bengali" },
-  { code: "bg", name: "Bulgarian" },
-  { code: "zh", name: "Chinese (Simplified)" },
-  { code: "zh-TW", name: "Chinese (Traditional)" },
-  { code: "cs", name: "Czech" },
-  { code: "da", name: "Danish" },
-  { code: "nl", name: "Dutch" },
-  { code: "en", name: "English" },
-  { code: "et", name: "Estonian" },
-  { code: "fa", name: "Farsi (Persian)" },
-  { code: "fi", name: "Finnish" },
-  { code: "fr", name: "French" },
-  { code: "de", name: "German" },
-  { code: "el", name: "Greek" },
-  { code: "he", name: "Hebrew" },
-  { code: "hi", name: "Hindi" },
-  { code: "hu", name: "Hungarian" },
-  { code: "id", name: "Indonesian" },
-  { code: "it", name: "Italian" },
-  { code: "ja", name: "Japanese" },
-  { code: "ko", name: "Korean" },
-  { code: "ms", name: "Malay" },
-  { code: "no", name: "Norwegian" },
-  { code: "pl", name: "Polish" },
-  { code: "pt", name: "Portuguese" },
-  { code: "ro", name: "Romanian" },
-  { code: "ru", name: "Russian" },
-  { code: "sk", name: "Slovak" },
-  { code: "sl", name: "Slovenian" },
-  { code: "es", name: "Spanish" },
-  { code: "sv", name: "Swedish" },
-  { code: "th", name: "Thai" },
-  { code: "tr", name: "Turkish" },
-  { code: "uk", name: "Ukrainian" },
-  { code: "ur", name: "Urdu" },
-  { code: "vi", name: "Vietnamese" },
-];
-
-// ── Azure Regions ──
-
-const AZURE_REGIONS = [
-  "global",
-  "eastus",
-  "eastus2",
-  "westus",
-  "westus2",
-  "centralus",
-  "northeurope",
-  "westeurope",
-  "southeastasia",
-  "eastasia",
-  "japaneast",
-  "australiaeast",
-  "brazilsouth",
-  "canadacentral",
-  "uksouth",
-];
+import { LlmTranslationPanel } from "./translation/LlmTranslationPanel";
+import { PartyTranslationPicker } from "./translation/PartyTranslationPicker";
+import { TRANSLATION_PARTIES, partyTranslationMode } from "../lib/translation/nativeTranslation";
+import { ProviderEndpointField } from "./translation/ProviderEndpointField";
+import {
+  ALL_PROVIDERS,
+  AZURE_REGIONS,
+  CLOUD_PROVIDERS,
+  LOCAL_PROVIDERS,
+  MICROSOFT_REGION_KEY,
+  isCloudProvider,
+  type ProviderOption,
+} from "./translation/providers";
+import { MAX_LIVE_SETTLE_MS, MIN_LIVE_SETTLE_MS, clampSettleMs } from "../lib/translation/defaults";
 
 // ── Badge logic ──
 
@@ -187,20 +64,27 @@ type ConnectionStatus = "idle" | "testing" | "success" | "error";
 // ══════════════════════════════════════════════════════════════
 
 export function TranslationSettings() {
+  const { t } = useT(["translation", "common"]);
   const provider = useTranslationStore((s) => s.provider);
   const setStoreProvider = useTranslationStore((s) => s.setProvider);
   const targetLang = useTranslationStore((s) => s.targetLang);
   const setTargetLang = useTranslationStore((s) => s.setTargetLang);
   const sourceLang = useTranslationStore((s) => s.sourceLang);
   const setSourceLang = useTranslationStore((s) => s.setSourceLang);
-  const displayMode = useTranslationStore((s) => s.displayMode);
-  const setDisplayMode = useTranslationStore((s) => s.setDisplayMode);
   const autoTranslateEnabled = useTranslationStore((s) => s.autoTranslateEnabled);
   const setAutoTranslateEnabled = useTranslationStore((s) => s.setAutoTranslateEnabled);
   const selectionToolbarEnabled = useTranslationStore((s) => s.selectionToolbarEnabled);
   const setSelectionToolbarEnabled = useTranslationStore((s) => s.setSelectionToolbarEnabled);
   const cacheEnabled = useTranslationStore((s) => s.cacheEnabled);
   const setCacheEnabled = useTranslationStore((s) => s.setCacheEnabled);
+  const endpoints = useTranslationStore((s) => s.endpoints);
+  const setEndpoint = useTranslationStore((s) => s.setEndpoint);
+  const liveSettleMs = useTranslationStore((s) => s.liveSettleMs);
+  const setLiveSettleMs = useTranslationStore((s) => s.setLiveSettleMs);
+  const backendStatus = useTranslationStore((s) => s.backendStatus);
+  const translateParties = useTranslationStore((s) => s.translateParties);
+  const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
+  const syncBackend = useTranslationStore((s) => s.syncBackend);
   const showPostMeetingTranslation = useConfigStore((s) => s.showPostMeetingTranslation);
   const setShowPostMeetingTranslation = useConfigStore((s) => s.setShowPostMeetingTranslation);
 
@@ -211,12 +95,11 @@ export function TranslationSettings() {
   const [keyDirty, setKeyDirty] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
-  const [responseMs, setResponseMs] = useState<number | null>(null);
   const [azureRegion, setAzureRegion] = useState("global");
   const [keyStatusMap, setKeyStatusMap] = useState<Record<string, boolean>>({});
-  const [availableLanguages, setAvailableLanguages] = useState<TranslationLanguage[]>([]);
   const [testedProviders, setTestedProviders] = useState<Set<string>>(new Set());
   const [opusMtModels, setOpusMtModels] = useState<OpusMtModelStatus[]>([]);
+  const settleId = useId();
 
   // Sync selectedProvider grid when the active provider loads from storage
   // (loadConfig runs async after mount, so useState initial value may be stale)
@@ -225,6 +108,8 @@ export function TranslationSettings() {
   }, [provider]);
 
   const currentProviderOption = ALL_PROVIDERS.find((p) => p.value === selectedProvider);
+  const providerLabel = (p: ProviderOption | undefined, fallback: string) =>
+    p ? (p.labelKey ? t(p.labelKey) : p.label) : fallback;
 
   // ── Load OPUS-MT model status for badge display + language filtering ──
   // Refreshes when the active provider changes (e.g., after activating a new model)
@@ -253,7 +138,8 @@ export function TranslationSettings() {
   }, [provider, refreshOpusMtModels]);
 
   const opusMtDownloadedCount = opusMtModels.filter((m) => m.is_downloaded).length;
-  const opusMtHasActive = opusMtModels.some((m) => m.is_active);
+  const opusMtActiveModel = opusMtModels.find((m) => m.is_active);
+  const opusMtHasActive = Boolean(opusMtActiveModel);
 
   // ── Check which cloud providers have stored keys (for badge display) ──
 
@@ -268,18 +154,6 @@ export function TranslationSettings() {
     checkAllKeys();
   }, []);
 
-  // ── Fetch languages from active provider on initial load ──
-
-  useEffect(() => {
-    async function fetchLanguages() {
-      try {
-        const langs = await getTranslationLanguages();
-        if (langs.length > 0) setAvailableLanguages(langs);
-      } catch { /* fallback to defaults */ }
-    }
-    fetchLanguages();
-  }, []);
-
   // ── Load key when provider changes ──
 
   useEffect(() => {
@@ -290,7 +164,6 @@ export function TranslationSettings() {
       setKeyDirty(false);
       setConnectionStatus("idle");
       setStatusMessage("");
-      setResponseMs(null);
 
       if (!currentProviderOption?.requiresApiKey) return;
 
@@ -310,9 +183,9 @@ export function TranslationSettings() {
 
       if (currentProviderOption.needsRegion) {
         try {
-          const regionExists = await hasApiKey("translation_microsoft_region");
+          const regionExists = await hasApiKey(MICROSOFT_REGION_KEY);
           if (regionExists) {
-            const stored = await getApiKey("translation_microsoft_region");
+            const stored = await getApiKey(MICROSOFT_REGION_KEY);
             if (stored) setAzureRegion(stored);
           }
         } catch (e) {
@@ -323,25 +196,28 @@ export function TranslationSettings() {
     loadKeyForProvider();
   }, [selectedProvider, currentProviderOption?.credentialKey, currentProviderOption?.requiresApiKey, currentProviderOption?.needsRegion]);
 
+  const customEndpoint = isCloudProvider(selectedProvider) ? endpoints[selectedProvider].trim() : "";
+
   // ── Badge state ──
 
   function getBadgeState(p: ProviderOption): BadgeState {
     if (p.isLocal) {
       if (p.value === "llm") {
-        return { text: "Available", variant: "available" };
+        return { text: t("settings.badge.available"), variant: "available" };
       }
       // OPUS-MT — dynamic badge based on model presence
       if (p.value === "opus-mt") {
-        if (opusMtHasActive) return { text: "Ready", variant: "ready" };
-        if (opusMtDownloadedCount > 0) return { text: `${opusMtDownloadedCount} Models`, variant: "available" };
-        return { text: "No Models", variant: "no-key" };
+        if (opusMtHasActive) return { text: t("settings.badge.ready"), variant: "ready" };
+        if (opusMtDownloadedCount > 0) return { text: t("settings.badge.models", { count: opusMtDownloadedCount }), variant: "available" };
+        return { text: t("settings.badge.noModels"), variant: "no-key" };
       }
-      return { text: "Not Ready", variant: "no-key" };
+      return { text: t("settings.badge.notReady"), variant: "no-key" };
     }
     // Cloud providers
-    if (testedProviders.has(p.value)) return { text: "Ready", variant: "ready" };
-    if (keyStatusMap[p.credentialKey]) return { text: "Has Key", variant: "available" };
-    return { text: "No Key", variant: "no-key" };
+    if (testedProviders.has(p.value)) return { text: t("settings.badge.ready"), variant: "ready" };
+    if (keyStatusMap[p.credentialKey]) return { text: t("settings.badge.hasKey"), variant: "available" };
+    if (isCloudProvider(p.value) && endpoints[p.value].trim()) return { text: t("settings.badge.customEndpoint"), variant: "available" };
+    return { text: t("settings.badge.noKey"), variant: "no-key" };
   }
 
   // ── Handlers ──
@@ -350,181 +226,148 @@ export function TranslationSettings() {
     setSelectedProvider(prov);
     setConnectionStatus("idle");
     setStatusMessage("");
-    setResponseMs(null);
   };
 
+  /** Saves a changed key (and the region), then tests the selected provider — the active one stays. */
   const handleSaveAndTest = useCallback(async () => {
     if (!currentProviderOption?.requiresApiKey) return;
-    if (!apiKey.trim()) return;
+    const key = apiKey.trim();
+    if (!key && !customEndpoint) return;
 
     setConnectionStatus("testing");
-    setStatusMessage("Testing connection...");
-    setResponseMs(null);
+    setStatusMessage(t("settings.apiKey.testing"));
 
     try {
-      // Store the key in CredentialManager
-      await storeApiKey(currentProviderOption.credentialKey, apiKey.trim());
-
-      // Store region for Microsoft
-      if (currentProviderOption.needsRegion && azureRegion.trim()) {
-        await storeApiKey("translation_microsoft_region", azureRegion.trim());
-      }
-
-      // Temporarily set this provider on backend to test it
-      const previousProvider = provider; // the currently active provider
-      await setTranslationProvider(
-        selectedProvider,
-        currentProviderOption.needsRegion ? azureRegion : undefined
-      );
-
-      // Test the connection
-      const result: TranslationConnectionStatus = await testTranslationConnection(selectedProvider);
-
-      if (result.connected) {
-        // Test passed — keep this provider active on backend
+      if (keyDirty && key) {
+        await storeApiKey(currentProviderOption.credentialKey, key);
         setHasStoredKey(true);
         setKeyDirty(false);
-        setConnectionStatus("success");
-        setResponseMs(result.response_ms);
-        setStatusMessage(
-          `Connected — ${result.language_count} languages available (${result.response_ms}ms)`
-        );
         setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: true }));
-        setTestedProviders((prev) => new Set(prev).add(selectedProvider));
-
-        // Load available languages
-        try {
-          const langs = await getTranslationLanguages();
-          if (langs.length > 0) setAvailableLanguages(langs);
-        } catch { /* ignore — fallback to defaults */ }
-
-        // Restore previous active provider on backend (don't change active yet — user must click Make Active)
-        if (previousProvider && previousProvider !== selectedProvider) {
-          await setTranslationProvider(previousProvider).catch(() => {});
-        }
-      } else {
-        // Test failed — restore previous provider on backend
-        if (previousProvider) {
-          await setTranslationProvider(previousProvider).catch(() => {});
-        }
-        setConnectionStatus("error");
-        setStatusMessage(result.error || "Connection failed");
       }
-    } catch (e) {
-      setConnectionStatus("error");
-      setStatusMessage(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
-    }
-  }, [apiKey, azureRegion, selectedProvider, currentProviderOption, setStoreProvider]);
+      if (currentProviderOption.needsRegion && azureRegion.trim()) {
+        await storeApiKey(MICROSOFT_REGION_KEY, azureRegion.trim());
+      }
 
-  const handleTestLocal = useCallback(async () => {
-    setConnectionStatus("testing");
-    setStatusMessage("Testing...");
-    setResponseMs(null);
-
-    const previousProvider = provider;
-    try {
-      await setTranslationProvider(selectedProvider);
-      const result = await testTranslationConnection(selectedProvider);
+      const result = await testTranslationProvider(
+        selectedProvider,
+        { endpoints },
+        currentProviderOption.needsRegion ? azureRegion : undefined,
+      );
 
       if (result.connected) {
         setConnectionStatus("success");
-        setResponseMs(result.response_ms);
         setStatusMessage(
-          `Connected — ${result.language_count} languages (${result.response_ms}ms)`
+          result.language_count > 0
+            ? t("settings.apiKey.connected", { count: result.language_count, ms: result.response_ms })
+            : t("settings.apiKey.connectedNoList", { ms: result.response_ms }),
         );
         setTestedProviders((prev) => new Set(prev).add(selectedProvider));
-        setStoreProvider(selectedProvider);
+        // The active provider picks up a new key or region.
+        if (selectedProvider === provider) void syncBackend();
       } else {
-        // Restore previous provider on test failure
-        if (previousProvider && previousProvider !== selectedProvider) {
-          await setTranslationProvider(previousProvider).catch(() => {});
-        }
         setConnectionStatus("error");
-        setStatusMessage(result.error || "Connection failed");
+        setStatusMessage(result.error || t("settings.apiKey.failed"));
       }
     } catch (e) {
-      // Restore previous provider on exception
-      if (previousProvider && previousProvider !== selectedProvider) {
-        await setTranslationProvider(previousProvider).catch(() => {});
-      }
       setConnectionStatus("error");
-      setStatusMessage(e instanceof Error ? e.message : "Test failed");
+      setStatusMessage(errorMessage(e));
     }
-  }, [selectedProvider, provider, setStoreProvider]);
+  }, [apiKey, azureRegion, customEndpoint, endpoints, keyDirty, provider, selectedProvider, currentProviderOption, syncBackend, t]);
 
   const handleMakeActive = useCallback(async () => {
     try {
-      if (currentProviderOption?.requiresApiKey && apiKey) {
-        await storeApiKey(currentProviderOption.credentialKey, apiKey).catch(() => {});
+      if (currentProviderOption?.requiresApiKey && keyDirty && apiKey.trim()) {
+        await storeApiKey(currentProviderOption.credentialKey, apiKey.trim()).catch(() => {});
       }
-      await setTranslationProvider(
-        selectedProvider,
-        currentProviderOption?.needsRegion ? azureRegion : undefined
-      );
+      if (currentProviderOption?.needsRegion && azureRegion.trim()) {
+        await storeApiKey(MICROSOFT_REGION_KEY, azureRegion.trim()).catch(() => {});
+      }
+    } finally {
+      // Tells the backend; its answer shows in the banner.
       setStoreProvider(selectedProvider);
+    }
+  }, [selectedProvider, apiKey, keyDirty, azureRegion, currentProviderOption, setStoreProvider]);
+
+  const handleRegionChange = (region: string) => {
+    setAzureRegion(region);
+    storeApiKey(MICROSOFT_REGION_KEY, region)
+      .then(() => {
+        if (provider === "microsoft") void syncBackend();
+      })
+      .catch((e) => console.warn("Failed to store Azure region:", e));
+  };
+
+  const handleClearKey = async () => {
+    if (!currentProviderOption) return;
+    try {
+      await deleteApiKey(currentProviderOption.credentialKey);
+      setHasStoredKey(false);
+      setApiKey("");
+      setConnectionStatus("idle");
+      setStatusMessage("");
+      setTestedProviders((prev) => {
+        const next = new Set(prev);
+        next.delete(selectedProvider);
+        return next;
+      });
+      setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: false }));
+      if (selectedProvider === provider) void syncBackend();
     } catch { /* ignore */ }
-  }, [selectedProvider, apiKey, azureRegion, currentProviderOption, setStoreProvider]);
-
-  // ── Language list for dropdowns ──
-  // Always use the comprehensive default list as the base.
-  // If the provider returned additional languages not in the defaults, merge them in.
-
-  const languageOptions = (() => {
-    // When OPUS-MT is active, only show the active model's target language
-    if (provider === "opus-mt" && opusMtModels.length > 0) {
-      const activeModel = opusMtModels.find((m) => m.is_active);
-      if (activeModel) {
-        const code = activeModel.definition.target_lang;
-        const match = DEFAULT_TARGET_LANGUAGES.find((l) => l.code === code);
-        return match ? [match] : [{ code, name: activeModel.definition.target_name }];
-      }
-    }
-
-    const base = [...DEFAULT_TARGET_LANGUAGES];
-    if (availableLanguages.length > 0) {
-      const existingCodes = new Set(base.map((l) => l.code));
-      for (const pl of availableLanguages) {
-        if (!existingCodes.has(pl.code)) {
-          base.push({ code: pl.code, name: pl.name });
-        }
-      }
-    }
-    return base.sort((a, b) => a.name.localeCompare(b.name));
-  })();
+  };
 
   const isCloud = currentProviderOption?.requiresApiKey ?? false;
   const isOpusMt = selectedProvider === "opus-mt";
   const isLlm = selectedProvider === "llm";
+  // The active OPUS-MT model decides the languages.
+  const opusLocksLanguages = provider === "opus-mt" && opusMtHasActive;
 
   // ── "Make Active" gating logic ──
-  // Cloud: tested this session OR has a stored key (and key not dirty). OPUS-MT: when model is active. LLM: always.
+  // Cloud: tested this session, a stored key or a custom address (and key not dirty). OPUS-MT: when model is active. LLM: always.
   const canMakeActive = (() => {
     if (selectedProvider === provider) return false; // already active
     if (isOpusMt) return opusMtHasActive;
-    if (isCloud) return (testedProviders.has(selectedProvider) || hasStoredKey) && !keyDirty;
+    if (isCloud) return (testedProviders.has(selectedProvider) || hasStoredKey || Boolean(customEndpoint)) && !keyDirty;
     if (isLlm) return true;
     return false;
   })();
 
+  const activeOption = ALL_PROVIDERS.find((p) => p.value === provider);
+  // The STT engine reads the target when its session starts (Soniox).
+  const nativeInUse = TRANSLATION_PARTIES.some(
+    (party) => partyTranslationMode(party, translateParties, meetingAudioConfig) === "native",
+  );
+  const activeStatus = backendStatus?.provider === provider ? backendStatus : null;
+
   return (
     <div className="space-y-5">
       {/* ── Active Provider Banner (full-width above grid) ── */}
-      <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/5 px-5 py-3.5">
-        <Globe className="h-4 w-4 text-primary shrink-0" />
+      <div
+        className={`flex items-center gap-3 rounded-xl border px-5 py-3.5 ${
+          activeStatus?.ok === false ? "border-destructive/40 bg-destructive/5" : "border-primary/30 bg-primary/5"
+        }`}
+      >
+        {activeStatus?.ok === false
+          ? <AlertTriangle className="h-4 w-4 text-destructive shrink-0" />
+          : <Globe className="h-4 w-4 text-primary shrink-0" />}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground">
-            Active: {ALL_PROVIDERS.find((p) => p.value === provider)?.label || provider}
-            {" · "}
-            {DEFAULT_TARGET_LANGUAGES.find((l) => l.code === targetLang)?.name || targetLang}
+            {t("settings.banner.active", {
+              provider: providerLabel(activeOption, provider),
+              language: languageLabel(targetLang),
+            })}
           </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            This provider will be used for transcript translation
-          </p>
+          {activeStatus?.ok === false ? (
+            <p className="mt-0.5 break-words text-xs text-destructive" role="alert">
+              {t("settings.banner.notReady", { detail: activeStatus.error ?? "" })}
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.banner.hint")}</p>
+          )}
         </div>
-        {connectionStatus === "success" && selectedProvider === provider && (
+        {activeStatus?.ok && (
           <div className="flex items-center gap-1 text-success shrink-0">
             <CheckCircle className="h-3.5 w-3.5" />
-            <span className="text-xs">Connected</span>
+            <span className="text-xs">{t("settings.banner.ready")}</span>
           </div>
         )}
       </div>
@@ -541,9 +384,9 @@ export function TranslationSettings() {
                 <div className="flex h-5 w-5 items-center justify-center rounded bg-success/10">
                   <Server className="h-3 w-3 text-success" />
                 </div>
-                <span className="text-xs font-semibold text-foreground">Local & Offline</span>
+                <span className="text-xs font-semibold text-foreground">{t("settings.groups.local")}</span>
                 <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">
-                  Free · No API Key · Private
+                  {t("settings.groups.localTag")}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -551,6 +394,7 @@ export function TranslationSettings() {
                   <ProviderCard
                     key={p.value}
                     provider={p}
+                    label={providerLabel(p, p.value)}
                     isSelected={selectedProvider === p.value}
                     isActive={provider === p.value}
                     badge={getBadgeState(p)}
@@ -566,9 +410,9 @@ export function TranslationSettings() {
                 <div className="flex h-5 w-5 items-center justify-center rounded bg-info/10">
                   <Cloud className="h-3 w-3 text-info" />
                 </div>
-                <span className="text-xs font-semibold text-foreground">Cloud Providers</span>
+                <span className="text-xs font-semibold text-foreground">{t("settings.groups.cloud")}</span>
                 <span className="ml-auto text-meta text-muted-foreground/60 font-medium uppercase tracking-wider">
-                  Requires API Key
+                  {t("settings.groups.cloudTag")}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -576,6 +420,7 @@ export function TranslationSettings() {
                   <ProviderCard
                     key={p.value}
                     provider={p}
+                    label={providerLabel(p, p.value)}
                     isSelected={selectedProvider === p.value}
                     isActive={provider === p.value}
                     badge={getBadgeState(p)}
@@ -586,209 +431,150 @@ export function TranslationSettings() {
             </div>
           </div>
 
-          {/* ── API Key Configuration (cloud providers only) ── */}
-          {isCloud && (
-            <div className="rounded-xl border border-border/30 bg-card/50 p-4">
-              <h3 className="mb-3 text-sm font-semibold text-primary/80">API Key</h3>
+          {/* ── API Key + address (cloud providers only) ── */}
+          {isCloud && currentProviderOption && isCloudProvider(selectedProvider) && (
+            <div className="space-y-4 rounded-xl border border-border/30 bg-card/50 p-4">
+              <div>
+                <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("settings.apiKey.title")}</h3>
 
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(e) => {
-                      setApiKey(e.target.value);
-                      setKeyDirty(true);
-                      setConnectionStatus("idle");
-                      setStatusMessage("");
-                    }}
-                    placeholder={
-                      hasStoredKey && !keyDirty
-                        ? "Key stored — type to replace"
-                        : `Enter ${currentProviderOption?.label || selectedProvider} API key`
-                    }
-                    maxLength={256}
-                    className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 pr-10 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
-                  />
-                  <button
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground cursor-pointer"
-                    type="button"
-                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
-                    aria-pressed={showApiKey}
-                  >
-                    {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-
-                {/* State 1: Key is new or changed → Save & Test */}
-                {keyDirty && apiKey.trim() && (
-                  <button
-                    onClick={handleSaveAndTest}
-                    disabled={connectionStatus === "testing"}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    {connectionStatus === "testing" ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Wifi className="h-3.5 w-3.5" />
-                    )}
-                    Save & Test
-                  </button>
-                )}
-
-                {/* State 2: Key stored, not yet tested this session → Test Connection */}
-                {hasStoredKey && !keyDirty && !testedProviders.has(selectedProvider) && (
-                  <button
-                    onClick={handleSaveAndTest}
-                    disabled={connectionStatus === "testing"}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    {connectionStatus === "testing" ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Wifi className="h-3.5 w-3.5" />
-                    )}
-                    Test Connection
-                  </button>
-                )}
-
-                {/* Clear stored key */}
-                {hasStoredKey && !keyDirty && (
-                  <button
-                    onClick={async () => {
-                      if (!currentProviderOption) return;
-                      try {
-                        const { deleteApiKey } = await import("../lib/ipc");
-                        await deleteApiKey(currentProviderOption.credentialKey);
-                        setHasStoredKey(false);
-                        setApiKey("");
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKey}
+                      onChange={(e) => {
+                        setApiKey(e.target.value);
+                        setKeyDirty(true);
                         setConnectionStatus("idle");
                         setStatusMessage("");
-                        setTestedProviders((prev) => {
-                          const next = new Set(prev);
-                          next.delete(selectedProvider);
-                          return next;
-                        });
-                        setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: false }));
-                      } catch { /* ignore */ }
-                    }}
-                    className="flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
-                    title="Remove stored API key"
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                    Clear
-                  </button>
+                      }}
+                      placeholder={
+                        hasStoredKey && !keyDirty
+                          ? t("settings.apiKey.storedPlaceholder")
+                          : customEndpoint
+                            ? t("settings.apiKey.optionalPlaceholder", { provider: currentProviderOption.label })
+                            : t("settings.apiKey.placeholder", { provider: currentProviderOption.label })
+                      }
+                      maxLength={256}
+                      aria-label={t("settings.apiKey.title")}
+                      className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 pr-10 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+                    />
+                    <button
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground cursor-pointer"
+                      type="button"
+                      aria-label={showApiKey ? t("settings.apiKey.hide") : t("settings.apiKey.show")}
+                      aria-pressed={showApiKey}
+                    >
+                      {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+
+                  {/* New or changed key → Save & Test; otherwise Test (also keyless with a custom address) */}
+                  {(keyDirty ? apiKey.trim() !== "" : (hasStoredKey || Boolean(customEndpoint))) && (
+                    <button
+                      onClick={handleSaveAndTest}
+                      disabled={connectionStatus === "testing"}
+                      className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                    >
+                      {connectionStatus === "testing" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Wifi className="h-3.5 w-3.5" />
+                      )}
+                      {keyDirty ? t("settings.apiKey.saveAndTest") : t("settings.apiKey.test")}
+                    </button>
+                  )}
+
+                  {/* Clear stored key */}
+                  {hasStoredKey && !keyDirty && (
+                    <button
+                      onClick={handleClearKey}
+                      className="flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                      title={t("settings.apiKey.clearTitle")}
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      {t("settings.apiKey.clear")}
+                    </button>
+                  )}
+                </div>
+
+                {/* Help link */}
+                {currentProviderOption.helpUrl && (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    <a
+                      href={currentProviderOption.helpUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary/70 hover:text-primary underline-offset-2 hover:underline"
+                    >
+                      {t("settings.apiKey.help")} &rarr;
+                    </a>
+                  </p>
                 )}
+
+                {/* Status feedback */}
+                <div className="mt-2 min-h-[18px]">
+                  {connectionStatus === "testing" && (
+                    <p className="text-xs text-muted-foreground">{statusMessage}</p>
+                  )}
+                  {connectionStatus === "success" && (
+                    <div className="flex items-center gap-1.5 text-xs text-success">
+                      <CheckCircle className="h-3 w-3" />
+                      {statusMessage}
+                    </div>
+                  )}
+                  {connectionStatus === "error" && (
+                    <div className="flex items-start gap-1.5 text-xs text-destructive" role="alert">
+                      <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                      <span className="break-words">{statusMessage}</span>
+                    </div>
+                  )}
+                  {connectionStatus === "idle" && hasStoredKey && !keyDirty && (
+                    <p className="text-xs text-success/70">{t("settings.apiKey.stored")}</p>
+                  )}
+                  {connectionStatus === "idle" && !hasStoredKey && (
+                    <p className="text-xs text-muted-foreground">{t("settings.apiKey.enterAndTest")}</p>
+                  )}
+                </div>
               </div>
 
-              {/* Help link */}
-              {currentProviderOption?.helpUrl && (
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  <a
-                    href={currentProviderOption.helpUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary/70 hover:text-primary underline-offset-2 hover:underline"
-                  >
-                    {currentProviderOption.helpLabel || "Get a free API key"} &rarr;
-                  </a>
-                </p>
-              )}
-
               {/* Azure Region dropdown (Microsoft only) */}
-              {currentProviderOption?.needsRegion && (
-                <div className="mt-3">
-                  <label className="mb-1.5 block text-xs font-medium text-foreground">Azure Region</label>
+              {currentProviderOption.needsRegion && (
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-foreground">{t("settings.region.label")}</label>
                   <select
                     value={azureRegion}
-                    onChange={(e) => setAzureRegion(e.target.value)}
+                    onChange={(e) => handleRegionChange(e.target.value)}
                     className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
                   >
-                    {AZURE_REGIONS.map((r) => (
+                    {(AZURE_REGIONS.includes(azureRegion) ? AZURE_REGIONS : [azureRegion, ...AZURE_REGIONS]).map((r) => (
                       <option key={r} value={r}>{r}</option>
                     ))}
                   </select>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Region for your Azure Translator resource
-                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t("settings.region.hint")}</p>
                 </div>
               )}
 
-              {/* Status feedback */}
-              <div className="mt-2 min-h-[18px]">
-                {connectionStatus === "success" && (
-                  <div className="flex items-center gap-1.5 text-xs text-success">
-                    <CheckCircle className="h-3 w-3" />
-                    {statusMessage}
-                  </div>
-                )}
-                {connectionStatus === "error" && (
-                  <div className="flex items-center gap-1.5 text-xs text-destructive">
-                    <XCircle className="h-3 w-3" />
-                    {statusMessage}
-                  </div>
-                )}
-                {connectionStatus === "idle" && hasStoredKey && !keyDirty && (
-                  <p className="text-xs text-success/70">
-                    API key stored securely
-                  </p>
-                )}
-                {connectionStatus === "idle" && !hasStoredKey && (
-                  <p className="text-xs text-muted-foreground">
-                    Enter your key and click Save & Test
-                  </p>
-                )}
-              </div>
+              {/* Custom service address */}
+              <ProviderEndpointField
+                provider={selectedProvider}
+                value={endpoints[selectedProvider]}
+                onChange={(url) => {
+                  setEndpoint(selectedProvider, url);
+                  setConnectionStatus("idle");
+                  setStatusMessage("");
+                }}
+                apiKey={apiKey}
+              />
             </div>
           )}
 
           {/* ── OPUS-MT Model Manager ── */}
           {isOpusMt && <OpusMtModelManager onModelsChanged={refreshOpusMtModels} />}
 
-          {/* ── LLM local provider — Test Connection ── */}
-          {isLlm && (
-            <div className="rounded-xl border border-border/30 bg-card/50 p-4">
-              <h3 className="mb-3 text-sm font-semibold text-primary/80">Connection</h3>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleTestLocal}
-                  disabled={connectionStatus === "testing"}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                >
-                  {connectionStatus === "testing" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Wifi className="h-3.5 w-3.5" />
-                  )}
-                  Test Connection
-                </button>
-
-                {canMakeActive && (
-                  <button
-                    onClick={handleMakeActive}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 cursor-pointer"
-                  >
-                    <Zap className="h-3.5 w-3.5" />
-                    Make Active
-                  </button>
-                )}
-
-                {connectionStatus === "success" && (
-                  <div className="flex items-center gap-1 text-success">
-                    <CheckCircle className="h-3.5 w-3.5" />
-                    <span className="text-xs">{statusMessage}</span>
-                  </div>
-                )}
-                {connectionStatus === "error" && (
-                  <div className="flex items-center gap-1 text-destructive">
-                    <XCircle className="h-3.5 w-3.5" />
-                    <span className="text-xs">{statusMessage}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {/* ── LLM translation: model note, prompts, glossary, test ── */}
+          {isLlm && <LlmTranslationPanel />}
 
           {/* Make Active — full-width at bottom of left column */}
           {canMakeActive && (
@@ -796,7 +582,7 @@ export function TranslationSettings() {
               onClick={handleMakeActive}
               className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer"
             >
-              Set {currentProviderOption?.label || selectedProvider} as Active Translation Provider
+              {t("settings.makeActive", { provider: providerLabel(currentProviderOption, selectedProvider) })}
             </button>
           )}
         </div>
@@ -805,84 +591,97 @@ export function TranslationSettings() {
         <div className="space-y-5">
           {/* ── Language Settings ── */}
           <div className="rounded-xl border border-border/30 bg-card/50 p-4">
-            <h3 className="mb-3 text-sm font-semibold text-primary/80">Language</h3>
-
-            {/* Banner: activate provider to see its languages */}
-            {selectedProvider !== provider && (
-              <div className="mb-3 flex items-center gap-2 rounded-lg border border-info/20 bg-info/5 px-3 py-2">
-                <Info className="h-3.5 w-3.5 text-info shrink-0" />
-                <p className="text-xs text-muted-foreground">
-                  Activate <span className="font-medium text-foreground">{currentProviderOption?.label}</span> to see its supported languages
-                </p>
-              </div>
-            )}
+            <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("settings.language.title")}</h3>
 
             <div className="space-y-4">
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-foreground">Target Language</label>
-                <select
+                <label className="mb-1.5 block text-xs font-medium text-foreground">{t("settings.language.target")}</label>
+                <LanguageCombobox
                   value={targetLang}
-                  onChange={(e) => setTargetLang(e.target.value)}
-                  className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
-                >
-                  {languageOptions.map((lang) => (
-                    <option key={lang.code} value={lang.code}>
-                      {lang.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setTargetLang}
+                  common={TRANSLATION_COMMON}
+                  disabled={opusLocksLanguages}
+                  aria-label={t("settings.language.target")}
+                />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Translate transcripts into this language
+                  {opusLocksLanguages
+                    ? t("settings.language.opusMtLocked", { name: opusMtActiveModel?.definition.display_name ?? "" })
+                    : t("settings.language.targetHint")}
                 </p>
+                {nativeInUse && (
+                  <p className="mt-1 text-xs text-muted-foreground">{t("settings.language.nativeNote")}</p>
+                )}
               </div>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-foreground">Source Language</label>
-                <select
+                <label className="mb-1.5 block text-xs font-medium text-foreground">{t("settings.language.source")}</label>
+                <LanguageCombobox
                   value={sourceLang}
-                  onChange={(e) => setSourceLang(e.target.value)}
-                  className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
-                >
-                  <option value="auto">Auto-detect (recommended)</option>
-                  {languageOptions.map((lang) => (
-                    <option key={lang.code} value={lang.code}>
-                      {lang.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Detect source language automatically or set explicitly
-                </p>
+                  onChange={setSourceLang}
+                  common={TRANSLATION_COMMON}
+                  allowAuto
+                  disabled={opusLocksLanguages}
+                  aria-label={t("settings.language.source")}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">{t("settings.language.sourceHint")}</p>
               </div>
             </div>
           </div>
 
+          {/* ── Who to translate ── */}
+          <div className="rounded-xl border border-border/30 bg-card/50 p-4">
+            <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("parties.title")}</h3>
+            <PartyTranslationPicker />
+          </div>
+
           {/* ── Behavior Toggles ── */}
           <div className="rounded-xl border border-border/30 bg-card/50 p-4">
-            <h3 className="mb-3 text-sm font-semibold text-primary/80">Behavior</h3>
+            <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("settings.behavior.title")}</h3>
             <div className="space-y-4">
+              {/* Live translation on when a meeting starts (also set by the overlay's Translate button) */}
+              <ToggleRow
+                label={t("settings.behavior.autoStart.label")}
+                description={t("settings.behavior.autoStart.description")}
+                checked={autoTranslateEnabled}
+                onChange={setAutoTranslateEnabled}
+              />
+
               {/* Select-to-translate toolbar */}
               <ToggleRow
-                label="Select-to-translate toolbar"
-                description="Show a translate button when selecting text in the transcript"
+                label={t("settings.behavior.selection.label")}
+                description={t("settings.behavior.selection.description")}
                 checked={selectionToolbarEnabled}
                 onChange={setSelectionToolbarEnabled}
               />
 
               {/* Show translations in post-meeting */}
               <ToggleRow
-                label="Show translations in post-meeting review"
-                description="Display translation toolbar and cached translations when reviewing past meetings"
+                label={t("settings.behavior.postMeeting.label")}
+                description={t("settings.behavior.postMeeting.description")}
                 checked={showPostMeetingTranslation}
                 onChange={setShowPostMeetingTranslation}
               />
 
               {/* Cache translations */}
               <ToggleRow
-                label="Cache translations"
-                description="Store translated text locally to avoid re-translating the same content"
+                label={t("settings.behavior.cache.label")}
+                description={t("settings.behavior.cache.description")}
                 checked={cacheEnabled}
                 onChange={setCacheEnabled}
               />
+
+              {/* Live settle time */}
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <label htmlFor={settleId} className="text-sm font-medium text-foreground">
+                    {t("settings.behavior.settle.label")}
+                  </label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.behavior.settle.description")}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <SecondsInput id={settleId} valueMs={liveSettleMs} onCommit={setLiveSettleMs} />
+                  <span className="text-xs text-muted-foreground">{t("settings.behavior.settle.unit")}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -891,21 +690,63 @@ export function TranslationSettings() {
   );
 }
 
+// ── Seconds input ──
+
+const formatSeconds = (ms: number) => (ms / 1000).toFixed(1);
+
+/** Edits freely and saves on blur / Enter (clamped); empty or invalid text puts the saved value back. */
+export function SecondsInput({ id, valueMs, onCommit }: { id: string; valueMs: number; onCommit: (ms: number) => void }) {
+  const [draft, setDraft] = useState(formatSeconds(valueMs));
+  useEffect(() => setDraft(formatSeconds(valueMs)), [valueMs]);
+
+  const commit = () => {
+    const seconds = Number(draft.trim().replace(",", "."));
+    if (draft.trim() === "" || !Number.isFinite(seconds)) {
+      setDraft(formatSeconds(valueMs));
+      return;
+    }
+    const ms = clampSettleMs(seconds * 1000);
+    setDraft(formatSeconds(ms));
+    if (ms !== valueMs) onCommit(ms);
+  };
+
+  return (
+    <input
+      id={id}
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") setDraft(formatSeconds(valueMs));
+      }}
+      aria-valuemin={MIN_LIVE_SETTLE_MS / 1000}
+      aria-valuemax={MAX_LIVE_SETTLE_MS / 1000}
+      className="w-16 rounded-lg border border-border/50 bg-background px-2 py-1.5 text-right text-sm tabular-nums text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+    />
+  );
+}
+
 // ── Provider Card ──
 
 function ProviderCard({
   provider,
+  label,
   isSelected,
   isActive,
   badge,
   onClick,
 }: {
   provider: ProviderOption;
+  label: string;
   isSelected: boolean;
   isActive: boolean;
   badge: BadgeState;
   onClick: () => void;
 }) {
+  const { t } = useT("translation");
   return (
     <button
       onClick={onClick}
@@ -921,7 +762,7 @@ function ProviderCard({
         <div className="absolute -top-1 -right-1">
           <div
             className={`h-2.5 w-2.5 rounded-full ring-2 ring-card ${DOT_COLORS[badge.variant]}`}
-            title={`Active provider — ${badge.text}`}
+            title={t("settings.badge.activeDot", { badge: badge.text })}
             aria-hidden="true"
           />
         </div>
@@ -929,7 +770,7 @@ function ProviderCard({
       <div className="flex w-full items-center gap-1.5 mb-1">
         <ProviderIcon value={provider.value} isSelected={isSelected} />
         <span className={`text-xs font-medium ${isSelected ? "text-primary" : "text-foreground"}`}>
-          {provider.label}
+          {label}
         </span>
         <span
           className={`ml-auto inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[8px] font-semibold tracking-wide ${BADGE_STYLES[badge.variant]}`}
@@ -938,7 +779,7 @@ function ProviderCard({
         </span>
       </div>
       <span className="text-meta text-muted-foreground/70 leading-tight">
-        {provider.description}
+        {t(provider.descriptionKey)}
       </span>
     </button>
   );
@@ -986,6 +827,7 @@ function ToggleRow({
       <button
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${
           checked ? "bg-primary" : "bg-muted-foreground/30"

@@ -12,7 +12,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { UpdateReadyToast } from "./components/UpdateToast";
 import { useTheme } from "./hooks/useTheme";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
-import { useTranslation } from "./hooks/useTranslation";
+import { useTranslationEvents } from "./hooks/useTranslationEvents";
+import { useAutoTranslate } from "./hooks/useAutoTranslate";
 import { useTraySync } from "./hooks/useTraySync";
 import { useUpdater } from "./hooks/useUpdater";
 import { useAgentFallbackToast } from "./hooks/useAgentFallbackToast";
@@ -52,8 +53,10 @@ function App() {
   // Demo mode keyboard shortcut (Ctrl+Shift+D)
   useDemoShortcut();
 
-  // Translation event subscriptions (needed for SelectionToolbar in all views)
-  useTranslation();
+  // Translation events in every window (results, errors, provider status);
+  // live translation requests only in the overlay window, also while it shows settings.
+  useTranslationEvents();
+  useAutoTranslate();
 
   // Sync frontend state to system tray icon & menu
   useTraySync();
@@ -68,23 +71,11 @@ function App() {
   useEffect(() => {
     loadConfig();
     useAIActionsStore.getState().loadConfigs();
-    useTranslationStore.getState().loadConfig().then(async () => {
-      // Sync backend translation provider with persisted frontend setting
-      const { provider } = useTranslationStore.getState();
-      if (provider) {
-        try {
-          const { setTranslationProvider, getApiKey } = await import("./lib/ipc");
-          // Microsoft needs region to authenticate — load from credential store
-          let region: string | undefined;
-          if (provider === "microsoft") {
-            try {
-              region = (await getApiKey("translation_microsoft_region")) || undefined;
-            } catch { /* region not stored yet */ }
-          }
-          await setTranslationProvider(provider, region).catch(() => {});
-        } catch { /* non-critical on startup */ }
-      }
-    });
+    // Restore the translation provider and its settings in the backend (the
+    // Microsoft region comes from the keychain there). A provider that isn't
+    // ready — e.g. no key yet — is kept in backendStatus, which the overlay's
+    // Translate button and the translation settings show.
+    useTranslationStore.getState().loadConfig().then(() => useTranslationStore.getState().syncBackend());
     // Load scenario config (custom scenarios, overrides, active scenario)
     import("./stores/scenarioStore").then(({ useScenarioStore }) => {
       useScenarioStore.getState().loadScenarioConfig();

@@ -3,7 +3,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { QuickSetupPlaceholder } from "./QuickSetupPlaceholder";
 import type { QuickSetupProps } from "./quickSetup";
 import { SttQuickSetup } from "./stt/SttQuickSetup";
-import { TranslationQuickSetup } from "./translation/TranslationQuickSetup";
 import { useMeetingStore } from "../stores/meetingStore";
 
 // LlmQuickSetup is the real one now (P1); its placeholder is tested directly.
@@ -13,7 +12,6 @@ describe("quick setup placeholders", () => {
   it.each([
     ["llm", LlmPlaceholder, "AI model"],
     ["stt", SttQuickSetup, "Speech recognition"],
-    ["translation", TranslationQuickSetup, "Translation"],
   ] as const)("%s reports incomplete once and opens its settings tab", (tab, Component, title) => {
     const onStatusChange = vi.fn();
     const { rerender } = render(<Component variant="wizard" onStatusChange={onStatusChange} />);

@@ -1,1 +1,323 @@
-{}
+{
+  "selection": {
+    "translate": "Translate",
+    "translating": "..."
+  },
+  "postMeeting": {
+    "title": "Translations",
+    "displayMode": {
+      "inline": "Inline",
+      "hover": "Hover"
+    },
+    "retranslateMismatched_one": "Retranslate {{count}} mismatched",
+    "retranslateMismatched_other": "Retranslate {{count}} mismatched",
+    "hide": "Hide translations",
+    "show": "Show translations"
+  },
+  "opusMt": {
+    "title": "OPUS-MT Models",
+    "summary": "{{downloaded}} downloaded · {{total}} available",
+    "filter": {
+      "all": "All Languages"
+    },
+    "loading": "Loading models...",
+    "activeBanner": "Active: {{name}}",
+    "empty": "No models found for this filter.",
+    "row": {
+      "cancelDownload": "Cancel download",
+      "active": "Active",
+      "activate": {
+        "label": "Activate",
+        "title": "Set as active model"
+      },
+      "download": {
+        "label": "Download",
+        "title": "Download model"
+      },
+      "delete": "Delete model"
+    },
+    "toast": {
+      "downloadFailedFor": "Download failed for {{modelId}}",
+      "downloadFailed": "Download failed: {{detail}}",
+      "deleted": "Model deleted",
+      "deleteFailed": "Delete failed: {{detail}}",
+      "activated": "Model activated — translation will load on first use",
+      "activationFailed": "Activation failed: {{detail}}"
+    }
+  },
+  "transcript": {
+    "empty": {
+      "capturing": "Capturing audio",
+      "hint": "Speech will appear as it's detected",
+      "startMeeting": "Start a meeting to see the transcript"
+    },
+    "search": {
+      "placeholder": "Search transcript...",
+      "label": "Search transcript",
+      "matches_one": "{{count}} match",
+      "matches_other": "{{count}} matches",
+      "clear": "Clear search"
+    },
+    "typeset": {
+      "text": "Text",
+      "textColor": "Text color",
+      "translation": "Translation",
+      "translationColor": "Translation color"
+    },
+    "scrollToLatest": "Scroll to latest",
+    "audio": {
+      "mute": "Mute {{label}}",
+      "unmute": "Unmute {{label}}",
+      "level": "{{label}} audio level",
+      "muted": "Muted"
+    }
+  },
+  "line": {
+    "renameHint": "Click to rename",
+    "confidence": "Confidence: {{percent}}%",
+    "translating": "Translating...",
+    "translationFailed": "Translation failed",
+    "latestFailed": "The latest text wasn't translated: {{detail}}",
+    "bookmark": {
+      "add": "Bookmark this line",
+      "remove": "Remove bookmark"
+    }
+  },
+  "overlay": {
+    "recording": {
+      "label": "Recording in progress",
+      "badge": "REC"
+    },
+    "mode": {
+      "online": "ONLINE",
+      "inPerson": "IN-PERSON"
+    },
+    "mute": {
+      "muteYou": "Mute mic (You)",
+      "unmuteYou": "Unmute mic (You)",
+      "muteThem": "Mute them",
+      "unmuteThem": "Unmute them"
+    },
+    "layout": {
+      "focusAi": "Focus AI panel",
+      "focusTranscript": "Focus Transcript",
+      "split": "Split view"
+    },
+    "panels": {
+      "speakerStats": "Speaker Stats (S)",
+      "bookmarks": "Bookmarks (K)",
+      "callLog": "AI Call Log",
+      "devLog": "Dev Log (Ctrl+Shift+L)",
+      "transcript": "Transcript",
+      "expandTranscript": "Expand transcript panel",
+      "expandTranscriptTitle": "Expand transcript",
+      "ai": "AI",
+      "expandAi": "Expand AI panel"
+    },
+    "stealth": {
+      "hidden": "Hidden from screen share — click to show ({{shortcut}})",
+      "visible": "Visible in screen share — click to hide ({{shortcut}})"
+    },
+    "transparency": "Transparency: {{percent}}% (click to cycle)",
+    "settings": "Settings",
+    "minimize": "Minimize to Dashboard (Ctrl+B brings it back)",
+    "translate": {
+      "label": "Translate",
+      "toggle": "Toggle auto-translate",
+      "notReady": "Translation isn't ready: {{detail}}",
+      "noParty": "No party is set to be translated. Choose who to translate in Settings → Translation.",
+      "noServiceParty": "No party is translated by the translation service (it's off, or the speech engine translates it itself).",
+      "inline": "Inline",
+      "hover": "Hover",
+      "all": "Translate All",
+      "allTitle": "Translate all past transcript segments",
+      "allRunning": "Translating...",
+      "target": "Target language: {{language}}"
+    },
+    "batch": {
+      "alreadyDone": "All {{total}} segments already translated",
+      "someNew": "Translated {{count}} new segments ({{cached}} already cached, {{total}} total)",
+      "allNew": "Translated all {{total}} segments",
+      "partial": "Translated {{count}} segments; {{failed}} failed: {{detail}}",
+      "failed": "Batch translation failed: {{detail}}"
+    },
+    "end": {
+      "label": "End meeting",
+      "button": "End",
+      "ended": "Meeting ended",
+      "failed": "Couldn't end meeting"
+    }
+  },
+  "errors": {
+    "translateFailed": "Translation failed: {{detail}}"
+  },
+  "providers": {
+    "opusMt": {
+      "description": "100+ langs · Fully offline · Private"
+    },
+    "llm": {
+      "label": "LLM Translation",
+      "description": "Uses the AI model chosen for translation"
+    },
+    "microsoft": {
+      "description": "179 langs · 2M free/mo"
+    },
+    "google": {
+      "description": "133 langs · $20 free/mo"
+    },
+    "deepl": {
+      "description": "31 langs · 500K free/mo"
+    }
+  },
+  "settings": {
+    "banner": {
+      "active": "Active: {{provider}} · {{language}}",
+      "hint": "This provider will be used for transcript translation",
+      "ready": "Ready",
+      "notReady": "Not ready: {{detail}}"
+    },
+    "groups": {
+      "local": "Local & Offline",
+      "localTag": "Free · No API Key · Private",
+      "cloud": "Cloud Providers",
+      "cloudTag": "Requires API Key"
+    },
+    "badge": {
+      "ready": "Ready",
+      "available": "Available",
+      "models_one": "{{count}} Model",
+      "models_other": "{{count}} Models",
+      "noModels": "No Models",
+      "notReady": "Not Ready",
+      "hasKey": "Has Key",
+      "noKey": "No Key",
+      "customEndpoint": "Custom URL",
+      "activeDot": "Active provider — {{badge}}"
+    },
+    "apiKey": {
+      "title": "API Key",
+      "storedPlaceholder": "Key stored — type to replace",
+      "placeholder": "Enter {{provider}} API key",
+      "optionalPlaceholder": "Enter {{provider}} API key (optional with a custom address)",
+      "show": "Show API key",
+      "hide": "Hide API key",
+      "saveAndTest": "Save & Test",
+      "test": "Test Connection",
+      "clear": "Clear",
+      "clearTitle": "Remove stored API key",
+      "help": "Get a free API key",
+      "stored": "API key stored securely",
+      "enterAndTest": "Enter your key and click Save & Test",
+      "testing": "Testing connection...",
+      "connected": "Connected — {{count}} languages available ({{ms}}ms)",
+      "connectedNoList": "Connected ({{ms}}ms)",
+      "failed": "Connection failed"
+    },
+    "region": {
+      "label": "Azure Region",
+      "hint": "Region for your Azure Translator resource"
+    },
+    "makeActive": "Set {{provider}} as Active Translation Provider",
+    "language": {
+      "title": "Language",
+      "target": "Target Language",
+      "targetHint": "Translate transcripts into this language",
+      "opusMtLocked": "Set by the active OPUS-MT model ({{name}}).",
+      "source": "Source Language",
+      "sourceHint": "Auto-detect uses each party's recognition language, unless that is set to auto-detect too.",
+      "nativeNote": "Parties the speech engine translates (Soniox) switch to a new target the next time recognition starts."
+    },
+    "behavior": {
+      "title": "Behavior",
+      "autoStart": {
+        "label": "Translate when a meeting starts",
+        "description": "Live translation starts on. The overlay's Translate button changes this too."
+      },
+      "selection": {
+        "label": "Select-to-translate toolbar",
+        "description": "Show a translate button when selecting text in the transcript"
+      },
+      "postMeeting": {
+        "label": "Show translations in post-meeting review",
+        "description": "Display translation toolbar and cached translations when reviewing past meetings"
+      },
+      "cache": {
+        "label": "Cache translations",
+        "description": "Store translated text locally to avoid re-translating the same content"
+      },
+      "settle": {
+        "label": "Wait before translating a line",
+        "description": "A live line is translated once it has stopped changing for this long (or the speaker starts a new line).",
+        "unit": "s"
+      }
+    }
+  },
+  "endpoint": {
+    "label": "Service URL",
+    "optional": "(optional)",
+    "preview": "Requests go to:",
+    "trimmed": "Recognized as a full address: {{path}} is added by the app.",
+    "hint": {
+      "deepl": "Leave empty for the official API (free or pro, by key). Or a compatible server such as DeepLX: the prefix ending in /v2. Put keys in the API Key field, not in the address (it's saved as plain text).",
+      "microsoft": "Leave empty for the global endpoint. Or a resource endpoint (https://<resource>.cognitiveservices.azure.com/translator/text/v3.0), or https://api.translator.azure.cn. Put keys in the API Key field, not in the address (it's saved as plain text).",
+      "google": "Leave empty for the official Cloud Translation v2 API, or enter a proxy that serves the same API. Put keys in the API Key field, not in the address (it's saved as plain text)."
+    }
+  },
+  "llm": {
+    "title": "LLM translation",
+    "modelNote": "The model is chosen in AI Models → Task routing → Live translation. Pick a fast model and turn thinking off for live use.",
+    "openModelSettings": "Open AI model settings",
+    "systemPrompt": {
+      "label": "System prompt",
+      "hint": "Empty uses the default shown in the box. {source}, {target} and {glossary} are filled in."
+    },
+    "userTemplate": {
+      "label": "Message template",
+      "hint": "Empty uses the default. {source}, {target}, {glossary} and {text} (the line to translate) are filled in; languages are given by name."
+    },
+    "glossary": {
+      "label": "Glossary",
+      "placeholder": "Kubernetes => Kubernetes\nsprint => 冲刺\nOKR => 目标与关键成果",
+      "hint": "One term per line: source => translation. Only the terms that occur in a line are sent with it."
+    },
+    "editDefault": "Edit the default",
+    "resetPrompts": "Restore default prompts",
+    "test": "Test translation",
+    "testOk": "The model translated a test sentence ({{ms}} ms):"
+  },
+  "parties": {
+    "title": "Who to translate",
+    "engine": "Speech engine: {{engine}}",
+    "groupLabel": "How to translate {{party}}",
+    "mode": {
+      "off": "Off",
+      "native": "Speech engine",
+      "service": "Translation service"
+    },
+    "nativeUnavailable": "{{engine}} can't translate by itself. Choose an engine that can (Soniox) for this party in the speech recognition settings.",
+    "hint": "Speech engine: the engine translates while it recognizes (Soniox), into the target language above, and the translation service isn't used for that party."
+  },
+  "quickSetup": {
+    "title": "Translation",
+    "intro": "Translate the live transcript while you meet. You can change all of this later in Settings → Translation.",
+    "enable": "Translate during meetings",
+    "parties": "Translate",
+    "native": {
+      "label": "Let {{engine}} translate while it recognizes",
+      "hint": "Fastest, no extra service needed. Other parties use the translation service below."
+    },
+    "provider": "Translation service",
+    "llmHint": "Uses the AI model from the previous step",
+    "customEndpoint": "Use a custom service URL",
+    "testNeeded": "Test the service to finish this step.",
+    "testOk": "Works ({{ms}} ms)",
+    "moreSettings": "More settings: service URLs, prompts, glossary",
+    "testedBefore": "Tested",
+    "summary": {
+      "off": "No translation",
+      "native": "{{engine}} translates into {{language}}",
+      "service": "{{provider}} → {{language}}",
+      "mixed": "{{engine}} and {{provider}} → {{language}}"
+    }
+  }
+}
