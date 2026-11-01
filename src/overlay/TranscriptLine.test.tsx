@@ -77,6 +77,14 @@ describe("TranscriptLine translations", () => {
     expect(failed).toHaveAttribute("title", "HTTP 401: invalid key");
   });
 
+  it("marks an older translation when the newest text failed", () => {
+    useTranslationStore.getState().addTranslation(translation("sx_1", "早上好。"));
+    useTranslationStore.getState().handleTranslationError({ segment_id: "sx_1", error: "HTTP 429" });
+    render(<TranscriptLine segment={merged[0]} />);
+    expect(screen.getByText("早上好。")).toBeInTheDocument();
+    expect(screen.getByLabelText("The latest text wasn't translated: HTTP 429")).toBeInTheDocument();
+  });
+
   it("a single segment still works", () => {
     useTranslationStore.getState().addTranslation(translation("solo", "你好", "DeepL"));
     render(<TranscriptLine segment={segment("solo", "Hello", 0)} />);

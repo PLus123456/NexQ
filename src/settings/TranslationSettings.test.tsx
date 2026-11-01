@@ -69,6 +69,28 @@ describe("TranslationSettings", () => {
     expect(screen.getByRole("button", { name: "Test Connection" })).toBeInTheDocument();
   });
 
+  it("the wait before translating can be typed freely and is saved on blur", async () => {
+    useTranslationStore.setState({ liveSettleMs: 1200 });
+    await renderPage();
+    const input = screen.getByLabelText("Wait before translating a line") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.change(input, { target: { value: "2." } });
+    expect(useTranslationStore.getState().liveSettleMs).toBe(1200);
+    fireEvent.change(input, { target: { value: "2.5" } });
+    fireEvent.blur(input);
+    expect(useTranslationStore.getState().liveSettleMs).toBe(2500);
+    expect(input.value).toBe("2.5");
+
+    // Cleared, or out of range: back to the saved value, or clamped.
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(input.value).toBe("2.5");
+    fireEvent.change(input, { target: { value: "0.05" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useTranslationStore.getState().liveSettleMs).toBe(300);
+    expect(input.value).toBe("0.3");
+  });
+
   it("LLM translation is tested with a real sentence and the prompts on screen", async () => {
     await renderPage();
     fireEvent.change(screen.getByLabelText("Glossary"), { target: { value: "sprint => 冲刺" } });

@@ -246,6 +246,25 @@ describe("live translation requests", () => {
 });
 
 describe("translating the lines not saved yet", () => {
+  it("skips the lines the batch handled and redoes translations of an earlier text", async () => {
+    useTranscriptStore.setState({
+      segments: [segment("them_1", "Hello everyone, welcome."), segment("them_2", "Batch did this"), segment("them_3", "Fresh")],
+    });
+    useTranslationStore.getState().addTranslation({
+      segment_id: "them_1",
+      original_text: "Hello everyone",
+      translated_text: "大家好",
+      source_lang: "en",
+      target_lang: "zh-CN",
+      provider: "DeepL",
+    });
+    await act(async () => {
+      await translateUntranslatedLines(["them"], new Set(["them_2"]));
+    });
+    expect(requests().map((r) => r.segmentIds)).toEqual([["them_1"], ["them_3"]]);
+    expect(requests()[0].texts).toEqual(["Hello everyone, welcome."]);
+  });
+
   it("sends each untranslated final line of the chosen parties once, in order", async () => {
     useTranscriptStore.setState({
       segments: [
@@ -308,14 +327,17 @@ describe("starting a meeting", () => {
     expect(useTranslationStore.getState().autoTranslateActive).toBe(false);
   });
 
-  it("a line pending when the meeting changes is not translated into the next one", async () => {
+  it("a line still waiting when the meeting ends is translated for its own meeting", async () => {
     await mount(<OverlayLevel />);
     await final(segment("them_old", "Last words"));
     await act(async () => {
-      useMeetingStore.setState({ activeMeeting: { id: "m2", title: "Next" } as Meeting });
+      useMeetingStore.setState({ activeMeeting: null });
     });
+    expect(requests()).toEqual([
+      expect.objectContaining({ segmentIds: ["them_old"], meetingId: "m1" }),
+    ]);
     await settle();
-    expect(requests()).toEqual([]);
+    expect(requests()).toHaveLength(1);
   });
 });
 

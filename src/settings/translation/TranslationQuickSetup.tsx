@@ -54,6 +54,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   const setEndpoint = useTranslationStore((s) => s.setEndpoint);
   const llm = useTranslationStore((s) => s.llm);
   const syncBackend = useTranslationStore((s) => s.syncBackend);
+  const setAutoTranslateEnabled = useTranslationStore((s) => s.setAutoTranslateEnabled);
   const audio = useConfigStore((s) => s.meetingAudioConfig);
   const setMeetingAudioConfig = useConfigStore((s) => s.setMeetingAudioConfig);
 
@@ -109,8 +110,12 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
     nativeCapable(party) && (useNative || !needsService) ? "native" : "service";
 
   const setEnabled = (on: boolean) => {
-    if (!on) applyModes({ you: "off", them: "off" });
-    else applyModes({ them: modeWhenOn("them") });
+    if (!on) {
+      applyModes({ you: "off", them: "off" });
+      setAutoTranslateEnabled(false);
+    } else {
+      applyModes({ them: modeWhenOn("them") });
+    }
   };
 
   const toggleParty = (party: TranslationParty) => {
@@ -166,6 +171,8 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
         setTest({ state: "ok", ms: result.response_ms });
         // The active provider picks up the key just saved.
         void syncBackend();
+        // Set up and working: meetings start with live translation on.
+        setAutoTranslateEnabled(true);
       } else {
         setTest({ state: "error", message: result.error || t("common:errors.unknown") });
       }

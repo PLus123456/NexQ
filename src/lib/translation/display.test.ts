@@ -55,6 +55,9 @@ describe("lineTranslation", () => {
     const line = lineTranslation(["s3"], translations, new Set(), errors);
     expect(line.text).toBe("");
     expect(line.error).toBe("HTTP 401");
-    expect(lineTranslation(["s1"], translations, new Set(), new Map([["s1", "old"]])).error).toBeUndefined();
+    // The newest text failed while an older translation is still shown.
+    const stale = lineTranslation(["s1"], translations, new Set(), new Map([["s1", "HTTP 429"]]));
+    expect(stale.text).toBe("First.");
+    expect(stale.error).toBe("HTTP 429");
   });
 });

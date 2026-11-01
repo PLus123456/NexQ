@@ -18,6 +18,10 @@ const LIVE_LLM_TIMEOUT: Duration = Duration::from_secs(30);
 const BATCH_LLM_TIMEOUT: Duration = Duration::from_secs(60);
 /// The settings page's "Test" button.
 const TEST_LLM_TIMEOUT: Duration = Duration::from_secs(15);
+/// After this many failures in a row, the remaining lines of a request fail
+/// with the same error without being sent (a dead address would otherwise
+/// cost a timeout per line).
+const MAX_FAILURES_IN_A_ROW: usize = 3;
 
 /// `translation_backend_status`: the outcome of the last
 /// `set_translation_provider`, for every window (the frontend shows the error).
@@ -256,7 +260,7 @@ pub async fn translate_segments(
             // Every requested line learns why it stays untranslated.
             let error = e.to_string();
             for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
-                emit_segment_error(&app, seg_id, text, &error);
+                emit_segment_error(&app, &meeting_id, seg_id, text, &error);
             }
             return Err(error);
         }
@@ -270,18 +274,30 @@ pub async fn translate_segments(
         segment_ids.join(", "), target, provider_name
     );
 
+    // A failed line doesn't stop the others; the call fails with the first error.
+    let mut first_error: Option<String> = None;
+    let mut failures_in_a_row = 0usize;
     for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
-        let translated = match &llm_settings {
-            Some(settings) => {
-                translate_with_llm(&app, &LlmTask::Translation, settings, text, source, &target, LIVE_LLM_TIMEOUT).await
+        let translated = if failures_in_a_row >= MAX_FAILURES_IN_A_ROW {
+            Err(first_error.clone().unwrap_or_default())
+        } else {
+            match &llm_settings {
+                Some(settings) => {
+                    translate_with_llm(&app, &LlmTask::Translation, settings, text, source, &target, LIVE_LLM_TIMEOUT).await
+                }
+                None => provider_arc.translate(text, source, &target).await.map_err(|e| e.to_string()),
             }
-            None => provider_arc.translate(text, source, &target).await.map_err(|e| e.to_string()),
         };
         let translated = match translated {
-            Ok(translated) => translated,
+            Ok(translated) => {
+                failures_in_a_row = 0;
+                translated
+            }
             Err(error) => {
-                emit_segment_error(&app, seg_id, text, &error);
-                return Err(error);
+                emit_segment_error(&app, &meeting_id, seg_id, text, &error);
+                failures_in_a_row += 1;
+                first_error.get_or_insert(error);
+                continue;
             }
         };
 
@@ -313,14 +329,19 @@ pub async fn translate_segments(
         let _ = app.emit("translation_result", &result);
     }
 
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// `translation_error` for one line; `original_text` lets the frontend ignore
-/// the failure of a request it already replaced with a newer text.
-fn emit_segment_error(app: &AppHandle, segment_id: &str, original_text: &str, error: &str) {
+/// the failure of a request it already replaced with a newer text, and
+/// `meeting_id` tells a past meeting's view the error isn't about its lines.
+fn emit_segment_error(app: &AppHandle, meeting_id: &str, segment_id: &str, original_text: &str, error: &str) {
     let _ = app.emit("translation_error", serde_json::json!({
         "segment_id": segment_id,
+        "meeting_id": meeting_id,
         "original_text": original_text,
         "error": error,
     }));
@@ -351,12 +372,15 @@ pub async fn translate_batch(
                 |row| row.get(0),
             ).map_err(|e| e.to_string())?;
 
+            // A translation counts only for the text the line has now: one
+            // made while the line was still growing is done again.
             let mut stmt = db.connection().prepare(&format!(
                 "SELECT ts.id, ts.text FROM transcript_segments ts
                  WHERE ts.meeting_id = ?1 AND ts.is_final = 1{filter}
-                   AND ts.id NOT IN (
-                     SELECT segment_id FROM transcript_translations
-                     WHERE meeting_id = ?1 AND target_lang = ?2
+                   AND NOT EXISTS (
+                     SELECT 1 FROM transcript_translations tt
+                     WHERE tt.segment_id = ts.id AND tt.meeting_id = ?1
+                       AND tt.target_lang = ?2 AND tt.original_text = ts.text
                    )
                  ORDER BY ts.timestamp_ms"
             )).map_err(|e| e.to_string())?;
@@ -416,12 +440,19 @@ pub async fn translate_batch(
     let mut completed = already_done;
     let mut newly_translated = 0usize;
     let mut failed = 0usize;
+    let mut failures_in_a_row = 0usize;
     let mut first_error: Option<String> = None;
+    // Every line this batch dealt with (translated or failed), so the
+    // frontend doesn't send them again as "not saved yet".
+    let mut handled_ids: Vec<String> = Vec::with_capacity(untranslated.len());
     for chunk in untranslated.chunks(10) {
         let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+        handled_ids.extend(chunk.iter().map(|(id, _)| id.clone()));
 
         // One result per line of the chunk.
-        let translations: Vec<Result<String, String>> = if let Some(settings) = &llm_settings {
+        let translations: Vec<Result<String, String>> = if failures_in_a_row >= MAX_FAILURES_IN_A_ROW {
+            vec![Err(first_error.clone().unwrap_or_default()); texts.len()]
+        } else if let Some(settings) = &llm_settings {
             let mut results = Vec::with_capacity(texts.len());
             for text in &texts {
                 results.push(
@@ -444,10 +475,14 @@ pub async fn translate_batch(
         // Save each translation
         for ((seg_id, orig_text), translated) in chunk.iter().zip(translations.iter()) {
             let translated = match translated {
-                Ok(translated) => translated,
+                Ok(translated) => {
+                    failures_in_a_row = 0;
+                    translated
+                }
                 Err(error) => {
-                    emit_segment_error(&app, seg_id, orig_text, error);
+                    emit_segment_error(&app, &meeting_id, seg_id, orig_text, error);
                     failed += 1;
+                    failures_in_a_row += 1;
                     first_error.get_or_insert_with(|| error.clone());
                     continue;
                 }
@@ -494,6 +529,7 @@ pub async fn translate_batch(
         "newlyTranslated": newly_translated,
         "failed": failed,
         "firstError": first_error,
+        "handledIds": handled_ids,
     }))
 }
 

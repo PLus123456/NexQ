@@ -39,7 +39,7 @@ import {
   isCloudProvider,
   type ProviderOption,
 } from "./translation/providers";
-import { MAX_LIVE_SETTLE_MS, MIN_LIVE_SETTLE_MS } from "../lib/translation/defaults";
+import { MAX_LIVE_SETTLE_MS, MIN_LIVE_SETTLE_MS, clampSettleMs } from "../lib/translation/defaults";
 
 // ── Badge logic ──
 
@@ -678,19 +678,7 @@ export function TranslationSettings() {
                   <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.behavior.settle.description")}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <input
-                    id={settleId}
-                    type="number"
-                    min={MIN_LIVE_SETTLE_MS / 1000}
-                    max={MAX_LIVE_SETTLE_MS / 1000}
-                    step={0.1}
-                    value={(liveSettleMs / 1000).toFixed(1)}
-                    onChange={(e) => {
-                      const seconds = Number(e.target.value);
-                      if (Number.isFinite(seconds)) setLiveSettleMs(seconds * 1000);
-                    }}
-                    className="w-16 rounded-lg border border-border/50 bg-background px-2 py-1.5 text-right text-sm tabular-nums text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
-                  />
+                  <SecondsInput id={settleId} valueMs={liveSettleMs} onCommit={setLiveSettleMs} />
                   <span className="text-xs text-muted-foreground">{t("settings.behavior.settle.unit")}</span>
                 </div>
               </div>
@@ -699,6 +687,45 @@ export function TranslationSettings() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Seconds input ──
+
+const formatSeconds = (ms: number) => (ms / 1000).toFixed(1);
+
+/** Edits freely and saves on blur / Enter (clamped); empty or invalid text puts the saved value back. */
+export function SecondsInput({ id, valueMs, onCommit }: { id: string; valueMs: number; onCommit: (ms: number) => void }) {
+  const [draft, setDraft] = useState(formatSeconds(valueMs));
+  useEffect(() => setDraft(formatSeconds(valueMs)), [valueMs]);
+
+  const commit = () => {
+    const seconds = Number(draft.trim().replace(",", "."));
+    if (draft.trim() === "" || !Number.isFinite(seconds)) {
+      setDraft(formatSeconds(valueMs));
+      return;
+    }
+    const ms = clampSettleMs(seconds * 1000);
+    setDraft(formatSeconds(ms));
+    if (ms !== valueMs) onCommit(ms);
+  };
+
+  return (
+    <input
+      id={id}
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") setDraft(formatSeconds(valueMs));
+      }}
+      aria-valuemin={MIN_LIVE_SETTLE_MS / 1000}
+      aria-valuemax={MAX_LIVE_SETTLE_MS / 1000}
+      className="w-16 rounded-lg border border-border/50 bg-background px-2 py-1.5 text-right text-sm tabular-nums text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+    />
   );
 }
 

@@ -61,6 +61,8 @@ describe("translationStore: new install", () => {
     expect(state.targetLang).toBe("zh-CN");
     expect(state.sourceLang).toBe("auto");
     expect(state.liveSettleMs).toBe(1200);
+    // Live translation costs quota on every line: off until chosen.
+    expect(state.autoTranslateEnabled).toBe(false);
     // The backend learns the real target (the STT engine's own translation follows it).
     expect(calls("set_translation_languages")).toEqual([{ targetLang: "zh-CN", sourceLang: undefined }]);
     // Following the UI language isn't a choice: nothing is saved.

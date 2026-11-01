@@ -49,6 +49,8 @@ export interface TranslationBackendStatus {
 /** Payload of `translation_error`. */
 export interface TranslationErrorEvent {
   segment_id?: string;
+  /** The meeting of the line (live and batch requests). */
+  meeting_id?: string;
   /** The text whose translation failed (to ignore failures of replaced requests). */
   original_text?: string;
   error: string;
@@ -62,4 +64,6 @@ export interface BatchTranslationOutcome {
   /** Lines that failed (shown on the lines); the batch carried on. */
   failed?: number;
   firstError?: string | null;
+  /** Every line the batch translated or failed on. */
+  handledIds?: string[];
 }

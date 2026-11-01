@@ -5,7 +5,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Bookmark as BookmarkIcon } from "lucide-react";
+import { AlertTriangle, Bookmark as BookmarkIcon } from "lucide-react";
 import type { TranscriptSegment } from "../lib/types";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useSpeakerStore } from "../stores/speakerStore";
@@ -332,10 +332,22 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
         {displayMode === "inline" && (
           <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
             {translation.text ? (
-              // Dimmed while a longer version is on its way or the engine is still streaming it.
-              <span className={translation.pending || translation.streaming ? "opacity-60" : undefined}>
-                {translation.text}
-              </span>
+              <>
+                {/* Dimmed while a longer version is on its way or the engine is still streaming it. */}
+                <span className={translation.pending || translation.streaming ? "opacity-60" : undefined}>
+                  {translation.text}
+                </span>
+                {translation.error && !translation.pending && (
+                  // The newest text failed: what shows is an older, shorter version.
+                  <span
+                    className="ml-1 inline-flex align-middle text-warning"
+                    title={t("line.latestFailed", { detail: translation.error })}
+                    aria-label={t("line.latestFailed", { detail: translation.error })}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                  </span>
+                )}
+              </>
             ) : translation.pending ? (
               <span className="text-muted-foreground/40 animate-pulse">{t("line.translating")}</span>
             ) : translation.error ? (

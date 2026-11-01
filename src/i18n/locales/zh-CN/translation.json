@@ -75,6 +75,7 @@
     "confidence": "置信度：{{percent}}%",
     "translating": "翻译中…",
     "translationFailed": "翻译失败",
+    "latestFailed": "最新的内容没有翻译成功：{{detail}}",
     "bookmark": {
       "add": "给这一行加书签",
       "remove": "移除书签"
@@ -254,9 +255,9 @@
     "preview": "实际请求地址：",
     "trimmed": "已识别为完整地址：{{path}} 会由应用自己加上。",
     "hint": {
-      "deepl": "留空用官方接口（按 Key 自动选免费版或专业版）。也可以填 DeepLX 等兼容服务以 /v2 结尾的前缀。",
-      "microsoft": "留空用全球终结点。也可以填资源终结点（https://<资源名>.cognitiveservices.azure.com/translator/text/v3.0）或 https://api.translator.azure.cn。",
-      "google": "留空用官方的 Cloud Translation v2 接口，也可以填提供同样接口的反向代理。"
+      "deepl": "留空用官方接口（按 Key 自动选免费版或专业版）。也可以填 DeepLX 等兼容服务以 /v2 结尾的前缀。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。",
+      "microsoft": "留空用全球终结点。也可以填资源终结点（https://<资源名>.cognitiveservices.azure.com/translator/text/v3.0）或 https://api.translator.azure.cn。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。",
+      "google": "留空用官方的 Cloud Translation v2 接口，也可以填提供同样接口的反向代理。Key 请填在 API Key 栏，不要写进地址（地址以明文保存）。"
     }
   },
   "llm": {

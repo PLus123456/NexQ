@@ -44,6 +44,7 @@ beforeEach(() => {
   invoke.mockImplementation(async (cmd: string) => (cmd === "has_api_key" ? false : undefined));
   useConfigStore.setState({ meetingAudioConfig: audio() });
   useTranslationStore.setState({
+    autoTranslateEnabled: false,
     provider: "llm",
     targetLang: "zh-CN",
     translateParties: { you: false, them: true },
@@ -68,11 +69,14 @@ describe("TranslationQuickSetup", () => {
     expect(onStatusChange).toHaveBeenCalledTimes(1);
     expect(lastStatus(onStatusChange)).toEqual(["incomplete", undefined]);
 
+    expect(useTranslationStore.getState().autoTranslateEnabled).toBe(false);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     });
     expect(invoke.mock.calls.find(([c]) => c === "test_translation_connection")?.[1]).toMatchObject({ provider: "llm" });
     expect(lastStatus(onStatusChange)).toEqual(["ok", "LLM Translation → Chinese (Simplified)"]);
+    // Tested and working: meetings now start with translation on.
+    expect(useTranslationStore.getState().autoTranslateEnabled).toBe(true);
 
     cleanup();
     onStatusChange = await renderStep();
@@ -80,9 +84,11 @@ describe("TranslationQuickSetup", () => {
   });
 
   it("turning translation off skips the step", async () => {
+    useTranslationStore.setState({ autoTranslateEnabled: true });
     const onStatusChange = await renderStep();
     fireEvent.click(screen.getByRole("switch", { name: "Translate during meetings" }));
     expect(useTranslationStore.getState().translateParties).toEqual({ you: false, them: false });
+    expect(useTranslationStore.getState().autoTranslateEnabled).toBe(false);
     expect(lastStatus(onStatusChange)).toEqual(["skipped", "No translation"]);
   });
 

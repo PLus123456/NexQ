@@ -176,7 +176,7 @@ export function OverlayView() {
     try {
       const batch = await translateBatchForParties(meetingId, targetLang, parties);
       // Then the lines not saved yet (failures show on their lines).
-      const recent = await translateUntranslatedLines(parties);
+      const recent = await translateUntranslatedLines(parties, new Set(batch.handledIds ?? []));
       const total = batch.total + recent.translated + recent.failed;
       const newlyTranslated = batch.newlyTranslated + recent.translated;
       const alreadyDone = batch.alreadyDone;

@@ -112,6 +112,17 @@ describe("SettleScheduler", () => {
     expect(sent()).toEqual([]);
   });
 
+  it("flushAll sends every pending line at once", () => {
+    const { scheduler, sent } = setup();
+    scheduler.final(them("t1", "Theirs"));
+    scheduler.final(you("y1", "Mine"));
+    scheduler.flushAll();
+    expect(sent().sort()).toEqual(["t1:Theirs", "y1:Mine"]);
+    expect(scheduler.pendingCount).toBe(0);
+    vi.advanceTimersByTime(SETTLE);
+    expect(sent()).toHaveLength(2);
+  });
+
   it("ignores empty finals and drops pending lines on dispose", () => {
     const { scheduler, sent } = setup();
     scheduler.final(them("a", "   "));

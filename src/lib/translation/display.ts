@@ -36,7 +36,7 @@ export interface LineTranslation {
   pending: boolean;
   /** A part is a streaming engine translation that can still change. */
   streaming: boolean;
-  /** Why a segment without a translation failed. */
+  /** Why the latest request for a segment failed (it may still show an older translation). */
   error?: string;
   /** Distinct provider names, in order of appearance. */
   providers: string[];
@@ -53,7 +53,7 @@ export function lineTranslation(
   for (const id of ids) {
     const part = translations.get(id);
     if (part) parts.push(part);
-    else if (!error && errors.has(id)) error = errors.get(id);
+    if (!error && errors.has(id)) error = errors.get(id);
   }
   const target = parts[0]?.target_lang ?? "";
   return {

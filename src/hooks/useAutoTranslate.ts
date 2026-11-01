@@ -36,7 +36,8 @@ import {
 function wanted(line: SettleLine): boolean {
   const translation = useTranslationStore.getState();
   const meeting = useMeetingStore.getState();
-  if (!translation.autoTranslateActive || !translation.targetLang || !meeting.activeMeeting?.id) return false;
+  const meetingId = line.meetingId ?? meeting.activeMeeting?.id;
+  if (!translation.autoTranslateActive || !translation.targetLang || !meetingId) return false;
   const party = partyOfSpeaker(line.speaker);
   // In person, the room is the only party: "User" lines aren't shown.
   if (party === "you" && meeting.audioMode === "in_person") return false;
@@ -47,7 +48,7 @@ function wanted(line: SettleLine): boolean {
 /** Sends one line for translation; resolves to whether the request went through. */
 function requestTranslation(line: SettleLine): Promise<boolean> {
   const translation = useTranslationStore.getState();
-  const meetingId = useMeetingStore.getState().activeMeeting?.id;
+  const meetingId = line.meetingId ?? useMeetingStore.getState().activeMeeting?.id;
   if (!meetingId) return Promise.resolve(false);
   const config = useConfigStore.getState();
   const source = partySourceLanguage(
@@ -71,21 +72,24 @@ function requestTranslation(line: SettleLine): Promise<boolean> {
 }
 
 /**
- * Translates the final lines of `parties` that have no translation and aren't
- * being translated, one request at a time. "Translate all" calls it after the
- * batch: the batch covers the saved transcript, and lines are saved only
- * every 30 s, so the latest ones would be missed.
+ * Translates the final lines of `parties` whose translation is missing or was
+ * made for an earlier, shorter text, one request at a time; lines being
+ * translated and `skipIds` are left alone. "Translate all" calls it after the
+ * batch (passing the lines the batch handled): the batch covers the saved
+ * transcript, and lines are saved only every 30 s.
  */
 export async function translateUntranslatedLines(
   parties: readonly TranslationParty[],
+  skipIds: ReadonlySet<string> = new Set(),
 ): Promise<{ translated: number; failed: number }> {
   const translation = useTranslationStore.getState();
   const inPerson = useMeetingStore.getState().audioMode === "in_person";
   const lines = useTranscriptStore.getState().segments.filter((segment) => {
-    if (!segment.is_final || !segment.text.trim()) return false;
+    if (!segment.is_final || !segment.text.trim() || skipIds.has(segment.id)) return false;
     const party = partyOfSpeaker(segment.speaker);
     if (!parties.includes(party) || (inPerson && party === "you")) return false;
-    return !translation.translations.has(segment.id) && !translation.translating.has(segment.id);
+    if (translation.translating.has(segment.id)) return false;
+    return translation.translations.get(segment.id)?.original_text !== segment.text;
   });
   let translated = 0;
   let failed = 0;
@@ -109,7 +113,9 @@ export function startAutoTranslate(): () => void {
 
   void Promise.all([
     onTranscriptFinal(({ segment }) => {
-      if (segment.is_final) scheduler.final({ id: segment.id, text: segment.text, speaker: segment.speaker });
+      if (!segment.is_final) return;
+      const meetingId = useMeetingStore.getState().activeMeeting?.id;
+      scheduler.final({ id: segment.id, text: segment.text, speaker: segment.speaker, meetingId });
     }),
     onTranscriptUpdate(({ segment }) => {
       scheduler.interim({ id: segment.id, speaker: segment.speaker });
@@ -119,10 +125,12 @@ export function startAutoTranslate(): () => void {
     else unlisteners.push(...subscriptions);
   });
 
-  // Lines of the previous meeting are dropped, not translated into the next
-  // one; a new meeting starts with translation on or off as last chosen.
+  // When the meeting changes, lines still waiting are translated for their own
+  // meeting (the last words before End too); the next meeting starts with
+  // translation on or off as last chosen.
   const offMeeting = useMeetingStore.subscribe((state, previous) => {
     if (state.activeMeeting?.id === previous.activeMeeting?.id) return;
+    scheduler.flushAll();
     scheduler.dispose();
     if (state.activeMeeting) {
       const translation = useTranslationStore.getState();

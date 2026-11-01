@@ -18,6 +18,8 @@ export interface SettleLine {
   id: string;
   text: string;
   speaker: string;
+  /** The meeting the line was spoken in (it is still translated for it after the meeting ends). */
+  meetingId?: string;
 }
 
 export interface SettleSchedulerOptions {
@@ -76,7 +78,12 @@ export class SettleScheduler {
     this.options.translate(line);
   }
 
-  /** Drops pending lines without translating them (meeting over, hook unmounted). */
+  /** Translates every pending line now (the meeting is ending). */
+  flushAll(): void {
+    for (const party of [...this.pending.keys()]) this.flush(party);
+  }
+
+  /** Drops pending lines without translating them (hook unmounted). */
   dispose(): void {
     for (const { timer } of this.pending.values()) clearTimeout(timer);
     this.pending.clear();

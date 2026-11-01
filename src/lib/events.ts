@@ -257,11 +257,11 @@ export function onTranslationResult(handler: (result: TranslationResult) => void
   return listen<TranslationResult>("translation_result", (e) => handler(e.payload));
 }
 
-/** `original_text`: the text whose translation failed (live lines); `consecutive_failures`: repeated selection failures. */
+/** `original_text` / `meeting_id`: the line whose translation failed; `consecutive_failures`: repeated selection failures. */
 export function onTranslationError(
-  handler: (error: { segment_id?: string; original_text?: string; error: string; consecutive_failures?: number }) => void,
+  handler: (error: { segment_id?: string; meeting_id?: string; original_text?: string; error: string; consecutive_failures?: number }) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ segment_id?: string; original_text?: string; error: string; consecutive_failures?: number }>(
+  return listen<{ segment_id?: string; meeting_id?: string; original_text?: string; error: string; consecutive_failures?: number }>(
     "translation_error",
     (e) => handler(e.payload),
   );

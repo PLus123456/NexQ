@@ -200,7 +200,9 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
     targetLang: "en", // loadConfig: the saved one, else the UI language
     sourceLang: AUTO_LANGUAGE,
     displayMode: "inline",
-    autoTranslateEnabled: true,
+    // Off until chosen (overlay Translate button, settings, a tested quick setup):
+    // live translation spends LLM / service quota on every line.
+    autoTranslateEnabled: false,
     selectionToolbarEnabled: true,
     cacheEnabled: true,
     translateParties: { ...DEFAULT_TRANSLATE_PARTIES },
