@@ -25,3 +25,4 @@ pub mod ui_commands;
 // p1-llm:
 // p4-rag:
 // p5-onboarding:
+pub mod onboarding_commands;
