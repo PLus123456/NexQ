@@ -1,10 +1,14 @@
 import { useState } from "react";
+import type { ParseKeys } from "i18next";
 import { FileText, X, RefreshCw } from "lucide-react";
 import type { ContextResource, RagIndexStatus } from "../lib/types";
 import { useConfigStore } from "../stores/configStore";
 import { useRagStore } from "../stores/ragStore";
 import { rebuildFileIndex } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
+import { formatNumber, useT } from "../i18n";
+
+type RagKey = ParseKeys<"rag">;
 
 interface ResourceCardProps {
   resource: ContextResource;
@@ -12,6 +16,7 @@ interface ResourceCardProps {
 }
 
 export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
+  const { t } = useT("rag");
   const [confirmRemove, setConfirmRemove] = useState(false);
   const contextStrategy = useConfigStore((s) => s.contextStrategy);
   const indexStatus = useRagStore((s) => s.indexStatus);
@@ -21,11 +26,11 @@ export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
     setIsReindexing(true);
     try {
       await rebuildFileIndex(resource.id);
-      showToast(`Re-indexed "${resource.name}"`, "success");
+      showToast(t("context.resourceCard.reindex.toast.success", { name: resource.name }), "success");
       useRagStore.getState().refreshIndexStatus();
     } catch (e) {
       console.error("Failed to re-index:", e);
-      showToast("Couldn't re-index file — try removing and re-adding it", "error");
+      showToast(t("context.resourceCard.reindex.toast.failed"), "error");
     } finally {
       setIsReindexing(false);
     }
@@ -78,7 +83,7 @@ export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
             <span
               className={`flex-shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${fileIndexStatus.className}`}
             >
-              {fileIndexStatus.label}
+              {t(fileIndexStatus.labelKey)}
             </span>
           )}
         </div>
@@ -87,11 +92,11 @@ export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
         <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
           <span>{formatFileSize(resource.size_bytes)}</span>
           <span className="rounded-full bg-muted/40 px-2 py-0.5">
-            ~{formatTokenCount(resource.token_count)} tokens
+            {t("context.resourceCard.tokens", { tokens: formatTokenCount(resource.token_count) })}
           </span>
           {isRagActive && resource.chunk_count != null && resource.chunk_count > 0 && (
             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">
-              {resource.chunk_count} chunks
+              {t("context.resourceCard.chunks", { count: resource.chunk_count })}
             </span>
           )}
         </div>
@@ -110,7 +115,7 @@ export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
           onClick={handleReindex}
           disabled={isReindexing}
           className="flex-shrink-0 rounded-lg p-1.5 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary opacity-0 group-hover:opacity-100"
-          title="Re-index file"
+          title={t("context.resourceCard.reindex.title")}
         >
           <RefreshCw className={`h-3.5 w-3.5 ${isReindexing ? "animate-spin" : ""}`} />
         </button>
@@ -124,7 +129,11 @@ export function ResourceCard({ resource, onRemove }: ResourceCardProps) {
             ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
             : "text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive opacity-0 group-hover:opacity-100"
         }`}
-        title={confirmRemove ? "Click again to confirm removal" : "Remove file"}
+        title={
+          confirmRemove
+            ? t("context.resourceCard.remove.confirm")
+            : t("context.resourceCard.remove.title")
+        }
       >
         <X className="h-4 w-4" />
       </button>
@@ -136,7 +145,7 @@ function getFileIndexBadge(
   _resource: ContextResource,
   isRagActive: boolean,
   indexStatus: RagIndexStatus | null,
-): { label: string; className: string } | null {
+): { labelKey: RagKey; className: string } | null {
   if (!isRagActive) return null;
 
   const hasChunks = (indexStatus?.total_chunks ?? 0) > 0;
@@ -146,7 +155,7 @@ function getFileIndexBadge(
   if (!hasChunks) {
     // No index built yet
     return {
-      label: "New",
+      labelKey: "context.resourceCard.badge.new",
       className: "bg-info/10 text-info",
     };
   }
@@ -154,14 +163,14 @@ function getFileIndexBadge(
   if (indexedFiles >= totalFiles && totalFiles > 0) {
     // All files indexed — every resource is covered
     return {
-      label: "Indexed",
+      labelKey: "context.resourceCard.badge.indexed",
       className: "bg-success/10 text-success",
     };
   }
 
   // Index exists but not all files covered
   return {
-    label: "Not Indexed",
+    labelKey: "context.resourceCard.badge.notIndexed",
     className: "bg-warning/10 text-warning",
   };
 }
@@ -191,5 +200,5 @@ function formatTokenCount(count: number): string {
   if (count >= 1000) {
     return `${(count / 1000).toFixed(1)}k`;
   }
-  return count.toLocaleString();
+  return formatNumber(count);
 }

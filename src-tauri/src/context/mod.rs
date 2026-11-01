@@ -244,6 +244,12 @@ impl ContextManager {
         self.resources.clone()
     }
 
+    /// The extracted text of a loaded resource (the RAG indexer reuses it
+    /// instead of parsing the file again).
+    pub fn resource_text(&self, resource_id: &str) -> Option<String> {
+        self.cache.get(resource_id).map(|c| c.text.clone())
+    }
+
     /// Get the assembled context text (concatenation of all resources' text).
     pub fn get_assembled_context(&self) -> String {
         let mut parts: Vec<String> = Vec::new();

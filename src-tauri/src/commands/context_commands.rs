@@ -38,6 +38,17 @@ pub async fn load_context_file(
         }
     }
 
+    // Index it in the background while the knowledge base is on.
+    if let Some(engine) = crate::rag::engine::global() {
+        let config = engine.config();
+        if config.enabled && config.indexing.auto_index {
+            engine.enqueue(crate::rag::indexer::JobKind::Sync {
+                resources: Some(vec![resource.id.clone()]),
+                force: false,
+            });
+        }
+    }
+
     serde_json::to_string(&resource)
         .map_err(|e| format!("Failed to serialize resource: {}", e))
 }
@@ -65,6 +76,10 @@ pub async fn remove_context_file(
             let _ = crate::db::context::delete_context_resource(db_guard.connection(), &resource_id);
             let _ = crate::db::rag::delete_chunks_by_file(db_guard.connection(), &resource_id);
         }
+    }
+    // Searches must stop finding it whatever the context strategy.
+    if let Some(engine) = crate::rag::engine::global() {
+        engine.enqueue(crate::rag::indexer::JobKind::Remove { resource_id: resource_id.clone() });
     }
 
     Ok(())

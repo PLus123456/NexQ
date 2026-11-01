@@ -1,12 +1,35 @@
+import type { ParseKeys } from "i18next";
 import { useContextStore } from "../stores/contextStore";
 import { AlertTriangle } from "lucide-react";
+import { useT } from "../i18n";
+
+/**
+ * The segment labels the backend sends (src-tauri/src/context/token_counter.rs),
+ * shown translated. Any other label is shown as it comes.
+ */
+const SEGMENT_LABEL_KEYS = new Map<string, ParseKeys<"rag">>([
+  ["Resume", "context.tokenBudget.segment.labels.resume"],
+  ["JD", "context.tokenBudget.segment.labels.jd"],
+  ["Notes", "context.tokenBudget.segment.labels.notes"],
+  ["Notes (PDF)", "context.tokenBudget.segment.labels.notesPdf"],
+  ["Notes (MD)", "context.tokenBudget.segment.labels.notesMd"],
+  ["Custom Instructions", "context.tokenBudget.segment.labels.customInstructions"],
+  ["System Prompt", "context.tokenBudget.segment.labels.systemPrompt"],
+  ["Transcript", "context.tokenBudget.segment.labels.transcript"],
+]);
 
 export function TokenBudget() {
+  const { t } = useT("rag");
   const tokenBudget = useContextStore((s) => s.tokenBudget);
 
   if (!tokenBudget || tokenBudget.limit === 0) {
     return null;
   }
+
+  const segmentLabel = (label: string) => {
+    const key = SEGMENT_LABEL_KEYS.get(label);
+    return key ? t(key) : label;
+  };
 
   const usedTokens = tokenBudget.total;
   const limit = tokenBudget.limit;
@@ -33,7 +56,7 @@ export function TokenBudget() {
       <div className="mb-2.5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-muted-foreground">
-            Token Budget
+            {t("context.tokenBudget.title")}
           </span>
           {(isWarning || isCritical) && (
             <AlertTriangle
@@ -44,8 +67,11 @@ export function TokenBudget() {
           )}
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
-          {formatNumber(usedTokens)} / {formatNumber(limit)} tokens used (
-          {usagePercent.toFixed(0)}%)
+          {t("context.tokenBudget.usage", {
+            used: formatNumber(usedTokens),
+            limit: formatNumber(limit),
+            percent: usagePercent.toFixed(0),
+          })}
         </span>
       </div>
 
@@ -53,7 +79,7 @@ export function TokenBudget() {
       <div
         className="h-2.5 w-full overflow-hidden rounded-full bg-muted/40"
         role="meter"
-        aria-label="Token budget usage"
+        aria-label={t("context.tokenBudget.meter.ariaLabel")}
         aria-valuenow={usedTokens}
         aria-valuemin={0}
         aria-valuemax={limit}
@@ -71,7 +97,10 @@ export function TokenBudget() {
                   backgroundColor: segment.color,
                   minWidth: widthPercent > 0 ? "2px" : "0",
                 }}
-                title={`${segment.label}: ~${formatNumber(segment.tokens)} tokens`}
+                title={t("context.tokenBudget.segment.title", {
+                  label: segmentLabel(segment.label),
+                  tokens: formatNumber(segment.tokens),
+                })}
               />
             );
           })}
@@ -91,7 +120,10 @@ export function TokenBudget() {
                 style={{ backgroundColor: segment.color }}
               />
               <span className="text-meta tabular-nums text-muted-foreground">
-                {segment.label}: ~{formatNumber(segment.tokens)}
+                {t("context.tokenBudget.segment.legend", {
+                  label: segmentLabel(segment.label),
+                  tokens: formatNumber(segment.tokens),
+                })}
               </span>
             </div>
           ))}
