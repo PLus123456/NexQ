@@ -289,6 +289,7 @@ export function assignPartyEngine(
 const PRESET_IDS = [
   "free",
   "soniox_them",
+  "remote_whisper",
   "best_quality",
   "fully_offline",
   "all_cloud",

@@ -71,7 +71,7 @@
     },
     "remote_whisper": {
       "name": "自建 Whisper",
-      "description": "两方都用你自己的 Whisper 服务器（OpenAI 兼容）"
+      "description": "双方都用你自己的 Whisper 服务器（OpenAI 兼容）"
     },
     "best_quality": {
       "name": "最佳质量",
