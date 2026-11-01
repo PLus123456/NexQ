@@ -3,7 +3,7 @@
 // Speaker color is dynamic via speakerStore; confidence underline when enabled.
 // SP2 Task 7: Hover bookmark icon, right-click context menu, bookmarked line indicator.
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Bookmark as BookmarkIcon } from "lucide-react";
 import type { TranscriptSegment } from "../lib/types";
@@ -15,13 +15,16 @@ import { useTranslationStore } from "../stores/translationStore";
 import { TranscriptContextMenu } from "./TranscriptContextMenu";
 import { showBookmarkToast } from "./BookmarkToast";
 import { defaultRemoteSpeakerName, remoteKeyOf, remoteSpeakerColor } from "../lib/speakerLabels";
+import { lineTranslation } from "../lib/translation/display";
+import { useT } from "../i18n";
 
 // Module-level singleton: ensures only one hover tooltip is visible at a time.
 // When a new line is hovered, it dismisses the previous tooltip first.
 let dismissActiveTooltip: (() => void) | null = null;
 
 interface TranscriptLineProps {
-  segment: TranscriptSegment;
+  /** A line; merged lines (mergeConsecutiveSegments) list the segments they contain in `originalIds`. */
+  segment: TranscriptSegment & { originalIds?: string[] };
   /** Optional search query to highlight matches */
   searchQuery?: string;
 }
@@ -33,8 +36,10 @@ interface TranscriptLineProps {
  * - Text content (italic/lighter for interim, normal for final)
  * - Confidence underline when confidenceHighlightEnabled and below threshold
  * - Hover state showing full timestamp with milliseconds
+ * - The translation of every segment the line contains
  */
 export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
+  const { t } = useT("translation");
   const [isHovered, setIsHovered] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
@@ -50,8 +55,8 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
   // Translation store subscriptions
   const translations = useTranslationStore((s) => s.translations);
   const translating = useTranslationStore((s) => s.translating);
+  const translationErrors = useTranslationStore((s) => s.errors);
   const displayMode = useTranslationStore((s) => s.displayMode);
-  const autoTranslateActive = useTranslationStore((s) => s.autoTranslateActive);
 
   // SP2 Task 7: Bookmark state + context menu position
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -59,9 +64,13 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
   const isBookmarked = !!bookmark;
   const toggleBookmark = useBookmarkStore((s) => s.toggleBookmark);
 
-  // Translation for this segment
-  const translation = translations.get(segment.id);
-  const isTranslating = translating.has(segment.id);
+  // Translation of this line: a merged line shows every segment's (Soniox
+  // translates sentence by sentence, so one line often has several).
+  const segmentIdsKey = (segment.originalIds ?? [segment.id]).join("\n");
+  const translation = useMemo(
+    () => lineTranslation(segmentIdsKey.split("\n"), translations, translating, translationErrors),
+    [segmentIdsKey, translations, translating, translationErrors],
+  );
 
   // Resolve speaker ID — prefer explicit speaker_id, fall back to speaker field
   const baseSpeakerId = segment.speaker_id ?? (segment.speaker === "User" ? "you" : "them");
@@ -207,7 +216,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
 
   // Hover translation tooltip state
   const [showTranslationTooltip, setShowTranslationTooltip] = useState(false);
-  const hasHoverTranslation = displayMode === "hover" && !!translation;
+  const hasHoverTranslation = displayMode === "hover" && !!translation.text;
   const lineRef = useRef<HTMLDivElement>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -286,7 +295,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
           className={`mt-[3px] shrink-0 text-[0.6875rem] font-semibold tracking-tight ${canRename ? "cursor-pointer hover:underline" : ""} ${isPending ? "animate-pulse" : ""}`}
           style={{ color: speakerHex }}
           onClick={startEditing}
-          title={canRename ? "Click to rename" : undefined}
+          title={canRename ? t("line.renameHint") : undefined}
         >
           {speakerLabel}
         </span>
@@ -307,7 +316,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
           style={{ fontSize: `${transcriptFontSize}px`, color: segment.is_final ? transcriptTextColor : undefined }}
           title={
             isLowConfidence
-              ? `Confidence: ${Math.round(segment.confidence * 100)}%`
+              ? t("line.confidence", { percent: Math.round(segment.confidence * 100) })
               : undefined
           }
         >
@@ -322,10 +331,15 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
         {/* Inline translation — visible below the original text */}
         {displayMode === "inline" && (
           <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
-            {isTranslating ? (
-              <span className="text-muted-foreground/40 animate-pulse">Translating...</span>
-            ) : translation ? (
-              translation.translated_text
+            {translation.text ? (
+              // Kept while a longer version is on its way, dimmed.
+              <span className={translation.pending ? "opacity-60" : undefined}>{translation.text}</span>
+            ) : translation.pending ? (
+              <span className="text-muted-foreground/40 animate-pulse">{t("line.translating")}</span>
+            ) : translation.error ? (
+              <span className="text-destructive/80" title={translation.error}>
+                {t("line.translationFailed")}
+              </span>
             ) : null}
           </div>
         )}
@@ -341,14 +355,14 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
             }}
           >
             <p style={{ fontSize: `${translationFontSize + 1}px`, color: translationTextColor }} className="leading-[1.6]">
-              {translation.translated_text}
+              {translation.text}
             </p>
             <div className="mt-1.5 flex items-center gap-1.5 text-[0.6rem] text-muted-foreground/50">
               <span className="rounded bg-white/8 px-1.5 py-0.5 font-medium tracking-wider">
-                {translation.source_lang.toUpperCase()} → {translation.target_lang.toUpperCase()}
+                {translation.parts[0].source_lang.toUpperCase()} → {translation.parts[0].target_lang.toUpperCase()}
               </span>
               <span>·</span>
-              <span>{translation.provider}</span>
+              <span>{translation.providers.join(" / ")}</span>
             </div>
           </div>,
           document.body
@@ -374,7 +388,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
         <button
           onClick={handleToggleBookmark}
           className="rounded p-0.5 hover:bg-accent/50 transition-colors"
-          title={isBookmarked ? "Remove bookmark" : "Bookmark this line"}
+          title={isBookmarked ? t("line.bookmark.remove") : t("line.bookmark.add")}
         >
           <BookmarkIcon className={`h-3 w-3 ${isBookmarked ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
         </button>

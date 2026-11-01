@@ -71,5 +71,82 @@
       "level": "{{label}} audio level",
       "muted": "Muted"
     }
+  },
+  "line": {
+    "renameHint": "Click to rename",
+    "confidence": "Confidence: {{percent}}%",
+    "translating": "Translating...",
+    "translationFailed": "Translation failed",
+    "bookmark": {
+      "add": "Bookmark this line",
+      "remove": "Remove bookmark"
+    }
+  },
+  "overlay": {
+    "recording": {
+      "label": "Recording in progress",
+      "badge": "REC"
+    },
+    "mode": {
+      "online": "ONLINE",
+      "inPerson": "IN-PERSON"
+    },
+    "mute": {
+      "muteYou": "Mute mic (You)",
+      "unmuteYou": "Unmute mic (You)",
+      "muteThem": "Mute them",
+      "unmuteThem": "Unmute them"
+    },
+    "layout": {
+      "focusAi": "Focus AI panel",
+      "focusTranscript": "Focus Transcript",
+      "split": "Split view"
+    },
+    "panels": {
+      "speakerStats": "Speaker Stats (S)",
+      "bookmarks": "Bookmarks (K)",
+      "callLog": "AI Call Log",
+      "devLog": "Dev Log (Ctrl+Shift+L)",
+      "transcript": "Transcript",
+      "expandTranscript": "Expand transcript panel",
+      "expandTranscriptTitle": "Expand transcript",
+      "ai": "AI",
+      "expandAi": "Expand AI panel"
+    },
+    "stealth": {
+      "hidden": "Hidden from screen share — click to show ({{shortcut}})",
+      "visible": "Visible in screen share — click to hide ({{shortcut}})"
+    },
+    "transparency": "Transparency: {{percent}}% (click to cycle)",
+    "settings": "Settings",
+    "minimize": "Minimize to Dashboard (Ctrl+B brings it back)",
+    "translate": {
+      "label": "Translate",
+      "toggle": "Toggle auto-translate",
+      "notReady": "Translation isn't ready: {{detail}}",
+      "noParty": "No party is set to be translated. Choose who to translate in Settings → Translation.",
+      "noServiceParty": "No party is translated by the translation service (it's off, or the speech engine translates it itself).",
+      "inline": "Inline",
+      "hover": "Hover",
+      "all": "Translate All",
+      "allTitle": "Translate all past transcript segments",
+      "allRunning": "Translating...",
+      "target": "Target language: {{language}}"
+    },
+    "batch": {
+      "alreadyDone": "All {{total}} segments already translated",
+      "someNew": "Translated {{count}} new segments ({{cached}} already cached, {{total}} total)",
+      "allNew": "Translated all {{total}} segments",
+      "failed": "Batch translation failed: {{detail}}"
+    },
+    "end": {
+      "label": "End meeting",
+      "button": "End",
+      "ended": "Meeting ended",
+      "failed": "Couldn't end meeting"
+    }
+  },
+  "errors": {
+    "translateFailed": "Translation failed: {{detail}}"
   }
 }

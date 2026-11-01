@@ -69,5 +69,82 @@
       "level": "{{label}}的音量",
       "muted": "已静音"
     }
+  },
+  "line": {
+    "renameHint": "点击重命名",
+    "confidence": "置信度：{{percent}}%",
+    "translating": "翻译中…",
+    "translationFailed": "翻译失败",
+    "bookmark": {
+      "add": "给这一行加书签",
+      "remove": "移除书签"
+    }
+  },
+  "overlay": {
+    "recording": {
+      "label": "正在录音",
+      "badge": "录音"
+    },
+    "mode": {
+      "online": "线上",
+      "inPerson": "现场"
+    },
+    "mute": {
+      "muteYou": "麦克风静音（我）",
+      "unmuteYou": "取消麦克风静音（我）",
+      "muteThem": "对方静音",
+      "unmuteThem": "取消对方静音"
+    },
+    "layout": {
+      "focusAi": "只看 AI 面板",
+      "focusTranscript": "只看字幕",
+      "split": "并排显示"
+    },
+    "panels": {
+      "speakerStats": "说话人统计（S）",
+      "bookmarks": "书签（K）",
+      "callLog": "AI 调用日志",
+      "devLog": "调试日志（Ctrl+Shift+L）",
+      "transcript": "字幕",
+      "expandTranscript": "展开字幕面板",
+      "expandTranscriptTitle": "展开字幕",
+      "ai": "AI",
+      "expandAi": "展开 AI 面板"
+    },
+    "stealth": {
+      "hidden": "共享屏幕时已隐藏，点击显示（{{shortcut}}）",
+      "visible": "共享屏幕时可见，点击隐藏（{{shortcut}}）"
+    },
+    "transparency": "透明度：{{percent}}%（点击切换）",
+    "settings": "设置",
+    "minimize": "最小化到主窗口（Ctrl+B 可恢复）",
+    "translate": {
+      "label": "翻译",
+      "toggle": "开关实时翻译",
+      "notReady": "翻译服务未就绪：{{detail}}",
+      "noParty": "没有选择要翻译哪一方，请在“设置 → 翻译”里选择。",
+      "noServiceParty": "没有哪一方由翻译服务翻译（已关闭，或由识别引擎直接翻译）。",
+      "inline": "行内",
+      "hover": "悬停",
+      "all": "全部翻译",
+      "allTitle": "翻译之前所有的字幕片段",
+      "allRunning": "翻译中…",
+      "target": "目标语言：{{language}}"
+    },
+    "batch": {
+      "alreadyDone": "{{total}} 个片段都已翻译",
+      "someNew": "新翻译了 {{count}} 个片段（{{cached}} 个已有缓存，共 {{total}} 个）",
+      "allNew": "已翻译全部 {{total}} 个片段",
+      "failed": "批量翻译失败：{{detail}}"
+    },
+    "end": {
+      "label": "结束会议",
+      "button": "结束",
+      "ended": "会议已结束",
+      "failed": "无法结束会议"
+    }
+  },
+  "errors": {
+    "translateFailed": "翻译失败：{{detail}}"
   }
 }
