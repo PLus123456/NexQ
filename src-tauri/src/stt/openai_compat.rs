@@ -8,9 +8,11 @@
 //     lead-in, so Whisper isn't handed long silences (it hallucinates on them).
 //     It never waits on the network: the shared audio loop also feeds the other
 //     party and the recorder.
-//   - One worker per stream takes segments from a bounded queue (4 waiting;
-//     when full the oldest waiting one is dropped), runs 1-2 requests at once
-//     and hands the results on strictly in submission order.
+//   - One worker per stream takes segments from a bounded queue (4 waiting),
+//     runs 1-2 requests at once and hands the results on strictly in
+//     submission order. Beyond 4 (the server is slower than real time), two
+//     adjacent waiting segments are merged into one request of up to 25 s;
+//     only when no two fit is the oldest waiting one dropped.
 //   - Every request reads the shared config, so settings apply to the next one.
 //   - An utterance accumulator joins consecutive speech segments into one line
 //     (interim results) and finalizes it at a pause, a silent segment, a failed
@@ -56,9 +58,18 @@ const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 /// survive, long silences don't reach Whisper.
 const LEAD_IN_SAMPLES: usize = 300 * SAMPLES_PER_MS;
 
-/// Speech segments allowed to wait for the worker; the oldest waiting one is
-/// dropped beyond that (M2: merge them instead).
+/// Speech segments allowed to wait for the worker. Beyond that the oldest two
+/// adjacent ones that fit in MAX_MERGED_SAMPLES become one, else the oldest
+/// waiting one is dropped.
 const MAX_WAITING_SEGMENTS: usize = 4;
+
+/// Most audio two waiting segments are merged into (25 s): Whisper hears 30 s
+/// at a time.
+const MAX_MERGED_SAMPLES: usize = 25 * SAMPLE_RATE as usize;
+
+/// A server slower than real time merges nearly every segment: the Dev Log
+/// gets the first merge and then every 10th.
+const MERGE_NOTICE_EVERY: u64 = 10;
 
 /// A line spanning this long is finalized even without a pause, so continuous
 /// speech or noise never leaves it interim for the whole meeting.
@@ -490,19 +501,52 @@ fn encode_wav(samples: &[i16]) -> Vec<u8> {
     wav
 }
 
-/// Audio cut from the stream, waiting to be transcribed.
+/// Audio cut from the stream, waiting to be transcribed: one cut, or adjacent
+/// cuts merged while the server is behind.
 #[derive(Debug)]
 struct Segment {
-    /// 1-based, for the Dev Log.
+    /// 1-based, for the Dev Log: the first cut's.
     seq: u64,
+    /// The last cut merged into it (`seq` when none was).
+    last_seq: u64,
     samples: Vec<i16>,
     /// Capture time (epoch ms) of its first chunk.
     start_ms: u64,
+    /// Capture time (epoch ms) where its audio ends: a merged segment ends
+    /// with its last cut, the silence trimmed between its cuts included.
+    end_ms: u64,
 }
 
 impl Segment {
+    fn new(seq: u64, samples: Vec<i16>, start_ms: u64) -> Self {
+        let end_ms = start_ms + samples_to_ms(samples.len());
+        Self { seq, last_seq: seq, samples, start_ms, end_ms }
+    }
+
+    /// The audio sent.
     fn duration_ms(&self) -> u64 {
         samples_to_ms(self.samples.len())
+    }
+
+    /// The capture time covered, for the transcript (past `duration_ms` once merged).
+    fn span_ms(&self) -> u64 {
+        self.end_ms.saturating_sub(self.start_ms)
+    }
+
+    /// `#3`, or `#3–5` once merged.
+    fn label(&self) -> String {
+        if self.last_seq == self.seq {
+            format!("#{}", self.seq)
+        } else {
+            format!("#{}–{}", self.seq, self.last_seq)
+        }
+    }
+
+    /// Appends `next`, which follows it without a pause, and leaves `next` empty.
+    fn absorb(&mut self, next: &mut Segment) {
+        self.samples.append(&mut next.samples);
+        self.last_seq = next.last_seq;
+        self.end_ms = self.end_ms.max(next.end_ms);
     }
 }
 
@@ -575,7 +619,7 @@ impl Segmenter {
             return Cut::Silent { seq: self.cuts, rms: level };
         }
         Cut::Speech {
-            segment: Segment { seq: self.cuts, samples, start_ms: self.start_ms },
+            segment: Segment::new(self.cuts, samples, self.start_ms),
             pause_after: trailing >= limits.pause_samples,
         }
     }
@@ -602,6 +646,43 @@ impl QueueState {
         self.jobs.iter().filter(|job| matches!(job, Job::Transcribe(_))).count()
     }
 
+    /// Appends the newer of the oldest two adjacent waiting segments (no pause
+    /// between them) that fit in MAX_MERGED_SAMPLES to the older one.
+    fn merge_oldest_pair(&mut self) -> Option<Overflow> {
+        let jobs = self.jobs.make_contiguous();
+        let i = jobs.windows(2).position(|pair| match pair {
+            [Job::Transcribe(a), Job::Transcribe(b)] => {
+                a.samples.len() + b.samples.len() <= MAX_MERGED_SAMPLES
+            }
+            _ => false,
+        })?;
+        let [Job::Transcribe(first), Job::Transcribe(second)] = &mut jobs[i..i + 2] else {
+            return None;
+        };
+        let merged = Overflow::Merged {
+            first: first.label(),
+            second: second.label(),
+            audio_ms: samples_to_ms(first.samples.len() + second.samples.len()),
+        };
+        first.absorb(second);
+        self.jobs.remove(i + 1);
+        Some(merged)
+    }
+
+    /// Turns the oldest waiting segment into a pause (the lines around the
+    /// gap aren't joined).
+    fn drop_oldest(&mut self) -> Option<Overflow> {
+        let i = self.jobs.iter().position(|job| matches!(job, Job::Transcribe(_)))?;
+        let dropped = match std::mem::replace(&mut self.jobs[i], Job::Pause) {
+            Job::Transcribe(old) => {
+                Some(Overflow::Dropped { segment: old.label(), audio_ms: old.duration_ms() })
+            }
+            Job::Pause => None,
+        };
+        self.coalesce_pauses();
+        dropped
+    }
+
     fn coalesce_pauses(&mut self) {
         let mut previous_pause = false;
         self.jobs.retain(|job| {
@@ -613,11 +694,14 @@ impl QueueState {
     }
 }
 
-/// What `push_segment` dropped to make room.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Dropped {
-    seq: u64,
-    duration_ms: u64,
+/// What `push_segment` did to keep at most MAX_WAITING_SEGMENTS waiting, by
+/// segment label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Overflow {
+    /// `second` was appended to `first`, the segment before it: `audio_ms` together.
+    Merged { first: String, second: String, audio_ms: u64 },
+    /// The oldest waiting segment became a pause.
+    Dropped { segment: String, audio_ms: u64 },
 }
 
 /// Jobs between `feed_audio` (never blocks) and the worker.
@@ -632,23 +716,19 @@ impl SegmentQueue {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Queues `segment`. With MAX_WAITING_SEGMENTS already waiting, the oldest
-    /// waiting one becomes a pause (the lines around the gap aren't joined).
-    fn push_segment(&self, segment: Segment) -> Option<Dropped> {
+    /// Queues `segment`. Beyond MAX_WAITING_SEGMENTS waiting (`segment`
+    /// included), two adjacent ones are merged, or else the oldest is dropped.
+    fn push_segment(&self, segment: Segment) -> Option<Overflow> {
         let mut state = self.lock();
-        let mut dropped = None;
-        if state.waiting() >= MAX_WAITING_SEGMENTS {
-            if let Some(i) = state.jobs.iter().position(|job| matches!(job, Job::Transcribe(_))) {
-                if let Job::Transcribe(old) = std::mem::replace(&mut state.jobs[i], Job::Pause) {
-                    dropped = Some(Dropped { seq: old.seq, duration_ms: old.duration_ms() });
-                }
-                state.coalesce_pauses();
-            }
-        }
         state.jobs.push_back(Job::Transcribe(segment));
+        let overflow = if state.waiting() > MAX_WAITING_SEGMENTS {
+            state.merge_oldest_pair().or_else(|| state.drop_oldest())
+        } else {
+            None
+        };
         drop(state);
         self.ready.notify_one();
-        dropped
+        overflow
     }
 
     fn push_pause(&self) {
@@ -1021,8 +1101,10 @@ enum Outcome {
 }
 
 struct Done {
-    seq: u64,
+    /// The segment's label (`#3`, `#3–5`).
+    label: String,
     start_ms: u64,
+    /// Capture time covered.
     duration_ms: u64,
     latency_ms: u64,
     result: Result<Option<String>, RequestError>,
@@ -1032,11 +1114,11 @@ async fn run_request(ctx: Arc<RequestCtx>, segment: Segment) -> Outcome {
     // The settings at this moment: changes apply from the next request.
     let cfg = read_config(&ctx.shared_config);
     let wav = encode_wav(&segment.samples);
+    let label = segment.label();
     ctx.notifier.debug(
         "info",
         &format!(
-            "Sending segment #{} ({:.1} s, {} KB) to {}",
-            segment.seq,
+            "Sending segment {label} ({:.1} s, {} KB) to {}",
             segment.samples.len() as f32 / SAMPLE_RATE as f32,
             wav.len() / 1024,
             if cfg.model.trim().is_empty() { "the server's default model" } else { cfg.model.trim() },
@@ -1045,9 +1127,9 @@ async fn run_request(ctx: Arc<RequestCtx>, segment: Segment) -> Outcome {
     let started = Instant::now();
     let result = transcribe(&ctx.client, &cfg, &ctx.credentials, ctx.language.as_deref(), wav).await;
     Outcome::Done(Done {
-        seq: segment.seq,
+        label,
         start_ms: segment.start_ms,
-        duration_ms: segment.duration_ms(),
+        duration_ms: segment.span_ms(),
         latency_ms: started.elapsed().as_millis() as u64,
         result,
     })
@@ -1091,28 +1173,28 @@ fn settle(outcome: Outcome, notifier: &Notifier, status: &mut StatusTracker) -> 
     let Outcome::Done(done) = outcome else {
         return AccMsg::Pause;
     };
-    let Done { seq, start_ms, duration_ms, latency_ms, result } = done;
+    let Done { label, start_ms, duration_ms, latency_ms, result } = done;
     match result {
         Ok(Some(text)) if !is_hallucination(&text) => {
             status.succeeded(notifier);
             notifier.debug(
                 "info",
-                &format!("Segment #{seq} ({latency_ms} ms): \"{}\"", preview(&text, 80)),
+                &format!("Segment {label} ({latency_ms} ms): \"{}\"", preview(&text, 80)),
             );
             AccMsg::Speech { text, start_ms, duration_ms }
         }
         Ok(Some(text)) => {
             status.succeeded(notifier);
-            notifier.debug("info", &format!("Segment #{seq}: filtered hallucination \"{text}\""));
+            notifier.debug("info", &format!("Segment {label}: filtered hallucination \"{text}\""));
             AccMsg::Pause
         }
         Ok(None) => {
             status.succeeded(notifier);
-            notifier.debug("info", &format!("Segment #{seq}: no speech heard ({latency_ms} ms)"));
+            notifier.debug("info", &format!("Segment {label}: no speech heard ({latency_ms} ms)"));
             AccMsg::Pause
         }
         Err(err) => {
-            notifier.debug("error", &format!("Segment #{seq}: {}", err.message(DEBUG_BODY_CHARS)));
+            notifier.debug("error", &format!("Segment {label}: {}", err.message(DEBUG_BODY_CHARS)));
             status.failed(notifier, &err);
             AccMsg::Pause
         }
@@ -1212,10 +1294,13 @@ struct Stream {
     notifier: Notifier,
     segmenter: Segmenter,
     chunks_fed: u64,
+    /// Segments merged into the one before / dropped because the server is behind.
+    merges: u64,
+    drops: u64,
 }
 
 impl Stream {
-    fn dispatch(&self, cut: Cut) {
+    fn dispatch(&mut self, cut: Cut) {
         match cut {
             Cut::Silent { seq, rms } => {
                 self.queue.push_pause();
@@ -1227,16 +1312,39 @@ impl Stream {
                 );
             }
             Cut::Speech { segment, pause_after } => {
-                if let Some(dropped) = self.queue.push_segment(segment) {
-                    self.notifier.debug(
-                        "warn",
-                        &format!(
-                            "The server is falling behind: dropped segment #{} ({:.1} s of audio), {} still waiting",
-                            dropped.seq,
-                            dropped.duration_ms as f32 / 1000.0,
-                            MAX_WAITING_SEGMENTS,
-                        ),
-                    );
+                match self.queue.push_segment(segment) {
+                    Some(Overflow::Merged { first, second, audio_ms }) => {
+                        self.merges += 1;
+                        if self.merges == 1 || self.merges % MERGE_NOTICE_EVERY == 0 {
+                            let why = if self.merges == 1 {
+                                "the server is slower than real time".to_string()
+                            } else {
+                                format!(
+                                    "the server is still slower than real time ({} merges so far)",
+                                    self.merges
+                                )
+                            };
+                            self.notifier.debug(
+                                "warn",
+                                &format!(
+                                    "Merged segments {first} and {second} ({:.1} s of audio): {why}",
+                                    audio_ms as f32 / 1000.0,
+                                ),
+                            );
+                        }
+                    }
+                    Some(Overflow::Dropped { segment, audio_ms }) => {
+                        self.drops += 1;
+                        self.notifier.debug(
+                            "warn",
+                            &format!(
+                                "The server is falling behind: dropped segment {segment} ({:.1} s of audio), {} still waiting",
+                                audio_ms as f32 / 1000.0,
+                                MAX_WAITING_SEGMENTS,
+                            ),
+                        );
+                    }
+                    None => {}
                 }
                 if pause_after {
                     self.queue.push_pause();
@@ -1362,6 +1470,8 @@ impl STTProvider for OpenAICompatSTT {
             notifier,
             segmenter: Segmenter::default(),
             chunks_fed: 0,
+            merges: 0,
+            drops: 0,
         });
         Ok(())
     }
@@ -1415,13 +1525,16 @@ impl STTProvider for OpenAICompatSTT {
         if tokio::time::timeout(STOP_GRACE, &mut stream.accumulator).await.is_err() {
             stream.notifier.debug("warn", "The last line was not handed on in time");
         }
-        stream.notifier.debug(
-            "info",
-            &format!(
-                "Stream stopped: {} chunks, {} segments",
-                stream.chunks_fed, stream.segmenter.cuts
-            ),
-        );
+        let mut summary =
+            format!("Stream stopped: {} chunks, {} segments", stream.chunks_fed, stream.segmenter.cuts);
+        if stream.merges + stream.drops > 0 {
+            // The merge notices were thinned out: the totals.
+            summary.push_str(&format!(
+                " ({} merged into the one before, {} dropped: the server fell behind)",
+                stream.merges, stream.drops
+            ));
+        }
+        stream.notifier.debug("info", &summary);
         Ok(())
     }
 
@@ -1634,6 +1747,18 @@ mod tests {
         /// Loudest sample of the posted audio: tells the test segments apart.
         fn peak(&self) -> i16 {
             self.wav_samples().iter().map(|s| s.saturating_abs()).max().unwrap_or(0)
+        }
+
+        /// Amplitudes of the posted audio's parts, in order (each test segment
+        /// is a square wave of its own amplitude): tells merged segments apart.
+        fn parts(&self) -> Vec<i16> {
+            let mut parts = Vec::new();
+            for level in self.wav_samples().iter().map(|s| s.saturating_abs()) {
+                if level != 0 && parts.last() != Some(&level) {
+                    parts.push(level);
+                }
+            }
+            parts
         }
     }
 
@@ -2366,27 +2491,75 @@ mod tests {
         assert!(matches!(cuts.as_slice(), [Cut::Silent { .. }]), "{cuts:?}");
     }
 
-    #[test]
-    fn a_full_queue_turns_its_oldest_waiting_segment_into_a_pause() {
-        let queue = SegmentQueue::default();
-        let segment = |seq| Segment { seq, samples: vec![1000; 16_000], start_ms: T0 };
-        for seq in 1..=4 {
-            assert_eq!(queue.push_segment(segment(seq)), None);
-            queue.push_pause();
-        }
-        assert_eq!(queue.push_segment(segment(5)), Some(Dropped { seq: 1, duration_ms: 1000 }));
-        queue.push_pause();
-        assert_eq!(queue.push_segment(segment(6)), Some(Dropped { seq: 2, duration_ms: 1000 }));
-        let jobs: Vec<String> = queue
+    /// The queued jobs: segment labels and pauses.
+    fn queued(queue: &SegmentQueue) -> Vec<String> {
+        queue
             .lock()
             .jobs
             .iter()
             .map(|job| match job {
-                Job::Transcribe(segment) => segment.seq.to_string(),
+                Job::Transcribe(segment) => segment.label(),
                 Job::Pause => "pause".to_string(),
             })
-            .collect();
-        assert_eq!(jobs, ["pause", "3", "pause", "4", "pause", "5", "pause", "6"]);
+            .collect()
+    }
+
+    fn dropped(segment: &str, audio_ms: u64) -> Option<Overflow> {
+        Some(Overflow::Dropped { segment: segment.to_string(), audio_ms })
+    }
+
+    fn merged(first: &str, second: &str, audio_ms: u64) -> Option<Overflow> {
+        Some(Overflow::Merged { first: first.to_string(), second: second.to_string(), audio_ms })
+    }
+
+    #[test]
+    fn a_full_queue_turns_its_oldest_waiting_segment_into_a_pause() {
+        // Each segment ends a line: none can be merged.
+        let queue = SegmentQueue::default();
+        let segment = |seq| Segment::new(seq, vec![1000; 16_000], T0);
+        for seq in 1..=4 {
+            assert_eq!(queue.push_segment(segment(seq)), None);
+            queue.push_pause();
+        }
+        assert_eq!(queue.push_segment(segment(5)), dropped("#1", 1000));
+        queue.push_pause();
+        assert_eq!(queue.push_segment(segment(6)), dropped("#2", 1000));
+        assert_eq!(queued(&queue), ["pause", "#3", "pause", "#4", "pause", "#5", "pause", "#6"]);
+        assert_eq!(queue.waiting(), 4);
+    }
+
+    #[test]
+    fn a_full_queue_merges_the_oldest_adjacent_segments_that_fit_in_25_s() {
+        let queue = SegmentQueue::default();
+        // 12.5 s each, cut 13 s apart (0.5 s of silence trimmed after each):
+        // two fit in one request, three don't.
+        let segment = |seq: u64| Segment::new(seq, vec![1000; 12_500 * SAMPLES_PER_MS], T0 + seq * 13_000);
+        assert_eq!(queue.push_segment(segment(1)), None);
+        queue.push_pause();
+        for seq in 2..=4 {
+            assert_eq!(queue.push_segment(segment(seq)), None);
+        }
+        // A pause follows #1: #2 and #3 are the oldest adjacent pair.
+        assert_eq!(queue.push_segment(segment(5)), merged("#2", "#3", 25_000));
+        assert_eq!(queued(&queue), ["#1", "pause", "#2–3", "#4", "#5"]);
+        {
+            let state = queue.lock();
+            let Job::Transcribe(two) = &state.jobs[2] else { panic!("{:?}", state.jobs) };
+            assert_eq!((two.seq, two.start_ms, two.end_ms), (2, T0 + 26_000, T0 + 39_000 + 12_500));
+            assert_eq!(two.duration_ms(), 25_000);
+            // The capture time covered includes the silence between the two.
+            assert_eq!(two.span_ms(), 25_500);
+        }
+        // #2–3 is full (25 s): #4 and #5 come next, then #6 and #7.
+        assert_eq!(queue.push_segment(segment(6)), merged("#4", "#5", 25_000));
+        assert_eq!(queue.push_segment(segment(7)), merged("#6", "#7", 25_000));
+        assert_eq!(queued(&queue), ["#1", "pause", "#2–3", "#4–5", "#6–7"]);
+        // No two fit any more: the oldest waiting one is dropped, the order kept.
+        assert_eq!(queue.push_segment(segment(8)), dropped("#1", 12_500));
+        assert_eq!(queued(&queue), ["pause", "#2–3", "#4–5", "#6–7", "#8"]);
+        assert_eq!(queue.push_segment(segment(9)), merged("#8", "#9", 25_000));
+        assert_eq!(queue.push_segment(segment(10)), dropped("#2–3", 25_000));
+        assert_eq!(queued(&queue), ["pause", "#4–5", "#6–7", "#8–9", "#10"]);
         assert_eq!(queue.waiting(), 4);
     }
 
@@ -2485,7 +2658,8 @@ mod tests {
         let mut run = start(config(&server.url("/v1")), None, "en-US").await;
         run.phrase(1000).await;
         server.wait_for(1).await;
-        // Six more while #1 is held: #2 and #3 have to go.
+        // Six more while #1 is held: each ends its line, so none can be merged
+        // and #2 and #3 have to go.
         for amplitude in [2000, 3000, 4000, 5000, 6000, 7000] {
             run.phrase(amplitude).await;
         }
@@ -2499,6 +2673,109 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(warnings[0].contains("dropped segment #2"), "{}", warnings[0]);
         assert!(warnings[1].contains("dropped segment #3"), "{}", warnings[1]);
+    }
+
+    #[tokio::test]
+    async fn a_slow_server_gets_adjacent_segments_merged_instead_of_dropped() {
+        let gate = Arc::new(Semaphore::new(0));
+        let first_gate = gate.clone();
+        // Answers with the parts it heard: "s2 s3" for #2 and #3 merged.
+        let server = FakeServer::start(move |request| {
+            let parts = request.parts();
+            let words: Vec<String> = parts.iter().map(|part| format!("s{}", part / 1000)).collect();
+            let reply = Reply::json(&format!(r#"{{"text":"{}"}}"#, words.join(" ")));
+            if parts == [1000] { reply.gated(&first_gate) } else { reply }
+        })
+        .await;
+        let mut cfg = config(&server.url("/v1"));
+        cfg.segment_duration_secs = 1.0;
+        let mut run = start(cfg, None, "en-US").await;
+        // #1 is a line of its own, held by the server.
+        run.phrase(1000).await;
+        server.wait_for(1).await;
+        // 14 more without a pause: 0.8 s of speech each, cut at 1 s with the
+        // 0.2 s of silence trimmed. From #6 on, each one overflows the queue.
+        for n in 2..=15_i16 {
+            run.feed(&[speech(800, n * 1000), silence(200)].concat()).await;
+        }
+        gate.add_permits(1);
+        let (results, notices) = run.stop().await;
+
+        // #2 took in #3 to #12, one per overflow: no audio lost, the order kept.
+        let requests = server.transcriptions();
+        let parts: Vec<Vec<i16>> = requests.iter().map(Recorded::parts).collect();
+        let merged: Vec<i16> = (2..=12).map(|n| n * 1000).collect();
+        assert_eq!(parts, [vec![1000], merged, vec![13_000], vec![14_000], vec![15_000]]);
+        let lengths: Vec<usize> = requests.iter().map(|r| r.wav_samples().len()).collect();
+        let cut = 800 * SAMPLES_PER_MS;
+        assert_eq!(lengths, [600 * SAMPLES_PER_MS, 11 * cut, cut, cut, cut]);
+
+        // The merged request's line starts with #2 and runs to the end of #12,
+        // the trimmed silences included.
+        let words = |range: std::ops::RangeInclusive<i16>| {
+            range.map(|n| format!("s{n}")).collect::<Vec<_>>().join(" ")
+        };
+        let line = results.iter().find(|r| r.text == words(2..=12)).expect("the merged request's line");
+        assert!(!line.is_final);
+        assert_eq!((line.timestamp_ms, line.duration_ms), (T0 + 900, Some(10_800)));
+        assert_eq!(finals(&results), ["s1".to_string(), words(2..=15)]);
+        let last = results.last().unwrap();
+        assert_eq!((last.timestamp_ms, last.duration_ms), (T0 + 900, Some(13_800)));
+
+        // The Dev Log hears of the first merge and the 10th, the total at stop.
+        let warnings = debug_lines(&notices, "warn");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].ends_with(
+                "Merged segments #2 and #3 (1.6 s of audio): the server is slower than real time"
+            ),
+            "{}",
+            warnings[0]
+        );
+        assert!(
+            warnings[1].ends_with(
+                "Merged segments #2–11 and #12 (8.8 s of audio): the server is still slower than real time (10 merges so far)"
+            ),
+            "{}",
+            warnings[1]
+        );
+        let info = debug_lines(&notices, "info");
+        assert!(info.iter().any(|m| m.contains("Sending segment #2–12 (8.8 s,")), "{info:?}");
+        assert!(info.iter().any(|m| m.contains("Segment #2–12 (")), "{info:?}");
+        assert!(info.iter().any(|m| m.contains("15 segments (10 merged into the one before, 0 dropped")), "{info:?}");
+    }
+
+    #[tokio::test]
+    async fn segments_too_long_to_merge_are_still_dropped() {
+        let gate = Arc::new(Semaphore::new(0));
+        let first_gate = gate.clone();
+        let server = FakeServer::start(move |request| {
+            let peak = request.peak();
+            let reply = Reply::json(&format!(r#"{{"text":"s{}"}}"#, peak / 1000));
+            if peak == 1000 { reply.gated(&first_gate) } else { reply }
+        })
+        .await;
+        let mut cfg = config(&server.url("/v1"));
+        cfg.segment_duration_secs = 25.0;
+        let mut run = start(cfg, None, "en-US").await;
+        run.feed(&speech(25_000, 1000)).await;
+        server.wait_for(1).await;
+        // Six more of 25 s without a pause while #1 is held: no two fit in one
+        // request, so #2 and #3 have to go.
+        for amplitude in [2000, 3000, 4000, 5000, 6000, 7000] {
+            run.feed(&speech(25_000, amplitude)).await;
+        }
+        gate.add_permits(1);
+        let (_, notices) = run.stop().await;
+
+        let requests = server.transcriptions();
+        let peaks: Vec<i16> = requests.iter().map(Recorded::peak).collect();
+        assert_eq!(peaks, [1000, 4000, 5000, 6000, 7000]);
+        assert!(requests.iter().all(|r| r.wav_samples().len() == 25 * SAMPLE_RATE as usize));
+        let warnings = debug_lines(&notices, "warn");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("dropped segment #2 (25.0 s of audio)"), "{}", warnings[0]);
+        assert!(warnings[1].contains("dropped segment #3 (25.0 s of audio)"), "{}", warnings[1]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
