@@ -13,6 +13,6 @@
       "entitlements": "entitlements.plist",
       "signingIdentity": "-"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   }
 }

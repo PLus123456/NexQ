@@ -61,12 +61,13 @@ pub fn build_args(cfg: &SessionConfig, system_prompt_file: &Path) -> Vec<String>
     args
 }
 
-/// `%LOCALAPPDATA%\NexQ\agent-sandbox`: the empty cwd the agent runs in.
+/// `%LOCALAPPDATA%\NexQPlus\agent-sandbox` (`$TMPDIR/NexQPlus/agent-sandbox`
+/// on macOS): the empty cwd the agent runs in.
 pub fn sandbox_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("NexQ").join("agent-sandbox")
+    base.join("NexQPlus").join("agent-sandbox")
 }
 
 /// Apply cwd (created if missing), stripped env and CREATE_NO_WINDOW.

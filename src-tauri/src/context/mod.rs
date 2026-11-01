@@ -26,7 +26,7 @@ pub struct ContextResource {
 }
 
 /// Loads, caches, and serves context text from files.
-/// Files stored in %APPDATA%/com.nexq.app/context/
+/// Files stored in `<app data dir>/context/`.
 pub struct ContextManager {
     context_dir: PathBuf,
     resources: Vec<ContextResource>,
@@ -35,10 +35,8 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
-    pub fn new() -> Self {
-        // Determine the context directory: %APPDATA%/com.nexq.app/context/
-        let context_dir = Self::get_context_dir();
-
+    /// `context_dir` is `<app data dir>/context` (see `crate::paths::context_dir`).
+    pub fn new(context_dir: PathBuf) -> Self {
         // Ensure the directory exists
         if let Err(e) = fs::create_dir_all(&context_dir) {
             log::warn!("Failed to create context directory: {}", e);
@@ -49,23 +47,6 @@ impl ContextManager {
             resources: Vec::new(),
             cache: ResourceCache::new(),
             custom_instructions: String::new(),
-        }
-    }
-
-    /// Get the context storage directory path.
-    fn get_context_dir() -> PathBuf {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            PathBuf::from(appdata)
-                .join("com.nexq.app")
-                .join("context")
-        } else {
-            // Fallback for non-Windows or if APPDATA is not set
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home)
-                .join(".nexq")
-                .join("context")
         }
     }
 

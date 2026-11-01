@@ -13,6 +13,8 @@ pub mod state;
 pub mod stt;
 pub mod translation;
 pub mod tray;
+// == PLUS MODULES ==
+pub mod paths;
 
 use state::AppState;
 use std::sync::{Arc, Mutex};
@@ -152,6 +154,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data directory");
+            paths::init(app_data_dir.clone());
             match db::DatabaseManager::new(app_data_dir.clone()) {
                 Ok(db_mgr) => {
                     app_state.database = Some(Arc::new(Mutex::new(db_mgr)));
@@ -174,7 +177,7 @@ pub fn run() {
             log::info!("Credential manager initialized");
 
             // -- Initialize ContextManager --
-            let ctx_mgr = context::ContextManager::new();
+            let ctx_mgr = context::ContextManager::new(paths::context_dir(&app_data_dir));
             app_state.context = Some(Arc::new(Mutex::new(ctx_mgr)));
             log::info!("Context manager initialized");
 

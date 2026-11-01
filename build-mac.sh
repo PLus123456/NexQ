@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-mac.sh — one-command macOS build + install for NexQ.
+# build-mac.sh — one-command macOS build + install for NexQ Plus.
 #
 #   ./build-mac.sh                 Build (app + dmg) and install to /Applications
 #   ./build-mac.sh --no-install    Build only, don't touch /Applications
@@ -17,7 +17,13 @@
 
 set -euo pipefail
 
-APP_NAME="NexQ"
+# NexQ Plus installs next to the official NexQ: never touch "NexQ.app" or its
+# process. APP_NAME is the bundle name (productName), PROCESS_NAME the
+# executable (mainBinaryName), BUNDLE_ID the identifier — all from
+# src-tauri/tauri.conf.json.
+APP_NAME="NexQ Plus"
+PROCESS_NAME="nexq-plus"
+BUNDLE_ID="com.plus.nexq"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 
 DO_INSTALL=1
@@ -89,7 +95,7 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
 fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
-echo "▶ Building NexQ ($PROFILE) ..."
+echo "▶ Building $APP_NAME ($PROFILE) ..."
 if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
   npm run tauri build -- "${BUILD_ARGS[@]}"
 else
@@ -103,6 +109,17 @@ if [[ ! -d "$APP_SRC" ]]; then
 fi
 echo "✔ Built: $APP_SRC"
 
+# The bundle must carry this fork's identity, or installing would replace
+# (and quitting would kill) the official app.
+bundle_id_of() {
+  defaults read "$1/Contents/Info" CFBundleIdentifier 2>/dev/null || true
+}
+BUILT_ID="$(bundle_id_of "$APP_SRC")"
+if [[ "$BUILT_ID" != "$BUNDLE_ID" ]]; then
+  echo "✖ $APP_SRC has bundle identifier '$BUILT_ID', expected '$BUNDLE_ID'. Not installing." >&2
+  exit 1
+fi
+
 if [[ "$DO_INSTALL" -eq 0 ]]; then
   echo "✔ Skipping install (--no-install)."
   exit 0
@@ -112,9 +129,19 @@ fi
 DEST_APP="$INSTALL_DIR/$APP_NAME.app"
 echo "▶ Installing to $DEST_APP ..."
 
-# Quit a running copy so its files aren't locked.
-osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+# Only ever replace a previous NexQ Plus.
+if [[ -e "$DEST_APP" ]]; then
+  DEST_ID="$(bundle_id_of "$DEST_APP")"
+  if [[ "$DEST_ID" != "$BUNDLE_ID" ]]; then
+    echo "✖ $DEST_APP has bundle identifier '$DEST_ID', expected '$BUNDLE_ID'. Not replacing it." >&2
+    exit 1
+  fi
+fi
+
+# Quit a running copy so its files aren't locked (by bundle id / executable
+# name, so the official NexQ keeps running).
+osascript -e "if application id \"$BUNDLE_ID\" is running then tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+pkill -x "$PROCESS_NAME" >/dev/null 2>&1 || true
 sleep 1
 
 SUDO=""

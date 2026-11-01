@@ -6,9 +6,9 @@
 	     input device). Without this key macOS terminates the app the first time it
 	     tries to access audio input. -->
 	<key>NSMicrophoneUsageDescription</key>
-	<string>NexQ captures audio so it can transcribe and assist during your calls.</string>
+	<string>NexQ Plus 需要使用麦克风，才能在通话中实时转写你的发言并提供 AI 协助。</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>NexQ captures audio played by your selected output device to transcribe the other participants in your calls.</string>
+	<string>NexQ Plus 需要录制所选输出设备播放的声音，才能转写通话中其他参会人的发言。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
