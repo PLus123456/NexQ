@@ -9,7 +9,6 @@ import { translateBatchForParties } from "../lib/translation/ipc";
 import { serviceParties, TRANSLATION_PARTIES, partyTranslationMode } from "../lib/translation/nativeTranslation";
 import { languageLabel } from "../lib/languages";
 import { APP_NAME } from "../lib/brand";
-import { useAutoTranslate } from "../hooks/useAutoTranslate";
 import { errorMessage } from "../stores/translationStore";
 import { useT } from "../i18n";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -115,9 +114,6 @@ export function OverlayView() {
   const nothingToTranslate = TRANSLATION_PARTIES.every(
     (party) => partyTranslationMode(party, translateParties, meetingAudioConfig) === "off",
   );
-
-  // Live translation of the transcript (one subscription for this window)
-  useAutoTranslate();
 
   // Bookmark hotkey (Ctrl+B) — also returns addBookmarkAtNow for shortcut hook
   const addBookmarkAtNow = useBookmarkHotkey();

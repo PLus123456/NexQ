@@ -13,6 +13,7 @@ import { UpdateReadyToast } from "./components/UpdateToast";
 import { useTheme } from "./hooks/useTheme";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
 import { useTranslationEvents } from "./hooks/useTranslationEvents";
+import { useAutoTranslate } from "./hooks/useAutoTranslate";
 import { useTraySync } from "./hooks/useTraySync";
 import { useUpdater } from "./hooks/useUpdater";
 import { useAgentFallbackToast } from "./hooks/useAgentFallbackToast";
@@ -53,8 +54,9 @@ function App() {
   useDemoShortcut();
 
   // Translation events in every window (results, errors, provider status);
-  // the overlay's useAutoTranslate is what requests live translations.
+  // live translation requests only in the overlay window, also while it shows settings.
   useTranslationEvents();
+  useAutoTranslate();
 
   // Sync frontend state to system tray icon & menu
   useTraySync();

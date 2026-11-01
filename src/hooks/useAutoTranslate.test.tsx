@@ -11,6 +11,7 @@ type Handler = (e: { payload: unknown }) => void;
 const listeners = vi.hoisted(() => new Map<string, Set<(e: { payload: unknown }) => void>>());
 const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => undefined));
 const toast = vi.hoisted(() => vi.fn());
+const windowLabel = vi.hoisted(() => ({ current: "overlay" }));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, cb: Handler) => {
@@ -25,6 +26,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({ set: async () => {}, get: async () => undefined, onKeyChange: async () => () => {} }),
 }));
 vi.mock("../stores/toastStore", () => ({ showToast: (...args: unknown[]) => toast(...args) }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: windowLabel.current }) }));
 
 import { useAutoTranslate } from "./useAutoTranslate";
 import { useTranslationEvents } from "./useTranslationEvents";
@@ -84,6 +86,7 @@ async function mount(ui: React.ReactElement) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  windowLabel.current = "overlay";
   listeners.clear();
   invoke.mockReset();
   invoke.mockImplementation(async () => undefined);
@@ -133,8 +136,21 @@ describe("live translation requests", () => {
     expect(useTranslationStore.getState().translating.has("them_1_acc_1")).toBe(true);
   });
 
-  it("the events hook alone (any other window) never requests translations", async () => {
+  it("the events hook alone never requests translations", async () => {
     await mount(<AppLevel />);
+    await final(segment("them_1_acc_1", "Hello"));
+    await settle();
+    expect(requests()).toEqual([]);
+  });
+
+  it("only the overlay window translates, even if translation is on in another window", async () => {
+    windowLabel.current = "launcher";
+    await mount(
+      <>
+        <AppLevel />
+        <OverlayLevel />
+      </>,
+    );
     await final(segment("them_1_acc_1", "Hello"));
     await settle();
     expect(requests()).toEqual([]);

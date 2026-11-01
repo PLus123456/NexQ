@@ -1,7 +1,9 @@
 // src/hooks/useAutoTranslate.ts
-// Live translation of the meeting transcript, mounted by the overlay. Each
-// final line is translated once it settles (SettleScheduler), only for the
-// parties chosen in the translation settings, and never for a party whose
+// Live translation of the meeting transcript. Mounted at App level, it works
+// only in the overlay window (where the meeting is shown and translation is
+// switched on), so it keeps translating while that window shows settings.
+// Each final line is translated once it settles (SettleScheduler), only for
+// the parties chosen in the translation settings, and never for a party whose
 // STT engine translates by itself (Soniox: its `translation_result` events
 // are shown by useTranslationEvents).
 //
@@ -9,6 +11,7 @@
 // listeners used to translate every line twice.
 import { useEffect } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { onTranscriptFinal, onTranscriptUpdate } from "../lib/events";
 import { translateSegments } from "../lib/ipc";
 import { LIVE_MAX_WAIT_MS } from "../lib/translation/defaults";
@@ -96,11 +99,23 @@ export function startAutoTranslate(): () => void {
   };
 }
 
+/** The window the meeting overlay runs in. */
+export const AUTO_TRANSLATE_WINDOW = "overlay";
+
+function isAutoTranslateWindow(): boolean {
+  try {
+    return getCurrentWebviewWindow().label === AUTO_TRANSLATE_WINDOW;
+  } catch {
+    return false; // not in a Tauri webview
+  }
+}
+
 let users = 0;
 let stop: (() => void) | null = null;
 
 export function useAutoTranslate(): void {
   useEffect(() => {
+    if (!isAutoTranslateWindow()) return;
     users += 1;
     if (users === 1) stop = startAutoTranslate();
     return () => {
