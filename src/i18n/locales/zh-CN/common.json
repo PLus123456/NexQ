@@ -1,0 +1,95 @@
+{
+  "actions": {
+    "add": "添加",
+    "apply": "应用",
+    "back": "返回",
+    "cancel": "取消",
+    "change": "更改",
+    "clear": "清除",
+    "close": "关闭",
+    "confirm": "确认",
+    "copy": "复制",
+    "delete": "删除",
+    "disable": "停用",
+    "dismiss": "关闭",
+    "done": "完成",
+    "edit": "编辑",
+    "enable": "启用",
+    "export": "导出",
+    "finish": "完成",
+    "import": "导入",
+    "next": "下一步",
+    "open": "打开",
+    "openSettings": "去设置里配置",
+    "previous": "上一步",
+    "refresh": "刷新",
+    "remove": "移除",
+    "resetDefaults": "恢复默认",
+    "retry": "重试",
+    "save": "保存",
+    "search": "搜索",
+    "skip": "跳过",
+    "testConnection": "测试连接"
+  },
+  "status": {
+    "connected": "已连接",
+    "copied": "已复制",
+    "disabled": "已停用",
+    "enabled": "已启用",
+    "error": "出错",
+    "failed": "失败",
+    "loading": "加载中…",
+    "notConfigured": "未配置",
+    "ready": "就绪",
+    "saved": "已保存",
+    "saving": "保存中…",
+    "success": "成功",
+    "testing": "测试中…"
+  },
+  "labels": {
+    "advanced": "高级",
+    "autoDetect": "自动检测",
+    "custom": "自定义",
+    "default": "默认",
+    "none": "无",
+    "off": "关",
+    "on": "开",
+    "optional": "可选",
+    "required": "必填",
+    "room": "现场",
+    "them": "对方",
+    "unknown": "未知",
+    "you": "我"
+  },
+  "errors": {
+    "loadFailed": "加载失败：{{detail}}",
+    "operationFailed": "操作失败：{{detail}}",
+    "saveFailed": "保存失败：{{detail}}",
+    "testFailed": "测试失败：{{detail}}",
+    "unknown": "未知错误"
+  },
+  "units": {
+    "milliseconds": "{{count}} 毫秒",
+    "minutes_other": "{{count}} 分钟",
+    "seconds_other": "{{count}} 秒"
+  },
+  "quickSetup": {
+    "llm": {
+      "title": "AI 模型",
+      "hint": "这里暂时还不能快速配置 AI 模型，请先到“设置 → AI 模型”里添加连接。"
+    },
+    "stt": {
+      "title": "语音识别",
+      "hint": "这里暂时还不能快速配置语音识别，请先到“设置 → 语音识别”里选择识别引擎。"
+    },
+    "translation": {
+      "title": "翻译",
+      "hint": "这里暂时还不能快速配置翻译，请先到“设置 → 翻译”里配置。"
+    }
+  },
+  "components": {
+    "endpointFields": {},
+    "languageCombobox": {},
+    "modelCombobox": {}
+  }
+}

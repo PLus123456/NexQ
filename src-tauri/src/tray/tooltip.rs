@@ -13,7 +13,7 @@ pub fn format_elapsed(start: Instant) -> String {
     }
 }
 
-/// Build tooltip text based on current state.
+/// Build tooltip text based on current state (in the current UI language).
 pub fn build_tooltip(
     state: super::TrayState,
     meeting_start: Option<Instant>,
@@ -21,43 +21,39 @@ pub fn build_tooltip(
     custom_text: Option<&str>,
 ) -> String {
     use super::TrayState;
+    use crate::i18n::{elapsed_label, tr, Text, APP_NAME};
+
+    let elapsed = || {
+        let elapsed = meeting_start
+            .map(format_elapsed)
+            .unwrap_or_else(|| "00:00".to_string());
+        elapsed_label(&elapsed)
+    };
 
     match state {
         TrayState::Idle => {
             if let Some(text) = custom_text {
-                format!("NexQ — Idle · {}", text)
+                format!("{APP_NAME} — {} · {}", tr(Text::Idle), text)
             } else {
-                "NexQ — Idle".to_string()
+                format!("{APP_NAME} — {}", tr(Text::Idle))
             }
         }
         TrayState::Recording => {
-            let elapsed = meeting_start
-                .map(|s| format_elapsed(s))
-                .unwrap_or_else(|| "00:00".to_string());
-            if is_muted {
-                format!("NexQ — Recording (Mic Muted) · {} elapsed", elapsed)
-            } else {
-                format!("NexQ — Recording · {} elapsed", elapsed)
-            }
+            let label = if is_muted { Text::RecordingMicMuted } else { Text::Recording };
+            format!("{APP_NAME} — {} · {}", tr(label), elapsed())
         }
         TrayState::Muted => {
-            let elapsed = meeting_start
-                .map(|s| format_elapsed(s))
-                .unwrap_or_else(|| "00:00".to_string());
-            format!("NexQ — Recording (Mic Muted) · {} elapsed", elapsed)
+            format!("{APP_NAME} — {} · {}", tr(Text::RecordingMicMuted), elapsed())
         }
         TrayState::Stealth => {
-            let elapsed = meeting_start
-                .map(|s| format_elapsed(s))
-                .unwrap_or_else(|| "00:00".to_string());
-            format!("NexQ — Recording (Overlay Hidden) · {} elapsed", elapsed)
+            format!("{APP_NAME} — {} · {}", tr(Text::RecordingOverlayHidden), elapsed())
         }
-        TrayState::AiProcessing => "NexQ — AI Processing...".to_string(),
+        TrayState::AiProcessing => format!("{APP_NAME} — {}", tr(Text::AiProcessing)),
         TrayState::Indexing => {
             if let Some(text) = custom_text {
-                format!("NexQ — {}", text)
+                format!("{APP_NAME} — {}", text)
             } else {
-                "NexQ — Indexing files...".to_string()
+                format!("{APP_NAME} — {}", tr(Text::IndexingFiles))
             }
         }
     }

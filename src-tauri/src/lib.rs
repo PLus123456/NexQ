@@ -14,6 +14,7 @@ pub mod stt;
 pub mod translation;
 pub mod tray;
 // == PLUS MODULES ==
+pub mod i18n;
 pub mod paths;
 
 use state::AppState;
@@ -364,6 +365,9 @@ pub fn run() {
                 }
             });
 
+            // -- UI language for the tray: the stored choice, before the menu is built --
+            i18n::load_from_config(app.handle());
+
             // -- Initialize TrayManager (non-fatal — app works without enhanced tray) --
             match tray::IconSet::new(include_bytes!("../icons/icon.png")) {
                 Ok(icon_set) => {
@@ -371,10 +375,12 @@ pub fn run() {
                     let state = app.state::<AppState>();
                     *state.tray_manager.lock().unwrap() = Some(manager);
 
-                    // Build initial idle menu (best-effort)
+                    // Build initial idle menu and tooltip (best-effort)
                     if let Ok(menu) = tray::menu::build_idle_menu(app.handle()) {
                         if let Some(tray_icon) = app.tray_by_id("main") {
                             let _ = tray_icon.set_menu(Some(menu));
+                            let tooltip = tray::tooltip::build_tooltip(tray::TrayState::Idle, None, false, None);
+                            let _ = tray_icon.set_tooltip(Some(&tooltip));
                         }
                     }
                     log::info!("TrayManager initialized successfully");
@@ -619,6 +625,8 @@ pub fn run() {
             tray_commands::set_tray_tooltip,
             tray_commands::set_meeting_start_time,
             tray_commands::rebuild_tray_menu,
+            // == PLUS COMMANDS: p0-ui ==
+            commands::ui_commands::set_ui_language,
             // == COMMANDS: gemini cache ==
             gemini_cache_commands::create_gemini_context_cache,
             gemini_cache_commands::delete_gemini_context_cache,

@@ -1,0 +1,97 @@
+{
+  "actions": {
+    "add": "Add",
+    "apply": "Apply",
+    "back": "Back",
+    "cancel": "Cancel",
+    "change": "Change",
+    "clear": "Clear",
+    "close": "Close",
+    "confirm": "Confirm",
+    "copy": "Copy",
+    "delete": "Delete",
+    "disable": "Disable",
+    "dismiss": "Dismiss",
+    "done": "Done",
+    "edit": "Edit",
+    "enable": "Enable",
+    "export": "Export",
+    "finish": "Finish",
+    "import": "Import",
+    "next": "Next",
+    "open": "Open",
+    "openSettings": "Open settings",
+    "previous": "Previous",
+    "refresh": "Refresh",
+    "remove": "Remove",
+    "resetDefaults": "Restore defaults",
+    "retry": "Retry",
+    "save": "Save",
+    "search": "Search",
+    "skip": "Skip",
+    "testConnection": "Test connection"
+  },
+  "status": {
+    "connected": "Connected",
+    "copied": "Copied",
+    "disabled": "Disabled",
+    "enabled": "Enabled",
+    "error": "Error",
+    "failed": "Failed",
+    "loading": "Loading…",
+    "notConfigured": "Not configured",
+    "ready": "Ready",
+    "saved": "Saved",
+    "saving": "Saving…",
+    "success": "Success",
+    "testing": "Testing…"
+  },
+  "labels": {
+    "advanced": "Advanced",
+    "autoDetect": "Auto-detect",
+    "custom": "Custom",
+    "default": "Default",
+    "none": "None",
+    "off": "Off",
+    "on": "On",
+    "optional": "Optional",
+    "required": "Required",
+    "room": "Room",
+    "them": "Them",
+    "unknown": "Unknown",
+    "you": "You"
+  },
+  "errors": {
+    "loadFailed": "Couldn't load: {{detail}}",
+    "operationFailed": "Operation failed: {{detail}}",
+    "saveFailed": "Couldn't save: {{detail}}",
+    "testFailed": "Test failed: {{detail}}",
+    "unknown": "Unknown error"
+  },
+  "units": {
+    "milliseconds": "{{count}} ms",
+    "minutes_one": "{{count}} minute",
+    "minutes_other": "{{count}} minutes",
+    "seconds_one": "{{count}} second",
+    "seconds_other": "{{count}} seconds"
+  },
+  "quickSetup": {
+    "llm": {
+      "title": "AI model",
+      "hint": "Quick setup for the AI model isn't available here yet. Set up a connection in Settings → LLM Providers."
+    },
+    "stt": {
+      "title": "Speech recognition",
+      "hint": "Quick setup for speech recognition isn't available here yet. Choose engines in Settings → STT Providers."
+    },
+    "translation": {
+      "title": "Translation",
+      "hint": "Quick setup for translation isn't available here yet. Configure it in Settings → Translation."
+    }
+  },
+  "components": {
+    "endpointFields": {},
+    "languageCombobox": {},
+    "modelCombobox": {}
+  }
+}
