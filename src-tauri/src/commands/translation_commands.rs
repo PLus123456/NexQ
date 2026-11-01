@@ -267,6 +267,11 @@ pub async fn translate_segments(
     if llm_settings.is_some() {
         provider_name = llm_provider_label(&app, &LlmTask::Translation).await;
     }
+    // Ids only (no text): one line per request shows a line is translated once.
+    log::info!(
+        "Translating segment(s) {} into {} via {}",
+        segment_ids.join(", "), target, provider_name
+    );
 
     for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
         let translated = match &llm_settings {
