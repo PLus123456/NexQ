@@ -20,6 +20,8 @@ import type { ClaudeCliConfig, ClaudeCliStatus, ClaudeModelInfo } from "../lib/t
 import { isSessionRunning, useAgentStore } from "../stores/agentStore";
 import { CLAUDE_FALLBACK_PROVIDERS, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
+import { useLlmConfig } from "../stores/llmConnectionsStore";
+import { ClaudeFallbackRoute } from "./llm/ClaudeFallbackRoute";
 
 type T = TFunction<["llm", "common"]>;
 
@@ -670,7 +672,13 @@ function ThinkingToggle({
   );
 }
 
+/** The fallback: a connection + model (the `claude_fallback` route) with LLM connections, else a provider type. */
 function FallbackSettings() {
+  const { view } = useLlmConfig();
+  return view ? <ClaudeFallbackRoute view={view} /> : <ProviderFallbackSettings />;
+}
+
+function ProviderFallbackSettings() {
   const { t } = useT(["llm", "common"]);
   const config = useConfigStore((s) => s.claudeCliConfig);
   const lastModelByProvider = useConfigStore((s) => s.lastModelByProvider);

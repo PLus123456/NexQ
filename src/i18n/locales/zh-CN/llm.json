@@ -796,5 +796,14 @@
     "unaffected": "以下任务单独指定了模型，不受影响：",
     "openSettings": "AI 模型设置…",
     "applyFailed": "切换默认模型失败：{{detail}}"
+  },
+  "fallbackRoute": {
+    "connectionLabel": "备用连接",
+    "modelLabel": "备用模型",
+    "none": "不使用备用",
+    "legacyOption": "之前的设置（见下）",
+    "legacyInUse": "目前沿用之前的备用设置：{{provider}}{{model}}。选一个连接即可替换。",
+    "effective": "Claude 不可用时改用 {{name}} / {{model}}。",
+    "routingHint": "和“任务路由 → Claude 备用”是同一个设置。"
   }
 }

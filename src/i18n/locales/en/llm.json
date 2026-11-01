@@ -806,5 +806,14 @@
     "unaffected": "These tasks have their own model and stay as they are:",
     "openSettings": "AI model settings…",
     "applyFailed": "Couldn't switch the default model: {{detail}}"
+  },
+  "fallbackRoute": {
+    "connectionLabel": "Fallback connection",
+    "modelLabel": "Fallback model",
+    "none": "No fallback",
+    "legacyOption": "Earlier setting (see below)",
+    "legacyInUse": "Using the earlier fallback setting: {{provider}}{{model}}. Pick a connection to replace it.",
+    "effective": "Claude falls back to {{name}} / {{model}}.",
+    "routingHint": "The same setting as Task routing → Claude fallback."
   }
 }
