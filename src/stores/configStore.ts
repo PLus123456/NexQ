@@ -84,8 +84,8 @@ function pushClaudeCliConfig(config: ClaudeCliConfig): void {
   import("../lib/ipc").then(({ setClaudeCliConfig }) =>
     setClaudeCliConfig(config).catch((e) => {
       console.warn("[configStore] Failed to push Claude CLI config:", e);
-      import("./toastStore").then(({ showToast }) =>
-        showToast(`Claude settings not applied: ${e instanceof Error ? e.message : String(e)}`, "error")
+      Promise.all([import("./toastStore"), import("../i18n")]).then(([{ showToast }, { t }]) =>
+        showToast(t("stt:configStore.claudeSettingsNotApplied", { detail: e instanceof Error ? e.message : String(e) }), "error")
       );
     })
   );

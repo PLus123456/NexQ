@@ -1695,6 +1695,8 @@ function DualPassSettings() {
   const { t } = useT(["stt", "common"]);
   const dualPass = useConfigStore((s) => s.whisperDualPass);
   const setDualPass = useConfigStore((s) => s.setWhisperDualPass);
+  const useGpu = useConfigStore((s) => s.whisperUseGpu);
+  const setUseGpu = useConfigStore((s) => s.setWhisperUseGpu);
 
   const update = (key: keyof typeof dualPass, value: number) => {
     setDualPass({ ...dualPass, [key]: value });
@@ -1740,6 +1742,29 @@ function DualPassSettings() {
           hint={t("stt:dualPass.pause.hint")}
           onChange={(v) => update("pauseSecs", v)}
         />
+      </div>
+
+      <div className="mt-5 flex items-start justify-between gap-3 border-t border-border/20 pt-4">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">{t("stt:dualPass.gpu.label")}</p>
+          <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:dualPass.gpu.hint")}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={useGpu}
+          aria-label={t("stt:dualPass.gpu.label")}
+          onClick={() => setUseGpu(!useGpu)}
+          className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-all duration-200 ${
+            useGpu ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
+              useGpu ? "translate-x-4 scale-105" : "translate-x-0"
+            }`}
+          />
+        </button>
       </div>
     </div>
   );

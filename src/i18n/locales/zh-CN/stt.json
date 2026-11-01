@@ -432,6 +432,10 @@
     "pause": {
       "label": "换行停顿",
       "hint": "静音多久后另起一行"
+    },
+    "gpu": {
+      "label": "使用 GPU（Metal）",
+      "hint": "在 Mac 上用图形芯片运行 Whisper.cpp，失败时自动改用 CPU。下次开始识别时生效。"
     }
   },
   "probe": {
@@ -670,5 +674,8 @@
   "status": {
     "error": "语音识别（{{party}}）：{{message}}",
     "connected": "语音识别：{{engine}} 已连接（{{party}}）"
+  },
+  "configStore": {
+    "claudeSettingsNotApplied": "Claude 设置未生效：{{detail}}"
   }
 }

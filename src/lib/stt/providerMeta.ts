@@ -55,71 +55,71 @@ const ALL_PLATFORMS: readonly SttPlatform[] = ["macos", "windows", "linux"];
 /** Every STT engine, in picker order. */
 export const STT_PROVIDERS: readonly SttProviderMeta[] = [
   {
-    id: "web_speech", label: "Web Speech", pickerLabel: "Web Speech", icon: "globe",
+    id: "web_speech", label: "Web Speech", pickerLabel: "Web Speech", icon: "globe", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ["macos", "windows"], // the webview's SpeechRecognition (WebKitGTK has none)
     requiresApiKey: false, isCloud: false, isLocal: true, inputOnly: true,
     supportsNativeTranslation: false, languageSupport: "noAuto", hidden: false,
   },
   {
-    id: "windows_native", label: "Windows Speech", pickerLabel: "Windows Speech", icon: "monitor",
+    id: "windows_native", label: "Windows Speech", pickerLabel: "Windows Speech", icon: "monitor", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ["windows"],
     requiresApiKey: false, isCloud: false, isLocal: true, inputOnly: true,
     supportsNativeTranslation: false, languageSupport: "noAuto", hidden: false,
   },
   {
-    id: "sherpa_onnx", label: "Sherpa-ONNX", pickerLabel: "Sherpa-ONNX", icon: "hardDrive",
+    id: "sherpa_onnx", label: "Sherpa-ONNX", pickerLabel: "Sherpa-ONNX", icon: "hardDrive", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: false, isCloud: false, isLocal: true, requiresDownload: "sherpa_onnx",
     // SenseVoice models detect; the streaming transducers ignore the language.
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
-    id: "ort_streaming", label: "ORT Streaming", pickerLabel: "ORT Streaming", icon: "zap",
+    id: "ort_streaming", label: "ORT Streaming", pickerLabel: "ORT Streaming", icon: "zap", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: false, isCloud: false, isLocal: true, requiresDownload: "ort_streaming",
     supportsNativeTranslation: false, languageSupport: "ignored", hidden: false,
   },
   {
     // Live dual-pass engine (Metal on macOS); there is no batch-only path.
-    id: "whisper_cpp", label: "Whisper.cpp", pickerLabel: "Whisper.cpp", icon: "hardDrive",
+    id: "whisper_cpp", label: "Whisper.cpp", pickerLabel: "Whisper.cpp", icon: "hardDrive", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: false, isCloud: false, isLocal: true, requiresDownload: "whisper_cpp",
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
-    id: "parakeet_tdt", label: "Parakeet TDT", pickerLabel: "Parakeet TDT", icon: "cpu",
+    id: "parakeet_tdt", label: "Parakeet TDT", pickerLabel: "Parakeet TDT", icon: "cpu", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: false, isCloud: false, isLocal: true, requiresDownload: "parakeet_tdt",
     supportsNativeTranslation: false, languageSupport: "ignored", hidden: false,
   },
   {
-    id: "deepgram", label: "Deepgram", pickerLabel: "Deepgram", icon: "cloud",
+    id: "deepgram", label: "Deepgram", pickerLabel: "Deepgram", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
     // Nova 2/3 detect ("multi"); older models fall back to English.
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
-    id: "whisper_api", label: "Whisper API", pickerLabel: "Whisper API", icon: "cloud",
+    id: "whisper_api", label: "Whisper API", pickerLabel: "Whisper API", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
-    id: "azure_speech", label: "Azure", pickerLabel: "Azure Speech", icon: "cloud",
+    id: "azure_speech", label: "Azure", pickerLabel: "Azure Speech", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
     supportsNativeTranslation: false, languageSupport: "noAuto", hidden: false,
   },
   {
-    id: "groq_whisper", label: "Groq STT", pickerLabel: "Groq Whisper", icon: "zap",
+    id: "groq_whisper", label: "Groq STT", pickerLabel: "Groq Whisper", icon: "zap", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
     // NexQ Plus: faster-whisper-server / speaches, vLLM, LocalAI… on any machine.
-    id: "openai_compat", label: "Remote Whisper", pickerLabel: "Remote Whisper", icon: "cloud",
+    id: "openai_compat", label: "Remote Whisper", pickerLabel: "Remote Whisper", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: false, keySlot: "openai_compat_stt", requiresBaseUrl: true,
     isCloud: true, isLocal: false,
@@ -127,7 +127,7 @@ export const STT_PROVIDERS: readonly SttProviderMeta[] = [
   },
   {
     // NexQ Plus: real-time recognition + one-way translation in the same stream.
-    id: "soniox", label: "Soniox", pickerLabel: "Soniox", icon: "cloud",
+    id: "soniox", label: "Soniox", pickerLabel: "Soniox", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
     supportsNativeTranslation: true, languageSupport: "auto", hidden: false,

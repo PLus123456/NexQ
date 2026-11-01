@@ -434,6 +434,10 @@
     "pause": {
       "label": "Pause for new line",
       "hint": "Silence before starting a new transcript line"
+    },
+    "gpu": {
+      "label": "Use the GPU (Metal)",
+      "hint": "Runs Whisper.cpp on the graphics chip on Macs; falls back to the CPU if that fails. Applies when transcription next starts."
     }
   },
   "probe": {
@@ -674,5 +678,8 @@
   "status": {
     "error": "STT ({{party}}): {{message}}",
     "connected": "STT: {{engine}} connected ({{party}})"
+  },
+  "configStore": {
+    "claudeSettingsNotApplied": "Claude settings not applied: {{detail}}"
   }
 }

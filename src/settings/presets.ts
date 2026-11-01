@@ -42,7 +42,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
     // default mic), so the other side uses a local model instead.
     id: "free",
     name: "Free",
-    description: "Web Speech for you, Parakeet TDT for the other side — free and private (one-time model download)",
+    description: "Web Speech for you, Parakeet TDT for the other side — free and private (one-time model download)", // i18n-ignore: worded via stt:presets.<id>
     badge: "Default",
     you: { hint: "default_mic", stt: "web_speech" },
     them: { hint: "default_output", stt: "parakeet_tdt" },
@@ -53,7 +53,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
     // translation into the translation target language); local Whisper for you.
     id: "soniox_them",
     name: "Soniox for Them",
-    description: "Soniox transcribes and translates the other side in real time; Whisper.cpp on this Mac for you",
+    description: "Soniox transcribes and translates the other side in real time; Whisper.cpp on this Mac for you", // i18n-ignore: worded via stt:presets.<id>
     badge: "Plus",
     you: { hint: "default_mic", stt: "whisper_cpp" },
     them: { hint: "default_output", stt: "soniox", nativeTranslation: { mode: "one_way" } },
@@ -63,7 +63,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
     id: "best_quality",
     name: "Best Quality",
-    description: "Deepgram cloud — fastest, most accurate",
+    description: "Deepgram cloud — fastest, most accurate", // i18n-ignore: worded via stt:presets.<id>
     badge: "Recommended",
     you: { hint: "default_mic", stt: "web_speech" },
     them: { hint: "default_output", stt: "deepgram" },
@@ -72,7 +72,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
     id: "fully_offline",
     name: "Fully Offline",
-    description: "Sherpa-ONNX — no internet needed",
+    description: "Sherpa-ONNX — no internet needed", // i18n-ignore: worded via stt:presets.<id>
     badge: "Free",
     you: { hint: "default_mic", stt: "sherpa_onnx" },
     them: { hint: "default_output", stt: "sherpa_onnx" },
@@ -81,7 +81,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
     id: "all_cloud",
     name: "All Cloud",
-    description: "Deepgram for both parties",
+    description: "Deepgram for both parties", // i18n-ignore: worded via stt:presets.<id>
     you: { hint: "default_mic", stt: "deepgram" },
     them: { hint: "default_output", stt: "deepgram" },
     requiresKey: "deepgram",
@@ -89,7 +89,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
     id: "local_whisper",
     name: "Local Only (Whisper)",
-    description: "Whisper.cpp for both parties — offline, free",
+    description: "Whisper.cpp for both parties — offline, free", // i18n-ignore: worded via stt:presets.<id>
     you: { hint: "default_mic", stt: "whisper_cpp" },
     them: { hint: "default_output", stt: "whisper_cpp" },
     requiresDownload: "whisper_cpp",
@@ -97,7 +97,7 @@ export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
     id: "in_person",
     name: "In-Person",
-    description: "Both parties use mic input — Web Speech + Whisper.cpp",
+    description: "Both parties use mic input — Web Speech + Whisper.cpp", // i18n-ignore: worded via stt:presets.<id>
     you: { hint: "default_mic", stt: "web_speech" },
     them: { hint: "mic_2", stt: "whisper_cpp" },
     requiresDownload: "whisper_cpp",
