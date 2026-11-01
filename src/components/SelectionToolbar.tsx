@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useTranslationStore } from "../stores/translationStore";
+import { errorMessage, useTranslationStore } from "../stores/translationStore";
+import { showToast } from "../stores/toastStore";
 import { translateText } from "../lib/ipc";
 import type { TranslationResult } from "../lib/types";
 import { Languages, Copy } from "lucide-react";
@@ -78,6 +79,7 @@ export function SelectionToolbar() {
       setTranslationResult(result);
     } catch (err) {
       console.error("[SelectionToolbar] Translation failed:", err);
+      showToast(t("errors.translateFailed", { detail: errorMessage(err) }), "error");
     } finally {
       setIsTranslating(false);
     }
