@@ -655,10 +655,40 @@ pub fn base_origin(base_url: &str) -> Option<String> {
     Some(url.origin().ascii_serialization())
 }
 
-/// Whether a saved secret may still be sent to `next` (same kind, same origin).
+fn url_origin(url: &str) -> Option<String> {
+    Url::parse(url.trim())
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .map(|u| u.origin().ascii_serialization())
+}
+
+/// Origins (scheme + host + port) of every address `conn` sends its secret
+/// to: the base URL, the chat URL override and a custom model list address.
+pub fn connection_origins(conn: &LlmConnection) -> std::collections::BTreeSet<String> {
+    let mut origins = std::collections::BTreeSet::new();
+    origins.extend(base_origin(&conn.base_url));
+    if let Some(url) = &conn.chat_url_override {
+        origins.extend(url_origin(&url.replace("{model}", "m")));
+    }
+    if conn.models_endpoint == ModelsEndpoint::Custom {
+        if let Some(url) = &conn.models_url {
+            origins.extend(url_origin(url));
+        }
+    }
+    origins
+}
+
+/// Whether a saved secret may still be sent by `next`: same kind, and no
+/// address on a server the secret was not given for.
 pub fn secret_stays_valid(previous: &LlmConnection, next: &LlmConnection) -> bool {
-    previous.kind == next.kind
-        && (previous.kind == LlmKind::ClaudeCli || base_origin(&previous.base_url) == base_origin(&next.base_url))
+    if previous.kind != next.kind {
+        return false;
+    }
+    if previous.kind == LlmKind::ClaudeCli {
+        return true;
+    }
+    let trusted = connection_origins(previous);
+    connection_origins(next).iter().all(|origin| trusted.contains(origin))
 }
 
 // ── Request addresses ───────────────────────────────────────────────────────
@@ -1150,6 +1180,20 @@ mod tests {
         b.base_url = a.base_url.clone();
         b.kind = LlmKind::Anthropic;
         assert!(!secret_stays_valid(&a, &b));
+        // Every address counts: an override or a model list on another server too.
+        let mut c = a.clone();
+        c.chat_url_override = Some("https://evil.example.net/{model}/chat".into());
+        assert!(!secret_stays_valid(&a, &c));
+        c.chat_url_override = Some("https://api.example.com/deploy/{model}".into());
+        assert!(secret_stays_valid(&a, &c), "same server");
+        let mut d = a.clone();
+        d.models_endpoint = ModelsEndpoint::Custom;
+        d.models_url = Some("https://list.example.org/models".into());
+        assert!(!secret_stays_valid(&a, &d));
+        // Dropping an address the key was given for is fine.
+        let mut with_override = a.clone();
+        with_override.chat_url_override = Some("https://gw.example.org/chat".into());
+        assert!(secret_stays_valid(&with_override, &a));
         assert_eq!(secret_hint("sk-1234567890abcd").as_deref(), Some("…abcd"));
         assert_eq!(secret_hint("abc").as_deref(), Some("…c"));
         assert_eq!(secret_hint("  "), None);

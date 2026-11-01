@@ -347,6 +347,24 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_old_settings_migrate_without_inventing_values() {
+        // A custom endpoint chosen but never given an address: kept empty
+        // (requests then say the Base URL is missing), not pointed elsewhere.
+        let config = migrate(Some(&json!({"llmProvider": "custom"})), 1);
+        let custom = &config.connections[0];
+        assert_eq!((custom.id.as_str(), custom.base_url.as_str()), ("legacy-custom", ""));
+        assert_eq!(config.routing.default.target, Some(target("legacy-custom", None)));
+        // A cloud provider without a model or verified list; junk values ignored.
+        let config = migrate(
+            Some(&json!({"llmProvider": "openai", "llmModel": "", "lastModelByProvider": {"openai": 5, "nope": "x"}, "verifiedCloudProviders": "openai"})),
+            1,
+        );
+        assert_eq!(config.connections.len(), 1);
+        assert_eq!((config.connections[0].default_model.clone(), config.connections[0].verified_at_ms), (None, None));
+        assert_eq!(config.routing.default.target, Some(target("legacy-openai", None)));
+    }
+
+    #[test]
     fn migration_is_repeatable() {
         let legacy = json!({"llmProvider": "groq", "llmModel": "llama-3.3-70b", "lastModelByProvider": {"groq": "x"}});
         assert_eq!(migrate(Some(&legacy), 3), migrate(Some(&legacy), 3));

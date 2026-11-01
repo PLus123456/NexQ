@@ -298,6 +298,22 @@ pub struct LlmConfigView {
 }
 
 pub fn effective_route(cfg: &LlmConfigFile, key: &str, claude: &ClaudeContext) -> EffectiveRoute {
+    if key == "claude_fallback" {
+        // What takes over when Claude is down (never Claude itself).
+        let down = ClaudeContext { available: false, ..claude.clone() };
+        return match fallback(cfg, &down) {
+            Some(r) => EffectiveRoute {
+                source: Some(r.source),
+                connection_id: Some(r.connection.id.clone()),
+                connection_name: Some(r.connection.display_name()),
+                kind: Some(r.connection.kind),
+                model: r.model,
+                via_fallback: false,
+                error: None,
+            },
+            None => EffectiveRoute { error: Some("no_fallback".to_string()), ..Default::default() },
+        };
+    }
     match resolve_task(cfg, key, claude) {
         Ok(r) => EffectiveRoute {
             source: Some(r.source),
@@ -841,12 +857,31 @@ impl LlmRegistry {
                 return Err("Custom endpoint base URL required".to_string());
             }
         }
-        self.mutate(|cfg| {
+        let (dropped, _) = self.mutate(|cfg| {
+            let mut dropped: Vec<String> = Vec::new();
             match cfg.connection_mut(&id) {
                 Some(existing) => {
                     // The old UI activated this type with these settings.
                     if carries_base && legacy.base_url != existing.base_url {
+                        let before = existing.clone();
                         existing.base_url = legacy.base_url.clone();
+                        if !connections::secret_stays_valid(&before, existing) {
+                            // A key entered in the new settings was given for the old
+                            // server: forget it. The old shared slots (`custom`…) stay
+                            // bound — the old settings resend their key with the
+                            // address they hold, as they always did.
+                            if let Some(account) = existing.secret_ref.clone().filter(|a| owned_account(a)) {
+                                existing.secret_ref = None;
+                                existing.secret_hint = None;
+                                dropped.push(account);
+                            }
+                            for header in existing.headers.iter_mut().filter(|h| h.secret && h.value_saved) {
+                                header.value_saved = false;
+                                dropped.push(before.header_secret_account(&header.name));
+                            }
+                            existing.verified_at_ms = None;
+                            existing.model_cache = None;
+                        }
                     }
                     if carries_auth {
                         existing.auth = legacy.auth.clone();
@@ -856,8 +891,13 @@ impl LlmRegistry {
                 None => cfg.connections.push(legacy),
             }
             cfg.routing.default.target = Some(RouteTarget { connection_id: id.clone(), model: None });
-            Ok(())
+            Ok(dropped)
         })?;
+        for account in dropped {
+            if let Err(e) = self.inner.secrets.delete(&account) {
+                log::debug!("LLM settings: could not delete keychain item {account}: {e}");
+            }
+        }
         self.invalidate(&id);
         Ok(true)
     }
@@ -1357,6 +1397,17 @@ mod tests {
     }
 
     #[test]
+    fn the_fallback_row_shows_who_takes_over() {
+        let claude = legacy_connection(&ProviderType::ClaudeCli, None, None, None);
+        let cfg = with_default(vec![claude], "legacy-claude_cli");
+        let none = effective_route(&cfg, "claude_fallback", &ClaudeContext::default());
+        assert_eq!(none.error.as_deref(), Some("no_fallback"));
+        let legacy = ClaudeContext { legacy_fallback: Some(("ollama".into(), Some("qwen3".into()))), ..Default::default() };
+        let row = effective_route(&cfg, "claude_fallback", &legacy);
+        assert_eq!((row.connection_id.as_deref(), row.model.as_deref(), row.error.clone()), (Some("legacy-ollama"), Some("qwen3"), None));
+    }
+
+    #[test]
     fn effective_routes_explain_errors() {
         let cfg = with_default(vec![], "gone");
         let e = effective_route(&cfg, "translation", &ClaudeContext::default());
@@ -1502,6 +1553,56 @@ mod tests {
         let openai = cfg.connection("legacy-openai").unwrap();
         assert_eq!(registry.secret_for(openai).unwrap().as_deref(), Some("sk-x"));
         assert!(openai.secret_hint.is_none(), "nothing written to the keychain");
+    }
+
+    #[test]
+    fn the_old_ui_moving_a_connection_to_another_host_drops_new_keys() {
+        let mut custom = legacy_connection(&ProviderType::Custom, Some("https://a.example.com/v1"), Some("bearer"), None);
+        custom.secret_ref = Some("llm:legacy-custom".into());
+        custom.secret_hint = Some("…1234".into());
+        let ollama = legacy_connection(&ProviderType::Ollama, None, None, None);
+        let (registry, secrets) = registry_with(with_default(vec![custom, ollama], "legacy-ollama"));
+        secrets.set("llm:legacy-custom", "sk-new-ui").unwrap();
+        let push = ProviderConfig {
+            provider_type: "custom".into(),
+            api_key: None,
+            base_url: Some("https://b.example.net/v1".into()),
+            auth_type: Some("bearer".into()),
+            auth_value: None,
+            auth_header: None,
+        };
+        assert!(registry.apply_legacy_provider(&push).unwrap());
+        let cfg = registry.config();
+        let moved = cfg.connection("legacy-custom").unwrap();
+        assert_eq!(moved.base_url, "https://b.example.net/v1");
+        assert_eq!((moved.secret_ref.clone(), moved.secret_hint.clone()), (None, None));
+        assert!(secrets.get("llm:legacy-custom").unwrap().is_none());
+        assert_eq!(registry.secret_for(moved).unwrap(), None, "the new host gets no key");
+
+        // The old shared slot stays bound (the old settings own it).
+        let mut legacy_slot = legacy_connection(&ProviderType::Custom, Some("https://a.example.com/v1"), Some("bearer"), None);
+        legacy_slot.secret_ref = Some("custom".into());
+        let (registry, secrets) = registry_with(with_default(vec![legacy_slot, legacy_connection(&ProviderType::Ollama, None, None, None)], "legacy-ollama"));
+        secrets.set("custom", "tok").unwrap();
+        registry.apply_legacy_provider(&push).unwrap();
+        assert_eq!(registry.config().connection("legacy-custom").unwrap().secret_ref.as_deref(), Some("custom"));
+        assert_eq!(secrets.get("custom").unwrap().as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn a_draft_never_sends_the_saved_key_to_a_new_address() {
+        let (registry, _) = registry_with(LlmConfigFile::default());
+        let (id, cfg) = registry.upsert(json!({"id": "", "base_url": "https://api.example.com/v1"}), Some("sk-saved".into())).unwrap();
+        let mut draft = serde_json::to_value(cfg.connection(&id).unwrap()).unwrap();
+        let (_, secret, _) = registry.draft(draft.clone(), None).unwrap();
+        assert_eq!(secret.as_deref(), Some("sk-saved"), "same server: the saved key is used");
+        draft["chat_url_override"] = json!("https://evil.example.net/{model}");
+        let (_, secret, _) = registry.draft(draft.clone(), None).unwrap();
+        assert_eq!(secret, None);
+        draft["chat_url_override"] = Value::Null;
+        draft["models_endpoint"] = json!("custom");
+        draft["models_url"] = json!("https://evil.example.net/models");
+        assert_eq!(registry.draft(draft, None).unwrap().1, None);
     }
 
     #[test]
