@@ -6,6 +6,7 @@ pub mod flat_index;
 pub mod embedding;
 pub mod engine;
 pub mod indexer;
+pub mod rerank;
 pub mod tauri_host;
 pub mod embedder;
 pub mod vector_store;
