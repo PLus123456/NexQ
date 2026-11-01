@@ -228,6 +228,11 @@ interface ClaudeCliSettingsProps {
   /** Claude CLI is the active provider. */
   active: boolean;
   onSelect: () => void;
+  /**
+   * Shown inside the connection editor: no provider rows and no "Use Claude"
+   * banner (the editor has its own "Make default"); the details always show.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -235,7 +240,7 @@ interface ClaudeCliSettingsProps {
  * driven through the user's own login (Beta), plus placeholder rows for
  * Gemini CLI and Codex CLI.
  */
-export function ClaudeCliSettings({ selected, active, onSelect }: ClaudeCliSettingsProps) {
+export function ClaudeCliSettings({ selected, active, onSelect, embedded = false }: ClaudeCliSettingsProps) {
   const { t } = useT(["llm", "common"]);
   const status = useAgentStore((s) => s.status);
   const checking = useAgentStore((s) => s.checking);
@@ -261,60 +266,62 @@ export function ClaudeCliSettings({ selected, active, onSelect }: ClaudeCliSetti
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{t("claudeCli.credentialsNote")}</p>
 
-      <div className="mt-4 grid grid-cols-3 gap-2.5">
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-pressed={selected}
-          aria-label={
-            active
-              ? t("claudeCli.providerRow.ariaLabelActive", { state: stateLabel })
-              : t("claudeCli.providerRow.ariaLabel", { state: stateLabel })
-          }
-          className={`relative flex flex-col items-start rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer ${
-            selected
-              ? "border-primary bg-primary/5 ring-1 ring-primary/20"
-              : "border-border/50 hover:border-border hover:bg-accent/50"
-          }`}
-        >
-          <div className="flex w-full items-center gap-1.5">
-            <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium">{CLAUDE}</span>
-            {active && <span className="ml-auto text-meta font-medium text-primary/80">{t("claudeCli.active")}</span>}
-          </div>
-          <span className="mt-1.5 flex w-full items-center gap-1.5 text-meta text-muted-foreground">
-            <span
-              data-testid="claude-status-dot"
-              data-state={state}
-              aria-hidden="true"
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[state]}`}
-            />
-            <span className="truncate">{stateLabel}</span>
-          </span>
-        </button>
-        {/* Product names: the same in every language. */}
-        {["Gemini CLI", "Codex CLI"].map((label) => (
+      {!embedded && (
+        <div className="mt-4 grid grid-cols-3 gap-2.5">
           <button
-            key={label}
             type="button"
-            disabled
-            className="flex flex-col items-start rounded-xl border border-dashed border-border/40 p-3 text-left opacity-60 cursor-not-allowed"
+            onClick={onSelect}
+            aria-pressed={selected}
+            aria-label={
+              active
+                ? t("claudeCli.providerRow.ariaLabelActive", { state: stateLabel })
+                : t("claudeCli.providerRow.ariaLabel", { state: stateLabel })
+            }
+            className={`relative flex flex-col items-start rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer ${
+              selected
+                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                : "border-border/50 hover:border-border hover:bg-accent/50"
+            }`}
           >
             <div className="flex w-full items-center gap-1.5">
-              <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
-              <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium">{CLAUDE}</span>
+              {active && <span className="ml-auto text-meta font-medium text-primary/80">{t("claudeCli.active")}</span>}
             </div>
-            <span className="mt-1.5 text-meta text-muted-foreground/70">{t("claudeCli.comingSoon")}</span>
+            <span className="mt-1.5 flex w-full items-center gap-1.5 text-meta text-muted-foreground">
+              <span
+                data-testid="claude-status-dot"
+                data-state={state}
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[state]}`}
+              />
+              <span className="truncate">{stateLabel}</span>
+            </span>
           </button>
-        ))}
-      </div>
+          {/* Product names: the same in every language. */}
+          {["Gemini CLI", "Codex CLI"].map((label) => (
+            <button
+              key={label}
+              type="button"
+              disabled
+              className="flex flex-col items-start rounded-xl border border-dashed border-border/40 p-3 text-left opacity-60 cursor-not-allowed"
+            >
+              <div className="flex w-full items-center gap-1.5">
+                <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
+                <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              </div>
+              <span className="mt-1.5 text-meta text-muted-foreground/70">{t("claudeCli.comingSoon")}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
-      {selected && (
+      {(selected || embedded) && (
         <ClaudeDetails
           status={status}
           state={state}
           checking={checking}
-          active={active}
+          active={active || embedded}
           refreshStatus={refreshStatus}
         />
       )}

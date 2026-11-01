@@ -1,4 +1,82 @@
 {
+  "statusBar": {
+    "llmChip": {
+      "tooltip": "AI 模型：{{provider}} / {{model}}",
+      "switchFailed": "无法切换 AI 服务商：{{detail}}"
+    },
+    "sttChip": {
+      "tooltip": {
+        "room": "现场语音识别：{{engine}}",
+        "you": "我的语音识别：{{engine}}",
+        "them": "对方的语音识别：{{engine}}"
+      },
+      "speakersDetected_other": "检测到 {{count}} 位说话人"
+    },
+    "muteButton": {
+      "you": {
+        "mute": "静音我的声音",
+        "unmute": "取消静音我的声音"
+      },
+      "them": {
+        "mute": "静音对方的声音",
+        "unmute": "取消静音对方的声音"
+      }
+    },
+    "groups": {
+      "local": "本地",
+      "cloud": "云端",
+      "localBuiltIn": "本地与内置",
+      "subscription": "订阅"
+    },
+    "sttPicker": {
+      "loading": "正在加载识别引擎…",
+      "empty": "没有可用的识别引擎，请到设置里配置",
+      "inUseBy": "{{party}}正在使用",
+      "steal": {
+        "message": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方将改用 <fallback>{{fallback}}</fallback>。",
+        "messageNoFallback": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方目前<fallback>没有可用的引擎</fallback>可改用。",
+        "confirm": "切换"
+      },
+      "toast": {
+        "noFallback": "没有可用的备用语音识别引擎，请先配置 API Key 或下载本地模型。",
+        "moved": "{{engine}} 已改由“{{to}}”使用，“{{from}}”已自动改用 {{fallback}}。"
+      }
+    },
+    "llmPicker": {
+      "active": "使用中",
+      "useClaude": "使用 Claude",
+      "usingClaude": "正在使用 Claude",
+      "claudeTiers": "快速 {{fast}}，深度 {{deep}}",
+      "noVerified": "还没有验证通过的服务商，请先到设置里测试连接",
+      "modelHeader": "模型：{{provider}}",
+      "loadingModels": "加载中…",
+      "noModels": "没有可用的模型"
+    },
+    "updatePill": {
+      "title": "重启 {{appName}} 以安装 v{{version}}",
+      "ready": "更新已就绪 · v{{version}}",
+      "restart": "重启",
+      "restarting": "正在重启…"
+    }
+  },
+  "actionItems": {
+    "toast": {
+      "noneFound": "这场会议里没有找到待办事项",
+      "found_other": "找到 {{count}} 项待办事项"
+    },
+    "errors": {
+      "parseFailed": "无法从 AI 的回复中解析出待办事项，请重试。"
+    }
+  },
+  "bookmarks": {
+    "info": {
+      "noNotableMoments": "这场会议里没有找到值得标记的重要时刻。你可以在“转写记录”标签页里手动添加书签。",
+      "notEnoughContent": "这场会议的内容不足以生成书签建议。你可以在“转写记录”标签页里手动添加书签。"
+    },
+    "errors": {
+      "parseFailed": "无法解析书签建议，请重试。"
+    }
+  },
   "agentUsage": {
     "notes": {
       "apiBilled": "此 Claude 登录向 API 账户计费，而不是使用你的订阅。",
@@ -213,82 +291,473 @@
       "unavailable": "其他原因"
     }
   },
-  "statusBar": {
-    "llmChip": {
-      "tooltip": "AI 模型：{{provider}} / {{model}}",
-      "switchFailed": "无法切换 AI 服务商：{{detail}}"
+  "page": {
+    "legacyFallback": "当前版本还不包含新的连接设置，下面显示的是原来的服务商设置。",
+    "readOnly": "这些设置是更新版本的 {{appName}} 保存的。可以修改，但修改只在 {{appName}} 本次运行期间有效，不会保存。",
+    "loadWarnings": {
+      "restoredFromBackup": "设置文件损坏，已从上一次的备份恢复。请检查一下连接。",
+      "resetCorruptFile": "设置文件损坏且无法恢复，AI 模型设置已重置。损坏的文件改名保留在原处。"
     },
-    "sttChip": {
-      "tooltip": {
-        "room": "现场语音识别：{{engine}}",
-        "you": "我的语音识别：{{engine}}",
-        "them": "对方的语音识别：{{engine}}"
-      },
-      "speakersDetected_other": "检测到 {{count}} 位说话人"
+    "refreshFailed": "刷新设置失败：{{detail}}",
+    "tabsLabel": "AI 模型设置",
+    "tabs": {
+      "connections": "连接",
+      "routing": "任务路由"
     },
-    "muteButton": {
-      "you": {
-        "mute": "静音我的声音",
-        "unmute": "取消静音我的声音"
-      },
-      "them": {
-        "mute": "静音对方的声音",
-        "unmute": "取消静音对方的声音"
+    "banner": {
+      "title": "默认：{{target}}",
+      "none": "还没有默认模型",
+      "noneHint": "添加一个连接并填好模型，它就会成为所有 AI 功能的默认模型。",
+      "hint": "没有单独指定的任务都用它回答。",
+      "customized_other": "没有单独指定的任务都用它回答 · {{count}} 个任务单独指定了模型。",
+      "claude": "快速：{{fast}} · 深度：{{deep}}",
+      "viaFallback": "Claude 当前不可用，正在由备用模型回答。"
+    }
+  },
+  "kinds": {
+    "openai_compat": "OpenAI 兼容",
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "ollama": "Ollama（原生接口）",
+    "claude_cli": "Claude 订阅（本机 CLI）"
+  },
+  "connections": {
+    "listLabel": "连接列表",
+    "untitled": "未命名连接",
+    "add": "添加连接",
+    "selectHint": "在左侧选择一个连接，或者添加一个。",
+    "unsaved": "有未保存的修改",
+    "newBadge": "新",
+    "status": {
+      "ready": "可用：上次测试成功",
+      "untested": "还没有测试",
+      "error": "需要处理",
+      "disabled": "已停用"
+    }
+  },
+  "tasks": {
+    "default": {
+      "label": "默认",
+      "short": "默认",
+      "hint": "下面没有单独选择连接的任务都由它回答。"
+    },
+    "assist": {
+      "label": "AI 助手",
+      "short": "助手",
+      "hint": "会议中的实时回答：AI 助手、怎么说、精简、追问、回顾、提问和自定义动作。"
+    },
+    "meeting_summary": {
+      "label": "会议总结",
+      "short": "总结",
+      "hint": "会后生成会议总结，适合用更强的模型。"
+    },
+    "action_items": {
+      "label": "待办事项",
+      "short": "待办",
+      "hint": "从会议里提取待办事项。"
+    },
+    "bookmark_suggestions": {
+      "label": "书签建议",
+      "short": "书签",
+      "hint": "找出会议里值得标记的时刻。"
+    },
+    "meeting_ask": {
+      "label": "问这场会议",
+      "short": "问答",
+      "hint": "针对历史会议提问。"
+    },
+    "translation": {
+      "label": "实时翻译",
+      "short": "翻译",
+      "hint": "会议中实时翻译转写记录，也包括划词翻译和单段补译。"
+    },
+    "translation_batch": {
+      "label": "批量翻译",
+      "short": "批量翻译",
+      "hint": "会后翻译整场会议。"
+    },
+    "rag_answer": {
+      "label": "知识库测试回答",
+      "short": "知识库",
+      "hint": "个人知识库设置里的“测试回答”。"
+    },
+    "claude_fallback": {
+      "label": "Claude 备用",
+      "short": "备用",
+      "hint": "Claude 订阅不可用时（未登录、用量上限、崩溃）改用它回答。"
+    }
+  },
+  "editor": {
+    "name": {
+      "label": "连接名称"
+    },
+    "fromTemplate": "来自“{{name}}”模板",
+    "enabled": "启用",
+    "isDefault": "默认",
+    "makeDefault": "设为默认",
+    "makeDefaultHint": "请先保存连接，并给它设置默认模型。",
+    "disabledInUse": "这个连接已停用，但仍有任务在用它：在重新启用或改用别的连接之前，这些任务的请求都会失败。",
+    "sections": {
+      "endpoint": "接口地址和密钥",
+      "models": "模型",
+      "params": "默认参数",
+      "advanced": "高级"
+    },
+    "kind": {
+      "label": "接口协议",
+      "hints": {
+        "openai_compat": "大多数服务商和自建服务都用它。请求发到“接口地址 + /chat/completions”，不会自动补 /v1。",
+        "anthropic": "Anthropic Messages 接口。接口地址不含 /v1（例如 https://api.anthropic.com）。",
+        "gemini": "Google 原生 Gemini 接口。接口地址只填主机（https://generativelanguage.googleapis.com）。",
+        "ollama": "Ollama 自己的接口（/api/chat）。接口地址只填主机，例如 http://localhost:11434 或局域网地址。",
+        "claude_cli": "通过本机的 Claude Code CLI 使用你自己的 Claude 登录。"
       }
     },
+    "altBaseUrls": {
+      "label": "其他官方地址：",
+      "china": "国内站",
+      "international": "国际站"
+    },
+    "modelsUrlLabel": "模型列表",
+    "secret": {
+      "pending": "新密钥会在点击“保存”时写入。",
+      "willClear": "点击“保存”时会删除已保存的密钥。",
+      "needed": "这个服务需要 API Key，可以在这里获取：",
+      "reentry": "接口协议或主机变了。为了不把已保存的 API Key 发到新地址，请重新输入 Key，或者删除已保存的 Key，或者撤销地址修改。",
+      "reentryShort": "地址已更改，请先重新输入 API Key。",
+      "revert": "撤销地址修改",
+      "clear": "删除已保存的 Key"
+    },
+    "plainHttp": "这个地址用明文 http:// 连接互联网上的其他电脑，API Key 会以明文发送。服务器支持的话请改用 https://。",
+    "hints": {
+      "check_version_prefix": "404 通常是路径不对：请检查接口地址里的版本前缀（例如 /v1、/v4、/api/v3）。",
+      "auth_failed": "服务器拒绝了密钥：请检查 API Key 和认证方式。",
+      "no_model": "没有可以测试的模型：请先填写默认模型。",
+      "base_url_invalid": "接口地址无效。",
+      "looks_openai_compat": "这个地址以 /v1 结尾，是 Ollama 的 OpenAI 兼容接口：请把接口协议改成“OpenAI 兼容”，或者去掉 /v1。"
+    },
+    "overrideActive": "“高级”里设置了完整对话地址：对话请求会发到那里，而不是上面的地址。",
+    "ollamaV1": "这个地址以 /v1 结尾，是 Ollama 的 OpenAI 兼容接口。请把接口协议改成“OpenAI 兼容”，或者去掉 /v1。",
+    "paramsHint": "这个连接上的所有任务默认都用这些参数，任务路由里可以单独覆盖。留空表示用功能自己的默认值。",
+    "problems": {
+      "baseUrlMissing": "请填写接口地址。",
+      "baseUrlInvalid": "接口地址无效。",
+      "overrideInvalid": "完整对话地址无效。",
+      "modelsUrlInvalid": "模型列表地址无效。",
+      "headersInvalid": "请修正认证请求头或自定义请求头。",
+      "fieldsInvalid": "请修正标红的字段。",
+      "secretReentry": "请重新输入 API Key，或者删除已保存的 Key。"
+    },
+    "discard": "放弃修改",
+    "state": {
+      "new": "新连接，尚未保存",
+      "unsaved": "有未保存的修改",
+      "saved": "修改已全部保存"
+    },
+    "delete": {
+      "button": "删除连接",
+      "confirm": "确定删除这个连接？",
+      "confirmInUse_other": "有 {{count}} 个任务在用它，删除后会改为跟随上级。确定删除？",
+      "done": "已删除“{{name}}”",
+      "doneWithRoutes_other": "已删除“{{name}}”，{{count}} 个任务改为跟随上级。"
+    },
+    "models": {
+      "default": {
+        "label": "默认模型",
+        "placeholder": "输入模型 ID 或从列表选择",
+        "hint": "任务选了这个连接但没填模型时用它。可以填任何模型 ID，列表只是候选。"
+      },
+      "manual": {
+        "label": "我的模型列表",
+        "placeholder": "添加模型 ID",
+        "remove": "移除 {{model}}",
+        "hint": "在给这个连接选模型的地方排在最前面。服务器没有模型列表时很有用。"
+      },
+      "fetch": "拉取模型列表",
+      "emptyList": "服务器返回的模型列表是空的。",
+      "fetchedInfo_other": "已拉取 {{countText}} 个模型 · {{time}}",
+      "lastFetchFailed": "上次拉取模型列表失败：{{detail}}"
+    },
+    "test": {
+      "button": "测试对话",
+      "withModel": "使用 {{model}}",
+      "needModel": "请先填写模型。",
+      "ok": "连接成功",
+      "failed": "失败",
+      "status": "HTTP {{status}}",
+      "url": "请求地址：",
+      "model": "模型：",
+      "reply": "回复：",
+      "reasoningOnly": "（模型只输出了推理内容）"
+    },
+    "advanced": {
+      "override": {
+        "label": "完整对话地址（可选）",
+        "placeholder": "例如 https://gw.example.com/deployments/{model}/chat",
+        "hint": "给路径不规则的网关用：对话请求会原样发到这里，{{placeholder}} 会替换成模型 ID。",
+        "preview": "对话请求发往",
+        "invalid": "这不是有效的地址。",
+        "noModel": "地址里没有 {{placeholder}}：所有模型都会发到同一个地址。"
+      },
+      "modelsEndpoint": {
+        "label": "模型列表",
+        "auto": "按协议默认",
+        "custom": "自定义地址",
+        "disabled": "关闭",
+        "placeholder": "https://…/models",
+        "preview": "从 {{url}} 拉取",
+        "autoHint": "从协议的默认地址拉取。",
+        "disabledHint": "不拉取模型列表，只用你自己的列表和手填的模型 ID。"
+      },
+      "timeout": {
+        "label": "连接超时（秒）",
+        "placeholder": "默认 {{seconds}}"
+      },
+      "concurrency": {
+        "label": "并发请求数",
+        "placeholder": "默认 {{value}}"
+      }
+    },
+    "compat": {
+      "title": "兼容选项",
+      "hint": "给不完全遵循协议的服务器用。请求没出问题就不用改。",
+      "temperature": {
+        "label": "温度（temperature）",
+        "pass": "发送",
+        "omit": "不发送",
+        "fixed": "固定为",
+        "value": "数值",
+        "hint": "推理模型（OpenAI o 系列、GPT-5、Claude）常常不接受温度参数，这时选“不发送”。"
+      },
+      "maxTokensField": {
+        "label": "输出长度字段",
+        "omit": "不发送",
+        "hint": "OpenAI 的新模型要用 max_completion_tokens，其他大多用 max_tokens。"
+      },
+      "reasoning": {
+        "label": "识别推理内容",
+        "hint": "把 reasoning_content / reasoning 显示为“思考中”，不会混进回答或译文。"
+      },
+      "stripThink": {
+        "label": "去掉 <think> 块",
+        "hint": "去掉部分模型写在回答开头的 <think>…</think> 块。"
+      },
+      "streamUsage": {
+        "label": "请求用量统计",
+        "hint": "发送 stream_options.include_usage。服务器不支持时关掉。"
+      },
+      "ollamaFallback": {
+        "label": "404 时改试 Ollama 接口",
+        "hint": "原来自定义端点的行为：只在 404/405 时改试 /api/chat。"
+      },
+      "keepAlive": {
+        "label": "模型保持加载",
+        "hint": "Ollama 的 keep_alive，例如 30m、1h，-1 表示一直保持。"
+      },
+      "webSearch": {
+        "label": "联网搜索",
+        "options": {
+          "auto": "自动",
+          "none": "关闭",
+          "openrouter_online": "OpenRouter :online",
+          "gemini_google_search": "Google 搜索增强"
+        }
+      }
+    }
+  },
+  "params": {
+    "notSet": "未设置",
+    "temperature": {
+      "label": "温度（temperature）"
+    },
+    "maxTokens": {
+      "label": "最大输出 token 数"
+    },
+    "extraBody": {
+      "label": "额外请求体（JSON）",
+      "placeholder": "{\"reasoning_effort\": \"low\"}",
+      "hint": "合并进每个请求（model、messages、stream 不能覆盖）。",
+      "disableThinking": "填入“关闭思考”",
+      "errors": {
+        "invalid": "不是有效的 JSON。",
+        "notObject": "必须是 JSON 对象，例如 {\"key\": \"value\"}。",
+        "reserved": "这里不能设置“{{key}}”。"
+      }
+    },
+    "errors": {
+      "range": "请输入 {{min}} 到 {{max}} 之间的数。",
+      "integerRange": "请输入 {{min}} 到 {{max}} 之间的整数。"
+    }
+  },
+  "templates": {
+    "title": "添加连接",
+    "hint": "选一个模板：模板只负责预填，所有字段都可以改。",
     "groups": {
-      "local": "本地",
-      "cloud": "云端",
-      "localBuiltIn": "本地与内置",
-      "subscription": "订阅"
+      "china": "国内",
+      "international": "国际",
+      "local": "本机与自建",
+      "other": "订阅与自定义"
     },
-    "sttPicker": {
-      "loading": "正在加载识别引擎…",
-      "empty": "没有可用的识别引擎，请到设置里配置",
-      "inUseBy": "{{party}}正在使用",
-      "steal": {
-        "message": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方将改用 <fallback>{{fallback}}</fallback>。",
-        "messageNoFallback": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方目前<fallback>没有可用的引擎</fallback>可改用。",
-        "confirm": "切换"
+    "subtitles": {
+      "claude": "你自己的 Claude 登录",
+      "ownHost": "填写自己的地址"
+    },
+    "items": {
+      "openai": {
+        "name": "OpenAI",
+        "note": "推理模型（o 系列、GPT-5）只接受 max_completion_tokens 和默认温度；请求失败时可以在“高级”里把温度改成“不发送”。"
       },
-      "toast": {
-        "noFallback": "没有可用的备用语音识别引擎，请先配置 API Key 或下载本地模型。",
-        "moved": "{{engine}} 已改由“{{to}}”使用，“{{from}}”已自动改用 {{fallback}}。"
+      "anthropic": {
+        "name": "Anthropic"
+      },
+      "gemini": {
+        "name": "Google Gemini"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "note": "模型 ID 形如“厂商/模型”。在模型 ID 后加 :online（或在“高级”里打开联网搜索）可以联网。"
+      },
+      "groq": {
+        "name": "Groq"
+      },
+      "azure": {
+        "name": "Azure OpenAI",
+        "note": "填你自己资源的地址（…/openai/v1）和门户里的密钥，模型填部署名称。"
+      },
+      "xai": {
+        "name": "xAI（Grok）"
+      },
+      "mistral": {
+        "name": "Mistral"
+      },
+      "deepseek": {
+        "name": "DeepSeek（深度求索）",
+        "note": "deepseek-chat 直接回答；deepseek-reasoner 会先思考（更慢，不适合实时翻译）。"
+      },
+      "kimi": {
+        "name": "Kimi（月之暗面）"
+      },
+      "zhipu": {
+        "name": "智谱 GLM",
+        "note": "路径是 /api/paas/v4，不是 /v1。GLM 默认会思考：实时翻译建议在任务参数里点“填入关闭思考”。"
+      },
+      "qwen": {
+        "name": "通义千问（百炼，兼容模式）",
+        "note": "Qwen3 模型可能默认思考：实时翻译建议在任务参数里点“填入关闭思考”。"
+      },
+      "volcengine": {
+        "name": "火山方舟（豆包）",
+        "note": "路径是 /api/v3。模型可以填推理接入点 ID（ep-…）或模型名称；可能拉不到模型列表，请手动填写。"
+      },
+      "siliconflow": {
+        "name": "硅基流动"
+      },
+      "minimax": {
+        "name": "MiniMax"
+      },
+      "qianfan": {
+        "name": "百度千帆"
+      },
+      "hunyuan": {
+        "name": "腾讯混元"
+      },
+      "stepfun": {
+        "name": "阶跃星辰"
+      },
+      "ollama": {
+        "name": "Ollama",
+        "note": "本机或局域网里另一台电脑上的 Ollama 都可以（例如 http://192.168.1.20:11434）。拉取一次模型列表就能确认它在运行。"
+      },
+      "lmstudio": {
+        "name": "LM Studio"
+      },
+      "selfhosted": {
+        "name": "自建服务（vLLM、LiteLLM、One API…）",
+        "note": "填写你的服务地址，带上版本前缀（通常是 /v1）。API Key 可选。"
+      },
+      "claude_cli": {
+        "name": "Claude（订阅）",
+        "note": "通过本机的 Claude Code CLI 使用你自己的 Claude 登录。"
+      },
+      "custom": {
+        "name": "自定义（OpenAI 兼容）"
       }
-    },
-    "llmPicker": {
-      "active": "使用中",
-      "useClaude": "使用 Claude",
-      "usingClaude": "正在使用 Claude",
-      "claudeTiers": "快速 {{fast}}，深度 {{deep}}",
-      "noVerified": "还没有验证通过的服务商，请先到设置里测试连接",
-      "modelHeader": "模型：{{provider}}",
-      "loadingModels": "加载中…",
-      "noModels": "没有可用的模型"
-    },
-    "updatePill": {
-      "title": "重启 {{appName}} 以安装 v{{version}}",
-      "ready": "更新已就绪 · v{{version}}",
-      "restart": "重启",
-      "restarting": "正在重启…"
     }
   },
-  "actionItems": {
-    "toast": {
-      "noneFound": "这场会议里没有找到待办事项",
-      "found_other": "找到 {{count}} 项待办事项"
+  "routing": {
+    "title": "按任务选模型",
+    "hint": "每个任务都可以单独选连接和模型；没选的任务跟随上级。修改立即生效。",
+    "noConnections": "请先添加一个连接。",
+    "badges": {
+      "highFrequency": "高频"
     },
-    "errors": {
-      "parseFailed": "无法从 AI 的回复中解析出待办事项，请重试。"
+    "fastModelHint": "每句话都会调用：建议选快模型，并关闭思考。",
+    "claudeFallbackLegacy": "这里没设置时，沿用 Claude 订阅设置里选的备用。",
+    "translationOnly": "只在翻译服务选择“AI 模型”时生效。",
+    "connection": {
+      "label": "连接",
+      "choose": "选择连接…",
+      "follow": "跟随“{{task}}”",
+      "disabledSuffix": "（已停用）"
+    },
+    "model": {
+      "label": "“{{task}}”的模型",
+      "placeholder": "输入模型 ID",
+      "connectionDefault": "连接默认：{{model}}",
+      "followsPlaceholder": "先选择连接",
+      "claudePlaceholder": "由 Claude 的快速 / 深度设置决定"
+    },
+    "effective": {
+      "label": "实际使用：",
+      "target": "→ {{name}} / {{model}}",
+      "claude": "→ {{name}}（快速 {{fast}}，深度 {{deep}}）",
+      "follows": "跟随“{{task}}” {{target}}",
+      "noDefault": "未设置：请选择连接。",
+      "notConfigured": "还没有默认模型：请先设置“默认”这一行。",
+      "disabled": "“{{name}}”已停用：请求会失败。",
+      "noModel": "没有模型：在这里填一个，或者给“{{name}}”设置默认模型。",
+      "noFallback": "没有备用：默认就是 Claude。",
+      "connectionMissing": "默认连接已被删除：请重新选择。",
+      "baseUrlMissing": "“{{name}}”还没有填写接口地址。",
+      "viaFallback": "（Claude 不可用，使用备用）"
+    },
+    "params": {
+      "toggle": "参数",
+      "toggleSet_other": "参数（已设 {{count}} 项）",
+      "title": "这个任务的参数覆盖",
+      "defaultTemperature": "功能默认：{{value}}"
     }
   },
-  "bookmarks": {
-    "info": {
-      "noNotableMoments": "这场会议里没有找到值得标记的重要时刻。你可以在“转写记录”标签页里手动添加书签。",
-      "notEnoughContent": "这场会议的内容不足以生成书签建议。你可以在“转写记录”标签页里手动添加书签。"
+  "responseLanguage": {
+    "title": "AI 回答语言",
+    "hint": "AI 助手、会议总结、待办事项、书签和“问这场会议”用什么语言回答。不影响翻译。",
+    "modes": {
+      "ui": "跟随界面语言",
+      "transcript": "跟随会议语言",
+      "fixed": "指定语言"
     },
-    "errors": {
-      "parseFailed": "无法解析书签建议，请重试。"
+    "languageLabel": "回答语言",
+    "descriptions": {
+      "ui": "用界面语言回答（当前：{{language}}）。",
+      "transcript": "用会议转写的语言回答（原来的行为）。",
+      "fixed": "总是用这里选的语言回答。"
     }
+  },
+  "quickSetup": {
+    "title": "连接 AI 模型",
+    "hint": "选择服务商，填好接口地址、API Key 和模型，然后测试。测试成功后会保存并设为默认。",
+    "provider": "服务商",
+    "testAndSave": "测试并保存",
+    "saveAnyway": "仍然保存，稍后再测",
+    "localFound_other": "已连上服务器：有 {{count}} 个模型可用。",
+    "moreSettings": "更多选项在“设置 → AI 模型”",
+    "ready": "AI 模型已就绪：{{target}}",
+    "readyHint": "上次测试成功。没有单独指定的 AI 功能都会用这个模型。",
+    "configured": "已设置 AI 模型：{{target}}",
+    "untestedHint": "还没有测试：测一次，确认它能正常回答。",
+    "test": "测试",
+    "retest": "重新测试",
+    "change": "换一个",
+    "loadFailed": "AI 模型设置加载失败。"
   }
 }

@@ -1,4 +1,84 @@
 {
+  "statusBar": {
+    "llmChip": {
+      "tooltip": "LLM: {{provider}} / {{model}}",
+      "switchFailed": "Couldn't switch the AI provider: {{detail}}"
+    },
+    "sttChip": {
+      "tooltip": {
+        "room": "Room STT: {{engine}}",
+        "you": "Your STT: {{engine}}",
+        "them": "Their STT: {{engine}}"
+      },
+      "speakersDetected_one": "{{count}} speaker detected",
+      "speakersDetected_other": "{{count}} speakers detected"
+    },
+    "muteButton": {
+      "you": {
+        "mute": "Mute You",
+        "unmute": "Unmute You"
+      },
+      "them": {
+        "mute": "Mute Them",
+        "unmute": "Unmute Them"
+      }
+    },
+    "groups": {
+      "local": "Local",
+      "cloud": "Cloud",
+      "localBuiltIn": "Local & Built-in",
+      "subscription": "Subscription"
+    },
+    "sttPicker": {
+      "loading": "Loading providers...",
+      "empty": "No providers available — configure in Settings",
+      "inUseBy": "In use by {{party}}",
+      "steal": {
+        "message": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>{{fallback}}</fallback>.",
+        "messageNoFallback": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>no available engine</fallback>.",
+        "confirm": "Switch"
+      },
+      "toast": {
+        "noFallback": "No fallback STT engine available. Configure an API key or download a local model first.",
+        "moved": "{{engine}} moved to {{to}}. {{from}} fell back to {{fallback}}."
+      }
+    },
+    "llmPicker": {
+      "active": "active",
+      "useClaude": "Use Claude",
+      "usingClaude": "Using Claude",
+      "claudeTiers": "Fast {{fast}}, Deep {{deep}}",
+      "noVerified": "No verified providers — test connection in Settings first",
+      "modelHeader": "Model — {{provider}}",
+      "loadingModels": "loading...",
+      "noModels": "No models available"
+    },
+    "updatePill": {
+      "title": "Restart {{appName}} to install v{{version}}",
+      "ready": "Update ready · v{{version}}",
+      "restart": "Restart",
+      "restarting": "Restarting…"
+    }
+  },
+  "actionItems": {
+    "toast": {
+      "noneFound": "No action items found in this meeting",
+      "found_one": "Found {{count}} action item",
+      "found_other": "Found {{count}} action items"
+    },
+    "errors": {
+      "parseFailed": "Couldn't parse action items from AI response. Try again."
+    }
+  },
+  "bookmarks": {
+    "info": {
+      "noNotableMoments": "No notable moments found in this meeting. You can add bookmarks manually from the Transcript tab.",
+      "notEnoughContent": "This meeting doesn't have enough content to suggest bookmarks. You can add bookmarks manually from the Transcript tab."
+    },
+    "errors": {
+      "parseFailed": "Couldn't parse bookmark suggestions. Try again."
+    }
+  },
   "agentUsage": {
     "notes": {
       "apiBilled": "This Claude login bills an API account, not your subscription.",
@@ -214,84 +294,479 @@
       "unavailable": "unavailable"
     }
   },
-  "statusBar": {
-    "llmChip": {
-      "tooltip": "LLM: {{provider}} / {{model}}",
-      "switchFailed": "Couldn't switch the AI provider: {{detail}}"
+  "page": {
+    "legacyFallback": "This build doesn't include the new connection settings yet, so the classic provider settings are shown.",
+    "readOnly": "These settings were saved by a newer version of {{appName}}. You can change them, but changes only last until {{appName}} quits: they aren't saved.",
+    "loadWarnings": {
+      "restoredFromBackup": "The settings file was damaged, so the last backup was restored. Check your connections.",
+      "resetCorruptFile": "The settings file was damaged and couldn't be restored, so the AI model settings were reset. The damaged file was kept next to it."
     },
-    "sttChip": {
-      "tooltip": {
-        "room": "Room STT: {{engine}}",
-        "you": "Your STT: {{engine}}",
-        "them": "Their STT: {{engine}}"
-      },
-      "speakersDetected_one": "{{count}} speaker detected",
-      "speakersDetected_other": "{{count}} speakers detected"
+    "refreshFailed": "Couldn't refresh the settings: {{detail}}",
+    "tabsLabel": "AI model settings",
+    "tabs": {
+      "connections": "Connections",
+      "routing": "Task routing"
     },
-    "muteButton": {
-      "you": {
-        "mute": "Mute You",
-        "unmute": "Unmute You"
-      },
-      "them": {
-        "mute": "Mute Them",
-        "unmute": "Unmute Them"
+    "banner": {
+      "title": "Default: {{target}}",
+      "none": "No default model yet",
+      "noneHint": "Add a connection, give it a model, and it becomes the default for every AI feature.",
+      "hint": "Used by every task that isn't routed elsewhere.",
+      "customized_one": "Used by every task that isn't routed elsewhere · {{count}} task has its own model.",
+      "customized_other": "Used by every task that isn't routed elsewhere · {{count}} tasks have their own model.",
+      "claude": "Fast: {{fast}} · Deep: {{deep}}",
+      "viaFallback": "Claude is unavailable right now, so its fallback is answering."
+    }
+  },
+  "kinds": {
+    "openai_compat": "OpenAI-compatible",
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "ollama": "Ollama (native API)",
+    "claude_cli": "Claude subscription (local CLI)"
+  },
+  "connections": {
+    "listLabel": "Connections",
+    "untitled": "Untitled connection",
+    "add": "Add connection",
+    "selectHint": "Choose a connection on the left, or add one.",
+    "unsaved": "Unsaved changes",
+    "newBadge": "New",
+    "status": {
+      "ready": "Ready — the last test succeeded",
+      "untested": "Not tested yet",
+      "error": "Needs attention",
+      "disabled": "Turned off"
+    }
+  },
+  "tasks": {
+    "default": {
+      "label": "Default",
+      "short": "Default",
+      "hint": "Answers every task below that doesn't pick its own connection."
+    },
+    "assist": {
+      "label": "AI assist",
+      "short": "Assist",
+      "hint": "Live answers during a meeting: Assist, What to say, Shorten, Follow-up, Recap, Ask, and custom actions."
+    },
+    "meeting_summary": {
+      "label": "Meeting summary",
+      "short": "Summary",
+      "hint": "Summaries of finished meetings. A stronger model pays off here."
+    },
+    "action_items": {
+      "label": "Action items",
+      "short": "Action items",
+      "hint": "Extracts action items from a meeting."
+    },
+    "bookmark_suggestions": {
+      "label": "Bookmark suggestions",
+      "short": "Bookmarks",
+      "hint": "Suggests the notable moments of a meeting."
+    },
+    "meeting_ask": {
+      "label": "Ask this meeting",
+      "short": "Ask",
+      "hint": "Questions about a past meeting."
+    },
+    "translation": {
+      "label": "Live translation",
+      "short": "Translation",
+      "hint": "Translates the transcript while you talk, plus selected text and single segments."
+    },
+    "translation_batch": {
+      "label": "Batch translation",
+      "short": "Batch",
+      "hint": "Translates a whole meeting afterwards."
+    },
+    "rag_answer": {
+      "label": "Knowledge base test answer",
+      "short": "Knowledge base",
+      "hint": "The test answer in the personal knowledge base settings."
+    },
+    "claude_fallback": {
+      "label": "Claude fallback",
+      "short": "Fallback",
+      "hint": "Answers while the Claude subscription is unavailable (logged out, usage limit, crash)."
+    }
+  },
+  "editor": {
+    "name": {
+      "label": "Connection name"
+    },
+    "fromTemplate": "from the {{name}} template",
+    "enabled": "On",
+    "isDefault": "Default",
+    "makeDefault": "Make default",
+    "makeDefaultHint": "Save the connection with a default model first.",
+    "disabledInUse": "This connection is off, but tasks still use it: their requests will fail until you turn it on or route them elsewhere.",
+    "sections": {
+      "endpoint": "Address and key",
+      "models": "Models",
+      "params": "Default parameters",
+      "advanced": "Advanced"
+    },
+    "kind": {
+      "label": "Protocol",
+      "hints": {
+        "openai_compat": "Most vendors and self-hosted servers. Requests go to Base URL + /chat/completions; /v1 is never added for you.",
+        "anthropic": "Anthropic Messages API. The Base URL is without /v1 (e.g. https://api.anthropic.com).",
+        "gemini": "Google's native Gemini API. The Base URL is the host (https://generativelanguage.googleapis.com).",
+        "ollama": "Ollama's own API (/api/chat). The Base URL is the host, e.g. http://localhost:11434 or a LAN address.",
+        "claude_cli": "Your own Claude login, through the Claude Code CLI on this computer."
       }
     },
+    "altBaseUrls": {
+      "label": "Other official addresses:",
+      "china": "China site",
+      "international": "International site"
+    },
+    "modelsUrlLabel": "Model list",
+    "secret": {
+      "pending": "The new key is saved when you click Save.",
+      "willClear": "The saved key will be removed when you click Save.",
+      "needed": "This service needs an API key. Get one at",
+      "reentry": "The protocol or the host changed. So that your saved API key is never sent to a new address, enter the key again, remove it, or undo the address change.",
+      "reentryShort": "Enter the API key again first: the address changed.",
+      "revert": "Undo address change",
+      "clear": "Remove saved key"
+    },
+    "plainHttp": "This address uses plain http:// to another computer on the internet: the API key is sent unencrypted. Use https:// if the server supports it.",
+    "hints": {
+      "check_version_prefix": "404 usually means a wrong path: check the version prefix of the Base URL (e.g. /v1, /v4, /api/v3).",
+      "auth_failed": "The server rejected the key: check the API key and the authentication method.",
+      "no_model": "No model to test with: enter a default model first.",
+      "base_url_invalid": "The Base URL isn't a valid address.",
+      "looks_openai_compat": "This address ends in /v1, which is Ollama's OpenAI-compatible API: switch the protocol to OpenAI-compatible, or remove /v1."
+    },
+    "overrideActive": "A full chat URL is set under Advanced: chat requests go there instead of the address above.",
+    "ollamaV1": "This address ends in /v1, which is Ollama's OpenAI-compatible API. Switch the protocol to OpenAI-compatible, or remove /v1.",
+    "paramsHint": "Used by every task on this connection unless the task overrides them. Leave empty to use the feature's own value.",
+    "problems": {
+      "baseUrlMissing": "Enter the Base URL.",
+      "baseUrlInvalid": "The Base URL isn't a valid address.",
+      "overrideInvalid": "The full chat URL isn't a valid address.",
+      "modelsUrlInvalid": "The model list address isn't valid.",
+      "headersInvalid": "Fix the authentication header or the custom request headers.",
+      "fieldsInvalid": "Fix the fields marked in red.",
+      "secretReentry": "Enter the API key again, or remove the saved one."
+    },
+    "discard": "Discard changes",
+    "state": {
+      "new": "New connection, not saved yet",
+      "unsaved": "Unsaved changes",
+      "saved": "All changes saved"
+    },
+    "delete": {
+      "button": "Delete connection",
+      "confirm": "Delete this connection?",
+      "confirmInUse_one": "{{count}} task uses it and will follow its parent again. Delete?",
+      "confirmInUse_other": "{{count}} tasks use it and will follow their parent again. Delete?",
+      "done": "Deleted “{{name}}”",
+      "doneWithRoutes_one": "Deleted “{{name}}”. {{count}} task follows its parent again.",
+      "doneWithRoutes_other": "Deleted “{{name}}”. {{count}} tasks follow their parent again."
+    },
+    "models": {
+      "default": {
+        "label": "Default model",
+        "placeholder": "Type a model ID or pick one",
+        "hint": "Used when a task picks this connection without a model. Any ID works: the list only offers candidates."
+      },
+      "manual": {
+        "label": "Your model list",
+        "placeholder": "Add a model ID",
+        "remove": "Remove {{model}}",
+        "hint": "Shown first wherever you pick a model for this connection — handy when the server has no model list."
+      },
+      "fetch": "Fetch model list",
+      "emptyList": "The server returned an empty model list.",
+      "fetchedInfo_one": "{{countText}} model fetched · {{time}}",
+      "fetchedInfo_other": "{{countText}} models fetched · {{time}}",
+      "lastFetchFailed": "The last model list fetch failed: {{detail}}"
+    },
+    "test": {
+      "button": "Test chat",
+      "withModel": "with {{model}}",
+      "needModel": "Enter a model first.",
+      "ok": "It works",
+      "failed": "Failed",
+      "status": "HTTP {{status}}",
+      "url": "Request URL:",
+      "model": "Model:",
+      "reply": "Reply:",
+      "reasoningOnly": "(the model only produced reasoning)"
+    },
+    "advanced": {
+      "override": {
+        "label": "Full chat URL (optional)",
+        "placeholder": "e.g. https://gw.example.com/deployments/{model}/chat",
+        "hint": "For gateways with irregular paths: chat requests go exactly here. {{placeholder}} is replaced by the model ID.",
+        "preview": "Chat requests go to",
+        "invalid": "This isn't a valid address.",
+        "noModel": "There's no {{placeholder}} in it: every model is sent to this same address."
+      },
+      "modelsEndpoint": {
+        "label": "Model list",
+        "auto": "Protocol default",
+        "custom": "Custom address",
+        "disabled": "Off",
+        "placeholder": "https://…/models",
+        "preview": "Fetched from {{url}}",
+        "autoHint": "Fetched from the protocol's default address.",
+        "disabledHint": "No model list is fetched: only your own list and typed IDs are used."
+      },
+      "timeout": {
+        "label": "Connect timeout (s)",
+        "placeholder": "Default: {{seconds}}"
+      },
+      "concurrency": {
+        "label": "Parallel requests",
+        "placeholder": "Default: {{value}}"
+      }
+    },
+    "compat": {
+      "title": "Compatibility",
+      "hint": "For servers that don't follow the protocol exactly. Leave as is unless requests fail.",
+      "temperature": {
+        "label": "Temperature",
+        "pass": "Send",
+        "omit": "Don't send",
+        "fixed": "Always",
+        "value": "Value",
+        "hint": "Reasoning models (OpenAI o-series, GPT-5, Claude) often reject a temperature: choose “Don't send”."
+      },
+      "maxTokensField": {
+        "label": "Output limit field",
+        "omit": "Don't send",
+        "hint": "OpenAI's newer models want max_completion_tokens; most others use max_tokens."
+      },
+      "reasoning": {
+        "label": "Read reasoning output",
+        "hint": "Shows reasoning_content / reasoning as “thinking”; it never ends up in answers or translations."
+      },
+      "stripThink": {
+        "label": "Remove <think> blocks",
+        "hint": "Drops a leading <think>…</think> block some models put in their answer."
+      },
+      "streamUsage": {
+        "label": "Ask for token usage",
+        "hint": "Sends stream_options.include_usage. Turn off if the server rejects it."
+      },
+      "ollamaFallback": {
+        "label": "Retry with Ollama's API on 404",
+        "hint": "Old custom-endpoint behaviour: only on 404/405, retry /api/chat."
+      },
+      "keepAlive": {
+        "label": "Keep the model loaded",
+        "hint": "Ollama keep_alive, e.g. 30m, 1h, or -1 for always."
+      },
+      "webSearch": {
+        "label": "Web search",
+        "options": {
+          "auto": "Automatic",
+          "none": "Off",
+          "openrouter_online": "OpenRouter :online",
+          "gemini_google_search": "Google Search grounding"
+        }
+      }
+    }
+  },
+  "params": {
+    "notSet": "Not set",
+    "temperature": {
+      "label": "Temperature"
+    },
+    "maxTokens": {
+      "label": "Max output tokens"
+    },
+    "extraBody": {
+      "label": "Extra request body (JSON)",
+      "placeholder": "{\"reasoning_effort\": \"low\"}",
+      "hint": "Merged into every request (model, messages and stream can't be overridden).",
+      "disableThinking": "Insert “thinking off”",
+      "errors": {
+        "invalid": "Not valid JSON.",
+        "notObject": "Must be a JSON object, e.g. {\"key\": \"value\"}.",
+        "reserved": "“{{key}}” can't be set here."
+      }
+    },
+    "errors": {
+      "range": "Enter a number from {{min}} to {{max}}.",
+      "integerRange": "Enter a whole number from {{min}} to {{max}}."
+    }
+  },
+  "templates": {
+    "title": "Add a connection",
+    "hint": "Pick a template: it only fills in the form, and every field stays editable.",
     "groups": {
-      "local": "Local",
-      "cloud": "Cloud",
-      "localBuiltIn": "Local & Built-in",
-      "subscription": "Subscription"
+      "china": "China",
+      "international": "International",
+      "local": "Local and self-hosted",
+      "other": "Subscription and custom"
     },
-    "sttPicker": {
-      "loading": "Loading providers...",
-      "empty": "No providers available — configure in Settings",
-      "inUseBy": "In use by {{party}}",
-      "steal": {
-        "message": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>{{fallback}}</fallback>.",
-        "messageNoFallback": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>no available engine</fallback>.",
-        "confirm": "Switch"
+    "subtitles": {
+      "claude": "Your Claude login",
+      "ownHost": "Your own address"
+    },
+    "items": {
+      "openai": {
+        "name": "OpenAI",
+        "note": "Reasoning models (o-series, GPT-5) take max_completion_tokens and only the default temperature: set Temperature to “Don't send” under Advanced if requests fail."
       },
-      "toast": {
-        "noFallback": "No fallback STT engine available. Configure an API key or download a local model first.",
-        "moved": "{{engine}} moved to {{to}}. {{from}} fell back to {{fallback}}."
+      "anthropic": {
+        "name": "Anthropic"
+      },
+      "gemini": {
+        "name": "Google Gemini"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "note": "Model IDs look like vendor/model. Append :online to a model ID (or turn on web search under Advanced) for web results."
+      },
+      "groq": {
+        "name": "Groq"
+      },
+      "azure": {
+        "name": "Azure OpenAI",
+        "note": "Use your resource's address (…/openai/v1) and the key from the portal. The model is your deployment name."
+      },
+      "xai": {
+        "name": "xAI (Grok)"
+      },
+      "mistral": {
+        "name": "Mistral"
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "note": "deepseek-chat answers directly; deepseek-reasoner thinks first (slower — not for live translation)."
+      },
+      "kimi": {
+        "name": "Kimi (Moonshot)"
+      },
+      "zhipu": {
+        "name": "Zhipu GLM",
+        "note": "The path is /api/paas/v4, not /v1. GLM models think by default: for live translation, use “Insert thinking off” in the task's parameters."
+      },
+      "qwen": {
+        "name": "Qwen (DashScope, OpenAI-compatible)",
+        "note": "Qwen3 models may think by default: for live translation, use “Insert thinking off” in the task's parameters."
+      },
+      "volcengine": {
+        "name": "Volcengine Ark (Doubao)",
+        "note": "The path is /api/v3. The model can be an inference endpoint ID (ep-…) or a model name; the model list may be unavailable, so type it."
+      },
+      "siliconflow": {
+        "name": "SiliconFlow"
+      },
+      "minimax": {
+        "name": "MiniMax"
+      },
+      "qianfan": {
+        "name": "Baidu Qianfan"
+      },
+      "hunyuan": {
+        "name": "Tencent Hunyuan"
+      },
+      "stepfun": {
+        "name": "StepFun"
+      },
+      "ollama": {
+        "name": "Ollama",
+        "note": "Works with Ollama on this computer or another one on your network (e.g. http://192.168.1.20:11434). Fetch the model list to check it's running."
+      },
+      "lmstudio": {
+        "name": "LM Studio"
+      },
+      "selfhosted": {
+        "name": "Self-hosted (vLLM, LiteLLM, One API…)",
+        "note": "Enter your server's address including its version prefix (often /v1). The key is optional."
+      },
+      "claude_cli": {
+        "name": "Claude (subscription)",
+        "note": "Uses your own Claude login through the Claude Code CLI on this computer."
+      },
+      "custom": {
+        "name": "Custom (OpenAI-compatible)"
       }
-    },
-    "llmPicker": {
-      "active": "active",
-      "useClaude": "Use Claude",
-      "usingClaude": "Using Claude",
-      "claudeTiers": "Fast {{fast}}, Deep {{deep}}",
-      "noVerified": "No verified providers — test connection in Settings first",
-      "modelHeader": "Model — {{provider}}",
-      "loadingModels": "loading...",
-      "noModels": "No models available"
-    },
-    "updatePill": {
-      "title": "Restart {{appName}} to install v{{version}}",
-      "ready": "Update ready · v{{version}}",
-      "restart": "Restart",
-      "restarting": "Restarting…"
     }
   },
-  "actionItems": {
-    "toast": {
-      "noneFound": "No action items found in this meeting",
-      "found_one": "Found {{count}} action item",
-      "found_other": "Found {{count}} action items"
+  "routing": {
+    "title": "Model per task",
+    "hint": "Each task can use its own connection and model; a task without one follows the task above it. Changes apply right away.",
+    "noConnections": "Add a connection first.",
+    "badges": {
+      "highFrequency": "Frequent"
     },
-    "errors": {
-      "parseFailed": "Couldn't parse action items from AI response. Try again."
+    "fastModelHint": "Runs for every sentence: pick a fast model with thinking off.",
+    "claudeFallbackLegacy": "Not set here: the fallback chosen in the Claude subscription settings is used.",
+    "translationOnly": "Only used when the translation service is set to the AI model.",
+    "connection": {
+      "label": "Connection",
+      "choose": "Choose a connection…",
+      "follow": "Follow {{task}}",
+      "disabledSuffix": " (off)"
+    },
+    "model": {
+      "label": "Model for {{task}}",
+      "placeholder": "Type a model ID",
+      "connectionDefault": "Connection default: {{model}}",
+      "followsPlaceholder": "Choose a connection first",
+      "claudePlaceholder": "Set by Claude's Fast / Deep models"
+    },
+    "effective": {
+      "label": "Answered by:",
+      "target": "→ {{name}} / {{model}}",
+      "claude": "→ {{name}} (Fast {{fast}}, Deep {{deep}})",
+      "follows": "Follows {{task}} {{target}}",
+      "noDefault": "Not set: choose a connection.",
+      "notConfigured": "No default model yet: set the Default row first.",
+      "disabled": "“{{name}}” is off: requests will fail.",
+      "noModel": "No model: enter one here, or give “{{name}}” a default model.",
+      "noFallback": "No fallback: the default is Claude itself.",
+      "connectionMissing": "The default connection was deleted: choose another one.",
+      "baseUrlMissing": "“{{name}}” has no address yet.",
+      "viaFallback": " (Claude is unavailable: fallback)"
+    },
+    "params": {
+      "toggle": "Parameters",
+      "toggleSet_one": "Parameters ({{count}} set)",
+      "toggleSet_other": "Parameters ({{count}} set)",
+      "title": "Overrides for this task",
+      "defaultTemperature": "Feature default: {{value}}"
     }
   },
-  "bookmarks": {
-    "info": {
-      "noNotableMoments": "No notable moments found in this meeting. You can add bookmarks manually from the Transcript tab.",
-      "notEnoughContent": "This meeting doesn't have enough content to suggest bookmarks. You can add bookmarks manually from the Transcript tab."
+  "responseLanguage": {
+    "title": "Answer language",
+    "hint": "The language of AI assist, summaries, action items, bookmarks and “Ask this meeting”. Translation isn't affected.",
+    "modes": {
+      "ui": "UI language",
+      "transcript": "Meeting language",
+      "fixed": "Fixed language"
     },
-    "errors": {
-      "parseFailed": "Couldn't parse bookmark suggestions. Try again."
+    "languageLabel": "Answer language",
+    "descriptions": {
+      "ui": "Answers in the UI language (now: {{language}}).",
+      "transcript": "Answers in the language of the meeting's transcript (the original behaviour).",
+      "fixed": "Always answers in the language chosen here."
     }
+  },
+  "quickSetup": {
+    "title": "Connect an AI model",
+    "hint": "Pick a provider, fill in the address, API key and model, then test. A successful test saves it as the default.",
+    "provider": "Provider",
+    "testAndSave": "Test and save",
+    "saveAnyway": "Save anyway and test later",
+    "localFound_one": "Found the server: {{count}} model available.",
+    "localFound_other": "Found the server: {{count}} models available.",
+    "moreSettings": "More options in Settings → AI models",
+    "ready": "AI model ready: {{target}}",
+    "readyHint": "The last test succeeded. Every AI feature uses this model unless you route a task elsewhere.",
+    "configured": "AI model set up: {{target}}",
+    "untestedHint": "Not tested yet: run a test to make sure it answers.",
+    "test": "Test",
+    "retest": "Test again",
+    "change": "Use another model",
+    "loadFailed": "Couldn't load the AI model settings."
   }
 }

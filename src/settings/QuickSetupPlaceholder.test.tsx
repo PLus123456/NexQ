@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { LlmQuickSetup } from "./llm/LlmQuickSetup";
+import { QuickSetupPlaceholder } from "./QuickSetupPlaceholder";
+import type { QuickSetupProps } from "./quickSetup";
 import { SttQuickSetup } from "./stt/SttQuickSetup";
 import { TranslationQuickSetup } from "./translation/TranslationQuickSetup";
 import { useMeetingStore } from "../stores/meetingStore";
 
+// LlmQuickSetup is the real one now (P1); its placeholder is tested directly.
+const LlmPlaceholder = (props: QuickSetupProps) => <QuickSetupPlaceholder {...props} area="llm" settingsTab="llm" />;
+
 describe("quick setup placeholders", () => {
   it.each([
-    ["llm", LlmQuickSetup, "AI model"],
+    ["llm", LlmPlaceholder, "AI model"],
     ["stt", SttQuickSetup, "Speech recognition"],
     ["translation", TranslationQuickSetup, "Translation"],
   ] as const)("%s reports incomplete once and opens its settings tab", (tab, Component, title) => {
@@ -26,7 +30,7 @@ describe("quick setup placeholders", () => {
   });
 
   it("has no settings button inside a settings page", () => {
-    render(<LlmQuickSetup variant="settings" onStatusChange={() => {}} />);
+    render(<LlmPlaceholder variant="settings" onStatusChange={() => {}} />);
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
