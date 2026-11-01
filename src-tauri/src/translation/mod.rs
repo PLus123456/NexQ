@@ -6,6 +6,10 @@ pub mod opus_mt;
 pub mod opus_mt_registry;
 pub mod opus_mt_manager;
 pub mod llm_provider;
+pub mod lang_map;
+pub mod options;
+#[cfg(test)]
+mod test_http;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -92,6 +96,31 @@ pub struct ConnectionStatus {
     pub language_count: usize,
     pub response_ms: u64,
     pub error: Option<String>,
+    /// What the test sentence came back as, when the test translates one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
+}
+
+// ── Service addresses ──
+
+pub use crate::net::endpoint::redact_url;
+
+/// A user-entered service address as a base URL: checked like every other
+/// endpoint (`net::endpoint`), with a pasted full address (one of
+/// `known_paths` at the end) cut back to the base.
+pub(crate) fn service_base(input: &str, known_paths: &[&str]) -> Result<String, TranslationError> {
+    let normalized = crate::net::endpoint::normalize_base_url(input)
+        .map_err(|e| TranslationError::NotConfigured(format!("Invalid service address: {e}")))?;
+    Ok(match crate::net::endpoint::strip_endpoint_path(input, known_paths) {
+        Some((base, _)) => base,
+        None => normalized.base,
+    })
+}
+
+/// `base` + `path`, query kept (see `net::endpoint::join_endpoint`).
+pub(crate) fn endpoint_url(base: &str, path: &str) -> Result<url::Url, TranslationError> {
+    crate::net::endpoint::join_endpoint(base, path)
+        .map_err(|e| TranslationError::NotConfigured(format!("Invalid service address: {e}")))
 }
 
 // ── Provider trait ──
@@ -180,16 +209,26 @@ impl TranslationCache {
 
 // ── Router ──
 
+/// API keys (and the Microsoft region) as stored in the keychain; `None` = not set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TranslationKeys {
+    pub microsoft: Option<String>,
+    pub microsoft_region: Option<String>,
+    pub google: Option<String>,
+    pub deepl: Option<String>,
+}
+
 pub struct TranslationRouter {
     active_provider: Option<Arc<dyn TranslationProvider>>,
     active_type: Option<TranslationProviderType>,
+    /// Why the last `set_provider` failed (shown instead of "no provider").
+    last_error: Option<String>,
     consecutive_failures: u32,
     cache: TranslationCache,
     // Cached API keys (loaded from CredentialManager)
-    microsoft_api_key: Option<String>,
-    microsoft_region: Option<String>,
-    google_api_key: Option<String>,
-    deepl_api_key: Option<String>,
+    keys: TranslationKeys,
+    // Service addresses and LLM prompts pushed by the frontend
+    options: options::TranslationOptions,
     // Default target/source language — set by frontend, used as fallback
     default_target_lang: String,
     default_source_lang: Option<String>,
@@ -203,12 +242,11 @@ impl TranslationRouter {
         Self {
             active_provider: None,
             active_type: None,
+            last_error: None,
             consecutive_failures: 0,
             cache: TranslationCache::new(1000),
-            microsoft_api_key: None,
-            microsoft_region: None,
-            google_api_key: None,
-            deepl_api_key: None,
+            keys: TranslationKeys::default(),
+            options: options::TranslationOptions::default(),
             default_target_lang: "en".to_string(),
             default_source_lang: None,
             opus_mt_models_dir: None,
@@ -220,17 +258,35 @@ impl TranslationRouter {
         self.active_type.as_ref()
     }
 
+    /// Replaces every key at once, so a key deleted from the keychain is forgotten too.
+    pub fn set_keys(&mut self, keys: TranslationKeys) {
+        self.keys = keys;
+    }
+
+    pub fn keys(&self) -> &TranslationKeys {
+        &self.keys
+    }
+
     pub fn set_microsoft_credentials(&mut self, key: String, region: Option<String>) {
-        self.microsoft_api_key = Some(key);
-        self.microsoft_region = region;
+        self.keys.microsoft = Some(key);
+        self.keys.microsoft_region = region;
     }
 
     pub fn set_google_credentials(&mut self, key: String) {
-        self.google_api_key = Some(key);
+        self.keys.google = Some(key);
     }
 
     pub fn set_deepl_credentials(&mut self, key: String) {
-        self.deepl_api_key = Some(key);
+        self.keys.deepl = Some(key);
+    }
+
+    /// Applies the frontend's service addresses / LLM prompts (missing parts kept).
+    pub fn apply_options(&mut self, patch: options::TranslationOptionsPatch) {
+        self.options.apply(patch);
+    }
+
+    pub fn options(&self) -> &options::TranslationOptions {
+        &self.options
     }
 
     pub fn set_default_target_lang(&mut self, lang: String) {
@@ -257,26 +313,25 @@ impl TranslationRouter {
         self.opus_mt_active_model_id = model_id;
     }
 
-    pub fn set_provider(
-        &mut self,
-        provider_type: TranslationProviderType,
-    ) -> Result<(), TranslationError> {
-        let provider: Box<dyn TranslationProvider> = match provider_type {
+    /// A provider of `provider_type` built from these keys and options, without
+    /// touching the active one (also used to test unsaved settings).
+    pub fn build_provider(
+        &self,
+        provider_type: &TranslationProviderType,
+        keys: &TranslationKeys,
+        options: &options::TranslationOptions,
+    ) -> Result<Box<dyn TranslationProvider>, TranslationError> {
+        let endpoints = &options.endpoints;
+        Ok(match provider_type {
             TranslationProviderType::Microsoft => {
-                let key = self.microsoft_api_key.clone()
-                    .ok_or_else(|| TranslationError::NoApiKey("microsoft".into()))?;
-                let region = self.microsoft_region.clone().unwrap_or_else(|| "global".into());
-                Box::new(microsoft::MicrosoftTranslator::new(key, region))
+                let region = keys.microsoft_region.clone().or_else(|| Some("global".into()));
+                Box::new(microsoft::MicrosoftTranslator::new(keys.microsoft.clone(), region, endpoints.microsoft())?)
             }
             TranslationProviderType::Google => {
-                let key = self.google_api_key.clone()
-                    .ok_or_else(|| TranslationError::NoApiKey("google".into()))?;
-                Box::new(google::GoogleTranslator::new(key))
+                Box::new(google::GoogleTranslator::new(keys.google.clone(), endpoints.google())?)
             }
             TranslationProviderType::Deepl => {
-                let key = self.deepl_api_key.clone()
-                    .ok_or_else(|| TranslationError::NoApiKey("deepl".into()))?;
-                Box::new(deepl::DeepLTranslator::new(key))
+                Box::new(deepl::DeepLTranslator::new(keys.deepl.clone(), endpoints.deepl())?)
             }
             TranslationProviderType::OpusMt => {
                 let mut translator = opus_mt::OpusMtTranslator::new();
@@ -293,10 +348,31 @@ impl TranslationRouter {
             TranslationProviderType::Llm => {
                 Box::new(llm_provider::LlmTranslator::new())
             }
+        })
+    }
+
+    /// Makes `provider_type` the active provider. On failure there is no
+    /// active provider any more (translating with the previous one would hide
+    /// the problem) and the error is kept for [`get_provider`](Self::get_provider).
+    pub fn set_provider(
+        &mut self,
+        provider_type: TranslationProviderType,
+    ) -> Result<(), TranslationError> {
+        let built = self.build_provider(&provider_type, &self.keys, &self.options);
+        let provider = match built {
+            Ok(provider) => provider,
+            Err(e) => {
+                self.active_provider = None;
+                self.active_type = None;
+                self.last_error = Some(format!("{provider_type}: {e}"));
+                log::warn!("Translation provider {} not ready: {}", provider_type, e);
+                return Err(e);
+            }
         };
 
         self.active_provider = Some(Arc::from(provider));
         self.active_type = Some(provider_type.clone());
+        self.last_error = None;
         self.consecutive_failures = 0;
         log::info!("Translation provider set to: {}", provider_type);
         Ok(())
@@ -305,9 +381,11 @@ impl TranslationRouter {
     /// Get an Arc clone of the active provider — safe to hold across .await.
     /// IMPORTANT: Always clone the Arc out of the lock scope before awaiting.
     pub fn get_provider(&self) -> Result<Arc<dyn TranslationProvider>, TranslationError> {
-        self.active_provider
-            .clone()
-            .ok_or_else(|| TranslationError::NotConfigured("No translation provider set".into()))
+        self.active_provider.clone().ok_or_else(|| {
+            TranslationError::NotConfigured(
+                self.last_error.clone().unwrap_or_else(|| "No translation provider set".into()),
+            )
+        })
     }
 
     pub fn active_provider_name(&self) -> String {
@@ -359,5 +437,72 @@ impl TranslationRouter {
             chunks.push(current);
         }
         chunks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(deepl: Option<&str>) -> TranslationKeys {
+        TranslationKeys { deepl: deepl.map(String::from), ..Default::default() }
+    }
+
+    #[test]
+    fn a_failed_switch_leaves_no_provider_and_says_why() {
+        let mut router = TranslationRouter::new();
+        router.set_provider(TranslationProviderType::Llm).unwrap();
+        assert_eq!(router.active_type(), Some(&TranslationProviderType::Llm));
+
+        let err = router.set_provider(TranslationProviderType::Deepl).unwrap_err();
+        assert!(matches!(err, TranslationError::NoApiKey(_)));
+        assert_eq!(router.active_type(), None);
+        let reason = router.get_provider().err().unwrap().to_string();
+        assert!(reason.contains("deepl"), "{reason}");
+        assert!(reason.contains("API key missing"), "{reason}");
+
+        router.set_keys(keys(Some("k:fx")));
+        router.set_provider(TranslationProviderType::Deepl).unwrap();
+        assert!(router.get_provider().is_ok());
+    }
+
+    #[test]
+    fn a_custom_endpoint_works_without_a_key() {
+        let mut router = TranslationRouter::new();
+        router.apply_options(serde_json::from_str(r#"{"endpoints": {"deepl": "http://deeplx.lan:1188/v2"}}"#).unwrap());
+        router.set_provider(TranslationProviderType::Deepl).unwrap();
+        assert_eq!(router.active_provider_name(), "DeepL");
+    }
+
+    #[test]
+    fn keys_removed_from_the_keychain_are_forgotten() {
+        let mut router = TranslationRouter::new();
+        router.set_keys(keys(Some("k")));
+        router.set_provider(TranslationProviderType::Deepl).unwrap();
+        router.set_keys(keys(None));
+        assert!(router.set_provider(TranslationProviderType::Deepl).is_err());
+    }
+
+    #[test]
+    fn build_provider_does_not_change_the_active_one() {
+        let mut router = TranslationRouter::new();
+        router.set_provider(TranslationProviderType::Llm).unwrap();
+        let options = router.options().with(Some(
+            serde_json::from_str(r#"{"endpoints": {"google": "https://proxy.lan/v2"}}"#).unwrap(),
+        ));
+        let google = router
+            .build_provider(&TranslationProviderType::Google, &TranslationKeys::default(), &options)
+            .unwrap();
+        assert_eq!(google.provider_name(), "Google Cloud Translation");
+        assert_eq!(router.active_type(), Some(&TranslationProviderType::Llm));
+        assert_eq!(router.options().endpoints.google(), None);
+    }
+
+    #[test]
+    fn invalid_addresses_are_reported() {
+        let mut router = TranslationRouter::new();
+        router.apply_options(serde_json::from_str(r#"{"endpoints": {"microsoft": "api.translator.azure.cn"}}"#).unwrap());
+        let err = router.set_provider(TranslationProviderType::Microsoft).unwrap_err().to_string();
+        assert!(err.contains("Invalid service address"), "{err}");
     }
 }

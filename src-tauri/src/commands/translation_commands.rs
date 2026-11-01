@@ -1,56 +1,105 @@
 // src-tauri/src/commands/translation_commands.rs
 use tauri::{command, AppHandle, Emitter};
 use crate::state::AppState;
+use crate::llm::api::{resolve_for_task, LlmTask};
 use crate::translation::{
     TranslationProviderType, TranslationResult, ConnectionStatus, Language,
-    DetectedLanguage,
+    DetectedLanguage, TranslationKeys,
 };
+use crate::translation::llm_provider::translate_with_llm;
+use crate::translation::options::TranslationOptionsPatch;
+use serde::Serialize;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 
+/// One live segment or a selection.
+const LIVE_LLM_TIMEOUT: Duration = Duration::from_secs(30);
+/// One segment of a post-meeting batch.
+const BATCH_LLM_TIMEOUT: Duration = Duration::from_secs(60);
+/// The settings page's "Test" button.
+const TEST_LLM_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `translation_backend_status`: the outcome of the last
+/// `set_translation_provider`, for every window (the frontend shows the error).
+#[derive(Debug, Clone, Serialize)]
+struct BackendStatus {
+    provider: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn parse_provider(provider: &str) -> Result<TranslationProviderType, String> {
+    match provider {
+        "microsoft" => Ok(TranslationProviderType::Microsoft),
+        "google" => Ok(TranslationProviderType::Google),
+        "deepl" => Ok(TranslationProviderType::Deepl),
+        "opus-mt" => Ok(TranslationProviderType::OpusMt),
+        "llm" => Ok(TranslationProviderType::Llm),
+        other => Err(format!("Unknown translation provider: {}", other)),
+    }
+}
+
+/// Every translation key in the keychain. A non-empty `region` (sent by the
+/// settings page) wins over the stored Microsoft region; otherwise the stored
+/// one is used, so restoring the provider at startup keeps the user's region.
+fn read_keys(state: &AppState, region: Option<String>) -> TranslationKeys {
+    let mut keys = TranslationKeys::default();
+    if let Some(ref cred_arc) = state.credentials {
+        if let Ok(cred) = cred_arc.lock() {
+            let read = |slot: &str| cred.get_key(slot).ok().flatten().filter(|v| !v.trim().is_empty());
+            keys.microsoft = read("translation_microsoft");
+            keys.google = read("translation_google");
+            keys.deepl = read("translation_deepl");
+            keys.microsoft_region = region
+                .filter(|r| !r.trim().is_empty())
+                .or_else(|| read("translation_microsoft_region"));
+        }
+    }
+    keys
+}
+
+/// "Connection · model" of the LLM routed to `task`, for the result's provider field.
+async fn llm_provider_label(app: &AppHandle, task: &LlmTask) -> String {
+    match resolve_for_task(app, task).await {
+        Ok(resolved) => format!("{} · {}", resolved.display_name, resolved.model),
+        Err(_) => "LLM Translation".to_string(),
+    }
+}
+
+/// `options` (service addresses, LLM prompts) is optional: missing parts keep
+/// what the backend has, so older callers that send only the provider still work.
 #[command]
 pub async fn set_translation_provider(
     app: AppHandle,
     provider: String,
     region: Option<String>,
+    options: Option<TranslationOptionsPatch>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-
-    // Load credentials from CredentialManager into the router
-    if let Some(ref cred_arc) = state.credentials {
-        if let Ok(cred) = cred_arc.lock() {
+    let result = match parse_provider(&provider) {
+        Ok(provider_type) => {
+            // Keychain reads happen before the router lock is taken.
+            let keys = read_keys(&state, region);
             let trans_arc = state.translation.as_ref()
                 .ok_or("Translation router not initialized")?;
             let mut router = trans_arc.lock()
                 .map_err(|_| "Translation lock poisoned".to_string())?;
-
-            if let Ok(Some(key)) = cred.get_key("translation_microsoft") {
-                router.set_microsoft_credentials(key, region.clone());
+            router.set_keys(keys);
+            if let Some(patch) = options {
+                router.apply_options(patch);
             }
-            if let Ok(Some(key)) = cred.get_key("translation_google") {
-                router.set_google_credentials(key);
-            }
-            if let Ok(Some(key)) = cred.get_key("translation_deepl") {
-                router.set_deepl_credentials(key);
-            }
+            router.set_provider(provider_type).map_err(|e| e.to_string())
         }
-    }
-
-    let provider_type = match provider.as_str() {
-        "microsoft" => TranslationProviderType::Microsoft,
-        "google" => TranslationProviderType::Google,
-        "deepl" => TranslationProviderType::Deepl,
-        "opus-mt" => TranslationProviderType::OpusMt,
-        "llm" => TranslationProviderType::Llm,
-        other => return Err(format!("Unknown translation provider: {}", other)),
+        Err(e) => Err(e),
     };
 
-    let trans_arc = state.translation.as_ref()
-        .ok_or("Translation router not initialized")?;
-    let mut router = trans_arc.lock()
-        .map_err(|_| "Translation lock poisoned".to_string())?;
-
-    router.set_provider(provider_type)
-        .map_err(|e| e.to_string())
+    let _ = app.emit("translation_backend_status", BackendStatus {
+        provider,
+        ok: result.is_ok(),
+        error: result.as_ref().err().cloned(),
+    });
+    result
 }
 
 /// Update the backend's default target/source language for translation.
@@ -114,16 +163,17 @@ pub async fn translate_text(
     // Translate — no lock held, using Arc clone
     let provider = provider_arc.unwrap();
 
-    // Handle LLM provider specially — construct a translation prompt
-    // and route through LLMRouter instead of the marker trait
-    let is_llm = {
+    // LLM translation goes through the LLM settings' task routing
+    let llm_settings = {
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        router.active_type() == Some(&crate::translation::TranslationProviderType::Llm)
+        (router.active_type() == Some(&TranslationProviderType::Llm))
+            .then(|| router.options().llm.clone())
     };
 
-    let translated = if is_llm {
-        // LLM translation: use existing LLMRouter with a translation prompt
-        translate_via_llm(&app, &text, source.as_deref(), &target).await?
+    let mut provider_name = provider_name;
+    let translated = if let Some(settings) = llm_settings {
+        provider_name = llm_provider_label(&app, &LlmTask::Translation).await;
+        translate_with_llm(&app, &LlmTask::Translation, &settings, &text, source.as_deref(), &target, LIVE_LLM_TIMEOUT).await?
     } else {
         // Split long text if needed (>5000 chars for cloud providers)
         let chunks = crate::translation::TranslationRouter::split_long_text(&text, 5000);
@@ -187,26 +237,50 @@ pub async fn translate_segments(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let target = target_lang.ok_or("target_lang is required")?;
-    let source = source_lang.as_deref();
+    let source = source_lang.filter(|s| !s.is_empty() && s != "auto");
+    let source = source.as_deref();
 
     let trans_arc = state.translation.as_ref()
         .ok_or("Translation router not initialized")?;
 
     // Clone provider Arc out of lock scope — safe to .await
-    let (provider_arc, provider_name, is_llm) = {
+    let provider = {
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        let p = router.get_provider().map_err(|e| e.to_string())?;
-        let name = p.provider_name().to_string();
-        let is_llm = router.active_type() == Some(&TranslationProviderType::Llm);
-        (p, name, is_llm)
+        router.get_provider().map(|p| {
+            let name = p.provider_name().to_string();
+            let llm = (router.active_type() == Some(&TranslationProviderType::Llm))
+                .then(|| router.options().llm.clone());
+            (p, name, llm)
+        })
     };
+    let (provider_arc, mut provider_name, llm_settings) = match provider {
+        Ok(found) => found,
+        Err(e) => {
+            // Every requested line learns why it stays untranslated.
+            let error = e.to_string();
+            for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
+                emit_segment_error(&app, seg_id, text, &error);
+            }
+            return Err(error);
+        }
+    };
+    if llm_settings.is_some() {
+        provider_name = llm_provider_label(&app, &LlmTask::Translation).await;
+    }
 
     for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
-        let translated = if is_llm {
-            translate_via_llm(&app, text, source, &target).await?
-        } else {
-            provider_arc.translate(text, source, &target).await
-                .map_err(|e| e.to_string())?
+        let translated = match &llm_settings {
+            Some(settings) => {
+                translate_with_llm(&app, &LlmTask::Translation, settings, text, source, &target, LIVE_LLM_TIMEOUT).await
+            }
+            None => provider_arc.translate(text, source, &target).await.map_err(|e| e.to_string()),
+        };
+        let translated = match translated {
+            Ok(translated) => translated,
+            Err(error) => {
+                emit_segment_error(&app, seg_id, text, &error);
+                return Err(error);
+            }
         };
 
         // Save to DB
@@ -230,7 +304,7 @@ pub async fn translate_segments(
             segment_id: Some(seg_id.clone()),
             original_text: text.clone(),
             translated_text: translated,
-            source_lang: source.as_deref().unwrap_or("auto").to_string(),
+            source_lang: source.unwrap_or("auto").to_string(),
             target_lang: target.clone(),
             provider: provider_name.clone(),
         };
@@ -240,46 +314,59 @@ pub async fn translate_segments(
     Ok(())
 }
 
+/// `translation_error` for one line; `original_text` lets the frontend ignore
+/// the failure of a request it already replaced with a newer text.
+fn emit_segment_error(app: &AppHandle, segment_id: &str, original_text: &str, error: &str) {
+    let _ = app.emit("translation_error", serde_json::json!({
+        "segment_id": segment_id,
+        "original_text": original_text,
+        "error": error,
+    }));
+}
+
+/// `parties` limits the batch to "you" (the user's lines) and/or "them"
+/// (everyone else); `None` translates every line.
 #[command]
 pub async fn translate_batch(
     app: AppHandle,
     meeting_id: String,
     target_lang: Option<String>,
+    parties: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     let target = target_lang.ok_or("target_lang is required")?;
 
     // Count total segments and load only untranslated ones (skip already-translated to save API calls)
-    let (total, already_done, untranslated): (usize, usize, Vec<(String, String)>) = {
-        let db_arc = state.database.as_ref().ok_or("DB not initialized")?;
-        let db = db_arc.lock().map_err(|_| "DB lock poisoned")?;
+    let (total, already_done, untranslated): (usize, usize, Vec<(String, String)>) = match speaker_filter(parties.as_deref()) {
+        None => (0, 0, Vec::new()),
+        Some(filter) => {
+            let db_arc = state.database.as_ref().ok_or("DB not initialized")?;
+            let db = db_arc.lock().map_err(|_| "DB lock poisoned")?;
 
-        let total: usize = db.connection().query_row(
-            "SELECT COUNT(*) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1",
-            [&meeting_id],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
+            let total: usize = db.connection().query_row(
+                &format!("SELECT COUNT(*) FROM transcript_segments ts WHERE ts.meeting_id = ?1 AND ts.is_final = 1{filter}"),
+                [&meeting_id],
+                |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
 
-        let already_done = crate::db::translation::count_meeting_translations(
-            db.connection(), &meeting_id, &target,
-        ).map_err(|e| e.to_string())?;
+            let mut stmt = db.connection().prepare(&format!(
+                "SELECT ts.id, ts.text FROM transcript_segments ts
+                 WHERE ts.meeting_id = ?1 AND ts.is_final = 1{filter}
+                   AND ts.id NOT IN (
+                     SELECT segment_id FROM transcript_translations
+                     WHERE meeting_id = ?1 AND target_lang = ?2
+                   )
+                 ORDER BY ts.timestamp_ms"
+            )).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([&meeting_id, &target], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }).map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
 
-        let mut stmt = db.connection().prepare(
-            "SELECT ts.id, ts.text FROM transcript_segments ts
-             WHERE ts.meeting_id = ?1 AND ts.is_final = 1
-               AND ts.id NOT IN (
-                 SELECT segment_id FROM transcript_translations
-                 WHERE meeting_id = ?1 AND target_lang = ?2
-               )
-             ORDER BY ts.timestamp_ms"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([&meeting_id, &target], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-
-        (total, already_done, rows)
+            // Final lines of these parties that already have a translation.
+            (total, total.saturating_sub(rows.len()), rows)
+        }
     };
 
     // Nothing to translate — emit completed and return
@@ -307,24 +394,31 @@ pub async fn translate_batch(
         }));
     }
 
-    let (provider_arc, provider_name, is_llm) = {
+    let (provider_arc, mut provider_name, llm_settings) = {
         let trans_arc = state.translation.as_ref()
             .ok_or("Translation router not initialized")?;
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
         let p = router.get_provider().map_err(|e| e.to_string())?;
-        let is_llm = router.active_type() == Some(&TranslationProviderType::Llm);
-        (p, router.active_provider_name(), is_llm)
+        let llm = (router.active_type() == Some(&TranslationProviderType::Llm))
+            .then(|| router.options().llm.clone());
+        (p, router.active_provider_name(), llm)
     };
+    if llm_settings.is_some() {
+        provider_name = llm_provider_label(&app, &LlmTask::TranslationBatch).await;
+    }
 
     // Translate only untranslated segments in chunks of 10
     let mut completed = already_done;
     for chunk in untranslated.chunks(10) {
         let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
 
-        let translations = if is_llm {
+        let translations = if let Some(settings) = &llm_settings {
             let mut results = Vec::with_capacity(texts.len());
             for text in &texts {
-                results.push(translate_via_llm(&app, text, None, &target).await?);
+                results.push(
+                    translate_with_llm(&app, &LlmTask::TranslationBatch, settings, text, None, &target, BATCH_LLM_TIMEOUT)
+                        .await?,
+                );
             }
             results
         } else {
@@ -372,6 +466,20 @@ pub async fn translate_batch(
     }))
 }
 
+/// SQL condition (on `ts.speaker`) for the parties a batch covers: `""` for
+/// everyone, `None` when no party is selected.
+fn speaker_filter(parties: Option<&[String]>) -> Option<&'static str> {
+    let Some(parties) = parties else { return Some("") };
+    let you = parties.iter().any(|p| p == "you");
+    let them = parties.iter().any(|p| p == "them");
+    match (you, them) {
+        (true, true) => Some(""),
+        (true, false) => Some(" AND ts.speaker = 'User'"),
+        (false, true) => Some(" AND ts.speaker <> 'User'"),
+        (false, false) => None,
+    }
+}
+
 #[command]
 pub async fn detect_language(
     app: AppHandle,
@@ -388,20 +496,64 @@ pub async fn detect_language(
     provider_arc.detect_language(&text).await.map_err(|e| e.to_string())
 }
 
+/// Tests `provider` with the stored keys and the given (possibly unsaved)
+/// region and options, without changing the active provider. LLM translation
+/// translates a real sentence with the model routed to translation.
 #[command]
 pub async fn test_translation_connection(
     app: AppHandle,
-    _provider: String,
+    provider: String,
+    region: Option<String>,
+    options: Option<TranslationOptionsPatch>,
 ) -> Result<ConnectionStatus, String> {
     let state = app.state::<AppState>();
+    let provider_type = parse_provider(&provider)?;
     let trans_arc = state.translation.as_ref()
         .ok_or("Translation router not initialized")?;
-    let provider_arc = {
+
+    if provider_type == TranslationProviderType::Llm {
+        let (settings, target) = {
+            let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
+            (router.options().with(options).llm, router.default_target_lang().to_string())
+        };
+        let (sample, source) = test_sentence(&target);
+        let start = Instant::now();
+        let result = translate_with_llm(
+            &app, &LlmTask::Translation, &settings, sample, Some(source), &target, TEST_LLM_TIMEOUT,
+        ).await;
+        let response_ms = start.elapsed().as_millis() as u64;
+        return Ok(match result {
+            Ok(translated) => ConnectionStatus {
+                connected: true, language_count: 0, response_ms, error: None, sample: Some(translated),
+            },
+            Err(error) => ConnectionStatus {
+                connected: false, language_count: 0, response_ms, error: Some(error), sample: None,
+            },
+        });
+    }
+
+    let keys = read_keys(&state, region);
+    let built = {
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
-        router.get_provider().map_err(|e| e.to_string())?
+        let options = router.options().with(options);
+        router.build_provider(&provider_type, &keys, &options)
         // lock dropped here
     };
-    provider_arc.test_connection().await.map_err(|e| e.to_string())
+    match built {
+        Ok(provider) => provider.test_connection().await.map_err(|e| e.to_string()),
+        Err(e) => Ok(ConnectionStatus {
+            connected: false, language_count: 0, response_ms: 0, error: Some(e.to_string()), sample: None,
+        }),
+    }
+}
+
+/// A sentence to test translation into `target`, and its language.
+fn test_sentence(target: &str) -> (&'static str, &'static str) {
+    if crate::translation::lang_map::english_source_name(target) == "English" {
+        ("Buenos días a todos, empecemos la reunión.", "es")
+    } else {
+        ("Good morning, everyone. Let's get started.", "en")
+    }
 }
 
 #[command]
@@ -464,77 +616,6 @@ pub async fn get_all_meeting_translations(
         target_lang: r.target_lang,
         provider: r.provider,
     }).collect())
-}
-
-/// Helper: translate text using the configured LLM provider
-/// instead of a dedicated translation API.
-///
-/// Runs a silent stream: tokens are collected through a private sink and
-/// never emitted as `llm_stream_*` events, so translation neither picks up
-/// other streams' tokens nor leaks its own into the overlay or AI Log.
-async fn translate_via_llm(
-    app: &AppHandle,
-    text: &str,
-    source: Option<&str>,
-    target: &str,
-) -> Result<String, String> {
-    let state = app.state::<AppState>();
-    let llm_arc = state.llm.as_ref().ok_or("LLM router not initialized")?;
-
-    let src_label = source.unwrap_or("the detected language");
-    let prompt = format!(
-        "Translate the following text from {} to {}. \
-         Return ONLY the translation, no explanations or commentary.\n\n{}",
-        src_label, target, text
-    );
-
-    let messages = vec![crate::llm::provider::LLMMessage {
-        role: "user".to_string(),
-        content: prompt,
-    }];
-
-    let provider_arc = {
-        let router = llm_arc.lock().map_err(|_| "LLM lock poisoned")?;
-        router.get_provider().map_err(|e| format!("LLM not configured: {}", e))?
-    };
-
-    let model = {
-        let router = llm_arc.lock().map_err(|_| "LLM lock poisoned")?;
-        router.active_model().to_string()
-    };
-
-    // Collect this request's tokens through a private sink
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let buffer_clone = buffer.clone();
-    let sink: crate::llm::provider::TokenSink = std::sync::Arc::new(move |token: &str| {
-        if let Ok(mut buf) = buffer_clone.lock() {
-            buf.push_str(token);
-        }
-    });
-
-    let params = crate::llm::provider::GenerationParams {
-        request_id: Some(uuid::Uuid::new_v4().to_string()),
-        silent: true,
-        ..Default::default()
-    };
-    let provider = provider_arc.lock().await;
-    let result = provider.stream_completion(
-        messages, &model, params, app.clone(), Some(sink)
-    ).await;
-
-    // Check for errors
-    result.map_err(|e| format!("LLM translation failed: {}", e))?;
-
-    // Extract collected text
-    let collected = buffer.lock()
-        .map_err(|_| "Buffer lock poisoned".to_string())?
-        .clone();
-
-    if collected.is_empty() {
-        return Err("LLM returned empty translation".to_string());
-    }
-
-    Ok(collected)
 }
 
 #[command]
@@ -608,4 +689,34 @@ pub async fn export_translated_transcript(
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_party_filter() {
+        let parties = |list: &[&str]| list.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(speaker_filter(None), Some(""));
+        assert_eq!(speaker_filter(Some(&parties(&["you", "them"]))), Some(""));
+        assert_eq!(speaker_filter(Some(&parties(&["you"]))), Some(" AND ts.speaker = 'User'"));
+        assert_eq!(speaker_filter(Some(&parties(&["them"]))), Some(" AND ts.speaker <> 'User'"));
+        assert_eq!(speaker_filter(Some(&parties(&[]))), None);
+        assert_eq!(speaker_filter(Some(&parties(&["nobody"]))), None);
+    }
+
+    #[test]
+    fn test_sentence_is_not_in_the_target_language() {
+        assert_eq!(test_sentence("zh-CN").1, "en");
+        assert_eq!(test_sentence("en").1, "es");
+        assert_eq!(test_sentence("en-GB").1, "es");
+    }
+
+    #[test]
+    fn provider_names() {
+        assert_eq!(parse_provider("opus-mt"), Ok(TranslationProviderType::OpusMt));
+        assert_eq!(parse_provider("llm"), Ok(TranslationProviderType::Llm));
+        assert!(parse_provider("soniox").is_err());
+    }
 }
