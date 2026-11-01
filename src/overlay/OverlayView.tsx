@@ -6,6 +6,7 @@ import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { showToast } from "../stores/toastStore";
 import { translateBatchForParties } from "../lib/translation/ipc";
+import { translateUntranslatedLines } from "../hooks/useAutoTranslate";
 import { serviceParties, TRANSLATION_PARTIES, partyTranslationMode } from "../lib/translation/nativeTranslation";
 import { languageLabel } from "../lib/languages";
 import { APP_NAME } from "../lib/brand";
@@ -109,7 +110,8 @@ export function OverlayView() {
   const backendStatus = useTranslationStore((s) => s.backendStatus);
   const batchProgress = useTranslationStore((s) => s.batchProgress);
   const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
-  const isBatchTranslating = batchProgress !== null;
+  const [translatingAll, setTranslatingAll] = useState(false);
+  const isBatchTranslating = batchProgress !== null || translatingAll;
   // The provider's last switch failed (e.g. no API key): say so on the button.
   const translationNotReady = backendStatus?.ok === false ? backendStatus.error ?? "" : null;
   const nothingToTranslate = TRANSLATION_PARTIES.every(
@@ -170,17 +172,25 @@ export function OverlayView() {
       showToast(t("overlay.translate.noServiceParty"), "info");
       return;
     }
+    setTranslatingAll(true);
     try {
-      const { total, alreadyDone, newlyTranslated } = await translateBatchForParties(meetingId, targetLang, parties);
-      if (newlyTranslated === 0) {
+      const batch = await translateBatchForParties(meetingId, targetLang, parties);
+      // Then the lines not saved yet (failures show on their lines).
+      const recent = await translateUntranslatedLines(parties);
+      const total = batch.total + recent.translated + recent.failed;
+      const newlyTranslated = batch.newlyTranslated + recent.translated;
+      const alreadyDone = batch.alreadyDone;
+      if (newlyTranslated === 0 && recent.failed === 0) {
         showToast(t("overlay.batch.alreadyDone", { total }), "info");
       } else if (alreadyDone > 0) {
         showToast(t("overlay.batch.someNew", { count: newlyTranslated, cached: alreadyDone, total }), "success");
-      } else {
+      } else if (recent.failed === 0) {
         showToast(t("overlay.batch.allNew", { total }), "success");
       }
     } catch (err) {
       showToast(t("overlay.batch.failed", { detail: errorMessage(err) }), "error");
+    } finally {
+      setTranslatingAll(false);
     }
   }, [activeMeeting?.id, targetLang, translateParties, meetingAudioConfig, t]);
 

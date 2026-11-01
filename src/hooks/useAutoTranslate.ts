@@ -22,8 +22,10 @@ import {
   partyUsesNativeTranslation,
 } from "../lib/translation/nativeTranslation";
 import { SettleScheduler, type SettleLine } from "../lib/translation/settleScheduler";
+import type { TranslationParty } from "../lib/translation/types";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useTranscriptStore } from "../stores/transcriptStore";
 import {
   errorMessage,
   notifyTranslationError,
@@ -42,10 +44,11 @@ function wanted(line: SettleLine): boolean {
   return !partyUsesNativeTranslation(partyConfig(useConfigStore.getState().meetingAudioConfig, party));
 }
 
-function requestTranslation(line: SettleLine): void {
+/** Sends one line for translation; resolves to whether the request went through. */
+function requestTranslation(line: SettleLine): Promise<boolean> {
   const translation = useTranslationStore.getState();
   const meetingId = useMeetingStore.getState().activeMeeting?.id;
-  if (!meetingId) return;
+  if (!meetingId) return Promise.resolve(false);
   const config = useConfigStore.getState();
   const source = partySourceLanguage(
     partyOfSpeaker(line.speaker),
@@ -54,13 +57,43 @@ function requestTranslation(line: SettleLine): void {
     config.sttLanguage,
   );
   translation.startLiveRequest(line.id, line.text);
-  translateSegments([line.id], [line.text], meetingId, translation.targetLang, source).catch((err) => {
-    const message = errorMessage(err);
-    console.error("[useAutoTranslate] Auto-translate failed:", message);
-    if (useTranslationStore.getState().failLiveRequest(line.id, line.text, message)) {
-      notifyTranslationError(message);
-    }
+  return translateSegments([line.id], [line.text], meetingId, translation.targetLang, source).then(
+    () => true,
+    (err) => {
+      const message = errorMessage(err);
+      console.error("[useAutoTranslate] Auto-translate failed:", message);
+      if (useTranslationStore.getState().failLiveRequest(line.id, line.text, message)) {
+        notifyTranslationError(message);
+      }
+      return false;
+    },
+  );
+}
+
+/**
+ * Translates the final lines of `parties` that have no translation and aren't
+ * being translated, one request at a time. "Translate all" calls it after the
+ * batch: the batch covers the saved transcript, and lines are saved only
+ * every 30 s, so the latest ones would be missed.
+ */
+export async function translateUntranslatedLines(
+  parties: readonly TranslationParty[],
+): Promise<{ translated: number; failed: number }> {
+  const translation = useTranslationStore.getState();
+  const inPerson = useMeetingStore.getState().audioMode === "in_person";
+  const lines = useTranscriptStore.getState().segments.filter((segment) => {
+    if (!segment.is_final || !segment.text.trim()) return false;
+    const party = partyOfSpeaker(segment.speaker);
+    if (!parties.includes(party) || (inPerson && party === "you")) return false;
+    return !translation.translations.has(segment.id) && !translation.translating.has(segment.id);
   });
+  let translated = 0;
+  let failed = 0;
+  for (const segment of lines) {
+    if (await requestTranslation({ id: segment.id, text: segment.text, speaker: segment.speaker })) translated += 1;
+    else failed += 1;
+  }
+  return { translated, failed };
 }
 
 /** Subscribes this window to live lines; returns the teardown. */
@@ -69,7 +102,7 @@ export function startAutoTranslate(): () => void {
     settleMs: () => useTranslationStore.getState().liveSettleMs,
     maxWaitMs: LIVE_MAX_WAIT_MS,
     accepts: wanted,
-    translate: requestTranslation,
+    translate: (line) => void requestTranslation(line),
   });
   let stopped = false;
   const unlisteners: UnlistenFn[] = [];

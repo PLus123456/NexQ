@@ -28,7 +28,8 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 vi.mock("../stores/toastStore", () => ({ showToast: (...args: unknown[]) => toast(...args) }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: windowLabel.current }) }));
 
-import { useAutoTranslate } from "./useAutoTranslate";
+import { translateUntranslatedLines, useAutoTranslate } from "./useAutoTranslate";
+import { useTranscriptStore } from "../stores/transcriptStore";
 import { useTranslationEvents } from "./useTranslationEvents";
 import { useTranslationStore } from "../stores/translationStore";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -95,6 +96,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   useMeetingStore.setState({ activeMeeting: { id: "m1", title: "Standup" } as Meeting, audioMode: "online" });
   useConfigStore.setState({ meetingAudioConfig: audioConfig(), sttLanguage: "en-US" });
+  useTranscriptStore.setState({ segments: [] });
   useTranslationStore.getState().clearTranslations();
   useTranslationStore.setState({
     autoTranslateActive: true,
@@ -240,6 +242,53 @@ describe("live translation requests", () => {
     await final(segment("them_1", "Room line", "Them"));
     await settle();
     expect(requests().map((r) => r.segmentIds)).toEqual([["them_1"]]);
+  });
+});
+
+describe("translating the lines not saved yet", () => {
+  it("sends each untranslated final line of the chosen parties once, in order", async () => {
+    useTranscriptStore.setState({
+      segments: [
+        segment("them_1", "Translated already"),
+        segment("them_2", "Not yet"),
+        segment("you_1", "Mine", "User"),
+        segment("them_3", "Still talking", "Them", false),
+        segment("them_4", "   "),
+        segment("them_5", "In flight"),
+        segment("them_6", "Last one"),
+      ],
+    });
+    useTranslationStore.getState().addTranslation({
+      segment_id: "them_1",
+      original_text: "Translated already",
+      translated_text: "已翻译",
+      source_lang: "en",
+      target_lang: "zh-CN",
+      provider: "DeepL",
+    });
+    useTranslationStore.getState().setTranslating("them_5", true);
+
+    let outcome = { translated: 0, failed: 0 };
+    await act(async () => {
+      outcome = await translateUntranslatedLines(["them"]);
+    });
+    expect(requests().map((r) => r.segmentIds)).toEqual([["them_2"], ["them_6"]]);
+    expect(outcome).toEqual({ translated: 2, failed: 0 });
+  });
+
+  it("counts failures and leaves no spinner behind", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "translate_segments") throw "HTTP 500";
+      return undefined;
+    });
+    useTranscriptStore.setState({ segments: [segment("them_1", "One"), segment("them_2", "Two")] });
+    let outcome = { translated: 0, failed: 0 };
+    await act(async () => {
+      outcome = await translateUntranslatedLines(["them"]);
+    });
+    expect(outcome).toEqual({ translated: 0, failed: 2 });
+    expect(useTranslationStore.getState().translating.size).toBe(0);
+    expect(useTranslationStore.getState().errors.get("them_2")).toBe("HTTP 500");
   });
 });
 
