@@ -2,8 +2,10 @@ import { useState, useEffect } from "react";
 import { useRagStore } from "../stores/ragStore";
 import { Loader2, Search, RefreshCw } from "lucide-react";
 import { TestSearchDialog } from "./TestSearchDialog";
+import { useT } from "../i18n";
 
 export function RagIndexBar() {
+  const { t } = useT("rag");
   const indexStatus = useRagStore((s) => s.indexStatus);
   const isIndexing = useRagStore((s) => s.isIndexing);
   const ragConfig = useRagStore((s) => s.ragConfig);
@@ -28,31 +30,33 @@ export function RagIndexBar() {
       <div className="flex items-center gap-2 rounded-xl border border-border/40 bg-secondary/20 px-3 py-2">
         <div className="flex-1 flex items-center gap-3 text-xs text-muted-foreground">
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary font-medium">
-            {totalChunks} chunks
+            {t("context.indexBar.chunks", { count: totalChunks })}
           </span>
-          <span>~{Math.round(estimatedTokens / 1000)}k tokens/query</span>
+          <span>
+            {t("context.indexBar.tokensPerQuery", { thousands: Math.round(estimatedTokens / 1000) })}
+          </span>
         </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => rebuildIndex()}
             disabled={isIndexing}
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            title="Rebuild All"
+            title={t("context.indexBar.rebuild.title")}
           >
             {isIndexing ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <RefreshCw className="h-3 w-3" />
             )}
-            Rebuild
+            {t("context.indexBar.rebuild.label")}
           </button>
           <button
             onClick={() => setShowSearch(true)}
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Test Search"
+            title={t("context.indexBar.test.title")}
           >
             <Search className="h-3 w-3" />
-            Test
+            {t("context.indexBar.test.label")}
           </button>
         </div>
       </div>

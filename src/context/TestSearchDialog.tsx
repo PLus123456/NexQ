@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import type { ParseKeys } from "i18next";
 import { useRagStore } from "../stores/ragStore";
 import { useConfigStore } from "../stores/configStore";
 import { testRagAnswer } from "../lib/ipc";
@@ -23,21 +24,36 @@ import {
   Zap,
   AlertCircle,
 } from "lucide-react";
+import { useT } from "../i18n";
+
+type RagKey = ParseKeys<"rag">;
 
 interface TestSearchDialogProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-const QUERY_TEMPLATES = [
-  { label: "Background", query: "What is the candidate's educational background?" },
-  { label: "Experience", query: "What relevant work experience do they have?" },
-  { label: "Skills", query: "What are their key technical skills?" },
-  { label: "Strengths", query: "What are their main strengths?" },
-  { label: "Summary", query: "Give a brief summary of the uploaded documents" },
+// The chip label is translated; the query goes to the search and the model as
+// written, so it stays as is.
+// Example questions typed into the search box: in the UI language, so they
+// match documents written in it.
+const QUERY_TEMPLATES: { labelKey: RagKey; queryKey: RagKey }[] = [
+  { labelKey: "context.testSearch.templates.background", queryKey: "context.testSearch.templateQueries.background" },
+  { labelKey: "context.testSearch.templates.experience", queryKey: "context.testSearch.templateQueries.experience" },
+  { labelKey: "context.testSearch.templates.skills", queryKey: "context.testSearch.templateQueries.skills" },
+  { labelKey: "context.testSearch.templates.strengths", queryKey: "context.testSearch.templateQueries.strengths" },
+  { labelKey: "context.testSearch.templates.summary", queryKey: "context.testSearch.templateQueries.summary" },
 ];
 
+/** The backend's search modes (src-tauri/src/rag/config.rs), shown translated. */
+const SEARCH_MODE_KEYS = new Map<string, RagKey>([
+  ["hybrid", "context.testSearch.searchModes.hybrid"],
+  ["semantic", "context.testSearch.searchModes.semantic"],
+  ["keyword", "context.testSearch.searchModes.keyword"],
+]);
+
 export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
+  const { t } = useT(["rag", "common"]);
   const testSearchResults = useRagStore((s) => s.testSearchResults);
   const isSearching = useRagStore((s) => s.isSearching);
   const searchLatencyMs = useRagStore((s) => s.searchLatencyMs);
@@ -219,6 +235,9 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
     0
   );
   const isBusy = isSearching || isGenerating;
+  const searchMode = ragConfig?.search_mode ?? "hybrid";
+  const searchModeKey = SEARCH_MODE_KEYS.get(searchMode);
+  const searchModeLabel = searchModeKey ? t(searchModeKey) : searchMode;
 
   return (
     <div
@@ -234,16 +253,16 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
               <FlaskConical className="h-4 w-4 text-primary" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-foreground">Test Knowledge Base</h2>
+              <h2 className="text-sm font-semibold text-foreground">{t("context.testSearch.title")}</h2>
               <p className="text-meta text-muted-foreground">
-                Search documents + get AI answer using your knowledge base
+                {t("context.testSearch.subtitle")}
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
-            title="Close (Esc)"
+            title={t("context.testSearch.close.title")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -251,39 +270,41 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
 
         {/* Config summary bar */}
         <div className="flex items-center gap-4 border-b border-border/20 bg-accent/10 px-6 py-2 text-meta text-muted-foreground">
-          <span className="flex items-center gap-1" title="Search model">
+          <span className="flex items-center gap-1" title={t("context.testSearch.config.searchModel.title")}>
             <Sparkles className="h-3 w-3" />
             {ragConfig?.embedding_model ?? "nomic-embed-text"}
           </span>
           <span className="flex items-center gap-1">
             <Hash className="h-3 w-3" />
-            top-{ragConfig?.top_k ?? 5}
+            {t("context.testSearch.config.topK", { k: ragConfig?.top_k ?? 5 })}
           </span>
           <span className="flex items-center gap-1">
             <BarChart3 className="h-3 w-3" />
-            {ragConfig?.search_mode ?? "hybrid"}
+            {searchModeLabel}
           </span>
-          <span className="flex items-center gap-1" title="LLM model">
+          <span className="flex items-center gap-1" title={t("context.testSearch.config.llmModel.title")}>
             <Bot className="h-3 w-3" />
-            {llmModel || "no model"}
+            {llmModel || t("context.testSearch.config.llmModel.none")}
           </span>
           <span className="ml-auto flex items-center gap-1">
             <FileText className="h-3 w-3" />
-            {indexStatus?.total_chunks ?? 0} chunks
+            {t("context.testSearch.config.chunks", { count: indexStatus?.total_chunks ?? 0 })}
           </span>
         </div>
 
         {/* Quick templates */}
         <div className="flex items-center gap-1.5 border-b border-border/20 px-6 py-2.5">
-          <span className="text-meta font-medium text-muted-foreground/60 mr-1">Try:</span>
-          {QUERY_TEMPLATES.map((t) => (
+          <span className="text-meta font-medium text-muted-foreground/60 mr-1">
+            {t("context.testSearch.templates.prompt")}
+          </span>
+          {QUERY_TEMPLATES.map((template) => (
             <button
-              key={t.label}
-              onClick={() => handleTemplate(t.query)}
+              key={template.labelKey}
+              onClick={() => handleTemplate(t(template.queryKey))}
               disabled={isBusy}
               className="rounded-full border border-border/30 bg-background px-2.5 py-1 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
             >
-              {t.label}
+              {t(template.labelKey)}
             </button>
           ))}
         </div>
@@ -296,7 +317,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask a question about your documents..."
+            placeholder={t("context.testSearch.input.placeholder")}
             className="flex-1 rounded-lg border border-border/50 bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
           />
           <button
@@ -309,7 +330,11 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             ) : (
               <Zap className="h-3.5 w-3.5" />
             )}
-            {isSearching ? "Searching..." : isGenerating ? "Generating..." : "Ask"}
+            {isSearching
+              ? t("context.testSearch.askButton.searching")
+              : isGenerating
+                ? t("context.testSearch.askButton.generating")
+                : t("context.testSearch.askButton.label")}
           </button>
         </div>
 
@@ -320,7 +345,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             <div className="mx-6 mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
               <div className="flex items-center gap-2 mb-1">
                 <AlertCircle className="h-3.5 w-3.5 text-red-400" />
-                <p className="text-xs font-medium text-red-400">Error</p>
+                <p className="text-xs font-medium text-red-400">{t("common:status.error")}</p>
               </div>
               <p className="text-xs text-red-400/70">{aiError || error}</p>
             </div>
@@ -331,7 +356,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <MessageSquare className="h-8 w-8 text-muted-foreground/50 mb-3" />
               <p className="text-xs text-muted-foreground/60">
-                Ask a question to search your documents and get an AI answer
+                {t("context.testSearch.empty.hint")}
               </p>
             </div>
           )}
@@ -340,7 +365,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
           {isSearching && (
             <div className="flex items-center justify-center gap-2 py-8">
               <Loader2 className="h-4 w-4 animate-spin text-primary/60" />
-              <span className="text-xs text-muted-foreground">Searching knowledge base...</span>
+              <span className="text-xs text-muted-foreground">{t("context.testSearch.searching")}</span>
             </div>
           )}
 
@@ -351,7 +376,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <Bot className="h-4 w-4 text-primary" />
-                    <span className="text-xs font-semibold text-foreground">AI Answer</span>
+                    <span className="text-xs font-semibold text-foreground">{t("context.testSearch.answer.title")}</span>
                     {isGenerating && (
                       <Loader2 className="h-3 w-3 animate-spin text-primary/60" />
                     )}
@@ -370,13 +395,13 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                       </span>
                     )}
                     {aiTotalTokens != null && (
-                      <span>{aiTotalTokens} tokens</span>
+                      <span>{t("context.testSearch.answer.tokens", { count: aiTotalTokens })}</span>
                     )}
                     {aiResponse && (
                       <button
                         onClick={handleCopyResponse}
                         className="rounded p-0.5 text-muted-foreground/60 hover:text-foreground"
-                        title="Copy response"
+                        title={t("context.testSearch.answer.copy.title")}
                       >
                         {copiedId === "ai-response" ? (
                           <Check className="h-3 w-3 text-success" />
@@ -388,7 +413,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                   </div>
                 </div>
                 <p className="text-xs text-foreground/90 leading-relaxed whitespace-pre-wrap">
-                  {aiResponse || "Thinking..."}
+                  {aiResponse || t("context.testSearch.answer.thinking")}
                   {isGenerating && <span className="animate-pulse">|</span>}
                 </p>
               </div>
@@ -400,10 +425,10 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Search className="h-8 w-8 text-muted-foreground/50 mb-3" />
               <p className="text-xs font-medium text-muted-foreground mb-1">
-                No results found
+                {t("context.testSearch.noResults.title")}
               </p>
               <p className="text-xs text-muted-foreground/50">
-                Try a different query or check that your documents are indexed
+                {t("context.testSearch.noResults.hint")}
               </p>
             </div>
           )}
@@ -415,7 +440,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
               <div className="flex items-center gap-4 rounded-lg bg-accent/20 px-3 py-2 text-meta text-muted-foreground">
                 <span className="flex items-center gap-1 font-medium text-foreground">
                   <Search className="h-3 w-3" />
-                  {testSearchResults.length} chunk{testSearchResults.length !== 1 ? "s" : ""} retrieved
+                  {t("context.testSearch.results.retrieved", { count: testSearchResults.length })}
                 </span>
                 {searchLatencyMs != null && (
                   <span className="flex items-center gap-1">
@@ -423,9 +448,9 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                     {searchLatencyMs}ms
                   </span>
                 )}
-                <span>~{Math.round(totalResultTokens)} tokens</span>
+                <span>{t("context.testSearch.results.tokens", { count: Math.round(totalResultTokens) })}</span>
                 <span className="ml-auto">
-                  {ragConfig?.search_mode ?? "hybrid"}
+                  {searchModeLabel}
                 </span>
               </div>
 
@@ -453,7 +478,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                         #{result.chunk_index}
                       </span>
                       <span className="text-meta text-muted-foreground/60">
-                        ~{estimatedTokens}t
+                        {t("context.testSearch.results.chunkTokens", { count: estimatedTokens })}
                       </span>
                       <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${
                         result.score >= 0.7
@@ -470,7 +495,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                           handleCopyChunk(result.chunk_id, result.text);
                         }}
                         className="rounded-lg p-1 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                        title="Copy chunk"
+                        title={t("context.testSearch.results.copyChunk.title")}
                       >
                         {copiedId === result.chunk_id ? (
                           <Check className="h-3 w-3 text-success" />

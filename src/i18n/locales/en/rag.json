@@ -1,1 +1,443 @@
-{}
+{
+  "strategy": {
+    "localRag": {
+      "title": "Local RAG",
+      "description": "Index your documents with any embedding service, hybrid semantic + keyword search"
+    },
+    "geminiCache": {
+      "title": "Gemini Context Cache",
+      "description": "Cache docs in Gemini once — skip local embedding entirely"
+    }
+  },
+  "presets": {
+    "title": "Quick Presets",
+    "subtitle": "Search depth vs. speed",
+    "topK": "top {{count}}",
+    "note": "Presets change search and chunk settings only, never the embedding model. Smaller chunks need an index rebuild.",
+    "items": {
+      "fastest": {
+        "label": "Fastest",
+        "description": "Keyword-only search, no embedding needed at query time"
+      },
+      "faster": {
+        "label": "Faster",
+        "description": "Hybrid search, fewer results"
+      },
+      "default": {
+        "label": "Default",
+        "description": "Best balance of speed and accuracy"
+      },
+      "accurate": {
+        "label": "Accurate",
+        "description": "More results, finer chunks, better coverage"
+      },
+      "mostAccurate": {
+        "label": "Most Accurate",
+        "description": "Fine chunks, maximum context"
+      }
+    }
+  },
+  "search": {
+    "title": "Search Settings",
+    "topK": {
+      "label": "Results to Retrieve (top-K)",
+      "option_one": "{{count}} chunk",
+      "option_other": "{{count}} chunks"
+    },
+    "mode": {
+      "label": "Search Mode",
+      "hybrid": "Hybrid (recommended)",
+      "semantic": "Semantic Only",
+      "keyword": "Keyword Only (fastest)"
+    }
+  },
+  "advanced": {
+    "title": "Advanced Settings",
+    "tokens_one": "{{count}} token",
+    "tokens_other": "{{count}} tokens",
+    "chunkSize": {
+      "label": "Chunk Size",
+      "min": "128 — precise",
+      "max": "2048 — broad"
+    },
+    "chunkOverlap": {
+      "label": "Chunk Overlap",
+      "min": "0 — no overlap",
+      "max": "512 — max continuity"
+    },
+    "rebuildHint": "Changing the chunk size or overlap needs an index rebuild.",
+    "minCosine": {
+      "label": "Minimum similarity",
+      "min": "0.0 — include all",
+      "max": "0.9 — strict"
+    },
+    "semanticWeight": {
+      "label": "Semantic Weight",
+      "value": "{{semantic}}% semantic / {{keyword}}% keyword",
+      "min": "0.0 — keyword",
+      "max": "1.0 — semantic"
+    },
+    "hybridOnly": "hybrid only",
+    "vectorOnly": "vector search only",
+    "autoIndex": "Index new and changed files automatically",
+    "meetingMode": {
+      "label": "Indexing during meetings",
+      "pause_local": "Pause a model on this computer, slow down a remote one",
+      "slow": "Slow down (one request at a time)",
+      "normal": "Full speed"
+    }
+  },
+  "help": {
+    "show": "Show explanation",
+    "topK": {
+      "title": "Results to Retrieve (top-K)",
+      "body": "How many document chunks are added to the AI prompt alongside your question.\n\n• 3 chunks — shortest prompt, fastest answer\n• 5 chunks — good balance ✓ default\n• 10 chunks — better coverage for multi-part questions\n• 15–20 — large documents with scattered information\n\nMore chunks mean a longer prompt: more tokens and slightly slower answers."
+    },
+    "searchMode": {
+      "title": "Search Mode",
+      "body": "How relevant chunks are found:\n\n• Hybrid (recommended) — vector and keyword results fused by rank (RRF). Handles both vague questions and exact names, codes and numbers.\n\n• Semantic Only — vector similarity only. Good for paraphrased questions; exact terms may be missed.\n\n• Keyword Only — full-text matching, no embedding call per question. Fastest; fails on paraphrasing.\n\nChinese works in all three: keywords are matched on overlapping two-character pieces. When vectors can't be used (no embedding service, rebuild needed, service unreachable) every mode falls back to keywords."
+    },
+    "chunkSize": {
+      "title": "Chunk Size (tokens)",
+      "body": "How many tokens each indexed piece of a document holds (Chinese counts about one token per character).\n\n• Small (128–256) — precise retrieval, more chunks\n• Medium (512) — good balance ✓ default\n• Large (1024–2048) — more context per chunk, fewer chunks; details can get buried\n\nSmaller chunks mean more embedding requests when indexing.\n\n⚠ Needs an index rebuild after changing."
+    },
+    "chunkOverlap": {
+      "title": "Chunk Overlap (tokens)",
+      "body": "How many tokens adjacent chunks share, so a sentence at a boundary isn't cut in half.\n\n• 0 — no overlap\n• 32–64 — recommended ✓ default (64)\n• 128–256 — more continuity for narrative text, larger index\n\n⚠ Needs an index rebuild after changing."
+    },
+    "minCosine": {
+      "title": "Minimum similarity",
+      "body": "Vector hits whose cosine similarity is below this value are dropped before ranking. Off by default: similarity scales differ a lot between models (0.3 is a strong match for some and noise for others).\n\nKeyword hits are never filtered by it."
+    },
+    "semanticWeight": {
+      "title": "Semantic Weight (Hybrid mode)",
+      "body": "In Hybrid mode, the balance between vector and keyword results when their ranks are fused (RRF).\n\nscore = w / (60 + vector rank) + (1 − w) / (60 + keyword rank)\n\n• 0.3 — favor exact terms (names, IDs)\n• 0.7 — favor meaning ✓ default\n• 1.0 — vectors only\n• 0.0 — keywords only\n\nNo effect in the other modes."
+    }
+  },
+  "meetingNote": "<strong>During meetings: </strong>The live transcript is sent as a rolling context window (configured in General settings), not stored in the RAG index. RAG retrieves the top-{{topK}} relevant chunks from your pre-indexed documents. Both are injected into the LLM prompt together.",
+  "gemini": {
+    "title": "Gemini Context Cache",
+    "active": "Active · expires {{time}}",
+    "description": "Upload your context documents to Gemini's servers once. Each query skips local embedding entirely — <strong>~3-5s faster per response</strong> on CPU-only machines.",
+    "model": "Model",
+    "ttl": "TTL",
+    "ttlOptions": {
+      "min30": "30 min",
+      "hour1": "1 hour",
+      "hours2": "2 hours",
+      "hours24": "24 hours"
+    },
+    "create": "Create Cache from Context Docs",
+    "modelLabel": "Model:",
+    "tokensCached": "Tokens cached:",
+    "toasts": {
+      "created": "Cache created — {{tokens}} tokens cached",
+      "cleared": "Gemini cache cleared"
+    }
+  },
+  "embedding": {
+    "title": "Embedding service",
+    "description": "Turns document chunks and questions into vectors. Use any OpenAI-compatible /embeddings endpoint, or Ollama.",
+    "unsaved": "Unsaved changes",
+    "preset": {
+      "label": "Template",
+      "hint": "Fills in the address and model suggestions; everything stays editable."
+    },
+    "presets": {
+      "custom": "Custom (OpenAI-compatible)",
+      "siliconflow": "SiliconFlow",
+      "dashscope": "Alibaba Cloud Model Studio (DashScope)",
+      "zhipu": "Zhipu BigModel",
+      "volcengine": "Volcengine Ark",
+      "ollama": "Ollama on this computer",
+      "selfhosted": "Self-hosted (vLLM / TEI / Xinference / LocalAI)"
+    },
+    "provider": {
+      "label": "API style",
+      "openai_compat": "OpenAI-compatible",
+      "ollama": "Ollama native",
+      "ollamaV1Warning": "This address ends with /v1, which is Ollama's OpenAI-compatible API. Switch the API style to OpenAI-compatible, or remove /v1 and use the Ollama host."
+    },
+    "connection": {
+      "label": "Connection",
+      "own": "Own address and key",
+      "hint": "Reuse an LLM connection's address, key and headers."
+    },
+    "model": {
+      "label": "Model",
+      "placeholder": "e.g. bge-m3",
+      "dims": "{{dims}}-d"
+    },
+    "dimensions": {
+      "label": "Dimensions",
+      "placeholder": "Auto",
+      "hint": "Leave empty to use what the model returns. A value here is checked against every response.",
+      "send": "Send dimensions with each request",
+      "sendHint": "Only for models that can shorten their vectors (OpenAI text-embedding-3, DashScope v3/v4, Zhipu embedding-3…). Other services may reject the request.",
+      "sendSupported": "This model supports it."
+    },
+    "advanced": {
+      "batchSize": "Batch size",
+      "batchSizeHint": "Batch size: chunks per request (halved automatically when the service says it is too large). Parallel requests are lowered during meetings. Longer inputs than the limit are cut before sending.",
+      "concurrency": "Parallel requests",
+      "auto": "Auto ({{value}})",
+      "maxInputTokens": "Max input tokens",
+      "prefixes": "Query / document prefixes",
+      "prefixesAuto": "Choose by model",
+      "prefixesHint": "Some models expect an instruction in front of the text (nomic, e5, bge-zh, Qwen3-Embedding). Changing the document prefix needs an index rebuild.",
+      "queryPrefix": "Query prefix",
+      "documentPrefix": "Document prefix",
+      "encoding": "Response encoding",
+      "encodingFloat": "float (default)",
+      "encodingBase64": "base64 (smaller downloads)",
+      "extraQuery": "Extra request fields for questions (JSON)",
+      "extraDocument": "Extra request fields for documents (JSON)",
+      "extraHint": "Merged into the request body, e.g. Jina's {\"task\": \"retrieval.passage\"}. model and input can't be changed here. Changing the document fields needs an index rebuild.",
+      "invalidJson": "Not a JSON object",
+      "requestTimeout": "Request timeout (s)",
+      "queryTimeout": "Question timeout during meetings (s)",
+      "queryTimeoutHint": "Past this the question is answered with keyword search only."
+    },
+    "actions": {
+      "revert": "Discard changes",
+      "pull": "Pull Model",
+      "pulling": "Pulling...",
+      "pullSaveFirst": "Save the settings first"
+    },
+    "confirm": {
+      "privacy": "Document text will be sent to {{host}} to be embedded.",
+      "privacyAction": "Send and save",
+      "rebuild_one": "This change produces different vectors: searches use keywords only until you rebuild the index ({{count}} chunk to embed again).",
+      "rebuild_other": "This change produces different vectors: searches use keywords only until you rebuild the index ({{count}} chunks to embed again).",
+      "rebuildAction": "Save anyway"
+    },
+    "test": {
+      "ok": "Connected · {{dims}}-d · {{ms}} ms",
+      "failed": "Test failed",
+      "url": "Request URL",
+      "dimsIgnored": "The service ignored the dimensions field and returned {{dims}}-d vectors.",
+      "addV1": "The same address with /v1 at the end answers.",
+      "addV1Action": "Add /v1"
+    }
+  },
+  "index": {
+    "title": "Index Status",
+    "state": {
+      "ready": "Vector search ready",
+      "empty": "No vectors yet",
+      "loading": "Loading vectors…",
+      "stale": "Rebuild needed",
+      "unconfigured": "Keyword search only",
+      "unavailable": "Index unavailable"
+    },
+    "storeError": "The index database could not be opened: {{detail}}",
+    "stats": {
+      "documents": "Files indexed",
+      "chunks": "Total chunks",
+      "vectors": "Vectors",
+      "dims": "{{dims}}-d",
+      "tokens": "Total tokens",
+      "lastIndexed": "Last indexed",
+      "never": "Never",
+      "memory": "Memory"
+    },
+    "pending_one": "{{count}} chunk waiting for vectors",
+    "pending_other": "{{count}} chunks waiting for vectors",
+    "unconfiguredHint": "Keyword search already works. Set up an embedding service above for vector search.",
+    "lastError": "Last error",
+    "lastJob": "Last run: {{embedded}} chunks embedded, {{reused}} reused, {{skipped}} files unchanged",
+    "failures_one": "{{count}} file could not be read",
+    "failures_other": "{{count}} files could not be read",
+    "banner": {
+      "title": "Index rebuild needed",
+      "modelChanged": "The embedding model changed. Until the index is rebuilt, searches use keywords only; old and new vectors are never mixed.",
+      "dimensionsChanged": "The embedding service now returns vectors of a different size.",
+      "chunkingChanged_one": "The chunk settings changed for {{count}} file.",
+      "chunkingChanged_other": "The chunk settings changed for {{count}} files.",
+      "cost_one": "Rebuilding embeds {{count}} chunk again (remote services charge for this).",
+      "cost_other": "Rebuilding embeds {{count}} chunks again (remote services charge for this)."
+    },
+    "progress": {
+      "scanning": "Checking files…",
+      "extracting": "Reading {{name}}…",
+      "embedding": "Embedding chunks",
+      "paused": "Paused during the meeting (model on this computer)",
+      "files": "{{done}}/{{total}} files",
+      "chunks": "{{done}}/{{total}} chunks",
+      "reused_one": "{{count}} reused",
+      "reused_other": "{{count}} reused"
+    },
+    "actions": {
+      "sync": "Update Index",
+      "build": "Build Index",
+      "rebuild": "Rebuild Index",
+      "confirmRebuild": "Confirm Rebuild",
+      "clear": "Clear Index",
+      "confirmClear": "Confirm Clear",
+      "stop": "Stop"
+    }
+  },
+  "toasts": {
+    "saveFailed": "Couldn't save the knowledge base settings: {{detail}}",
+    "keySaved": "API key saved",
+    "keyCleared": "API key removed",
+    "keyFailed": "Couldn't save the API key: {{detail}}",
+    "rebuilt": "Index rebuilt successfully",
+    "rebuildFailed": "Couldn't build the index: {{detail}}",
+    "cleared": "Index cleared",
+    "pulling": "Pulling model \"{{model}}\"...",
+    "pulled": "Model \"{{model}}\" pulled successfully",
+    "pullFailed": "Failed to pull model: {{detail}}"
+  },
+  "context": {
+    "panel": {
+      "title": "Meeting Context",
+      "smartSearchActive": "Smart Search Active",
+      "loadedContext_one": "Loaded Context ({{count}} file)",
+      "loadedContext_other": "Loaded Context ({{count}} files)"
+    },
+    "customInstructions": {
+      "label": "Custom Instructions",
+      "charCount": "{{count}} chars",
+      "tokenCount": "~{{count}} tokens",
+      "placeholder": "Add custom instructions for AI responses..."
+    },
+    "fileUpload": {
+      "browseDialog": {
+        "filterName": "Context Files"
+      },
+      "dropZone": {
+        "ariaLabel": "Drop files here or click to browse",
+        "processing": "Processing file...",
+        "dragHere": "Drag files here",
+        "dropToUpload": "Drop to upload",
+        "supportedTypes": "PDF, TXT, Markdown, or DOCX"
+      },
+      "browse": "Browse Files"
+    },
+    "indexBar": {
+      "chunks": "{{count}} chunks",
+      "tokensPerQuery": "~{{thousands}}k tokens/query",
+      "rebuild": {
+        "label": "Rebuild",
+        "title": "Rebuild All"
+      },
+      "test": {
+        "label": "Test",
+        "title": "Test Search"
+      }
+    },
+    "resourceCard": {
+      "tokens": "~{{tokens}} tokens",
+      "chunks": "{{count}} chunks",
+      "badge": {
+        "new": "New",
+        "indexed": "Indexed",
+        "notIndexed": "Not Indexed"
+      },
+      "reindex": {
+        "title": "Re-index file",
+        "toast": {
+          "success": "Re-indexed \"{{name}}\"",
+          "failed": "Couldn't re-index file — try removing and re-adding it"
+        }
+      },
+      "remove": {
+        "title": "Remove file",
+        "confirm": "Click again to confirm removal"
+      }
+    },
+    "testSearch": {
+      "title": "Test Knowledge Base",
+      "subtitle": "Search documents + get AI answer using your knowledge base",
+      "close": {
+        "title": "Close (Esc)"
+      },
+      "config": {
+        "searchModel": {
+          "title": "Search model"
+        },
+        "topK": "top-{{k}}",
+        "llmModel": {
+          "title": "LLM model",
+          "none": "no model"
+        },
+        "chunks": "{{count}} chunks"
+      },
+      "searchModes": {
+        "hybrid": "hybrid",
+        "semantic": "semantic",
+        "keyword": "keyword"
+      },
+      "templates": {
+        "prompt": "Try:",
+        "background": "Background",
+        "experience": "Experience",
+        "skills": "Skills",
+        "strengths": "Strengths",
+        "summary": "Summary"
+      },
+      "input": {
+        "placeholder": "Ask a question about your documents..."
+      },
+      "askButton": {
+        "label": "Ask",
+        "searching": "Searching...",
+        "generating": "Generating..."
+      },
+      "empty": {
+        "hint": "Ask a question to search your documents and get an AI answer"
+      },
+      "searching": "Searching knowledge base...",
+      "answer": {
+        "title": "AI Answer",
+        "tokens": "{{count}} tokens",
+        "copy": {
+          "title": "Copy response"
+        },
+        "thinking": "Thinking..."
+      },
+      "noResults": {
+        "title": "No results found",
+        "hint": "Try a different query or check that your documents are indexed"
+      },
+      "results": {
+        "retrieved_one": "{{count}} chunk retrieved",
+        "retrieved_other": "{{count}} chunks retrieved",
+        "tokens": "~{{count}} tokens",
+        "chunkTokens": "~{{count}}t",
+        "copyChunk": {
+          "title": "Copy chunk"
+        }
+      },
+      "templateQueries": {
+        "background": "What is the candidate's educational background?",
+        "experience": "What relevant work experience do they have?",
+        "skills": "What are their key technical skills?",
+        "strengths": "What are their main strengths?",
+        "summary": "Give a brief summary of the uploaded documents"
+      }
+    },
+    "tokenBudget": {
+      "title": "Token Budget",
+      "usage": "{{used}} / {{limit}} tokens used ({{percent}}%)",
+      "meter": {
+        "ariaLabel": "Token budget usage"
+      },
+      "segment": {
+        "title": "{{label}}: ~{{tokens}} tokens",
+        "legend": "{{label}}: ~{{tokens}}",
+        "labels": {
+          "resume": "Resume",
+          "jd": "JD",
+          "notes": "Notes",
+          "notesPdf": "Notes (PDF)",
+          "notesMd": "Notes (MD)",
+          "customInstructions": "Custom Instructions",
+          "systemPrompt": "System Prompt",
+          "transcript": "Transcript"
+        }
+      }
+    }
+  }
+}

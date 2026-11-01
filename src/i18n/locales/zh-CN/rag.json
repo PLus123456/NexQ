@@ -1,1 +1,433 @@
-{}
+{
+  "strategy": {
+    "localRag": {
+      "title": "个人知识库（RAG）",
+      "description": "用任意向量化服务为文档建立索引，语义 + 关键词混合检索"
+    },
+    "geminiCache": {
+      "title": "Gemini 上下文缓存",
+      "description": "把文档一次性缓存到 Gemini，完全不用本地向量化"
+    }
+  },
+  "presets": {
+    "title": "快速预设",
+    "subtitle": "在检索深度和速度之间取舍",
+    "topK": "前 {{count}} 条",
+    "note": "预设只改检索和分块设置，不会更换向量化模型。改小分块需要重建索引。",
+    "items": {
+      "fastest": {
+        "label": "最快",
+        "description": "只用关键词检索，提问时不需要向量化"
+      },
+      "faster": {
+        "label": "较快",
+        "description": "混合检索，结果少一些"
+      },
+      "default": {
+        "label": "默认",
+        "description": "速度和准确度最均衡"
+      },
+      "accurate": {
+        "label": "准确",
+        "description": "结果更多、分块更细、覆盖更全"
+      },
+      "mostAccurate": {
+        "label": "最准确",
+        "description": "细分块，上下文最多"
+      }
+    }
+  },
+  "search": {
+    "title": "检索设置",
+    "topK": {
+      "label": "检索结果数（top-K）",
+      "option_other": "{{count}} 块"
+    },
+    "mode": {
+      "label": "检索模式",
+      "hybrid": "混合（推荐）",
+      "semantic": "仅语义",
+      "keyword": "仅关键词（最快）"
+    }
+  },
+  "advanced": {
+    "title": "高级设置",
+    "tokens_other": "{{count}} token",
+    "chunkSize": {
+      "label": "分块大小",
+      "min": "128 — 精确",
+      "max": "2048 — 宽泛"
+    },
+    "chunkOverlap": {
+      "label": "分块重叠",
+      "min": "0 — 不重叠",
+      "max": "512 — 最连贯"
+    },
+    "rebuildHint": "改分块大小或重叠需要重建索引。",
+    "minCosine": {
+      "label": "最低相似度",
+      "min": "0.0 — 全部保留",
+      "max": "0.9 — 严格"
+    },
+    "semanticWeight": {
+      "label": "语义权重",
+      "value": "语义 {{semantic}}% / 关键词 {{keyword}}%",
+      "min": "0.0 — 关键词",
+      "max": "1.0 — 语义"
+    },
+    "hybridOnly": "仅混合模式",
+    "vectorOnly": "仅向量检索",
+    "autoIndex": "自动为新增和修改的文件建立索引",
+    "meetingMode": {
+      "label": "会议进行中的索引",
+      "pause_local": "本机模型暂停，远程服务降速",
+      "slow": "降速（一次只发一个请求）",
+      "normal": "全速"
+    }
+  },
+  "help": {
+    "show": "显示说明",
+    "topK": {
+      "title": "检索结果数（top-K）",
+      "body": "和问题一起加进 AI 提示词的文本块数量。\n\n• 3 块——提示词最短，回答最快\n• 5 块——比较均衡 ✓ 默认\n• 10 块——多方面的问题覆盖更全\n• 15–20 块——适合信息分散的大文档\n\n块越多提示词越长，消耗的 token 越多，回答也会稍慢。"
+    },
+    "searchMode": {
+      "title": "检索模式",
+      "body": "怎样找到相关的文本块：\n\n• 混合（推荐）——向量结果和关键词结果按排名融合（RRF），既能应对含糊的问题，也能精确命中人名、编号和数字。\n\n• 仅语义——只看向量相似度，适合换了说法的问题，精确的词可能漏掉。\n\n• 仅关键词——全文匹配，提问时不调用向量化服务。最快，但换了说法就找不到。\n\n三种模式都支持中文：关键词按重叠的两字片段匹配。向量用不了的时候（没配置向量化、需要重建、服务连不上），各模式都会退回关键词检索。"
+    },
+    "chunkSize": {
+      "title": "分块大小（token）",
+      "body": "文档切成的每个文本块包含多少 token（中文大约一个字算一个 token）。\n\n• 小（128–256）——检索精确，块更多\n• 中（512）——比较均衡 ✓ 默认\n• 大（1024–2048）——每块上下文更多、块更少，细节可能被淹没\n\n块越小，建立索引时的向量化请求越多。\n\n⚠ 修改后需要重建索引。"
+    },
+    "chunkOverlap": {
+      "title": "分块重叠（token）",
+      "body": "相邻文本块之间重复多少 token，免得边界上的句子被切成两半。\n\n• 0——不重叠\n• 32–64——推荐 ✓ 默认（64）\n• 128–256——叙述性文本更连贯，索引也更大\n\n⚠ 修改后需要重建索引。"
+    },
+    "minCosine": {
+      "title": "最低相似度",
+      "body": "余弦相似度低于这个值的向量命中会在排序前丢掉。默认关闭：不同模型的相似度范围差别很大（同样是 0.3，有的模型算强相关，有的只是噪声）。\n\n不影响关键词命中。"
+    },
+    "semanticWeight": {
+      "title": "语义权重（混合模式）",
+      "body": "混合模式下按排名融合（RRF）时，向量结果和关键词结果的权重。\n\n得分 = w / (60 + 向量排名) + (1 − w) / (60 + 关键词排名)\n\n• 0.3——偏重精确的词（人名、编号）\n• 0.7——偏重语义 ✓ 默认\n• 1.0——只看向量\n• 0.0——只看关键词\n\n其他模式下不起作用。"
+    }
+  },
+  "meetingNote": "<strong>会议中：</strong>实时转写记录作为滚动的上下文窗口发送（在“通用”设置里配置），不存进知识库索引。知识库从已建立索引的文档里检索最相关的 {{topK}} 个文本块，两者一起放进发给 LLM 的提示词。",
+  "gemini": {
+    "title": "Gemini 上下文缓存",
+    "active": "已启用 · {{time}} 过期",
+    "description": "把上下文文档一次性上传到 Gemini 的服务器，之后每次提问都不用本地向量化，在只有 CPU 的电脑上<strong>每次回答大约快 3–5 秒</strong>。",
+    "model": "模型",
+    "ttl": "有效期",
+    "ttlOptions": {
+      "min30": "30 分钟",
+      "hour1": "1 小时",
+      "hours2": "2 小时",
+      "hours24": "24 小时"
+    },
+    "create": "用上下文文档创建缓存",
+    "modelLabel": "模型：",
+    "tokensCached": "已缓存 token：",
+    "toasts": {
+      "created": "缓存已创建，共 {{tokens}} 个 token",
+      "cleared": "Gemini 缓存已清除"
+    }
+  },
+  "embedding": {
+    "title": "向量化服务（embedding）",
+    "description": "把文档文本块和问题转换成向量。支持任意 OpenAI 兼容的 /embeddings 接口，也支持 Ollama。",
+    "unsaved": "有未保存的修改",
+    "preset": {
+      "label": "模板",
+      "hint": "填入地址和候选模型，之后都能改。"
+    },
+    "presets": {
+      "custom": "自定义（OpenAI 兼容）",
+      "siliconflow": "硅基流动",
+      "dashscope": "阿里云百炼（DashScope）",
+      "zhipu": "智谱开放平台",
+      "volcengine": "火山方舟",
+      "ollama": "本机 Ollama",
+      "selfhosted": "自建服务（vLLM / TEI / Xinference / LocalAI）"
+    },
+    "provider": {
+      "label": "接口类型",
+      "openai_compat": "OpenAI 兼容",
+      "ollama": "Ollama 原生",
+      "ollamaV1Warning": "这个地址以 /v1 结尾，是 Ollama 的 OpenAI 兼容接口。请把接口类型改成“OpenAI 兼容”，或者去掉 /v1，只填 Ollama 的主机地址。"
+    },
+    "connection": {
+      "label": "连接",
+      "own": "单独填写地址和 Key",
+      "hint": "复用某个 LLM 连接的地址、Key 和请求头。"
+    },
+    "model": {
+      "label": "模型",
+      "placeholder": "例如 bge-m3",
+      "dims": "{{dims}} 维"
+    },
+    "dimensions": {
+      "label": "维度",
+      "placeholder": "自动",
+      "hint": "留空表示用模型返回的维度；填了就会检查每次返回的向量是不是这个维度。",
+      "send": "随请求发送维度（dimensions）",
+      "sendHint": "只适用于能缩短向量的模型（OpenAI text-embedding-3、百炼 v3/v4、智谱 embedding-3 等），其他服务可能直接报错。",
+      "sendSupported": "这个模型支持。"
+    },
+    "advanced": {
+      "batchSize": "每批条数",
+      "batchSizeHint": "每批条数：每个请求发送的文本块数（服务提示批太大时会自动减半）。会议中并发请求数会自动降低。超过输入上限的文本块发送前会截断。",
+      "concurrency": "并发请求数",
+      "auto": "自动（{{value}}）",
+      "maxInputTokens": "单条输入上限（token）",
+      "prefixes": "查询 / 文档前缀",
+      "prefixesAuto": "按模型自动选择",
+      "prefixesHint": "有些模型要求在文本前面加指令（nomic、e5、bge-zh、Qwen3-Embedding）。改文档前缀需要重建索引。",
+      "queryPrefix": "查询前缀",
+      "documentPrefix": "文档前缀",
+      "encoding": "返回格式",
+      "encodingFloat": "float（默认）",
+      "encodingBase64": "base64（下载量更小）",
+      "extraQuery": "提问请求的额外字段（JSON）",
+      "extraDocument": "文档请求的额外字段（JSON）",
+      "extraHint": "合并进请求体，例如 Jina 的 {\"task\": \"retrieval.passage\"}。不能用来改 model 和 input。改文档请求的字段需要重建索引。",
+      "invalidJson": "不是合法的 JSON 对象",
+      "requestTimeout": "请求超时（秒）",
+      "queryTimeout": "会议中提问的超时（秒）",
+      "queryTimeoutHint": "超过这个时间就只用关键词检索回答。"
+    },
+    "actions": {
+      "revert": "放弃修改",
+      "pull": "拉取模型",
+      "pulling": "正在拉取…",
+      "pullSaveFirst": "请先保存设置"
+    },
+    "confirm": {
+      "privacy": "文档内容会发送到 {{host}} 做向量化。",
+      "privacyAction": "确认并保存",
+      "rebuild_other": "这个修改会产生不同的向量：重建索引之前只能用关键词检索（需要重新向量化 {{count}} 块）。",
+      "rebuildAction": "仍然保存"
+    },
+    "test": {
+      "ok": "连接成功 · {{dims}} 维 · {{ms}} ms",
+      "failed": "测试失败",
+      "url": "请求地址",
+      "dimsIgnored": "服务没有理会 dimensions 字段，返回的是 {{dims}} 维向量。",
+      "addV1": "在 Base URL 末尾加上 /v1 就能连通。",
+      "addV1Action": "补上 /v1"
+    }
+  },
+  "index": {
+    "title": "索引状态",
+    "state": {
+      "ready": "向量检索可用",
+      "empty": "还没有向量",
+      "loading": "正在加载向量…",
+      "stale": "需要重建",
+      "unconfigured": "只有关键词检索",
+      "unavailable": "索引不可用"
+    },
+    "storeError": "无法打开索引数据库：{{detail}}",
+    "stats": {
+      "documents": "已索引文件",
+      "chunks": "文本块",
+      "vectors": "向量",
+      "dims": "{{dims}} 维",
+      "tokens": "总 token 数",
+      "lastIndexed": "上次索引",
+      "never": "从未",
+      "memory": "内存占用"
+    },
+    "pending_other": "{{count}} 块等待向量化",
+    "unconfiguredHint": "关键词检索已经可以用了。在上方配置向量化服务后就能用向量检索。",
+    "lastError": "上次出错",
+    "lastJob": "上次运行：新向量化 {{embedded}} 块，复用 {{reused}} 块，{{skipped}} 个文件没有变化",
+    "failures_other": "{{count}} 个文件读取失败",
+    "banner": {
+      "title": "需要重建索引",
+      "modelChanged": "向量化模型已更换。重建索引之前检索只用关键词，新旧向量不会混用。",
+      "dimensionsChanged": "向量化服务返回的向量维度变了。",
+      "chunkingChanged_other": "{{count}} 个文件的分块设置已变。",
+      "cost_other": "重建会重新向量化 {{count}} 块（远程服务会按量计费）。"
+    },
+    "progress": {
+      "scanning": "正在检查文件…",
+      "extracting": "正在读取 {{name}}…",
+      "embedding": "正在向量化",
+      "paused": "会议进行中，已暂停（本机模型）",
+      "files": "{{done}}/{{total}} 个文件",
+      "chunks": "{{done}}/{{total}} 块",
+      "reused_other": "复用 {{count}} 块"
+    },
+    "actions": {
+      "sync": "更新索引",
+      "build": "建立索引",
+      "rebuild": "重建索引",
+      "confirmRebuild": "确认重建",
+      "clear": "清空索引",
+      "confirmClear": "确认清空",
+      "stop": "停止"
+    }
+  },
+  "toasts": {
+    "saveFailed": "知识库设置保存失败：{{detail}}",
+    "keySaved": "API Key 已保存",
+    "keyCleared": "API Key 已删除",
+    "keyFailed": "API Key 保存失败：{{detail}}",
+    "rebuilt": "索引已更新",
+    "rebuildFailed": "建立索引失败：{{detail}}",
+    "cleared": "索引已清空",
+    "pulling": "正在拉取模型“{{model}}”…",
+    "pulled": "模型“{{model}}”拉取完成",
+    "pullFailed": "拉取模型失败：{{detail}}"
+  },
+  "context": {
+    "panel": {
+      "title": "会议上下文",
+      "smartSearchActive": "智能检索已启用",
+      "loadedContext_other": "已加载的上下文（{{count}} 个文件）"
+    },
+    "customInstructions": {
+      "label": "自定义指令",
+      "charCount": "{{count}} 个字符",
+      "tokenCount": "约 {{count}} token",
+      "placeholder": "为 AI 的回答添加自定义指令…"
+    },
+    "fileUpload": {
+      "browseDialog": {
+        "filterName": "上下文文件"
+      },
+      "dropZone": {
+        "ariaLabel": "将文件拖放到这里，或点击选择文件",
+        "processing": "正在处理文件…",
+        "dragHere": "将文件拖放到这里",
+        "dropToUpload": "松开即可上传",
+        "supportedTypes": "支持 PDF、TXT、Markdown 和 DOCX 格式"
+      },
+      "browse": "选择文件"
+    },
+    "indexBar": {
+      "chunks": "{{count}} 个文本块",
+      "tokensPerQuery": "每次查询约 {{thousands}}k token",
+      "rebuild": {
+        "label": "重建索引",
+        "title": "重建全部索引"
+      },
+      "test": {
+        "label": "测试",
+        "title": "测试检索"
+      }
+    },
+    "resourceCard": {
+      "tokens": "约 {{tokens}} token",
+      "chunks": "{{count}} 个文本块",
+      "badge": {
+        "new": "新文件",
+        "indexed": "已索引",
+        "notIndexed": "未索引"
+      },
+      "reindex": {
+        "title": "重新建立索引",
+        "toast": {
+          "success": "已重新为“{{name}}”建立索引",
+          "failed": "重新建立索引失败，请移除该文件后再重新添加"
+        }
+      },
+      "remove": {
+        "title": "移除文件",
+        "confirm": "再次点击确认移除"
+      }
+    },
+    "testSearch": {
+      "title": "测试知识库",
+      "subtitle": "检索文档，并基于你的知识库生成 AI 回答",
+      "close": {
+        "title": "关闭（Esc）"
+      },
+      "config": {
+        "searchModel": {
+          "title": "检索模型"
+        },
+        "topK": "前 {{k}} 条",
+        "llmModel": {
+          "title": "LLM 模型",
+          "none": "未选择模型"
+        },
+        "chunks": "{{count}} 个文本块"
+      },
+      "searchModes": {
+        "hybrid": "混合检索",
+        "semantic": "语义检索",
+        "keyword": "关键词检索"
+      },
+      "templates": {
+        "prompt": "试试：",
+        "background": "教育背景",
+        "experience": "工作经历",
+        "skills": "技能",
+        "strengths": "优势",
+        "summary": "总结"
+      },
+      "input": {
+        "placeholder": "针对你的文档提个问题…"
+      },
+      "askButton": {
+        "label": "提问",
+        "searching": "检索中…",
+        "generating": "生成中…"
+      },
+      "empty": {
+        "hint": "提个问题，即可检索你的文档并获得 AI 回答"
+      },
+      "searching": "正在检索知识库…",
+      "answer": {
+        "title": "AI 回答",
+        "tokens": "{{count}} token",
+        "copy": {
+          "title": "复制回答"
+        },
+        "thinking": "思考中…"
+      },
+      "noResults": {
+        "title": "没有找到结果",
+        "hint": "换个问题试试，或检查文档是否已建立索引"
+      },
+      "results": {
+        "retrieved_other": "检索到 {{count}} 个文本块",
+        "tokens": "约 {{count}} token",
+        "chunkTokens": "约 {{count}} token",
+        "copyChunk": {
+          "title": "复制文本块"
+        }
+      },
+      "templateQueries": {
+        "background": "这位候选人的教育背景是什么？",
+        "experience": "他们有哪些相关的工作经历？",
+        "skills": "他们的核心技术技能有哪些？",
+        "strengths": "他们的主要优势是什么？",
+        "summary": "简要总结一下上传的文档"
+      }
+    },
+    "tokenBudget": {
+      "title": "Token 预算",
+      "usage": "已用 {{used}} / {{limit}} token（{{percent}}%）",
+      "meter": {
+        "ariaLabel": "Token 预算使用情况"
+      },
+      "segment": {
+        "title": "{{label}}：约 {{tokens}} token",
+        "legend": "{{label}}：约 {{tokens}}",
+        "labels": {
+          "resume": "简历",
+          "jd": "职位描述",
+          "notes": "笔记",
+          "notesPdf": "笔记（PDF）",
+          "notesMd": "笔记（MD）",
+          "customInstructions": "自定义指令",
+          "systemPrompt": "系统提示词",
+          "transcript": "转写记录"
+        }
+      }
+    }
+  }
+}
