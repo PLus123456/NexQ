@@ -510,6 +510,12 @@ impl RagEngine {
                     summary.cancelled = true;
                     break;
                 }
+                // The user switched to another embedding setup meanwhile: stop
+                // spending on this one (its vectors would not be searched).
+                if self.config().space_key() != key {
+                    log::info!("RAG: embedding setup changed during the job; stopping it");
+                    break;
+                }
                 let lanes = if target.is_none() { 1 } else { self.embed_concurrency(config) };
                 let rows = {
                     let s = store.clone();

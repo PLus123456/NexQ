@@ -191,17 +191,19 @@ pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Durati
     (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs.min(120.0)))
 }
 
-/// A transport error as a retryable failure.
-pub(crate) fn transport_error(e: &reqwest::Error, url: &Url) -> EmbedError {
+/// A transport error as a retryable failure. The message carries the
+/// redacted address only (reqwest's own text embeds the raw URL, query
+/// string included).
+pub(crate) fn transport_error(e: reqwest::Error, url: &Url) -> EmbedError {
     let url = endpoint::redact_url(url.as_str());
     let what = if e.is_timeout() {
-        "timed out".to_string()
+        "timed out"
     } else if e.is_connect() {
-        "could not connect".to_string()
+        "could not connect"
     } else {
-        "request failed".to_string()
+        "request failed"
     };
-    EmbedError::Transient(format!("{url}: {what} ({})", endpoint::redact_url(&e.to_string())))
+    EmbedError::Transient(format!("{url}: {what} ({})", e.without_url()))
 }
 
 /// Everything needed to send embedding requests.
@@ -487,10 +489,10 @@ impl Embedder {
         };
         let req = self.client.post(s.endpoint.clone()).timeout(s.request_timeout).json(&body);
         let req = endpoint::apply_headers(req, &s.headers);
-        let response = req.send().await.map_err(|e| transport_error(&e, &s.endpoint))?;
+        let response = req.send().await.map_err(|e| transport_error(e, &s.endpoint))?;
         let status = response.status().as_u16();
         let after = retry_after(response.headers());
-        let text = response.text().await.map_err(|e| transport_error(&e, &s.endpoint))?;
+        let text = response.text().await.map_err(|e| transport_error(e, &s.endpoint))?;
         if !(200..300).contains(&status) {
             return Err(classify(status, &s.endpoint, &text, after));
         }
@@ -959,6 +961,15 @@ mod tests {
         let err = Embedder::new(s, reqwest::Client::new()).with_retry(fast()).embed(&["a".into()], EmbedKind::Document, None).await.unwrap_err();
         assert_eq!(err.kind(), "transient");
         assert!(err.to_string().contains(&format!("127.0.0.1:{port}/v1/embeddings")), "{err}");
+    }
+
+    #[tokio::test]
+    async fn secrets_in_the_address_stay_out_of_error_messages() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let s = settings(EmbeddingProvider::OpenaiCompat, &format!("http://127.0.0.1:{port}/v1?key=topsecret"));
+        let err = Embedder::new(s, reqwest::Client::new()).with_retry(fast()).embed(&["a".into()], EmbedKind::Document, None).await.unwrap_err();
+        assert!(!err.to_string().contains("topsecret"), "{err}");
+        assert!(err.to_string().contains("key=***"), "{err}");
     }
 
     #[tokio::test]

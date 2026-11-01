@@ -90,7 +90,7 @@ pub async fn get_rag_status(
         .unwrap_or(0);
 
     let engine = engine()?;
-    engine.index_info().await; // refreshes the counters
+    engine.refresh_stats().await;
     let stats = engine.stats();
     let status = crate::db::rag::RagIndexStatus {
         total_files: context_file_count.max(stats.documents_indexed),

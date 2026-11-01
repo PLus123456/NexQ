@@ -501,7 +501,7 @@ impl RagEngine {
     }
 
     /// Re-reads the counters the legacy status and `retrieve_rag` use.
-    pub(super) async fn refresh_stats(&self) {
+    pub async fn refresh_stats(&self) {
         let Some(store) = self.store.clone() else { return };
         let space = self.slot_read().space.as_ref().map(|s| s.id);
         if let Ok(stats) = blocking(move || store.stats(space)).await {

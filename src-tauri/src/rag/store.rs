@@ -613,21 +613,21 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
-    /// Chunks without a vector in `space_id` (all chunks when `space_id` is None).
+    /// Chunks without a vector in `space_id` (all chunks when `space_id` is
+    /// None). Every vector belongs to an existing chunk (foreign key with
+    /// cascade) and a chunk has at most one per space, so this is the chunk
+    /// count minus the space's vector count: two index counts, no row scan.
     pub fn count_missing_vectors(&self, space_id: Option<i64>) -> Result<usize, String> {
         let conn = self.writer();
-        let n: i64 = match space_id {
-            Some(space) => conn
-                .query_row(
-                    "SELECT COUNT(*) FROM rag_chunks c WHERE NOT EXISTS
-                       (SELECT 1 FROM rag_vectors v WHERE v.space_id = ?1 AND v.chunk_id = c.id)",
-                    [space],
-                    |r| r.get(0),
-                )
-                .map_err(err)?,
-            None => conn.query_row("SELECT COUNT(*) FROM rag_chunks", [], |r| r.get(0)).map_err(err)?,
-        };
-        Ok(n as usize)
+        let n: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM rag_chunks)
+                      - (SELECT COUNT(*) FROM rag_vectors WHERE space_id = ?1)",
+                [space_id.unwrap_or(-1)],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        Ok(n.max(0) as usize)
     }
 
     /// Documents chunked with other chunk settings than `chunk_params`.
