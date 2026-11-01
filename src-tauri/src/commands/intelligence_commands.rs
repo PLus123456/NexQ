@@ -605,16 +605,34 @@ pub(crate) async fn stateless_provider(
     }
 }
 
-/// Whether the meeting's Gemini context cache can serve `resolved`: it was
-/// created with the old Gemini key (`gemini` slot) on Google's own API.
-fn gemini_cache_applies(app: &AppHandle, resolved: &ResolvedLlm) -> bool {
-    resolved.kind == LlmKind::Gemini
-        && app.try_state::<LlmRegistry>().is_some_and(|registry| {
+/// The meeting's Gemini context cache, when it can serve `resolved`: made
+/// on the same connection (a cache from before connections: with the old
+/// Gemini key on Google's API) and for the same model (Gemini rejects a cache
+/// made for another model).
+fn gemini_cache_for(app: &AppHandle, state: &AppState, resolved: &ResolvedLlm) -> Option<String> {
+    if resolved.kind != LlmKind::Gemini {
+        return None;
+    }
+    let cache = state.gemini_cache.lock().ok()?.clone()?;
+    let same_connection = match &cache.connection_id {
+        Some(id) => *id == resolved.connection_id,
+        None => app.try_state::<LlmRegistry>().is_some_and(|registry| {
             registry.config().connection(&resolved.connection_id).is_some_and(|c| {
                 c.secret_ref.as_deref() == Some("gemini")
                     && c.base_url.trim_end_matches('/') == "https://generativelanguage.googleapis.com"
             })
-        })
+        }),
+    };
+    if !same_connection || !crate::llm::gemini_cache::same_model(&cache.model, &resolved.model) {
+        log::info!(
+            "Gemini context cache {} not used: made for {} on another connection or model ({})",
+            cache.name,
+            cache.model,
+            resolved.model
+        );
+        return None;
+    }
+    Some(cache.name)
 }
 
 #[command]
@@ -866,14 +884,7 @@ pub async fn generate_assist(
     };
 
     // Check for active Gemini context cache — only applies when Gemini is the provider
-    let active_cache_name = if gemini_cache_applies(&app_handle, &resolved) {
-        state.gemini_cache
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(|c| c.name.clone()))
-    } else {
-        None
-    };
+    let active_cache_name = gemini_cache_for(&app_handle, &state, &resolved);
 
     let enable_web_search = action_cfg.as_ref().map(|c| c.web_search).unwrap_or(false);
 
