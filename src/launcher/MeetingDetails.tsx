@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Meeting, AIInteraction, TranscriptSegment } from "../lib/types";
+import { t, useT } from "../i18n";
 import { getMeeting } from "../lib/ipc";
 import { onTranscriptFinal } from "../lib/events";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -26,7 +27,17 @@ interface MeetingDetailsProps {
   onBack: () => void;
 }
 
+/**
+ * Text for a failed load whose error carries no message. Uses the module-level
+ * `t` (read when called), so loadMeeting doesn't depend on the UI language and
+ * a language switch doesn't reload the meeting.
+ */
+function loadErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : t("launcher:details.loadFailed");
+}
+
 export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
+  const { t } = useT("launcher");
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +55,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       const data = await getMeeting(meetingId);
       setMeeting(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load meeting");
+      setError(loadErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -75,7 +86,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Loading meeting...</p>
+        <p className="text-sm text-muted-foreground">{t("details.loading")}</p>
       </div>
     );
   }
@@ -83,12 +94,12 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   if (error || !meeting) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
-        <p className="text-sm text-destructive">{error || "Meeting not found"}</p>
+        <p className="text-sm text-destructive">{error || t("details.notFound")}</p>
         <button
           onClick={onBack}
           className="text-sm text-primary hover:underline"
         >
-          Go back
+          {t("details.goBack")}
         </button>
       </div>
     );
@@ -96,7 +107,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
 
   const durationDisplay = meeting.duration_seconds
     ? formatDurationLong(meeting.duration_seconds * 1000)
-    : "In progress";
+    : t("details.inProgress");
 
   return (
     <div className="flex h-full flex-col">
@@ -105,7 +116,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         <button
           onClick={onBack}
           className="rounded-xl p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          aria-label="Go back"
+          aria-label={t("details.goBack")}
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -115,10 +126,10 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
           </h2>
           <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground/60">
             <span>{formatRelativeTime(meeting.start_time)}</span>
-            <span className="text-muted-foreground/60">&middot;</span>
+            <span className="text-muted-foreground/60">&middot;</span>{/* i18n-ignore: 分隔符 */}
             <span>{durationDisplay}</span>
-            <span className="text-muted-foreground/60">&middot;</span>
-            <span>{meeting.transcript.length} segments</span>
+            <span className="text-muted-foreground/60">&middot;</span>{/* i18n-ignore: 分隔符 */}
+            <span>{t("details.segmentCount", { total: meeting.transcript.length })}</span>
           </div>
         </div>
       </div>
@@ -129,21 +140,21 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
           active={activeTab === "transcript"}
           onClick={() => setActiveTab("transcript")}
           icon={<FileText className="h-3.5 w-3.5" />}
-          label="Transcript"
+          label={t("details.tabs.transcript")}
           count={meeting.transcript.length}
         />
         <TabButton
           active={activeTab === "ai"}
           onClick={() => setActiveTab("ai")}
           icon={<MessageSquare className="h-3.5 w-3.5" />}
-          label="AI Log"
+          label={t("details.tabs.aiLog")}
           count={meeting.ai_interactions.length}
         />
         <TabButton
           active={activeTab === "summary"}
           onClick={() => setActiveTab("summary")}
           icon={<Sparkles className="h-3.5 w-3.5" />}
-          label="Summary"
+          label={t("details.tabs.summary")}
         />
       </div>
 
@@ -209,11 +220,12 @@ function TabButton({
 // -- Transcript View --
 
 function TranscriptView({ segments }: { segments: TranscriptSegment[] }) {
+  const { t } = useT("launcher");
   if (segments.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground/60">
         <FileText className="mb-4 h-7 w-7" />
-        <p className="text-sm font-medium">No transcript segments</p>
+        <p className="text-sm font-medium">{t("details.transcript.empty")}</p>
       </div>
     );
   }
@@ -248,11 +260,12 @@ function AIInteractionLog({
   expandedId: string | null;
   onToggle: (id: string) => void;
 }) {
+  const { t } = useT("launcher");
   if (interactions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground/60">
         <MessageSquare className="mb-4 h-7 w-7" />
-        <p className="text-sm font-medium">No AI interactions recorded</p>
+        <p className="text-sm font-medium">{t("details.aiLog.empty")}</p>
       </div>
     );
   }
@@ -281,7 +294,7 @@ function AIInteractionLog({
               </div>
               <div className="flex items-center gap-2.5">
                 <span className="text-meta tabular-nums text-muted-foreground/60">
-                  {interaction.latency_ms}ms
+                  {t("details.aiLog.latency", { ms: interaction.latency_ms })}
                 </span>
                 {isExpanded ? (
                   <ChevronUp className="h-3.5 w-3.5 text-muted-foreground/60" />
@@ -294,7 +307,7 @@ function AIInteractionLog({
               <div className="border-t border-border/20 px-4 py-3.5">
                 <div className="mb-2.5 flex items-center gap-1.5 text-meta text-muted-foreground/50">
                   <span>{interaction.provider}/{interaction.model}</span>
-                  <span className="text-muted-foreground/60">&middot;</span>
+                  <span className="text-muted-foreground/60">&middot;</span>{/* i18n-ignore: 分隔符 */}
                   <span>{formatRelativeTime(interaction.timestamp)}</span>
                 </div>
                 <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
@@ -312,13 +325,14 @@ function AIInteractionLog({
 // -- Summary View --
 
 function SummaryView({ summary }: { summary: string | null }) {
+  const { t } = useT("launcher");
   if (!summary) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground/60">
         <Sparkles className="mb-4 h-7 w-7" />
-        <p className="text-sm font-medium">No summary available</p>
+        <p className="text-sm font-medium">{t("details.summary.empty")}</p>
         <p className="mt-1.5 text-xs text-muted-foreground/60">
-          Summaries are generated when meetings end
+          {t("details.summary.hint")}
         </p>
       </div>
     );

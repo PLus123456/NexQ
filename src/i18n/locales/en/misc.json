@@ -1,1 +1,253 @@
-{}
+{
+  "actionNames": {
+    "assist": "Assist",
+    "whatToSay": "Say",
+    "shorten": "Short",
+    "followUp": "F/U",
+    "recap": "Recap",
+    "askQuestion": "Ask"
+  },
+  "scenarios": {
+    "teamMeeting": {
+      "name": "Team Meeting",
+      "description": "Tracks decisions, action items, speaker attribution"
+    },
+    "lecture": {
+      "name": "Lecture",
+      "description": "Key concepts, definitions, Q&A extraction"
+    },
+    "interview": {
+      "name": "Interview",
+      "description": "Questions, responses, follow-ups"
+    },
+    "webinar": {
+      "name": "Webinar",
+      "description": "Presentation points, audience Q&A"
+    },
+    "oralExam": {
+      "name": "Oral Exam",
+      "description": "Exam prep — professor questions, coached responses, knowledge gaps"
+    }
+  },
+  "noisePresets": {
+    "quietOffice": {
+      "name": "Quiet Office",
+      "description": "Low noise, high sensitivity — catches soft speech"
+    },
+    "classroom": {
+      "name": "Classroom",
+      "description": "Moderate noise, echo tolerant — handles shuffling, chatter"
+    },
+    "conferenceHall": {
+      "name": "Conference Hall",
+      "description": "High noise, aggressive filtering — large rooms, reverb"
+    },
+    "cafe": {
+      "name": "Café / Open Space",
+      "description": "Variable noise, balanced sensitivity — music, conversations nearby"
+    }
+  },
+  "reservedShortcuts": {
+    "startEndMeeting": "Start / end meeting",
+    "showHideOverlay": "Show / hide overlay",
+    "openSettings": "Open settings",
+    "devLog": "Dev log",
+    "demoMode": "Demo mode"
+  },
+  "shortcuts": {
+    "meetingNotSaved": "Couldn't finish saving the meeting",
+    "stealth": {
+      "hidden": "Hidden from screen share",
+      "visible": "Visible in screen share",
+      "failed": "Couldn't change screen-share visibility: {{detail}}"
+    }
+  },
+  "audioPlayer": {
+    "playButton": {
+      "play": "Play",
+      "pause": "Pause"
+    },
+    "volume": {
+      "label": "Volume",
+      "title": "Volume: {{percent}}%"
+    },
+    "speed": {
+      "label": "Cycle playback speed",
+      "hint": "Click to increase speed"
+    },
+    "download": {
+      "label": "Download recording",
+      "fileType": "Audio"
+    },
+    "processing": {
+      "label": "Processing audio..."
+    }
+  },
+  "colorPicker": {
+    "button": {
+      "title": "Pick color"
+    },
+    "hex": {
+      "placeholder": "custom"
+    },
+    "colors": {
+      "white": "White",
+      "warm": "Warm",
+      "snow": "Snow",
+      "cyan": "Cyan",
+      "sky": "Sky",
+      "amber": "Amber",
+      "orange": "Orange",
+      "emerald": "Emerald",
+      "lime": "Lime",
+      "rose": "Rose",
+      "pink": "Pink",
+      "lavender": "Lavender",
+      "indigo": "Indigo",
+      "peach": "Peach",
+      "teal": "Teal"
+    }
+  },
+  "devLog": {
+    "title": "Dev Log",
+    "resizeHandle": {
+      "label": "Resize dev log panel"
+    },
+    "filter": {
+      "all": "all"
+    },
+    "copyAll": {
+      "label": "Copy all"
+    },
+    "detach": {
+      "label": "Open in separate window"
+    },
+    "close": {
+      "label": "Close (Esc)"
+    },
+    "empty": {
+      "waiting": "Waiting for speech events...",
+      "noEntries": "No {{category}} entries"
+    }
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "detail": "An unexpected error occurred."
+  },
+  "streamLatency": {
+    "thinking": "Thinking {{seconds}} s",
+    "writing": "Writing {{seconds}} s",
+    "answering": "Answering…"
+  },
+  "toast": {
+    "dismiss": {
+      "label": "Dismiss notification"
+    },
+    "container": {
+      "label": "Notifications"
+    }
+  },
+  "meetingPrompt": {
+    "status": {
+      "detected": "{{app}} meeting detected"
+    },
+    "nameInput": {
+      "placeholder": "{{app}} — name this meeting",
+      "label": "Meeting name"
+    },
+    "startButton": {
+      "label": "Start {{appName}}"
+    },
+    "typeButton": {
+      "label": "Meeting type: {{type}}"
+    },
+    "typeMenu": {
+      "label": "Meeting type",
+      "heading": "Start as"
+    },
+    "typeFallback": "Meeting",
+    "consent": {
+      "hint": "Let everyone know the meeting is being transcribed."
+    }
+  },
+  "hooks": {
+    "meetingStats": {
+      "duration": {
+        "hoursMinutes": "{{hours}}h {{minutes}}m",
+        "minutesSeconds": "{{minutes}}m {{seconds}}s",
+        "seconds": "{{seconds}}s"
+      }
+    }
+  },
+  "speakerLabels": {
+    "defaultName": "Speaker {{n}}"
+  },
+  "time": {
+    "justNow": "Just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago"
+  },
+  "modes": {
+    "assist": "Assist",
+    "whatToSay": "Say",
+    "shorten": "Short",
+    "followUp": "F/U",
+    "recap": "Recap",
+    "askQuestion": "Ask",
+    "meetingSummary": "Summary",
+    "actionItems": "Actions",
+    "bookmarkSuggestions": "Bookmarks",
+    "meetingAsk": "Ask meeting"
+  },
+  "endMeetingSave": {
+    "unsavedTranscript_one": "{{count}} transcript line could not be saved. The meeting is still open — press End again.",
+    "unsavedTranscript_other": "{{count}} transcript lines could not be saved. The meeting is still open — press End again."
+  },
+  "export": {
+    "labels": {
+      "date": "Date:",
+      "duration": "Duration:",
+      "mode": "Mode:",
+      "scenario": "Scenario:",
+      "segments": "Segments:",
+      "attendees": "Attendees:"
+    },
+    "headings": {
+      "summary": "Summary",
+      "actionItems": "Action Items",
+      "bookmarks": "Bookmarks",
+      "transcript": "Transcript",
+      "aiInteractions": "AI Interactions",
+      "keyTakeaways": "Key Takeaways",
+      "topicsCovered": "Topics Covered",
+      "notes": "Notes",
+      "followUpActions": "Follow-Up Actions",
+      "agendaItems": "Agenda Items",
+      "discussion": "Discussion"
+    },
+    "docs": {
+      "studyNotes": "Study Notes",
+      "meetingMinutes": "Meeting Minutes",
+      "heading": "{{kind}} — {{title}}"
+    },
+    "scenarios": {
+      "teamMeeting": "team meeting",
+      "lecture": "lecture",
+      "interview": "interview",
+      "webinar": "webinar",
+      "oralExam": "oral exam",
+      "custom": "custom"
+    },
+    "noNote": "(no note)",
+    "startsAt": "Starts at {{time}}",
+    "attendeeSeparator": ", ",
+    "filters": {
+      "srt": "SRT Subtitles"
+    },
+    "toast": {
+      "exported": "Exported successfully",
+      "failed": "Export failed — check disk space"
+    }
+  }
+}

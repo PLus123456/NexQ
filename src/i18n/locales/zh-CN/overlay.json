@@ -1,1 +1,219 @@
-{}
+{
+  "response": {
+    "tabs": {
+      "ariaLabel": "AI 回答标签页",
+      "current": "当前"
+    },
+    "history": {
+      "label": "历史",
+      "ariaLabel_other": "历史记录，{{count}} 条回答"
+    },
+    "content": {
+      "ariaLabel": "AI 回答内容"
+    },
+    "empty": {
+      "hint": "按 <kbd>Space</kbd> 调用 AI 助手"
+    },
+    "typeset": {
+      "label": "AI 文字",
+      "smaller": "缩小字号",
+      "larger": "放大字号",
+      "colorLabel": "AI 文字颜色",
+      "lineHeight": {
+        "label": "行高",
+        "decrease": "减小行高",
+        "increase": "增大行高"
+      },
+      "margin": {
+        "decrease": "减小边距",
+        "increase": "增大边距"
+      },
+      "align": {
+        "left": {
+          "label": "左",
+          "title": "左对齐"
+        },
+        "center": {
+          "label": "中",
+          "title": "居中对齐"
+        },
+        "right": {
+          "label": "右",
+          "title": "右对齐"
+        }
+      }
+    },
+    "timing": {
+      "firstWords": "首字延迟 {{duration}}"
+    },
+    "actions": {
+      "copy": "复制到剪贴板",
+      "pin": "固定此回答",
+      "unpin": "取消固定"
+    }
+  },
+  "progress": {
+    "phase": {
+      "sending": "发送中…",
+      "waiting": "等待 AI 开始回答…",
+      "thinking": "思考中…",
+      "writing": "生成中…"
+    },
+    "answer": "回答",
+    "ariaLabel": "{{label}}：{{phase}}",
+    "lines": {
+      "none": "自上次回答后没有新的转写内容",
+      "sent_other": "已发送 {{count}} 行新转写内容",
+      "total_other": "{{count}} 行转写内容"
+    }
+  },
+  "format": {
+    "seconds": "{{value}} 秒"
+  },
+  "history": {
+    "title": "全部回答",
+    "close": "关闭回答历史",
+    "pinned": "已固定"
+  },
+  "question": {
+    "region": {
+      "ariaLabel": "检测到的问题"
+    },
+    "empty": "正在聆听对方的提问",
+    "card": {
+      "labelAnswered": "问题：{{text}}。已回答",
+      "labelPending": "问题：{{text}}。点击让 AI 帮忙回答"
+    },
+    "answered": "已回答",
+    "assist": "帮我回答",
+    "button": {
+      "answeredLabel": "已回答",
+      "assistLabel": "让 AI 帮忙回答这个问题"
+    },
+    "dismiss": "忽略此问题"
+  },
+  "scope": {
+    "label": {
+      "default": "按动作默认",
+      "sinceLastAny": "上次回答以来",
+      "sinceLastSame": "上次同一动作以来",
+      "minutes": "最近 {{minutes}} 分钟",
+      "all": "整场会议"
+    },
+    "option": {
+      "sinceLastSame": "上次同一动作以来"
+    },
+    "optionHint": {
+      "default": "各动作自己的转写时间窗",
+      "defaultClaude": "Claude 根据整场会议自行判断",
+      "sinceLastAny": "最近一次回答（不限动作）后的新发言",
+      "sinceLastSame": "该动作上次运行之后的新发言",
+      "all": "目前为止的全部发言"
+    },
+    "actionHint": {
+      "sinceLastAny": "上次回答以来",
+      "sinceLastSame": "上次“{{action}}”以来",
+      "minutes": "最近 {{minutes}} 分钟",
+      "all": "整场会议"
+    },
+    "resolved": {
+      "firstAny": "整场会议（首次回答）",
+      "sinceLastSame": "上次“{{action}}”以来",
+      "firstSame": "整场会议（首次“{{action}}”）"
+    },
+    "chip": {
+      "ariaLabel": "转写范围：{{label}}",
+      "ariaLabelOnce": "转写范围：{{label}}，仅限下一个动作",
+      "titleOnce": "转写范围：{{label}}（仅限下一个动作）",
+      "once": "仅一次"
+    },
+    "dialog": {
+      "title": "转写范围",
+      "heading": "让后续回答聚焦于"
+    },
+    "minutes": {
+      "group": "分钟",
+      "preset": "最近 {{minutes}} 分钟",
+      "custom": "自定义分钟数（{{min}} 到 {{max}}）",
+      "unit": "分钟"
+    },
+    "note": {
+      "claude": "Claude 的实时会话里已经有整场会议的内容，每次请求只发送新增的转写内容。这里只是告诉它该关注哪一段。",
+      "settings": "每个动作的转写时间窗可在<settings>设置 → AI 动作</settings>中调整。"
+    },
+    "sticky": {
+      "label": "后续动作继续沿用"
+    }
+  },
+  "modes": {
+    "shortcutLabel": "{{name}}（{{shortcut}}）",
+    "errors": {
+      "cancelFailed": "取消生成失败",
+      "generateFailed": "生成 AI 回答失败",
+      "sendFailed": "发送问题失败"
+    },
+    "ask": {
+      "closeLabel": "关闭提问框"
+    }
+  },
+  "ask": {
+    "input": {
+      "placeholder": "就这场会议提问…",
+      "ariaLabel": "提出问题"
+    },
+    "send": {
+      "title": "发送（Enter）",
+      "ariaLabel": "发送问题"
+    },
+    "close": {
+      "title": "关闭（Esc）",
+      "ariaLabel": "关闭提问框"
+    },
+    "errors": {
+      "sendFailed": "发送问题失败"
+    }
+  },
+  "speakerStats": {
+    "title": "说话人统计",
+    "count_other": "{{count}} 位说话人",
+    "empty": "还没有记录到说话人。",
+    "lastSpoke": {
+      "now": "刚刚",
+      "seconds": "{{seconds}} 秒前",
+      "minutes": "{{minutes}} 分钟前"
+    },
+    "rename": {
+      "title": "{{name}}（点击重命名）"
+    },
+    "words": "{{words}} 词"
+  },
+  "bookmarks": {
+    "panel": {
+      "empty": "还没有书签。右键点击某一行，或按 Ctrl+B 添加书签。",
+      "title": "书签（{{total}}）",
+      "jump": "跳转到该行",
+      "notePlaceholder": "添加备注…"
+    },
+    "toast": {
+      "added": "已添加书签",
+      "addNote": "+ 备注",
+      "notePlaceholder": "添加备注…"
+    }
+  },
+  "contextMenu": {
+    "bookmark": "添加书签",
+    "removeBookmark": "移除书签",
+    "addNote": "添加备注",
+    "copyText": "复制文本"
+  },
+  "speakerNaming": {
+    "detected": "检测到新的说话人：",
+    "name": {
+      "heading": "为这位说话人命名",
+      "placeholder": "例如：王教授"
+    },
+    "merge": {
+      "heading": "其实这是…"
+    }
+  }
+}

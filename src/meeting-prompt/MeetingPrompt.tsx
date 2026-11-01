@@ -3,7 +3,8 @@ import { Check, ChevronDown, Play, X } from "lucide-react";
 import { dismissMeetingPrompt, getDetectedMeeting } from "../lib/ipc";
 import { emitStartDetectedMeeting, onDetectedMeetingEnded, onMeetingDetected } from "../lib/events";
 import { composeMeetingTitle } from "../lib/meetingTitle";
-import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
+import { BUILT_IN_SCENARIOS, scenarioDescription, scenarioName } from "../lib/scenarios";
+import { useT } from "../i18n";
 import type { AIScenario, MeetingPromptInfo } from "../lib/types";
 
 /** Window height with the card alone, and with the meeting-type menu open below it. */
@@ -27,6 +28,7 @@ export function MeetingPrompt({
   /** The meeting-type menu opened or closed (the window makes room for it). */
   onMenuToggle?: (open: boolean) => void;
 }) {
+  const { t } = useT(["misc", "common"]);
   const { meeting } = info;
   const [title, setTitle] = useState(meeting.title ?? "");
   const [scenario, setScenario] = useState<AIScenario>(info.default_scenario);
@@ -35,7 +37,8 @@ export function MeetingPrompt({
   const [focusIdx, setFocusIdx] = useState(0);
   const chevronRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const scenarioName = BUILT_IN_SCENARIOS.find((s) => s.id === scenario)?.name ?? "Meeting";
+  const currentScenario = BUILT_IN_SCENARIOS.find((s) => s.id === scenario);
+  const scenarioLabel = currentScenario ? scenarioName(currentScenario) : t("meetingPrompt.typeFallback");
 
   const start = useCallback(() => {
     onStart(composeMeetingTitle(title.trim() || meeting.app_name), scenario);
@@ -82,18 +85,18 @@ export function MeetingPrompt({
     const onKey = (e: KeyboardEvent) => {
       if (menuOpen) {
         const count = BUILT_IN_SCENARIOS.length;
-        if (e.key === "Escape") closeMenu();
+        if (e.key === "Escape") closeMenu(); // i18n-ignore: 键名
         else if (e.key === "ArrowDown") setFocusIdx((i) => (i + 1) % count);
         else if (e.key === "ArrowUp") setFocusIdx((i) => (i - 1 + count) % count);
-        else if (e.key === "Home") setFocusIdx(0);
-        else if (e.key === "End") setFocusIdx(count - 1);
-        else if (e.key === "Enter" || e.key === " ") choose(BUILT_IN_SCENARIOS[focusIdx].id as AIScenario);
+        else if (e.key === "Home") setFocusIdx(0); // i18n-ignore: 键名
+        else if (e.key === "End") setFocusIdx(count - 1); // i18n-ignore: 键名
+        else if (e.key === "Enter" || e.key === " ") choose(BUILT_IN_SCENARIOS[focusIdx].id as AIScenario); // i18n-ignore: 键名
         else return;
         e.preventDefault();
         return;
       }
-      if (e.key === "Escape") onDismiss();
-      else if (e.key === "Enter" && e.target !== chevronRef.current) start();
+      if (e.key === "Escape") onDismiss(); // i18n-ignore: 键名
+      else if (e.key === "Enter" && e.target !== chevronRef.current) start(); // i18n-ignore: 键名
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -114,13 +117,13 @@ export function MeetingPrompt({
       >
         <div
           role="dialog"
-          aria-label={`${meeting.app_name} meeting detected`}
+          aria-label={t("meetingPrompt.status.detected", { app: meeting.app_name })}
           className="meeting-prompt-enter relative w-full overflow-hidden rounded-[18px] border border-white/10 bg-[hsl(228_22%_9%/0.96)] text-foreground shadow-[0_10px_30px_-8px_rgba(0,0,0,0.6)] backdrop-blur-xl"
         >
           <button
             type="button"
             onClick={onDismiss}
-            aria-label="Dismiss"
+            aria-label={t("common:actions.dismiss")}
             className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-white/10 hover:text-foreground cursor-pointer"
           >
             <X className="h-3 w-3" />
@@ -135,15 +138,15 @@ export function MeetingPrompt({
                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
                 </span>
                 <span className="truncate">
-                  {meeting.app_name} meeting detected
-                  <span className="text-muted-foreground/50"> · {scenarioName}</span>
+                  {t("meetingPrompt.status.detected", { app: meeting.app_name })}
+                  <span className="text-muted-foreground/50"> · {scenarioLabel}</span>
                 </span>
               </p>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder={`${meeting.app_name} — name this meeting`}
-                aria-label="Meeting name"
+                placeholder={t("meetingPrompt.nameInput.placeholder", { app: meeting.app_name })}
+                aria-label={t("meetingPrompt.nameInput.label")}
                 maxLength={120}
                 className="mt-0.5 w-full truncate bg-transparent text-sm font-semibold text-foreground placeholder:font-medium placeholder:text-muted-foreground/50 focus:outline-none"
               />
@@ -157,7 +160,7 @@ export function MeetingPrompt({
                 className="flex items-center gap-1.5 py-2 pl-3.5 pr-3 text-xs font-semibold transition-all duration-150 hover:brightness-110 active:scale-[0.97] cursor-pointer"
               >
                 <Play className="h-3 w-3 fill-current" aria-hidden="true" />
-                Start NexQ
+                {t("meetingPrompt.startButton.label")}
               </button>
               <button
                 ref={chevronRef}
@@ -165,7 +168,7 @@ export function MeetingPrompt({
                 onClick={() => (menuOpen ? closeMenu() : openMenu())}
                 aria-haspopup="listbox"
                 aria-expanded={menuOpen}
-                aria-label={`Meeting type: ${scenarioName}`}
+                aria-label={t("meetingPrompt.typeButton.label", { type: scenarioLabel })}
                 className={`flex w-7 items-center justify-center border-l border-primary-foreground/20 transition-colors cursor-pointer ${
                   menuOpen ? "bg-black/15" : "hover:bg-black/10"
                 }`}
@@ -179,7 +182,7 @@ export function MeetingPrompt({
           </div>
 
           <p className="-mt-1.5 truncate pb-2.5 pl-8 pr-3 text-[10px] text-muted-foreground/45">
-            Let everyone know the meeting is being transcribed.
+            {t("meetingPrompt.consent.hint")}
           </p>
 
           {total > 0 && (
@@ -192,11 +195,11 @@ export function MeetingPrompt({
         {menuOpen && (
           <div
             role="listbox"
-            aria-label="Meeting type"
+            aria-label={t("meetingPrompt.typeMenu.label")}
             className="scope-pop-enter absolute right-0 top-full z-10 mt-1.5 w-64 rounded-2xl border border-white/10 bg-[hsl(228_22%_9%/0.97)] p-1.5 shadow-[0_14px_36px_-10px_rgba(0,0,0,0.7)] backdrop-blur-xl"
           >
             <p className="px-2.5 pb-1 pt-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/45">
-              Start as
+              {t("meetingPrompt.typeMenu.heading")}
             </p>
             {BUILT_IN_SCENARIOS.map((s, idx) => {
               const selected = s.id === scenario;
@@ -221,9 +224,9 @@ export function MeetingPrompt({
                   </span>
                   <span className="min-w-0">
                     <span className={`block text-xs ${selected ? "font-semibold text-foreground" : "font-medium text-foreground/85"}`}>
-                      {s.name}
+                      {scenarioName(s)}
                     </span>
-                    <span className="block truncate text-[10px] text-muted-foreground/55">{s.description}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground/55">{scenarioDescription(s)}</span>
                   </span>
                 </button>
               );
@@ -248,7 +251,7 @@ export function MeetingPromptWindow() {
 
     // Dev only: `?view=meeting-prompt&demo` previews the card in a browser.
     if (window.location.port === "5173" && new URLSearchParams(window.location.search).has("demo")) {
-      setInfo({ meeting: { app: "zoom", app_name: "Zoom", title: "Weekly design sync" }, auto_dismiss_secs: 60, default_scenario: "team_meeting" });
+      setInfo({ meeting: { app: "zoom", app_name: "Zoom", title: "Weekly design sync" }, auto_dismiss_secs: 60, default_scenario: "team_meeting" }); // i18n-ignore: 仅开发预览用的演示数据
       return;
     }
     getDetectedMeeting().then((current) => current && setInfo(current)).catch(() => {});

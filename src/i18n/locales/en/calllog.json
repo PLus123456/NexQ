@@ -1,1 +1,148 @@
-{}
+{
+  "entry": {
+    "sources": {
+      "transcript": {
+        "label": "T",
+        "title": "Transcript"
+      },
+      "rag": {
+        "label": "R",
+        "title": "Document Excerpts"
+      },
+      "instructions": {
+        "label": "I",
+        "title": "Instructions"
+      },
+      "question": {
+        "label": "Q",
+        "title": "Question"
+      }
+    },
+    "stalled": "No response yet",
+    "latency": {
+      "title": "Answered in {{total}}",
+      "titleWithFirst": "Answered in {{total}} — first words after {{first}}"
+    },
+    "temperature": {
+      "title": "Temperature: {{value}}"
+    }
+  },
+  "panel": {
+    "title": "AI Call Log",
+    "close": "Close (Esc)",
+    "clearAll": "Clear all",
+    "export": {
+      "title": "Export transcript",
+      "translatedTxt": "Translated transcript (.txt)",
+      "bilingualTxt": "Bilingual transcript (.txt)",
+      "bilingualMd": "Bilingual transcript (.md)",
+      "clipboard": "Copy to clipboard",
+      "copied": "Copied to clipboard",
+      "downloaded": "Export downloaded",
+      "failed": "Export failed: {{detail}}"
+    },
+    "stats": {
+      "calls": "Calls",
+      "avgResponse": "Avg response",
+      "firstWord": "First word",
+      "tokens": "Tokens",
+      "errors": "Errors"
+    },
+    "translating": "Translating to {{lang}}...",
+    "empty": {
+      "none": "No AI calls yet",
+      "noMatch": "No calls match filter"
+    },
+    "detailHint": "Click an entry to view prompt details"
+  },
+  "sidebar": {
+    "title": "AI Call Log",
+    "close": "Close (Esc)",
+    "clearAll": "Clear all",
+    "stats": {
+      "calls": "Calls",
+      "avg": "Avg",
+      "avgValue": "{{ms}}ms",
+      "tokens": "Tokens",
+      "errors": "Errors"
+    },
+    "empty": {
+      "none": "No AI calls yet",
+      "noMatch": "No calls match filter"
+    }
+  },
+  "stats": {
+    "filter": {
+      "all": "All",
+      "errors": "Errors"
+    },
+    "usage": {
+      "prompt": "{{tokens}} in",
+      "promptWithCache": "{{tokens}} in ({{cache}})",
+      "cacheRead": "{{tokens}} cached",
+      "cacheWrite": "{{tokens}} written",
+      "output": "{{tokens}} out",
+      "outputWithThinking": "{{tokens}} out ({{thinking}} thinking)"
+    }
+  },
+  "prompt": {
+    "view": {
+      "structured": "Structured",
+      "raw": "Raw"
+    },
+    "tokens": {
+      "label": "Tokens:",
+      "system": "System",
+      "transcript": "Transcript",
+      "rag": "RAG",
+      "estimate": "≈ estimate",
+      "actual": "Actual:",
+      "scope": "Scope:",
+      "sessionPrompt": "<strong>Session prompt</strong> (sent once when the session started)",
+      "sentThisRequest": "Sent this request"
+    },
+    "rag": {
+      "title": "RAG CHUNKS",
+      "noRelevantBadge": "0 relevant",
+      "query": "Query:",
+      "chunkRef": "{{source}} (chunk {{index}})",
+      "filtered_one": "{{count}} chunk filtered (below threshold)",
+      "filtered_other": "{{count}} chunks filtered (below threshold)",
+      "noneFound": "No relevant chunks found",
+      "noneFoundDetail": "— {{count}} candidates below threshold"
+    },
+    "section": {
+      "systemPrompt": "SYSTEM PROMPT",
+      "userMessage": "USER MESSAGE",
+      "response": "RESPONSE",
+      "responseStreaming": "RESPONSE (streaming...)"
+    },
+    "raw": {
+      "systemMessage": "System Message",
+      "userMessage": "User Message",
+      "response": "Response",
+      "streaming": "streaming..."
+    },
+    "empty": "(empty)",
+    "badge": {
+      "system": "System",
+      "response": "Response",
+      "instruction": "Instruction",
+      "modeInstruction": "Mode Instruction",
+      "context": "Context",
+      "documentContext": "Document Context",
+      "chunks": "{{count}} chunks",
+      "transcript": "Transcript",
+      "segments": "{{count}} segments",
+      "question": "Question",
+      "detected": "Detected",
+      "confidence": "{{percent}}% confidence",
+      "toShorten": "To Shorten",
+      "section": "Section"
+    },
+    "copy": {
+      "label": "Copy section",
+      "failed": "Couldn't copy — try selecting the text manually"
+    }
+  }
+}

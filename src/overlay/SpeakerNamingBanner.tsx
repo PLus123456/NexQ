@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { useSpeakerStore } from "../stores/speakerStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { UserPlus, X } from "lucide-react";
+import { useT } from "../i18n";
 
 export function SpeakerNamingBanner() {
+  const { t } = useT(["overlay", "common"]);
   const pendingNaming = useSpeakerStore((s) => s.pendingNaming);
   const renameSpeaker = useSpeakerStore((s) => s.renameSpeaker);
   const dismissNaming = useSpeakerStore((s) => s.dismissNaming);
@@ -84,14 +86,14 @@ export function SpeakerNamingBanner() {
       <div className="flex items-center gap-2 mb-2">
         <UserPlus className="h-3.5 w-3.5 shrink-0 text-purple-400" />
         <span className="text-xs text-muted-foreground/80">
-          New speaker detected:
+          {t("speakerNaming.detected")}
           <span className="ml-1 font-semibold text-purple-400">{defaultName}</span>
         </span>
         <button
           type="button"
           onClick={dismissNaming}
           className="ml-auto shrink-0 rounded-md p-0.5 text-muted-foreground/50 hover:text-muted-foreground/80 hover:bg-white/5 transition-colors cursor-pointer"
-          aria-label="Dismiss"
+          aria-label={t("common:actions.dismiss")}
         >
           <X className="h-3 w-3" />
         </button>
@@ -102,7 +104,7 @@ export function SpeakerNamingBanner() {
         {/* Left: Name this speaker */}
         <div className="flex-1 rounded-md bg-white/[0.03] border border-white/[0.06] p-2">
           <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 mb-1.5">
-            Name this speaker
+            {t("speakerNaming.name.heading")}
           </div>
           <form onSubmit={handleSubmit} className="flex gap-1.5">
             <input
@@ -110,7 +112,7 @@ export function SpeakerNamingBanner() {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Professor Smith"
+              placeholder={t("speakerNaming.name.placeholder")}
               maxLength={40}
               className="flex-1 min-w-0 rounded-md bg-white/5 border border-purple-400/20 px-2 py-1 text-xs text-foreground/90 placeholder:text-muted-foreground/40 outline-none focus:border-purple-400/40"
             />
@@ -118,7 +120,7 @@ export function SpeakerNamingBanner() {
               type="submit"
               className="shrink-0 rounded-md bg-purple-400/15 px-2.5 py-1 text-xs font-medium text-purple-400 hover:bg-purple-400/25 transition-colors cursor-pointer"
             >
-              Save
+              {t("common:actions.save")}
             </button>
           </form>
         </div>
@@ -127,7 +129,7 @@ export function SpeakerNamingBanner() {
         {mergeTargets.length > 0 && (
           <div className="flex-1 rounded-md bg-white/[0.03] border border-white/[0.06] p-2">
             <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 mb-1.5">
-              Actually this is...
+              {t("speakerNaming.merge.heading")}
             </div>
             <div className="flex flex-wrap gap-1">
               {mergeTargets.map((target) => (

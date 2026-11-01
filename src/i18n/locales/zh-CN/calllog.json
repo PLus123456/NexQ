@@ -1,1 +1,147 @@
-{}
+{
+  "entry": {
+    "sources": {
+      "transcript": {
+        "label": "转",
+        "title": "转写记录"
+      },
+      "rag": {
+        "label": "库",
+        "title": "知识库文本块"
+      },
+      "instructions": {
+        "label": "指",
+        "title": "附加指令"
+      },
+      "question": {
+        "label": "问",
+        "title": "问题"
+      }
+    },
+    "stalled": "暂无响应",
+    "latency": {
+      "title": "回答耗时 {{total}}",
+      "titleWithFirst": "回答耗时 {{total}}，首字延迟 {{first}}"
+    },
+    "temperature": {
+      "title": "温度：{{value}}"
+    }
+  },
+  "panel": {
+    "title": "AI 调用日志",
+    "close": "关闭（Esc）",
+    "clearAll": "全部清除",
+    "export": {
+      "title": "导出转写记录",
+      "translatedTxt": "翻译后的转写记录（.txt）",
+      "bilingualTxt": "双语转写记录（.txt）",
+      "bilingualMd": "双语转写记录（.md）",
+      "clipboard": "复制到剪贴板",
+      "copied": "已复制到剪贴板",
+      "downloaded": "导出文件已下载",
+      "failed": "导出失败：{{detail}}"
+    },
+    "stats": {
+      "calls": "调用次数",
+      "avgResponse": "平均耗时",
+      "firstWord": "首字延迟",
+      "tokens": "token",
+      "errors": "错误"
+    },
+    "translating": "正在翻译为 {{lang}}…",
+    "empty": {
+      "none": "还没有 AI 调用",
+      "noMatch": "没有符合筛选条件的调用"
+    },
+    "detailHint": "点击一条记录查看提示词详情"
+  },
+  "sidebar": {
+    "title": "AI 调用日志",
+    "close": "关闭（Esc）",
+    "clearAll": "全部清除",
+    "stats": {
+      "calls": "调用次数",
+      "avg": "平均耗时",
+      "avgValue": "{{ms}} 毫秒",
+      "tokens": "token",
+      "errors": "错误"
+    },
+    "empty": {
+      "none": "还没有 AI 调用",
+      "noMatch": "没有符合筛选条件的调用"
+    }
+  },
+  "stats": {
+    "filter": {
+      "all": "全部",
+      "errors": "错误"
+    },
+    "usage": {
+      "prompt": "输入 {{tokens}}",
+      "promptWithCache": "输入 {{tokens}}（{{cache}}）",
+      "cacheRead": "缓存命中 {{tokens}}",
+      "cacheWrite": "缓存写入 {{tokens}}",
+      "output": "输出 {{tokens}}",
+      "outputWithThinking": "输出 {{tokens}}（思考 {{thinking}}）"
+    }
+  },
+  "prompt": {
+    "view": {
+      "structured": "结构化",
+      "raw": "原始"
+    },
+    "tokens": {
+      "label": "token：",
+      "system": "系统",
+      "transcript": "转写记录",
+      "rag": "知识库",
+      "estimate": "≈ 估算",
+      "actual": "实际用量：",
+      "scope": "转写范围：",
+      "sessionPrompt": "<strong>会话提示词</strong>（会话开始时发送一次）",
+      "sentThisRequest": "本次请求发送"
+    },
+    "rag": {
+      "title": "知识库文本块",
+      "noRelevantBadge": "无相关文本块",
+      "query": "查询：",
+      "chunkRef": "{{source}}（文本块 {{index}}）",
+      "filtered_other": "已过滤 {{count}} 个文本块（低于阈值）",
+      "noneFound": "未找到相关文本块",
+      "noneFoundDetail": "—— 有 {{count}} 个候选低于阈值"
+    },
+    "section": {
+      "systemPrompt": "系统提示词",
+      "userMessage": "用户消息",
+      "response": "回答",
+      "responseStreaming": "回答（生成中…）"
+    },
+    "raw": {
+      "systemMessage": "系统消息",
+      "userMessage": "用户消息",
+      "response": "回答",
+      "streaming": "生成中…"
+    },
+    "empty": "（空）",
+    "badge": {
+      "system": "系统",
+      "response": "回答",
+      "instruction": "指令",
+      "modeInstruction": "模式指令",
+      "context": "上下文",
+      "documentContext": "知识库上下文",
+      "chunks": "{{count}} 个文本块",
+      "transcript": "转写记录",
+      "segments": "{{count}} 个片段",
+      "question": "问题",
+      "detected": "检测到",
+      "confidence": "置信度 {{percent}}%",
+      "toShorten": "待精简",
+      "section": "部分"
+    },
+    "copy": {
+      "label": "复制此部分",
+      "failed": "复制失败，请手动选中文本后复制"
+    }
+  }
+}

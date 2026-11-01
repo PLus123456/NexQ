@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDevLogStore } from "../stores/devLogStore";
 import { Copy, ExternalLink, Trash2, X } from "lucide-react";
+import { APP_NAME } from "../lib/brand";
+import { formatDate, useT } from "../i18n";
 
 // For the detached window, we import Tauri's WebviewWindow API
-async function openDetachedDevLog() {
+async function openDetachedDevLog(windowTitle: string) {
   try {
     const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
     // Check if window already exists
@@ -13,10 +15,10 @@ async function openDetachedDevLog() {
       return;
     }
     // Create a new window pointing to the same app with ?view=devlog
-    const devUrl = `${window.location.origin}${window.location.pathname}?view=devlog`;
+    const devUrl = `${window.location.origin}${window.location.pathname}?view=devlog`; // i18n-ignore: URL
     new WebviewWindow("devlog", {
       url: devUrl,
-      title: "NexQ Dev Log",
+      title: windowTitle,
       width: 700,
       height: 450,
       resizable: true,
@@ -37,6 +39,7 @@ export function DevLogPanel({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t } = useT("misc");
   const [height, setHeight] = useState(180);
   const isDragging = useRef(false);
   const startY = useRef(0);
@@ -75,14 +78,14 @@ export function DevLogPanel({
         onMouseDown={onMouseDown}
         className="h-1.5 shrink-0 cursor-ns-resize hover:bg-primary/20 transition-colors flex items-center justify-center"
         role="separator"
-        aria-label="Resize dev log panel"
+        aria-label={t("devLog.resizeHandle.label")}
       >
         <div className="h-0.5 w-8 rounded-full bg-border/30" />
       </div>
       <DevLogContent
         onClose={onClose}
         onDetach={() => {
-          openDetachedDevLog();
+          openDetachedDevLog(`${APP_NAME} ${t("devLog.title")}`);
           onClose();
         }}
       />
@@ -102,6 +105,9 @@ export function DevLogFullPage() {
 const FILTER_CATEGORIES = ["all", "speaker", "stt", "audio", "config", "rag"] as const;
 type FilterCategory = (typeof FILTER_CATEGORIES)[number];
 
+/** Clock time of a log line (what `toLocaleTimeString()` showed). */
+const LOG_TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit", second: "2-digit" };
+
 /** Shared content used by both inline panel and detached window. */
 function DevLogContent({
   onClose,
@@ -110,6 +116,7 @@ function DevLogContent({
   onClose?: () => void;
   onDetach?: () => void;
 } = {}) {
+  const { t } = useT(["misc", "common"]);
   const entries = useDevLogStore((s) => s.entries);
   const clear = useDevLogStore((s) => s.clear);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -133,7 +140,7 @@ function DevLogContent({
   useEffect(() => {
     if (!onClose) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onClose(); // i18n-ignore: 键名
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -147,7 +154,7 @@ function DevLogContent({
     const text = filteredEntries
       .map(
         (e) =>
-          `[${e.timestamp.toLocaleTimeString()}] [${e.level.toUpperCase()}] [${e.source}] ${e.message}`
+          `[${formatDate(e.timestamp, LOG_TIME_FORMAT)}] [${e.level.toUpperCase()}] [${e.source}] ${e.message}`
       )
       .join("\n");
     navigator.clipboard.writeText(text);
@@ -158,7 +165,7 @@ function DevLogContent({
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between border-b border-border/20 px-3 py-1.5">
         <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
-          Dev Log
+          {t("devLog.title")}
         </span>
         <div className="flex items-center gap-1.5">
           {/* Category filter buttons */}
@@ -172,7 +179,7 @@ function DevLogContent({
                   : "text-muted-foreground/50 hover:text-foreground"
               }`}
             >
-              {cat}
+              {cat === "all" ? t("devLog.filter.all") : cat}
             </button>
           ))}
           <span className="text-meta tabular-nums text-muted-foreground/60">
@@ -181,14 +188,14 @@ function DevLogContent({
           <button
             onClick={handleCopyAll}
             className="rounded p-1 text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
-            aria-label="Copy all"
+            aria-label={t("devLog.copyAll.label")}
           >
             <Copy className="h-3 w-3" />
           </button>
           <button
             onClick={clear}
             className="rounded p-1 text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
-            aria-label="Clear"
+            aria-label={t("common:actions.clear")}
           >
             <Trash2 className="h-3 w-3" />
           </button>
@@ -196,7 +203,7 @@ function DevLogContent({
             <button
               onClick={onDetach}
               className="rounded p-1 text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
-              aria-label="Open in separate window"
+              aria-label={t("devLog.detach.label")}
             >
               <ExternalLink className="h-3 w-3" />
             </button>
@@ -205,7 +212,7 @@ function DevLogContent({
             <button
               onClick={onClose}
               className="rounded p-1 text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
-              aria-label="Close (Esc)"
+              aria-label={t("devLog.close.label")}
             >
               <X className="h-3 w-3" />
             </button>
@@ -221,7 +228,9 @@ function DevLogContent({
       >
         {filteredEntries.length === 0 ? (
           <div className="flex h-full min-h-[60px] items-center justify-center text-muted-foreground/60">
-            {entries.length === 0 ? "Waiting for speech events..." : `No ${filterCategory} entries`}
+            {entries.length === 0
+              ? t("devLog.empty.waiting")
+              : t("devLog.empty.noEntries", { category: filterCategory })}
           </div>
         ) : (
           filteredEntries.map((entry) => (
@@ -230,7 +239,7 @@ function DevLogContent({
               className="flex gap-1.5 rounded px-1 py-0.5 hover:bg-accent/20"
             >
               <span className="shrink-0 tabular-nums text-muted-foreground/60">
-                {entry.timestamp.toLocaleTimeString()}
+                {formatDate(entry.timestamp, LOG_TIME_FORMAT)}
               </span>
               <span
                 className={`shrink-0 font-semibold uppercase ${

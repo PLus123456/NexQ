@@ -1,7 +1,8 @@
 // Noise preset settings — radio-style selection for in-person meeting audio environments.
 
 import { useConfigStore } from "../stores/configStore";
-import { NOISE_PRESETS } from "../lib/scenarios";
+import { NOISE_PRESETS, noisePresetDescription, noisePresetName } from "../lib/scenarios";
+import { useT } from "../i18n";
 
 const PRESET_ICONS: Record<string, string> = {
   quiet_office: "🏢",
@@ -11,15 +12,16 @@ const PRESET_ICONS: Record<string, string> = {
 };
 
 export function NoisePresetSettings() {
+  const { t } = useT(["settings", "common"]);
   const noisePreset = useConfigStore((s) => s.noisePreset);
   const setNoisePreset = useConfigStore((s) => s.setNoisePreset);
 
   return (
     <div className="space-y-4">
       <div>
-        <label className="text-sm font-medium text-foreground">Noise Environment</label>
+        <label className="text-sm font-medium text-foreground">{t("noisePresets.title")}</label>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Primarily affects in-person meetings
+          {t("noisePresets.hint")}
         </p>
       </div>
 
@@ -48,10 +50,10 @@ export function NoisePresetSettings() {
               <p className={`text-xs font-medium transition-colors duration-150 ${
                 noisePreset === null ? "text-primary" : "text-foreground"
               }`}>
-                Default
+                {t("common:labels.default")}
               </p>
               <p className="mt-0.5 text-meta text-muted-foreground/60">
-                No noise filtering — use provider defaults
+                {t("noisePresets.none.hint")}
               </p>
             </div>
           </div>
@@ -88,14 +90,17 @@ export function NoisePresetSettings() {
                   <p className={`text-xs font-medium transition-colors duration-150 ${
                     noisePreset === preset.id ? "text-primary" : "text-foreground"
                   }`}>
-                    {preset.name}
+                    {noisePresetName(preset)}
                   </p>
                   <span className="text-meta text-muted-foreground/40 tabular-nums">
-                    VAD {Math.round(preset.vad_sensitivity * 100)}% · Gate {preset.noise_gate_db} dB
+                    {t("noisePresets.metrics", {
+                      sensitivity: Math.round(preset.vad_sensitivity * 100),
+                      gate: preset.noise_gate_db,
+                    })}
                   </span>
                 </div>
                 <p className="mt-0.5 text-meta text-muted-foreground/60">
-                  {preset.description}
+                  {noisePresetDescription(preset)}
                 </p>
               </div>
             </div>

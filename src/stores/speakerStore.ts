@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { SpeakerIdentity, SpeakerStats, SpeakerSource } from "../lib/types";
 import { getSpeakerColor, FIXED_SPEAKER_COLORS } from "../lib/speakerColors";
 import { defaultRemoteSpeakerName, remoteSpeakerColor, remoteSpeakerId } from "../lib/speakerLabels";
+import { t } from "../i18n";
 
 interface SpeakerState {
   speakers: Record<string, SpeakerIdentity>;
@@ -68,8 +69,10 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
   pendingNaming: null,
 
   initForOnline: () => {
-    const you = makeSpeaker("you", "You", "fixed", FIXED_SPEAKER_COLORS.you);
-    const them = makeSpeaker("them", "Them", "fixed", FIXED_SPEAKER_COLORS.them);
+    // The default names are stored with the speaker (and saved with the
+    // meeting), so they are translated here, when the speaker is created.
+    const you = makeSpeaker("you", t("common:labels.you"), "fixed", FIXED_SPEAKER_COLORS.you);
+    const them = makeSpeaker("them", t("common:labels.them"), "fixed", FIXED_SPEAKER_COLORS.them);
     set({
       speakers: { you, them },
       speakerOrder: ["you", "them"],
@@ -83,7 +86,7 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
       set({ speakers: {}, speakerOrder: [], pendingNaming: null });
     } else {
       // In-person without diarization: single "Room" label for all audio
-      const room = makeSpeaker("room", "Room", "room", FIXED_SPEAKER_COLORS.room);
+      const room = makeSpeaker("room", t("common:labels.room"), "room", FIXED_SPEAKER_COLORS.room);
       set({ speakers: { room }, speakerOrder: ["room"], pendingNaming: null });
     }
   },
@@ -100,7 +103,7 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     // Deepgram returns IDs like "0", "1", "2" or "speaker_0", etc.
     const numMatch = speakerId.match(/(\d+)/);
     const speakerNum = numMatch ? parseInt(numMatch[1], 10) + 1 : orderIndex + 1;
-    const displayName = `Speaker ${speakerNum}`;
+    const displayName = t("misc:speakerLabels.defaultName", { n: speakerNum });
 
     const speaker = makeSpeaker(speakerId, displayName, "diarization", color);
 

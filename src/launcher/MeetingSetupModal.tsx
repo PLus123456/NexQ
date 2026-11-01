@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import { setRecordingEnabled } from "../lib/ipc";
-import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
+import { BUILT_IN_SCENARIOS, scenarioDescription, scenarioName } from "../lib/scenarios";
 import { MODE_COLORS } from "../lib/speakerColors";
 import type { AudioMode, AIScenario } from "../lib/types";
 import {
@@ -23,10 +24,12 @@ interface MeetingSetupModalProps {
 
 // ── Scenario label lookup ──
 function getScenarioName(id: AIScenario): string {
-  return BUILT_IN_SCENARIOS.find((s) => s.id === id)?.name ?? id;
+  const scenario = BUILT_IN_SCENARIOS.find((s) => s.id === id);
+  return scenario ? scenarioName(scenario) : id;
 }
 
 export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModalProps) {
+  const { t } = useT(["launcher", "common"]);
   const rememberedSetup = useConfigStore((s) => s.rememberedMeetingSetup);
   const setRememberedMeetingSetup = useConfigStore((s) => s.setRememberedMeetingSetup);
   const recordingEnabled = useConfigStore((s) => s.recordingEnabled);
@@ -61,7 +64,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
   useEffect(() => {
     if (!open) return;
     const handle = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") onCancel(); // i18n-ignore: 按键名
     };
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
@@ -103,7 +106,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
-      aria-label="Meeting setup"
+      aria-label={t("setup.ariaLabel")}
     >
       <div className="w-[420px] rounded-2xl border border-border/40 bg-card shadow-2xl overflow-hidden">
 
@@ -120,16 +123,16 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
               }
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-foreground">Start Meeting</h2>
+              <h2 className="text-sm font-semibold text-foreground">{t("setup.title")}</h2>
               <p className="text-[11px] text-muted-foreground/60 leading-tight">
-                Configure audio mode and scenario
+                {t("setup.subtitle")}
               </p>
             </div>
           </div>
           <button
             onClick={onCancel}
             className="rounded-lg p-1.5 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
-            aria-label="Cancel"
+            aria-label={t("common:actions.cancel")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -142,15 +145,15 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
             <div className="rounded-xl border border-border/30 bg-secondary/20 px-4 py-3 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
-                  Saved Preferences
+                  {t("setup.saved.title")}
                 </span>
                 <button
                   onClick={handleForget}
                   className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-muted-foreground/50 transition-colors hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                  title="Clear saved preferences"
+                  title={t("setup.saved.clearTitle")}
                 >
                   <RotateCcw className="h-2.5 w-2.5" />
-                  Forget
+                  {t("setup.saved.forget")}
                 </button>
               </div>
               <div className="flex items-center gap-3">
@@ -163,7 +166,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                     ? <Monitor className="h-3 w-3" />
                     : <Mic className="h-3 w-3" />
                   }
-                  {audioMode === "online" ? "Online" : "In-Person"}
+                  {audioMode === "online" ? t("common:labels.online") : t("common:labels.inPerson")}
                 </span>
                 {/* Scenario badge */}
                 <span className="rounded-full border border-border/30 bg-accent/20 px-2.5 py-1 text-xs font-medium text-foreground/80">
@@ -173,7 +176,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                 {recordingEnabled && (
                   <span className="flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive ring-1 ring-destructive/20">
                     <span className="h-1 w-1 rounded-full bg-destructive animate-pulse" />
-                    REC
+                    {t("setup.rec")}
                   </span>
                 )}
               </div>
@@ -185,7 +188,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
               className="group w-full flex items-center justify-center gap-2.5 rounded-xl bg-primary py-3.5 font-semibold text-white shadow-md shadow-primary/20 transition-all duration-150 hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-px active:translate-y-px active:scale-[0.98] cursor-pointer"
             >
               <Play className="h-4 w-4 ml-0.5" fill="white" />
-              <span className="text-sm">Start Meeting</span>
+              <span className="text-sm">{t("setup.startButton")}</span>
             </button>
 
             {/* Change settings link */}
@@ -193,7 +196,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
               onClick={() => setIsExpanded(true)}
               className="w-full text-center text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-pointer"
             >
-              Change settings
+              {t("setup.changeSettings")}
             </button>
           </div>
         ) : (
@@ -203,7 +206,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
             {/* ── Audio Mode Cards ── */}
             <div>
               <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-                Audio Mode
+                {t("setup.audioMode.label")}
               </p>
               <div className="grid grid-cols-2 gap-2.5">
                 {/* Online card */}
@@ -225,7 +228,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                   <div
                     className="flex h-8 w-8 items-center justify-center rounded-lg"
                     style={{
-                      background: audioMode === "online" ? onlineColors.bg : "rgba(255,255,255,0.04)",
+                      background: audioMode === "online" ? onlineColors.bg : "rgba(255,255,255,0.04)", // i18n-ignore: 颜色值
                     }}
                   >
                     <Monitor
@@ -237,10 +240,10 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                     <div className={`text-xs font-semibold ${audioMode === "online" ? "" : "text-foreground/80"}`}
                       style={audioMode === "online" ? { color: onlineColors.text } : undefined}
                     >
-                      Online
+                      {t("common:labels.online")}
                     </div>
                     <div className="text-[10px] text-muted-foreground/60 leading-tight mt-0.5">
-                      Mic + system audio
+                      {t("setup.audioMode.onlineHint")}
                     </div>
                   </div>
                 </button>
@@ -264,7 +267,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                   <div
                     className="flex h-8 w-8 items-center justify-center rounded-lg"
                     style={{
-                      background: audioMode === "in_person" ? inPersonColors.bg : "rgba(255,255,255,0.04)",
+                      background: audioMode === "in_person" ? inPersonColors.bg : "rgba(255,255,255,0.04)", // i18n-ignore: 颜色值
                     }}
                   >
                     <Mic
@@ -277,10 +280,10 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                       className={`text-xs font-semibold ${audioMode === "in_person" ? "" : "text-foreground/80"}`}
                       style={audioMode === "in_person" ? { color: inPersonColors.text } : undefined}
                     >
-                      In-Person
+                      {t("common:labels.inPerson")}
                     </div>
                     <div className="text-[10px] text-muted-foreground/60 leading-tight mt-0.5">
-                      Mic only, shared room
+                      {t("setup.audioMode.inPersonHint")}
                     </div>
                   </div>
                 </button>
@@ -290,7 +293,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
             {/* ── Scenario Picker ── */}
             <div>
               <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-                Scenario
+                {t("setup.scenario.label")}
               </p>
               <div className="relative">
                 <button
@@ -318,9 +321,9 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                             : "hover:bg-accent/50 text-foreground"
                         }`}
                       >
-                        <span className="text-xs font-semibold">{s.name}</span>
+                        <span className="text-xs font-semibold">{scenarioName(s)}</span>
                         <span className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
-                          {s.description}
+                          {scenarioDescription(s)}
                         </span>
                       </button>
                     ))}
@@ -342,9 +345,9 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                     : "bg-muted-foreground/30"
                 }`} />
                 <div>
-                  <p className="text-xs font-semibold text-foreground/80">Record Audio</p>
+                  <p className="text-xs font-semibold text-foreground/80">{t("setup.recording.label")}</p>
                   <p className="text-[10px] text-muted-foreground/60 leading-tight mt-0.5">
-                    Save as file for playback
+                    {t("setup.recording.hint")}
                   </p>
                 </div>
               </div>
@@ -381,7 +384,7 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                 : <Square className="h-4 w-4 text-muted-foreground/50 shrink-0 group-hover:text-muted-foreground transition-colors" />
               }
               <span className="text-xs text-muted-foreground/70 group-hover:text-muted-foreground transition-colors">
-                Remember these settings for next time
+                {t("setup.remember")}
               </span>
             </button>
 
@@ -392,13 +395,13 @@ export function MeetingSetupModal({ open, onStart, onCancel }: MeetingSetupModal
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary py-3 font-semibold text-white shadow-md shadow-primary/20 transition-all duration-150 hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-px active:translate-y-px active:scale-[0.98] cursor-pointer"
               >
                 <Play className="h-4 w-4 ml-0.5" fill="white" />
-                <span className="text-sm">Start Meeting</span>
+                <span className="text-sm">{t("setup.startButton")}</span>
               </button>
               <button
                 onClick={onCancel}
                 className="w-full rounded-xl border border-border/30 bg-secondary/20 py-2 text-xs font-medium text-muted-foreground transition-all duration-150 hover:bg-secondary/40 hover:text-foreground active:scale-[0.98] cursor-pointer"
               >
-                Cancel
+                {t("common:actions.cancel")}
               </button>
             </div>
           </div>

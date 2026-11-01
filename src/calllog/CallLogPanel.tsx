@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useT } from "../i18n";
 import { useCallLogStore } from "../stores/callLogStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useTranslationStore } from "../stores/translationStore";
@@ -9,7 +10,7 @@ import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
 import { useAgentStore } from "../stores/agentStore";
 import { formatUsageSummary, formatCostEstimate, formatDuration, isApiBilled } from "../lib/agentUsage";
 import { PromptViewer } from "./PromptViewer";
-import { callLogStats, formatCompactTokens } from "./stats";
+import { callLogStats, filterLabel, formatCompactTokens } from "./stats";
 import type { LogFilterKind } from "../lib/types";
 import {
   X,
@@ -22,20 +23,22 @@ import {
 
 // -- Filter options ----------------------------------------------------------
 
-const FILTER_OPTIONS: Array<{ label: string; value: LogFilterKind }> = [
-  { label: "All", value: "all" },
-  { label: "Assist", value: "Assist" },
-  { label: "Say", value: "WhatToSay" },
-  { label: "Short", value: "Shorten" },
-  { label: "F/U", value: "FollowUp" },
-  { label: "Recap", value: "Recap" },
-  { label: "Ask", value: "AskQuestion" },
-  { label: "Errors", value: "errors" },
+// The chip's label comes from filterLabel(): "All" / "Errors", or the mode's short name.
+const FILTER_OPTIONS: Array<{ value: LogFilterKind }> = [
+  { value: "all" },
+  { value: "Assist" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "WhatToSay" },
+  { value: "Shorten" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "FollowUp" },
+  { value: "Recap" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "AskQuestion" },
+  { value: "errors" },
 ];
 
 // -- Main panel component ----------------------------------------------------
 
 export function CallLogPanel() {
+  const { t } = useT(["calllog", "common"]);
   const isOpen = useCallLogStore((s) => s.isOpen);
   const setOpen = useCallLogStore((s) => s.setOpen);
   const entries = useCallLogStore((s) => s.entries);
@@ -61,7 +64,7 @@ export function CallLogPanel() {
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape") { // i18n-ignore: 键盘按键名
         if (useMeetingStore.getState().settingsOpen) return;
         setOpen(false);
       }
@@ -116,22 +119,22 @@ export function CallLogPanel() {
       const content = await exportTranslatedTranscript(meetingId, targetLang, format);
       if (format === "clipboard") {
         await navigator.clipboard.writeText(content);
-        showToast("Copied to clipboard", "success");
+        showToast(t("panel.export.copied"), "success");
       } else {
         const blob = new Blob([content], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `transcript-${format.replace("_", "-")}.${format.includes("md") ? "md" : "txt"}`;
+        a.download = `transcript-${format.replace("_", "-")}.${format.includes("md") ? "md" : "txt"}`; // i18n-ignore: 下载的文件名
         a.click();
         URL.revokeObjectURL(url);
-        showToast("Export downloaded", "success");
+        showToast(t("panel.export.downloaded"), "success");
       }
     } catch (err) {
-      showToast(`Export failed: ${err}`, "error");
+      showToast(t("panel.export.failed", { detail: String(err) }), "error");
     }
     setShowExportMenu(false);
-  }, [meetingId, targetLang]);
+  }, [meetingId, targetLang, t]);
 
   const handleClose = useCallback(() => setOpen(false), [setOpen]);
 
@@ -149,7 +152,7 @@ export function CallLogPanel() {
               <div className="flex items-center gap-2">
                 <Activity className="h-3.5 w-3.5 text-primary" />
                 <span className="text-xs font-semibold text-foreground">
-                  AI Call Log
+                  {t("panel.title")}
                 </span>
                 {entries.length > 0 && (
                   <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-meta font-medium text-primary">
@@ -164,10 +167,10 @@ export function CallLogPanel() {
                     <button
                       onClick={() => setShowExportMenu((v) => !v)}
                       className="flex items-center gap-1 rounded-lg border border-border/30 bg-secondary/30 px-2 py-1 text-meta font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
-                      title="Export transcript"
+                      title={t("panel.export.title")}
                     >
                       <Download className="h-3 w-3" />
-                      Export
+                      {t("common:actions.export")}
                       <ChevronDown className="h-2.5 w-2.5" />
                     </button>
 
@@ -178,26 +181,26 @@ export function CallLogPanel() {
                             onClick={() => handleExport("translated_txt")}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-accent/40 transition-colors"
                           >
-                            Translated transcript (.txt)
+                            {t("panel.export.translatedTxt")}
                           </button>
                           <button
                             onClick={() => handleExport("bilingual_txt")}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-accent/40 transition-colors"
                           >
-                            Bilingual transcript (.txt)
+                            {t("panel.export.bilingualTxt")}
                           </button>
                           <button
                             onClick={() => handleExport("bilingual_md")}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-accent/40 transition-colors"
                           >
-                            Bilingual transcript (.md)
+                            {t("panel.export.bilingualMd")}
                           </button>
                           <div className="my-1 border-t border-border/20" />
                           <button
                             onClick={() => handleExport("clipboard")}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-accent/40 transition-colors"
                           >
-                            Copy to clipboard
+                            {t("panel.export.clipboard")}
                           </button>
                         </div>
                       </div>
@@ -209,7 +212,7 @@ export function CallLogPanel() {
                   <button
                     onClick={clearAll}
                     className="rounded p-1 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-destructive"
-                    title="Clear all"
+                    title={t("panel.clearAll")}
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
@@ -217,7 +220,7 @@ export function CallLogPanel() {
                 <button
                   onClick={handleClose}
                   className="rounded p-1 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
-                  title="Close (Esc)"
+                  title={t("panel.close")}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -227,7 +230,7 @@ export function CallLogPanel() {
             {/* Claude session usage for this meeting (an estimate, not quota) */}
             {claudeSessions.length > 0 && (
               <div className="mt-2 text-meta text-muted-foreground" data-testid="claude-usage">
-                <span className="font-medium text-foreground/80">Claude</span>{" "}
+                <span className="font-medium text-foreground/80">Claude</span>{" "}{/* i18n-ignore: 第三方产品名 */}
                 <span className="tabular-nums">{formatUsageSummary(claudeUsage)}</span>
                 <span className="block text-muted-foreground/70">{formatCostEstimate(claudeUsage, claudeApiBilled)}</span>
               </div>
@@ -235,7 +238,7 @@ export function CallLogPanel() {
 
             {/* Filter chips */}
             <div className="mt-2 flex flex-wrap gap-1">
-              {FILTER_OPTIONS.map(({ label, value }) => {
+              {FILTER_OPTIONS.map(({ value }) => {
                 const count = filterCounts[value] ?? 0;
                 const isActive = activeFilter === value;
                 return (
@@ -248,7 +251,7 @@ export function CallLogPanel() {
                         : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground"
                     }`}
                   >
-                    {label}
+                    {filterLabel(value)}
                     {count > 0 && (
                       <span
                         className={
@@ -272,19 +275,19 @@ export function CallLogPanel() {
               className="flex items-center justify-between border-b border-border/20 bg-secondary/20 px-3 py-1.5 shrink-0"
               data-testid="call-log-stats"
             >
-              <StatTile label="Calls" value={`${stats.total}`} />
+              <StatTile label={t("panel.stats.calls")} value={`${stats.total}`} />
               <StatTile
-                label="Avg response"
+                label={t("panel.stats.avgResponse")}
                 value={stats.avgLatencyMs != null ? formatDuration(stats.avgLatencyMs) : "—"}
               />
               <StatTile
-                label="First word"
+                label={t("panel.stats.firstWord")}
                 value={stats.avgFirstTokenMs != null ? formatDuration(stats.avgFirstTokenMs) : "—"}
               />
-              <StatTile label="Tokens" value={formatCompactTokens(stats.totalTokens)} />
+              <StatTile label={t("panel.stats.tokens")} value={formatCompactTokens(stats.totalTokens)} />
               {stats.errorCount > 0 && (
                 <StatTile
-                  label="Errors"
+                  label={t("panel.stats.errors")}
                   value={`${stats.errorCount}`}
                   valueClass="text-red-400"
                 />
@@ -296,7 +299,7 @@ export function CallLogPanel() {
           {batchProgress && (
             <div className="flex items-center gap-2 px-4 py-2 bg-primary/5 border-b border-primary/10 shrink-0">
               <span className="text-meta text-primary/60 font-medium whitespace-nowrap">
-                Translating to {targetLang.toUpperCase()}...
+                {t("panel.translating", { lang: targetLang.toUpperCase() })}
               </span>
               <div className="flex-1 h-1 rounded-full bg-border/20 overflow-hidden">
                 <div
@@ -323,8 +326,8 @@ export function CallLogPanel() {
                   <FileSearch className="h-6 w-6" />
                   <span className="text-xs">
                     {entries.length === 0
-                      ? "No AI calls yet"
-                      : "No calls match filter"}
+                      ? t("panel.empty.none")
+                      : t("panel.empty.noMatch")}
                   </span>
                 </div>
               ) : (
@@ -349,7 +352,7 @@ export function CallLogPanel() {
               filteredEntries.length > 0 && (
                 <div className="flex-1 flex items-center justify-center text-muted-foreground/60">
                   <span className="text-xs">
-                    Click an entry to view prompt details
+                    {t("panel.detailHint")}
                   </span>
                 </div>
               )

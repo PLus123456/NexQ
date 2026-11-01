@@ -1,5 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { formatNumber, useT } from "../i18n";
+import { actionDisplayName } from "../lib/actionNames";
 import type { ActionConfig } from "../lib/types";
 
 interface PromptPreviewDialogProps {
@@ -19,6 +21,7 @@ export function PromptPreviewDialog({
   actionConfig,
   composedInstructions,
 }: PromptPreviewDialogProps) {
+  const { t } = useT("settings");
   const [isVisible, setIsVisible] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +62,8 @@ export function PromptPreviewDialog({
 
   if (!isOpen) return null;
 
-  // Build the simulated user message sections
+  // Build the simulated user message sections. This block mirrors the message
+  // that is sent to the AI (English prompt text), so it is deliberately not translated.
   const userMessageSections: string[] = [];
 
   if (actionConfig.includeRagChunks || actionConfig.includeCustomInstructions) {
@@ -129,7 +133,7 @@ export function PromptPreviewDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Prompt preview"
+        aria-label={t("promptPreview.ariaLabel")}
         className={`w-full max-w-[600px] max-h-[80vh] flex flex-col rounded-xl border border-border/50 bg-card shadow-2xl transition-all duration-150 ${
           isVisible
             ? "opacity-100 scale-100 translate-y-0"
@@ -140,18 +144,21 @@ export function PromptPreviewDialog({
         <div className="flex items-center justify-between border-b border-border/30 px-5 py-3.5">
           <div>
             <h2 className="text-base font-semibold text-foreground">
-              Prompt Preview
+              {t("promptPreview.title")}
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {actionConfig.name} &mdash; {actionConfig.mode} mode
+              {t("promptPreview.subtitle", {
+                name: actionDisplayName(actionConfig),
+                mode: actionConfig.mode,
+              })}
             </p>
           </div>
           <button
             autoFocus
             onClick={handleClose}
             className="rounded-lg p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
-            title="Close (Esc)"
-            aria-label="Close prompt preview"
+            title={t("promptPreview.close.title")}
+            aria-label={t("promptPreview.close.ariaLabel")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -162,18 +169,18 @@ export function PromptPreviewDialog({
           {/* System Prompt Section */}
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-2">
-              System Prompt
+              {t("promptPreview.systemPrompt")}
             </h3>
             <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 p-3">
               <pre className="font-mono text-xs text-foreground whitespace-pre-wrap break-words">
-                {systemPrompt || "(empty)"}
+                {systemPrompt || t("promptPreview.empty")}
               </pre>
             </div>
             <p className="text-meta text-muted-foreground mt-1.5">
-              ~{systemTokens.toLocaleString()} tokens
+              {t("promptPreview.tokens", { value: formatNumber(systemTokens) })}
               {actionConfig.isDefaultPrompt && (
                 <span className="ml-2 text-muted-foreground/70">
-                  (default prompt)
+                  {t("promptPreview.defaultPrompt")}
                 </span>
               )}
             </p>
@@ -182,7 +189,7 @@ export function PromptPreviewDialog({
           {/* User Message Section */}
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-2">
-              User Message
+              {t("promptPreview.userMessage")}
             </h3>
             <div className="rounded-lg border border-border/30 bg-muted/30 p-3">
               <pre className="font-mono text-xs text-foreground whitespace-pre-wrap break-words">
@@ -190,42 +197,46 @@ export function PromptPreviewDialog({
               </pre>
             </div>
             <p className="text-meta text-muted-foreground mt-1.5">
-              ~{userTokens.toLocaleString()} tokens
+              {t("promptPreview.tokens", { value: formatNumber(userTokens) })}
             </p>
           </div>
 
           {/* Included Sections Summary */}
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-2">
-              Included Sections
+              {t("promptPreview.sections.title")}
             </h3>
             <div className="grid grid-cols-2 gap-1.5">
               <SectionBadge
-                label="Transcript"
+                label={t("promptPreview.sections.transcript")}
                 active={actionConfig.includeTranscript}
                 detail={
                   actionConfig.includeTranscript
                     ? actionConfig.transcriptWindowSeconds
-                      ? `${actionConfig.transcriptWindowSeconds}s window`
-                      : "default window"
+                      ? t("promptPreview.sections.window", {
+                          seconds: actionConfig.transcriptWindowSeconds,
+                        })
+                      : t("promptPreview.sections.defaultWindow")
                     : undefined
                 }
               />
               <SectionBadge
-                label="RAG Chunks"
+                label={t("promptPreview.sections.ragChunks")}
                 active={actionConfig.includeRagChunks}
                 detail={
                   actionConfig.includeRagChunks
-                    ? `top ${actionConfig.ragTopK ?? "default"}`
+                    ? actionConfig.ragTopK != null
+                      ? t("promptPreview.sections.topK", { count: actionConfig.ragTopK })
+                      : t("promptPreview.sections.topKDefault")
                     : undefined
                 }
               />
               <SectionBadge
-                label="Custom Instructions"
+                label={t("promptPreview.sections.customInstructions")}
                 active={actionConfig.includeCustomInstructions}
               />
               <SectionBadge
-                label="Detected Question"
+                label={t("promptPreview.sections.detectedQuestion")}
                 active={actionConfig.includeDetectedQuestion}
               />
             </div>
@@ -234,10 +245,10 @@ export function PromptPreviewDialog({
           {/* Token Estimate */}
           <div className="rounded-lg border border-border/30 bg-muted/20 px-4 py-3 flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground">
-              Estimated total tokens
+              {t("promptPreview.totalTokens")}
             </span>
             <span className="text-sm font-semibold text-foreground tabular-nums">
-              ~{totalTokens.toLocaleString()}
+              {t("promptPreview.totalValue", { value: formatNumber(totalTokens) })}
             </span>
           </div>
 
@@ -245,12 +256,12 @@ export function PromptPreviewDialog({
           {actionConfig.temperature !== null && (
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-2">
-                Parameters
+                {t("promptPreview.parameters.title")}
               </h3>
               <div className="flex gap-3">
                 <div className="rounded-md border border-border/30 bg-muted/20 px-3 py-1.5">
                   <span className="text-meta text-muted-foreground">
-                    Temperature
+                    {t("promptPreview.parameters.temperature")}
                   </span>
                   <p className="text-xs font-medium text-foreground">
                     {actionConfig.temperature}
@@ -285,7 +296,7 @@ function SectionBadge({
       {label}
       {active && detail && (
         <span className="ml-1.5 text-meta text-muted-foreground">
-          ({detail})
+          {detail}
         </span>
       )}
     </div>

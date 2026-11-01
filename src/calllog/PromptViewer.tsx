@@ -1,4 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
+import type { TFunction } from "i18next";
+import { Trans, formatNumber, useT } from "../i18n";
 import { showToast } from "../stores/toastStore";
 import { formatActualUsage } from "./stats";
 import type { LogEntry } from "../lib/types";
@@ -27,6 +29,9 @@ interface PromptSection {
 
 type ViewMode = "structured" | "raw";
 
+/** `t` of `useT("calllog")`, handed to the plain functions that build the badges. */
+type CallLogT = TFunction<"calllog">;
+
 // -- Main component ----------------------------------------------------------
 
 interface PromptViewerProps {
@@ -34,6 +39,7 @@ interface PromptViewerProps {
 }
 
 export function PromptViewer({ entry }: PromptViewerProps) {
+  const { t } = useT("calllog");
   const [viewMode, setViewMode] = useState<ViewMode>("structured");
 
   return (
@@ -48,7 +54,7 @@ export function PromptViewer({ entry }: PromptViewerProps) {
               : "text-muted-foreground/50 hover:bg-accent/50 hover:text-foreground"
           }`}
         >
-          Structured
+          {t("prompt.view.structured")}
         </button>
         <button
           onClick={() => setViewMode("raw")}
@@ -58,7 +64,7 @@ export function PromptViewer({ entry }: PromptViewerProps) {
               : "text-muted-foreground/50 hover:bg-accent/50 hover:text-foreground"
           }`}
         >
-          Raw
+          {t("prompt.view.raw")}
         </button>
       </div>
 
@@ -80,16 +86,17 @@ export function PromptViewer({ entry }: PromptViewerProps) {
 const estimateTokens = (text: string) => Math.ceil((text || "").length / 4);
 
 function TokenBudget({ entry }: { entry: LogEntry }) {
+  const { t } = useT("calllog");
   const actual = entry.usage ? (
     <div data-testid="token-actual">
-      <span className="font-medium">Actual:</span>{" "}
+      <span className="font-medium">{t("prompt.tokens.actual")}</span>{" "}
       <span className="tabular-nums text-foreground/70">{formatActualUsage(entry.usage)}</span>
     </div>
   ) : null;
 
   const scope = entry.scopeLabel ? (
     <div data-testid="token-scope">
-      <span className="font-medium">Scope:</span> <span className="text-foreground/70">{entry.scopeLabel}</span>
+      <span className="font-medium">{t("prompt.tokens.scope")}</span> <span className="text-foreground/70">{entry.scopeLabel}</span>
     </div>
   ) : null;
 
@@ -101,12 +108,16 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
         data-testid="token-budget"
       >
         <div>
-          <span className="font-medium">Session prompt</span> (sent once when the session started){" "}
-          <span className="tabular-nums">≈ {estimateTokens(entry.actualSystemPrompt).toLocaleString()}</span>
+          <Trans
+            t={t}
+            i18nKey="prompt.tokens.sessionPrompt"
+            components={{ strong: <span className="font-medium" /> }}
+          />{" "}
+          <span className="tabular-nums">≈ {formatNumber(estimateTokens(entry.actualSystemPrompt))}</span>
         </div>
         <div>
-          <span className="font-medium">Sent this request</span>{" "}
-          <span className="tabular-nums">≈ {estimateTokens(entry.actualUserPrompt).toLocaleString()}</span>
+          <span className="font-medium">{t("prompt.tokens.sentThisRequest")}</span>{" "}
+          <span className="tabular-nums">≈ {formatNumber(estimateTokens(entry.actualUserPrompt))}</span>
         </div>
         {scope}
         {actual}
@@ -120,25 +131,25 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
   const total = system + userTotal;
 
   const items = [
-    { label: "System", tokens: system, color: "text-muted-foreground" },
-    { label: "Transcript", tokens: Math.max(0, userTotal - rag), color: "text-success" },
-    { label: "RAG", tokens: rag, color: "text-info" },
+    { label: t("prompt.tokens.system"), tokens: system, color: "text-muted-foreground" },
+    { label: t("prompt.tokens.transcript"), tokens: Math.max(0, userTotal - rag), color: "text-success" },
+    { label: t("prompt.tokens.rag"), tokens: rag, color: "text-info" },
   ].filter((i) => i.tokens > 0);
 
   return (
     <div className="space-y-0.5 px-3 py-1.5 border-b border-border/20 text-meta text-muted-foreground/60" data-testid="token-budget">
       <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
-        <span className="font-medium">Tokens:</span>
+        <span className="font-medium">{t("prompt.tokens.label")}</span>
         {items.map((item, i) => (
           <span key={item.label}>
-            {i > 0 && <span className="mx-0.5">&middot;</span>}
+            {i > 0 && <span className="mx-0.5">&middot;</span>}{/* i18n-ignore: 分隔符号 */}
             <span className={item.color}>{item.label}</span>{" "}
-            <span className="tabular-nums">{item.tokens.toLocaleString()}</span>
+            <span className="tabular-nums">{formatNumber(item.tokens)}</span>
           </span>
         ))}
-        <span className="mx-0.5">&rarr;</span>
-        <span className="font-semibold tabular-nums">~{total.toLocaleString()}</span>
-        <span>≈ estimate</span>
+        <span className="mx-0.5">&rarr;</span>{/* i18n-ignore: 箭头符号 */}
+        <span className="font-semibold tabular-nums">~{formatNumber(total)}</span>
+        <span>{t("prompt.tokens.estimate")}</span>
       </div>
       {scope}
       {actual}
@@ -149,6 +160,7 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
 // -- RAG Chunks Section ------------------------------------------------------
 
 function RagChunksSection({ entry }: { entry: LogEntry }) {
+  const { t } = useT("calllog");
   const [expanded, setExpanded] = useState(false);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
 
@@ -169,7 +181,7 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
   };
 
   const allText = chunks.map((c) =>
-    `[${c.source}, chunk ${c.chunk_index}] (score: ${c.normalized_score.toFixed(2)})\n${c.text}`
+    `[${c.source}, chunk ${c.chunk_index}] (score: ${c.normalized_score.toFixed(2)})\n${c.text}` // i18n-ignore: 复制到剪贴板的日志数据格式，不随界面语言变化
   ).join("\n---\n");
 
   return (
@@ -185,10 +197,10 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
         )}
         <span className="flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-meta font-medium bg-info/10 text-info border-info/20">
           <Database className="h-2.5 w-2.5" />
-          {hasChunks ? `${chunks.length} chunks` : "0 relevant"}
+          {hasChunks ? t("prompt.badge.chunks", { count: chunks.length }) : t("prompt.rag.noRelevantBadge")}
         </span>
         <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
-          RAG CHUNKS
+          {t("prompt.rag.title")}
         </span>
         <SectionCopyButton text={allText} />
       </button>
@@ -199,7 +211,7 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
             <div className="flex items-start gap-1.5 rounded-md bg-secondary/20 px-2.5 py-1.5 mb-2">
               <Search className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground/50" />
               <p className="text-meta text-muted-foreground/60 break-words">
-                <span className="font-medium">Query:</span> {query.length > 200 ? query.slice(0, 200) + "..." : query}
+                <span className="font-medium">{t("prompt.rag.query")}</span> {query.length > 200 ? query.slice(0, 200) + "..." : query}
               </p>
             </div>
           )}
@@ -220,7 +232,9 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-meta font-semibold text-info/80">#{idx + 1}</span>
-                      <span className="text-meta text-muted-foreground truncate">{chunk.source} (chunk {chunk.chunk_index})</span>
+                      <span className="text-meta text-muted-foreground truncate">
+                        {t("prompt.rag.chunkRef", { source: chunk.source, index: chunk.chunk_index })}
+                      </span>
                       <span className="text-meta font-mono tabular-nums text-info/70">{chunk.normalized_score.toFixed(2)}</span>
                     </div>
                     {expandedChunks.has(idx) ? (
@@ -237,14 +251,14 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
               ))}
               {filtered > 0 && (
                 <p className="text-meta text-muted-foreground/50 px-2.5 py-1">
-                  {filtered} chunk{filtered !== 1 ? "s" : ""} filtered (below threshold)
+                  {t("prompt.rag.filtered", { count: filtered })}
                 </p>
               )}
             </>
           ) : (
             <div className="rounded-md bg-secondary/20 px-2.5 py-2 text-meta text-muted-foreground/50">
-              No relevant chunks found
-              {filtered > 0 && <span> &mdash; {filtered} candidates below threshold</span>}
+              {t("prompt.rag.noneFound")}
+              {filtered > 0 && <span> {t("prompt.rag.noneFoundDetail", { count: filtered })}</span>}
             </div>
           )}
         </div>
@@ -256,14 +270,15 @@ function RagChunksSection({ entry }: { entry: LogEntry }) {
 // -- Structured View ---------------------------------------------------------
 
 function StructuredView({ entry }: { entry: LogEntry }) {
+  const { t } = useT("calllog");
   const sections = useMemo(
-    () => parseUserPromptSections(entry.actualUserPrompt),
-    [entry.actualUserPrompt]
+    () => parseUserPromptSections(entry.actualUserPrompt, t),
+    [entry.actualUserPrompt, t]
   );
 
   // Filter out RAG sections — we render them via RagChunksSection instead
   const nonRagSections = sections.filter(
-    (s) => s.type !== "context" || (!s.title.includes("Relevant Context") && !s.title.includes("RAG") && !s.title.includes("Reference"))
+    (s) => s.type !== "context" || (!s.title.includes("Relevant Context") && !s.title.includes("RAG") && !s.title.includes("Reference")) // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
   );
 
   return (
@@ -272,17 +287,17 @@ function StructuredView({ entry }: { entry: LogEntry }) {
 
       {entry.actualSystemPrompt && (
         <CollapsibleSection
-          title="SYSTEM PROMPT"
+          title={t("prompt.section.systemPrompt")}
           content={entry.actualSystemPrompt}
           defaultExpanded={false}
-          badge={{ label: "System", color: "gray", icon: Sparkles }}
+          badge={{ label: t("prompt.badge.system"), color: "gray", icon: Sparkles }}
         />
       )}
 
       {nonRagSections.map((section, i) => (
         <CollapsibleSection
           key={i}
-          title={section.title || "USER MESSAGE"}
+          title={section.title || t("prompt.section.userMessage")}
           content={section.content}
           defaultExpanded={true}
           badge={section.badge}
@@ -294,11 +309,11 @@ function StructuredView({ entry }: { entry: LogEntry }) {
       {(entry.responseContentClean || entry.status === "streaming") && (
         <CollapsibleSection
           title={
-            entry.status === "streaming" ? "RESPONSE (streaming...)" : "RESPONSE"
+            entry.status === "streaming" ? t("prompt.section.responseStreaming") : t("prompt.section.response")
           }
           content={entry.responseContentClean}
           defaultExpanded={true}
-          badge={{ label: "Response", color: "emerald", icon: MessageSquare }}
+          badge={{ label: t("prompt.badge.response"), color: "emerald", icon: MessageSquare }}
           isResponse
         />
       )}
@@ -321,6 +336,7 @@ function CollapsibleSection({
   badge?: PromptSection["badge"];
   isResponse?: boolean;
 }) {
+  const { t } = useT("calllog");
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!content && !isResponse) return null;
@@ -379,7 +395,7 @@ function CollapsibleSection({
           >
             {content || (
               <span className="italic text-muted-foreground/60">
-                (empty)
+                {t("prompt.empty")}
               </span>
             )}
           </div>
@@ -400,18 +416,19 @@ function CollapsibleSection({
 // -- Raw View ----------------------------------------------------------------
 
 function RawView({ entry }: { entry: LogEntry }) {
+  const { t } = useT("calllog");
   return (
     <div className="flex flex-col gap-3 p-3">
       {/* System message */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
-            System Message
+            {t("prompt.raw.systemMessage")}
           </span>
           <SectionCopyButton text={entry.actualSystemPrompt} />
         </div>
         <pre className="max-h-60 overflow-y-auto rounded-md bg-secondary/20 p-2.5 font-mono text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap break-words">
-          {entry.actualSystemPrompt || "(empty)"}
+          {entry.actualSystemPrompt || t("prompt.empty")}
         </pre>
       </div>
 
@@ -419,12 +436,12 @@ function RawView({ entry }: { entry: LogEntry }) {
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
-            User Message
+            {t("prompt.raw.userMessage")}
           </span>
           <SectionCopyButton text={entry.actualUserPrompt} />
         </div>
         <pre className="max-h-80 overflow-y-auto rounded-md bg-secondary/20 p-2.5 font-mono text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap break-words">
-          {entry.actualUserPrompt || "(empty)"}
+          {entry.actualUserPrompt || t("prompt.empty")}
         </pre>
       </div>
 
@@ -433,10 +450,10 @@ function RawView({ entry }: { entry: LogEntry }) {
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
-              Response
+              {t("prompt.raw.response")}
               {entry.status === "streaming" && (
                 <span className="ml-1.5 animate-pulse text-primary/60">
-                  streaming...
+                  {t("prompt.raw.streaming")}
                 </span>
               )}
             </span>
@@ -453,7 +470,7 @@ function RawView({ entry }: { entry: LogEntry }) {
 
 // -- Prompt section parser ---------------------------------------------------
 
-function parseUserPromptSections(text: string): PromptSection[] {
+function parseUserPromptSections(text: string, t: CallLogT): PromptSection[] {
   if (!text) return [];
 
   const sections: PromptSection[] = [];
@@ -464,14 +481,14 @@ function parseUserPromptSections(text: string): PromptSection[] {
   const flushSection = () => {
     const content = contentLines.join("\n").trim();
     if (currentHeader) {
-      sections.push(buildSection(currentHeader, content));
+      sections.push(buildSection(currentHeader, content, t));
     } else if (content) {
       // Text before any ## header → mode instruction
       sections.push({
         title: "",
         content,
         type: "instruction",
-        badge: { label: "Instruction", color: "gray", icon: BookOpen },
+        badge: { label: t("prompt.badge.instruction"), color: "gray", icon: BookOpen },
       });
     }
     contentLines = [];
@@ -521,7 +538,7 @@ function parseUserPromptSections(text: string): PromptSection[] {
           title: "",
           content: trailingInstr.join("\n").trim(),
           type: "instruction",
-          badge: { label: "Mode Instruction", color: "gray", icon: BookOpen },
+          badge: { label: t("prompt.badge.modeInstruction"), color: "gray", icon: BookOpen },
         });
       }
     }
@@ -530,29 +547,30 @@ function parseUserPromptSections(text: string): PromptSection[] {
   return sections;
 }
 
-function buildSection(title: string, content: string): PromptSection {
-  if (title.includes("Reference") || title.includes("Custom")) {
+// The `includes()` checks match the English section headers of the prompt sent to the AI; only the badges are UI text.
+function buildSection(title: string, content: string, t: CallLogT): PromptSection {
+  if (title.includes("Reference") || title.includes("Custom")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     return {
       title,
       content,
       type: "context",
-      badge: { label: "Context", color: "amber", icon: FileText },
+      badge: { label: t("prompt.badge.context"), color: "amber", icon: FileText },
     };
   }
-  if (title.includes("Relevant Context") || title.includes("RAG")) {
+  if (title.includes("Relevant Context") || title.includes("RAG")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     const chunkCount = (content.match(/^### /gm) || []).length;
     return {
       title,
       content,
       type: "context",
       badge: {
-        label: chunkCount > 0 ? `${chunkCount} chunks` : "Document Context",
+        label: chunkCount > 0 ? t("prompt.badge.chunks", { count: chunkCount }) : t("prompt.badge.documentContext"),
         color: "blue",
         icon: FileText,
       },
     };
   }
-  if (title.includes("Transcript")) {
+  if (title.includes("Transcript")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     const segCount = content
       .split("\n")
       .filter((l) => l.trim().startsWith("[")).length;
@@ -561,52 +579,53 @@ function buildSection(title: string, content: string): PromptSection {
       content,
       type: "transcript",
       badge: {
-        label: segCount > 0 ? `${segCount} segments` : "Transcript",
+        label: segCount > 0 ? t("prompt.badge.segments", { count: segCount }) : t("prompt.badge.transcript"),
         color: "green",
         icon: MessageSquare,
       },
     };
   }
-  if (title.includes("User's Question")) {
+  if (title.includes("User's Question")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     return {
       title,
       content,
       type: "question",
-      badge: { label: "Question", color: "rose", icon: HelpCircle },
+      badge: { label: t("prompt.badge.question"), color: "rose", icon: HelpCircle },
     };
   }
-  if (title.includes("Detected Question")) {
+  if (title.includes("Detected Question")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     const confMatch = title.match(/(\d+)%/);
     return {
       title,
       content,
       type: "question",
       badge: {
-        label: confMatch ? `${confMatch[1]}% confidence` : "Detected",
+        label: confMatch ? t("prompt.badge.confidence", { percent: confMatch[1] }) : t("prompt.badge.detected"),
         color: "rose",
         icon: HelpCircle,
       },
     };
   }
-  if (title.includes("Shorten")) {
+  if (title.includes("Shorten")) { // i18n-ignore: 匹配发给 AI 的提示词里的英文小节标题
     return {
       title,
       content,
       type: "question",
-      badge: { label: "To Shorten", color: "amber", icon: FileText },
+      badge: { label: t("prompt.badge.toShorten"), color: "amber", icon: FileText },
     };
   }
   return {
     title,
     content,
     type: "instruction",
-    badge: { label: title || "Section", color: "gray", icon: BookOpen },
+    badge: { label: title || t("prompt.badge.section"), color: "gray", icon: BookOpen },
   };
 }
 
 // -- Copy button -------------------------------------------------------------
 
 function SectionCopyButton({ text }: { text: string }) {
+  const { t } = useT("calllog");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(
@@ -615,9 +634,9 @@ function SectionCopyButton({ text }: { text: string }) {
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
-      }).catch(() => showToast("Couldn't copy — try selecting the text manually", "error"));
+      }).catch(() => showToast(t("prompt.copy.failed"), "error"));
     },
-    [text]
+    [text, t]
   );
 
   if (!text) return null;
@@ -627,9 +646,9 @@ function SectionCopyButton({ text }: { text: string }) {
       role="button"
       tabIndex={0}
       onClick={handleCopy}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleCopy(e as unknown as React.MouseEvent); }}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleCopy(e as unknown as React.MouseEvent); }} // i18n-ignore: 键盘按键名
       className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground cursor-pointer"
-      aria-label="Copy section"
+      aria-label={t("prompt.copy.label")}
     >
       {copied ? (
         <Check className="h-3 w-3 text-success" />

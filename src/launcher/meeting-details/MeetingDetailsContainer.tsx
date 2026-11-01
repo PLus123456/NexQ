@@ -14,6 +14,7 @@ import { useActionItemsExtraction } from "../../hooks/useActionItemsExtraction";
 import { useBookmarkSuggestions } from "../../hooks/useBookmarkSuggestions";
 import { useMeetingChat, answeredExchanges } from "../../hooks/useMeetingChat";
 import { useAudioKeyboardShortcuts } from "../../hooks/useAudioKeyboardShortcuts";
+import { useT } from "../../i18n";
 import { exportMeetingAsMarkdown } from "../../lib/export";
 import { mergeConsecutiveSegments } from "../../lib/mergeSegments";
 import { useDemoStore } from "../../demo/demoStore";
@@ -39,6 +40,7 @@ interface MeetingDetailsProps {
 }
 
 export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
+  const { t } = useT("launcher");
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +98,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       if (demoMeeting) {
         setMeeting(demoMeeting);
       } else {
-        setError("Demo meeting not found");
+        setError(t("container.error.demoNotFound"));
       }
       setLoading(false);
       return;
@@ -106,10 +108,11 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       const data = await getMeeting(meetingId);
       setMeeting(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load meeting");
+      setError(err instanceof Error ? err.message : t("container.error.loadFailed"));
     } finally {
       setLoading(false);
     }
+    // `t` is read when a load fails; switching the UI language must not reload the meeting.
   }, [meetingId, isDemoActive, buildDemoMeeting]);
 
   useEffect(() => { loadMeeting(); }, [loadMeeting]);
@@ -373,9 +376,9 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     if (isDemoActive) return;
     renameSpeaker(meetingId, speakerKey, name).catch((err) => {
       console.error("[MeetingDetails] Failed to save the speaker name:", err);
-      showToast("Couldn't save the speaker name", "error");
+      showToast(t("container.toast.speakerNameFailed"), "error");
     });
-  }, [meetingId, isDemoActive]);
+  }, [meetingId, isDemoActive, t]);
 
   const handleScrollHandled = useCallback(() => setScrollToSegmentIndex(null), []);
 
@@ -385,7 +388,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2">
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
-        <p className="text-xs text-muted-foreground">Loading meeting data...</p>
+        <p className="text-xs text-muted-foreground">{t("container.loading")}</p>
       </div>
     );
   }
@@ -393,8 +396,8 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   if (error || !meeting) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2">
-        <p className="text-xs text-red-400">{error || "Meeting not found"}</p>
-        <button onClick={onBack} className="text-xs text-primary hover:underline cursor-pointer">Go back</button>
+        <p className="text-xs text-red-400">{error || t("container.error.notFound")}</p>
+        <button onClick={onBack} className="text-xs text-primary hover:underline cursor-pointer">{t("container.error.goBack")}</button>
       </div>
     );
   }
@@ -481,7 +484,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
             otherTaskRunning={otherAiBusy}
             unavailableReason={
               meeting.transcript.length === 0 && !meeting.summary
-                ? "This meeting has no transcript to ask about"
+                ? t("container.ask.noTranscript")
                 : null
             }
           />

@@ -122,7 +122,7 @@ export function SpeakerTimeline({
       if (!rect) return;
       const elapsedMs = Math.max(0, block.timestampMs - meetingStartMs);
       const preview =
-        block.text.length > 50 ? block.text.slice(0, 50) + "..." : block.text;
+        block.text.length > 50 ? block.text.slice(0, 50) + "..." : block.text; // i18n-ignore: truncation mark on transcript text
       setTooltip({
         x: e.clientX - rect.left,
         y: e.clientY - rect.top,

@@ -1,10 +1,11 @@
 import type { ScenarioTemplate } from "./types";
+import { t } from "../i18n";
 
 export const BUILT_IN_SCENARIOS: ScenarioTemplate[] = [
   {
     id: "team_meeting",
     name: "Team Meeting",
-    description: "Tracks decisions, action items, speaker attribution",
+    description: "Tracks decisions, action items, speaker attribution", // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
     system_prompt: `You are an AI assistant in a team meeting. Your role:
 - Track decisions made and who made them
 - Identify action items and who they are assigned to
@@ -30,7 +31,7 @@ Items that were discussed but not resolved.`,
   {
     id: "lecture",
     name: "Lecture",
-    description: "Key concepts, definitions, Q&A extraction",
+    description: "Key concepts, definitions, Q&A extraction", // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
     system_prompt: `You are an AI assistant in a lecture or class session. Your role:
 - Identify the primary speaker (highest talk time) as the lecturer/presenter
 - Extract key concepts, definitions, and examples
@@ -55,7 +56,7 @@ Questions asked by audience members and the lecturer's responses.`,
   {
     id: "interview",
     name: "Interview",
-    description: "Questions, responses, follow-ups",
+    description: "Questions, responses, follow-ups", // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
     system_prompt: `You are an AI assistant in an interview. Your role:
 - Track questions asked by the interviewer
 - Summarize candidate responses
@@ -80,7 +81,7 @@ Objective observations about the conversation flow.`,
   {
     id: "webinar",
     name: "Webinar",
-    description: "Presentation points, audience Q&A",
+    description: "Presentation points, audience Q&A", // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
     system_prompt: `You are an AI assistant in a webinar or presentation. Your role:
 - Track the presentation structure and key points
 - Separate presenter content from audience Q&A
@@ -101,7 +102,7 @@ Audience questions and presenter responses.`,
   {
     id: "oral_exam",
     name: "Oral Exam",
-    description: "Exam prep — professor questions, coached responses, knowledge gaps",
+    description: "Exam prep — professor questions, coached responses, knowledge gaps", // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
     system_prompt: `You are an expert academic coach assisting a student during an oral exam or viva voce. The professor is asking questions about a subject the student is being evaluated on.
 
 Your role:
@@ -143,8 +144,78 @@ export function getDefaultScenario(): ScenarioTemplate {
 }
 
 export const NOISE_PRESETS = [
-  { id: "quiet_office", name: "Quiet Office", vad_sensitivity: 0.8, noise_gate_db: -40, description: "Low noise, high sensitivity — catches soft speech" },
-  { id: "classroom", name: "Classroom", vad_sensitivity: 0.5, noise_gate_db: -30, description: "Moderate noise, echo tolerant — handles shuffling, chatter" },
-  { id: "conference_hall", name: "Conference Hall", vad_sensitivity: 0.3, noise_gate_db: -25, description: "High noise, aggressive filtering — large rooms, reverb" },
-  { id: "cafe", name: "Café / Open Space", vad_sensitivity: 0.4, noise_gate_db: -28, description: "Variable noise, balanced sensitivity — music, conversations nearby" },
+  { id: "quiet_office", name: "Quiet Office", vad_sensitivity: 0.8, noise_gate_db: -40, description: "Low noise, high sensitivity — catches soft speech" }, // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
+  { id: "classroom", name: "Classroom", vad_sensitivity: 0.5, noise_gate_db: -30, description: "Moderate noise, echo tolerant — handles shuffling, chatter" }, // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
+  { id: "conference_hall", name: "Conference Hall", vad_sensitivity: 0.3, noise_gate_db: -25, description: "High noise, aggressive filtering — large rooms, reverb" }, // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
+  { id: "cafe", name: "Café / Open Space", vad_sensitivity: 0.4, noise_gate_db: -28, description: "Variable noise, balanced sensitivity — music, conversations nearby" }, // i18n-ignore: English source text, shown through scenarioDescription() / noisePresetDescription()
 ] as const;
+
+/** Display name of a scenario: built-in ones are translated by id, custom ones show what the user typed. */
+export function scenarioName(s: Pick<ScenarioTemplate, "id" | "name" | "is_custom">): string {
+  if (s.is_custom) return s.name;
+  switch (s.id) {
+    case "team_meeting":
+      return t("misc:scenarios.teamMeeting.name");
+    case "lecture":
+      return t("misc:scenarios.lecture.name");
+    case "interview":
+      return t("misc:scenarios.interview.name");
+    case "webinar":
+      return t("misc:scenarios.webinar.name");
+    case "oral_exam":
+      return t("misc:scenarios.oralExam.name");
+    default:
+      return s.name;
+  }
+}
+
+/** Description of a scenario, translated the same way as {@link scenarioName}. */
+export function scenarioDescription(s: Pick<ScenarioTemplate, "id" | "description" | "is_custom">): string {
+  if (s.is_custom) return s.description;
+  switch (s.id) {
+    case "team_meeting":
+      return t("misc:scenarios.teamMeeting.description");
+    case "lecture":
+      return t("misc:scenarios.lecture.description");
+    case "interview":
+      return t("misc:scenarios.interview.description");
+    case "webinar":
+      return t("misc:scenarios.webinar.description");
+    case "oral_exam":
+      return t("misc:scenarios.oralExam.description");
+    default:
+      return s.description;
+  }
+}
+
+/** Display name of a built-in noise preset. */
+export function noisePresetName(p: { id: string; name: string }): string {
+  switch (p.id) {
+    case "quiet_office":
+      return t("misc:noisePresets.quietOffice.name");
+    case "classroom":
+      return t("misc:noisePresets.classroom.name");
+    case "conference_hall":
+      return t("misc:noisePresets.conferenceHall.name");
+    case "cafe":
+      return t("misc:noisePresets.cafe.name");
+    default:
+      return p.name;
+  }
+}
+
+/** Description of a built-in noise preset. */
+export function noisePresetDescription(p: { id: string; description: string }): string {
+  switch (p.id) {
+    case "quiet_office":
+      return t("misc:noisePresets.quietOffice.description");
+    case "classroom":
+      return t("misc:noisePresets.classroom.description");
+    case "conference_hall":
+      return t("misc:noisePresets.conferenceHall.description");
+    case "cafe":
+      return t("misc:noisePresets.cafe.description");
+    default:
+      return p.description;
+  }
+}

@@ -1,1 +1,442 @@
-{}
+{
+  "main": {
+    "toast": {
+      "started": "Meeting started",
+      "startFailed": "Failed to start meeting",
+      "newStarted": "New meeting started",
+      "endSaveFailed": "Couldn't finish saving the meeting — new meeting not started",
+      "newStartFailed": "Failed to start",
+      "deleted": "Meeting deleted",
+      "deleteFailed": "Couldn't delete meeting",
+      "allDeleted": "All meetings deleted",
+      "renameFailed": "Couldn't rename meeting"
+    },
+    "activeMeeting": {
+      "return": "RETURN"
+    },
+    "settings": {
+      "ariaLabel": "Settings (Ctrl+,)"
+    },
+    "search": {
+      "placeholder": "Search meetings...",
+      "ariaLabel": "Search meetings",
+      "clear": "Clear search"
+    },
+    "filter": {
+      "favorites": "Starred",
+      "withSummary": "Summary"
+    },
+    "count_one": "{{count}} meeting",
+    "count_other": "{{count}} meetings",
+    "startButton": {
+      "label": "Start Meeting",
+      "starting": "Starting...",
+      "scenario": {
+        "teamMeeting": "team meeting",
+        "lecture": "lecture",
+        "interview": "interview",
+        "webinar": "webinar",
+        "oralExam": "oral exam",
+        "custom": "custom"
+      }
+    },
+    "context": {
+      "title": "Meeting Context"
+    },
+    "rag": {
+      "rebuild": "Settings Changed — Rebuild Knowledge Base",
+      "build": "Build Knowledge Base",
+      "update": "Update Knowledge Base",
+      "building": "Building knowledge base...",
+      "indexingFile": "Indexing file...",
+      "updated": "Knowledge base updated",
+      "test": "Test Knowledge Base"
+    },
+    "sources": {
+      "title": "Sources ({{total}})"
+    },
+    "deleteAll": {
+      "ariaLabel": "Delete all meetings",
+      "dialogAriaLabel": "Delete all meetings confirmation",
+      "title": "Delete All Meetings",
+      "body": "This will permanently delete all <strong>{{total}}</strong> meetings and their transcripts. This action cannot be undone.",
+      "confirmButton": "Delete All {{total}} Meetings",
+      "deleting": "Deleting..."
+    },
+    "conflict": {
+      "ariaLabel": "Meeting in progress conflict",
+      "title": "Meeting in Progress",
+      "body": "“{{title}}” is still active.",
+      "endAndStart": "End Current & Start New",
+      "returnToCurrent": "Return to Current Meeting"
+    }
+  },
+  "card": {
+    "ariaLabel": "Meeting: {{title}}, {{time}}",
+    "favorite": {
+      "add": "Add to favorites",
+      "remove": "Remove from favorites"
+    },
+    "rename": {
+      "save": "Save title",
+      "cancel": "Cancel rename"
+    },
+    "live": "LIVE",
+    "inProgress": "In progress",
+    "audioMode": {
+      "online": "ONLINE",
+      "inPerson": "IN-PERSON"
+    },
+    "scenario": {
+      "teamMeeting": "team meeting",
+      "lecture": "lecture",
+      "interview": "interview",
+      "webinar": "webinar",
+      "oralExam": "oral exam",
+      "custom": "custom"
+    },
+    "delete": {
+      "prompt": "Delete?",
+      "confirm": "Confirm delete",
+      "cancel": "Cancel delete",
+      "ariaLabel": "Delete meeting"
+    }
+  },
+  "recent": {
+    "empty": {
+      "title": "No meetings yet",
+      "hint": "Start a meeting to see it here"
+    }
+  },
+  "setup": {
+    "ariaLabel": "Meeting setup",
+    "title": "Start Meeting",
+    "subtitle": "Configure audio mode and scenario",
+    "saved": {
+      "title": "Saved Preferences",
+      "clearTitle": "Clear saved preferences",
+      "forget": "Forget"
+    },
+    "rec": "REC",
+    "startButton": "Start Meeting",
+    "changeSettings": "Change settings",
+    "audioMode": {
+      "label": "Audio Mode",
+      "onlineHint": "Mic + system audio",
+      "inPersonHint": "Mic only, shared room"
+    },
+    "scenario": {
+      "label": "Scenario"
+    },
+    "recording": {
+      "label": "Record Audio",
+      "hint": "Save as file for playback"
+    },
+    "remember": "Remember these settings for next time"
+  },
+  "details": {
+    "loadFailed": "Failed to load meeting",
+    "loading": "Loading meeting...",
+    "notFound": "Meeting not found",
+    "goBack": "Go back",
+    "inProgress": "In progress",
+    "segmentCount": "{{total}} segments",
+    "tabs": {
+      "transcript": "Transcript",
+      "aiLog": "AI Log",
+      "summary": "Summary"
+    },
+    "transcript": {
+      "empty": "No transcript segments"
+    },
+    "aiLog": {
+      "empty": "No AI interactions recorded",
+      "latency": "{{ms}}ms"
+    },
+    "summary": {
+      "empty": "No summary available",
+      "hint": "Summaries are generated when meetings end"
+    }
+  },
+  "container": {
+    "loading": "Loading meeting data...",
+    "error": {
+      "demoNotFound": "Demo meeting not found",
+      "loadFailed": "Failed to load meeting",
+      "notFound": "Meeting not found",
+      "goBack": "Go back"
+    },
+    "ask": {
+      "noTranscript": "This meeting has no transcript to ask about"
+    },
+    "toast": {
+      "speakerNameFailed": "Couldn't save the speaker name"
+    }
+  },
+  "header": {
+    "back": "Go back",
+    "title": {
+      "save": "Save title",
+      "cancel": "Cancel editing"
+    },
+    "inProgress": "In progress",
+    "segments": "{{count}} segments",
+    "stats": {
+      "duration": "Duration",
+      "words": "Words",
+      "pace": {
+        "label": "Pace",
+        "value": "{{value}}/min"
+      },
+      "ai": "AI",
+      "latency": {
+        "label": "Latency",
+        "value": "{{value}}ms"
+      }
+    }
+  },
+  "tabs": {
+    "transcript": "Transcript",
+    "summary": "Summary",
+    "ask": "Ask",
+    "aiLog": "AI Log",
+    "speakers": "Speakers",
+    "actions": "Actions",
+    "bookmarks": "Bookmarks",
+    "summaryAction": {
+      "generate": {
+        "label": "Generate Summary",
+        "title": "Generate AI summary"
+      },
+      "regenerate": {
+        "label": "Regenerate Summary",
+        "title": "Regenerate AI summary"
+      }
+    },
+    "extractActions": {
+      "label": "Extract Actions",
+      "title": "Extract action items with AI"
+    },
+    "suggestBookmarks": {
+      "label": "Suggest Bookmarks",
+      "title": "AI bookmark suggestions"
+    }
+  },
+  "summary": {
+    "generating": "Generating summary...",
+    "regenerate": "Regenerate Summary",
+    "aiGenerated": "AI Generated",
+    "empty": {
+      "title": "No summary yet",
+      "hint": "Generate an AI summary from the transcript",
+      "generate": "Generate Summary"
+    }
+  },
+  "export": {
+    "button": {
+      "ariaLabel": "Export meeting"
+    },
+    "menu": {
+      "ariaLabel": "Export options",
+      "heading": "Export as"
+    },
+    "options": {
+      "markdown": {
+        "description": "Full transcript + summary"
+      },
+      "srt": {
+        "label": "SRT Subtitles",
+        "description": "Timed subtitle file"
+      },
+      "json": {
+        "description": "Structured data export"
+      },
+      "scenario": {
+        "description": "Formatted for {{scenario}}"
+      }
+    },
+    "scenarios": {
+      "lecture": "lecture",
+      "teamMeeting": "team meeting"
+    }
+  },
+  "row": {
+    "translating": "Translating...",
+    "retranslateTo": "Retranslate to {{lang}}",
+    "translateTo": "Translate to {{lang}}",
+    "bookmark": {
+      "add": "Bookmark this line",
+      "remove": "Remove bookmark"
+    },
+    "speaker": {
+      "nameLabel": "Speaker name",
+      "renameHint": "Rename this speaker"
+    }
+  },
+  "transcript": {
+    "empty": "No transcript segments",
+    "search": {
+      "placeholder": "Search transcript...",
+      "label": "Search transcript",
+      "position": "{{current}} of {{total}}",
+      "noMatches": "No matches"
+    },
+    "typeset": {
+      "text": "Text",
+      "textColor": "Text color",
+      "translation": "Translation",
+      "translationColor": "Translation color"
+    },
+    "translation": {
+      "inline": "Inline",
+      "hover": "Hover",
+      "hide": "Hide translations",
+      "show": "Show translations"
+    },
+    "note": {
+      "title": "Bookmark Note",
+      "placeholder": "Add a note...",
+      "saveHint": "Ctrl+Enter to save"
+    },
+    "toast": {
+      "removeBookmarkFailed": "Failed to remove bookmark",
+      "addBookmarkFailed": "Failed to add bookmark",
+      "createBookmarkFailed": "Failed to create bookmark",
+      "saveNoteFailed": "Failed to save note"
+    },
+    "timeline": {
+      "duration": {
+        "hoursMinutes": "{{hours}}h {{minutes}}m",
+        "minutesSeconds": "{{minutes}}m {{seconds}}s"
+      }
+    }
+  },
+  "actionItems": {
+    "row": {
+      "markComplete": "Mark complete",
+      "markIncomplete": "Mark incomplete",
+      "editHint": "Double-click to edit",
+      "seek": "Seek to this moment"
+    },
+    "toast": {
+      "saveEditFailed": "Failed to save edit",
+      "deleteFailed": "Failed to delete",
+      "reorderFailed": "Failed to reorder",
+      "copied": "Action items copied to clipboard"
+    },
+    "copy": {
+      "heading": "# Action Items — {{title}}",
+      "title": "Copy action items to clipboard"
+    },
+    "reextract": {
+      "label": "Re-extract",
+      "title": "Re-extract action items",
+      "confirm": "This will replace {{count}} existing action items. Continue?"
+    },
+    "extracting": {
+      "title": "Analyzing transcript...",
+      "hint": "Extracting action items, assignments, and follow-ups"
+    },
+    "error": {
+      "retry": "Try Again"
+    },
+    "progress": "{{completed}} of {{total}} completed",
+    "empty": {
+      "title": "Extract Action Items",
+      "hint": "AI will analyze the full transcript to find action items, assignments, and follow-ups",
+      "tooltip": {
+        "noTranscript": "No transcript",
+        "noModel": "Configure LLM",
+        "busy": "Wait for AI",
+        "ready": "Extract action items"
+      }
+    }
+  },
+  "bookmarks": {
+    "empty": {
+      "title": "No bookmarks yet",
+      "hint": "You can add bookmarks from the Transcript tab"
+    },
+    "analyzing": "Analyzing...",
+    "suggest": {
+      "long": "Suggest Bookmarks",
+      "short": "Suggest"
+    },
+    "count_one": "{{count}} bookmark",
+    "count_other": "{{count}} bookmarks",
+    "suggestions": {
+      "title": "AI Suggestions",
+      "acceptAll": "Accept All",
+      "accept": "Accept suggestion",
+      "dismiss": "Dismiss suggestion"
+    },
+    "toast": {
+      "updateFailed": "Failed to update bookmark note",
+      "deleteFailed": "Failed to delete bookmark"
+    },
+    "row": {
+      "goTo": "Go to this moment in transcript",
+      "notePlaceholder": "Add a note...",
+      "editHint": "Click to edit note",
+      "noNote": "No note — click to add",
+      "edit": "Edit note",
+      "delete": "Delete bookmark"
+    }
+  },
+  "ask": {
+    "suggestions": {
+      "decided": "What was decided?",
+      "openQuestions": "What are the open questions?",
+      "owners": "Who agreed to do what?"
+    },
+    "loading": "Loading conversation…",
+    "loadError": "Couldn't load earlier questions: {{detail}}",
+    "input": {
+      "placeholder": "Ask about this meeting…",
+      "label": "Ask about this meeting"
+    },
+    "stop": {
+      "label": "Stop answer",
+      "title": "Stop"
+    },
+    "send": {
+      "label": "Send question",
+      "title": "Send (Enter)",
+      "waitTitle": "Wait for the current AI task to finish"
+    },
+    "hint": "Enter to send · Shift+Enter for a new line",
+    "empty": {
+      "title": "Ask anything about this meeting",
+      "hint": "Questions and answers are saved with the meeting."
+    },
+    "thinking": "Thinking…",
+    "stopped": "Stopped · not saved",
+    "session": {
+      "starting": "Session starting…",
+      "unavailable": "Session unavailable"
+    }
+  },
+  "speakers": {
+    "originally": "Originally {{id}}",
+    "row": {
+      "saveName": "Save name",
+      "rename": "Rename {{name}}",
+      "talkTime": "{{time}} talk time",
+      "segments": "{{count}} segments",
+      "words": "{{words}} words",
+      "microphone": "Microphone",
+      "systemAudio": "System audio"
+    },
+    "empty": {
+      "title": "No speaker data",
+      "hint": "Speaker data appears after meetings with diarization"
+    },
+    "count_one": "{{count}} Speaker",
+    "count_other": "{{count}} Speakers"
+  },
+  "aiLog": {
+    "empty": "No AI interactions",
+    "latency": "{{ms}}ms",
+    "askMeeting": "Ask this meeting"
+  }
+}

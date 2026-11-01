@@ -1,6 +1,8 @@
 import { useMemo } from "react";
+import type { TFunction } from "i18next";
 import type { Meeting } from "../lib/types";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useT } from "../i18n";
 
 export interface MeetingStats {
   durationDisplay: string;
@@ -18,16 +20,19 @@ const SPEAKER_COLORS: Record<string, string> = {
   Unknown: "text-muted-foreground",
 };
 
-function formatStatDuration(seconds: number): string {
+function formatStatDuration(seconds: number, t: TFunction<"misc">): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
-  return `${s}s`;
+  if (h > 0) return t("hooks.meetingStats.duration.hoursMinutes", { hours: h, minutes: m });
+  if (m > 0) {
+    return t("hooks.meetingStats.duration.minutesSeconds", { minutes: m, seconds: String(s).padStart(2, "0") });
+  }
+  return t("hooks.meetingStats.duration.seconds", { seconds: s });
 }
 
 export function useMeetingStats(meeting: Meeting | null): MeetingStats {
+  const { t } = useT("misc");
   const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id);
   const elapsedMs = useMeetingStore((s) => s.elapsedMs);
   const isActiveMeeting = meeting?.id === activeMeetingId;
@@ -47,7 +52,7 @@ export function useMeetingStats(meeting: Meeting | null): MeetingStats {
     const durationSec = isActiveMeeting
       ? elapsedMs / 1000
       : meeting.duration_seconds ?? 0;
-    const durationDisplay = durationSec > 0 ? formatStatDuration(durationSec) : "—";
+    const durationDisplay = durationSec > 0 ? formatStatDuration(durationSec, t) : "—";
 
     // Word counts per speaker
     const speakerWords: Record<string, number> = {};
@@ -85,5 +90,5 @@ export function useMeetingStats(meeting: Meeting | null): MeetingStats {
       aiCount,
       avgLatencyMs,
     };
-  }, [meeting, isActiveMeeting, elapsedMs]);
+  }, [meeting, isActiveMeeting, elapsedMs, t]);
 }

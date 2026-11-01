@@ -9,6 +9,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useAudioPlayerStore } from "@/stores/audioPlayerStore";
 import { WaveformCanvas } from "@/components/WaveformCanvas";
+import { useT } from "@/i18n";
 import type { WaveformData, MeetingBookmark, TopicSection } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -32,9 +33,9 @@ export function formatTime(ms: number): string {
 
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) {
-    return `${Math.round(bytes / 1024)} KB`;
+    return `${Math.round(bytes / 1024)} KB`; // i18n-ignore: 文件大小单位
   }
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`; // i18n-ignore: 文件大小单位
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,7 @@ function AudioPlayerImpl({
   bookmarks = NO_BOOKMARKS,
   topicSections = NO_TOPIC_SECTIONS,
 }: AudioPlayerProps) {
+  const { t } = useT("misc");
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
@@ -289,8 +291,8 @@ function AudioPlayerImpl({
     try {
       const ext = recordingPath.endsWith(".ogg") ? "ogg" : "wav";
       const savePath = await save({
-        defaultPath: `meeting-recording.${ext}`,
-        filters: [{ name: "Audio", extensions: [ext] }],
+        defaultPath: `meeting-recording.${ext}`, // i18n-ignore: 保存对话框里的默认文件名
+        filters: [{ name: t("audioPlayer.download.fileType"), extensions: [ext] }],
       });
       if (savePath) {
         await copyFile(recordingPath, savePath);
@@ -298,7 +300,7 @@ function AudioPlayerImpl({
     } catch (err) {
       console.error("Download failed:", err);
     }
-  }, [recordingPath]);
+  }, [recordingPath, t]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -317,7 +319,7 @@ function AudioPlayerImpl({
         className="flex-shrink-0 w-[30px] h-[30px] rounded-full flex items-center justify-center
           text-white/70 hover:text-white hover:bg-indigo-500/20 active:bg-indigo-500/30
           transition-colors duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400"
-        aria-label={isPlaying ? "Pause" : "Play"}
+        aria-label={isPlaying ? t("audioPlayer.playButton.pause") : t("audioPlayer.playButton.play")}
       >
         {isPlaying ? <PauseIcon /> : <PlayIcon />}
       </button>
@@ -370,8 +372,8 @@ function AudioPlayerImpl({
           value={Math.round(volume * 100)}
           onChange={(e) => setVolume(Number(e.target.value) / 100)}
           className="w-16 h-1 accent-indigo-400 cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
-          title={`Volume: ${Math.round(volume * 100)}%`}
-          aria-label="Volume"
+          title={t("audioPlayer.volume.title", { percent: Math.round(volume * 100) })}
+          aria-label={t("audioPlayer.volume.label")}
         />
         <span className="text-[8px] text-muted-foreground/40 tabular-nums w-[26px]">
           {Math.round(volume * 100)}%
@@ -386,8 +388,8 @@ function AudioPlayerImpl({
           px-1.5 py-0.5 rounded transition-colors duration-150
           text-muted-foreground hover:text-foreground
           focus:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
-        aria-label="Cycle playback speed"
-        title="Click to increase speed"
+        aria-label={t("audioPlayer.speed.label")}
+        title={t("audioPlayer.speed.hint")}
       >
         {playbackSpeed}x
       </button>
@@ -400,8 +402,8 @@ function AudioPlayerImpl({
           hover:bg-white/[0.06] active:bg-white/[0.1]
           transition-colors duration-150
           focus:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
-        aria-label="Download recording"
-        title="Download recording"
+        aria-label={t("audioPlayer.download.label")}
+        title={t("audioPlayer.download.label")}
       >
         <DownloadIcon />
       </button>
@@ -423,6 +425,7 @@ function AudioPlayerImpl({
 export const AudioPlayer = memo(AudioPlayerImpl);
 
 export function AudioPlayerSkeleton() {
+  const { t } = useT("misc");
   return (
     <div className="border-t border-border/10 bg-card/95 backdrop-blur-xl px-5 py-2.5 flex items-center gap-3 select-none">
       {/* Play button placeholder */}
@@ -441,7 +444,7 @@ export function AudioPlayerSkeleton() {
 
       {/* Processing label */}
       <span className="flex-shrink-0 text-[10px] text-muted-foreground/40 animate-pulse">
-        Processing audio...
+        {t("audioPlayer.processing.label")}
       </span>
     </div>
   );

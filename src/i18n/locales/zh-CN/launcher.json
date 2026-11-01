@@ -1,1 +1,439 @@
-{}
+{
+  "main": {
+    "toast": {
+      "started": "会议已开始",
+      "startFailed": "开始会议失败",
+      "newStarted": "新会议已开始",
+      "endSaveFailed": "会议没能保存完，没有开始新会议",
+      "newStartFailed": "开始新会议失败",
+      "deleted": "会议已删除",
+      "deleteFailed": "删除会议失败",
+      "allDeleted": "所有会议已删除",
+      "renameFailed": "重命名会议失败"
+    },
+    "activeMeeting": {
+      "return": "返回会议"
+    },
+    "settings": {
+      "ariaLabel": "设置（Ctrl+,）"
+    },
+    "search": {
+      "placeholder": "搜索会议…",
+      "ariaLabel": "搜索会议",
+      "clear": "清除搜索"
+    },
+    "filter": {
+      "favorites": "收藏",
+      "withSummary": "有总结"
+    },
+    "count_other": "{{count}} 场会议",
+    "startButton": {
+      "label": "开始会议",
+      "starting": "正在开始…",
+      "scenario": {
+        "teamMeeting": "团队会议",
+        "lecture": "讲座",
+        "interview": "面试",
+        "webinar": "网络研讨会",
+        "oralExam": "口试",
+        "custom": "自定义"
+      }
+    },
+    "context": {
+      "title": "会议上下文"
+    },
+    "rag": {
+      "rebuild": "设置已更改，重建知识库",
+      "build": "建立知识库",
+      "update": "更新知识库",
+      "building": "正在建立知识库…",
+      "indexingFile": "正在为文件建立索引…",
+      "updated": "知识库已更新",
+      "test": "测试知识库"
+    },
+    "sources": {
+      "title": "来源（{{total}}）"
+    },
+    "deleteAll": {
+      "ariaLabel": "删除所有会议",
+      "dialogAriaLabel": "确认删除所有会议",
+      "title": "删除所有会议？",
+      "body": "将永久删除全部 <strong>{{total}}</strong> 场会议及其转写记录。此操作无法撤销。",
+      "confirmButton": "删除全部 {{total}} 场会议",
+      "deleting": "正在删除…"
+    },
+    "conflict": {
+      "ariaLabel": "已有会议正在进行",
+      "title": "会议正在进行",
+      "body": "“{{title}}”仍在进行中。",
+      "endAndStart": "结束当前会议并开始新会议",
+      "returnToCurrent": "返回当前会议"
+    }
+  },
+  "card": {
+    "ariaLabel": "会议：{{title}}，{{time}}",
+    "favorite": {
+      "add": "加入收藏",
+      "remove": "取消收藏"
+    },
+    "rename": {
+      "save": "保存标题",
+      "cancel": "取消重命名"
+    },
+    "live": "进行中",
+    "inProgress": "进行中",
+    "audioMode": {
+      "online": "线上",
+      "inPerson": "现场"
+    },
+    "scenario": {
+      "teamMeeting": "团队会议",
+      "lecture": "讲座",
+      "interview": "面试",
+      "webinar": "网络研讨会",
+      "oralExam": "口试",
+      "custom": "自定义"
+    },
+    "delete": {
+      "prompt": "删除？",
+      "confirm": "确认删除",
+      "cancel": "取消删除",
+      "ariaLabel": "删除会议"
+    }
+  },
+  "recent": {
+    "empty": {
+      "title": "还没有会议",
+      "hint": "开始会议后会显示在这里"
+    }
+  },
+  "setup": {
+    "ariaLabel": "会议设置",
+    "title": "开始会议",
+    "subtitle": "选择音频模式和场景",
+    "saved": {
+      "title": "已保存的偏好设置",
+      "clearTitle": "清除已保存的偏好设置",
+      "forget": "清除"
+    },
+    "rec": "录音",
+    "startButton": "开始会议",
+    "changeSettings": "更改设置",
+    "audioMode": {
+      "label": "音频模式",
+      "onlineHint": "麦克风 + 系统音频",
+      "inPersonHint": "仅麦克风，同一房间"
+    },
+    "scenario": {
+      "label": "场景"
+    },
+    "recording": {
+      "label": "录制音频",
+      "hint": "保存为文件，可回放"
+    },
+    "remember": "记住这些设置，下次直接使用"
+  },
+  "details": {
+    "loadFailed": "加载会议失败",
+    "loading": "正在加载会议…",
+    "notFound": "找不到这场会议",
+    "goBack": "返回",
+    "inProgress": "进行中",
+    "segmentCount": "{{total}} 个片段",
+    "tabs": {
+      "transcript": "转写记录",
+      "aiLog": "AI 日志",
+      "summary": "总结"
+    },
+    "transcript": {
+      "empty": "没有转写片段"
+    },
+    "aiLog": {
+      "empty": "没有 AI 交互记录",
+      "latency": "{{ms}} 毫秒"
+    },
+    "summary": {
+      "empty": "还没有总结",
+      "hint": "会议结束后会自动生成总结"
+    }
+  },
+  "container": {
+    "loading": "正在加载会议数据…",
+    "error": {
+      "demoNotFound": "找不到演示会议",
+      "loadFailed": "加载会议失败",
+      "notFound": "找不到这场会议",
+      "goBack": "返回"
+    },
+    "ask": {
+      "noTranscript": "这场会议没有转写记录，无法提问"
+    },
+    "toast": {
+      "speakerNameFailed": "保存说话人名称失败"
+    }
+  },
+  "header": {
+    "back": "返回",
+    "title": {
+      "save": "保存标题",
+      "cancel": "取消编辑"
+    },
+    "inProgress": "进行中",
+    "segments": "{{count}} 个片段",
+    "stats": {
+      "duration": "时长",
+      "words": "词数",
+      "pace": {
+        "label": "语速",
+        "value": "{{value}}/分钟"
+      },
+      "ai": "AI",
+      "latency": {
+        "label": "延迟",
+        "value": "{{value}} 毫秒"
+      }
+    }
+  },
+  "tabs": {
+    "transcript": "转写记录",
+    "summary": "总结",
+    "ask": "问会议",
+    "aiLog": "AI 日志",
+    "speakers": "说话人",
+    "actions": "待办",
+    "bookmarks": "书签",
+    "summaryAction": {
+      "generate": {
+        "label": "生成总结",
+        "title": "生成 AI 会议总结"
+      },
+      "regenerate": {
+        "label": "重新生成总结",
+        "title": "重新生成 AI 会议总结"
+      }
+    },
+    "extractActions": {
+      "label": "提取待办",
+      "title": "用 AI 提取待办事项"
+    },
+    "suggestBookmarks": {
+      "label": "推荐书签",
+      "title": "让 AI 推荐书签"
+    }
+  },
+  "summary": {
+    "generating": "正在生成总结…",
+    "regenerate": "重新生成总结",
+    "aiGenerated": "AI 生成",
+    "empty": {
+      "title": "还没有总结",
+      "hint": "根据转写记录生成 AI 总结",
+      "generate": "生成总结"
+    }
+  },
+  "export": {
+    "button": {
+      "ariaLabel": "导出会议"
+    },
+    "menu": {
+      "ariaLabel": "导出选项",
+      "heading": "导出为"
+    },
+    "options": {
+      "markdown": {
+        "description": "完整转写记录和总结"
+      },
+      "srt": {
+        "label": "SRT 字幕",
+        "description": "带时间轴的字幕文件"
+      },
+      "json": {
+        "description": "结构化数据"
+      },
+      "scenario": {
+        "description": "按{{scenario}}场景整理"
+      }
+    },
+    "scenarios": {
+      "lecture": "讲座",
+      "teamMeeting": "团队会议"
+    }
+  },
+  "row": {
+    "translating": "翻译中…",
+    "retranslateTo": "重新翻译为 {{lang}}",
+    "translateTo": "翻译为 {{lang}}",
+    "bookmark": {
+      "add": "为这一行添加书签",
+      "remove": "移除书签"
+    },
+    "speaker": {
+      "nameLabel": "说话人名称",
+      "renameHint": "重命名这位说话人"
+    }
+  },
+  "transcript": {
+    "empty": "没有转写片段",
+    "search": {
+      "placeholder": "搜索转写记录…",
+      "label": "搜索转写记录",
+      "position": "{{current}} / {{total}}",
+      "noMatches": "无匹配结果"
+    },
+    "typeset": {
+      "text": "原文",
+      "textColor": "原文颜色",
+      "translation": "译文",
+      "translationColor": "译文颜色"
+    },
+    "translation": {
+      "inline": "行内",
+      "hover": "悬停",
+      "hide": "隐藏翻译",
+      "show": "显示翻译"
+    },
+    "note": {
+      "title": "书签备注",
+      "placeholder": "添加备注…",
+      "saveHint": "Ctrl+Enter 保存"
+    },
+    "toast": {
+      "removeBookmarkFailed": "移除书签失败",
+      "addBookmarkFailed": "添加书签失败",
+      "createBookmarkFailed": "创建书签失败",
+      "saveNoteFailed": "保存备注失败"
+    },
+    "timeline": {
+      "duration": {
+        "hoursMinutes": "{{hours}} 小时 {{minutes}} 分",
+        "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒"
+      }
+    }
+  },
+  "actionItems": {
+    "row": {
+      "markComplete": "标记为已完成",
+      "markIncomplete": "标记为未完成",
+      "editHint": "双击编辑",
+      "seek": "跳转到这一刻"
+    },
+    "toast": {
+      "saveEditFailed": "保存修改失败",
+      "deleteFailed": "删除失败",
+      "reorderFailed": "调整顺序失败",
+      "copied": "待办事项已复制到剪贴板"
+    },
+    "copy": {
+      "heading": "# 待办事项：{{title}}",
+      "title": "复制待办事项到剪贴板"
+    },
+    "reextract": {
+      "label": "重新提取",
+      "title": "重新提取待办事项",
+      "confirm": "这会替换现有的 {{count}} 条待办事项，要继续吗？"
+    },
+    "extracting": {
+      "title": "正在分析转写记录…",
+      "hint": "正在提取待办事项、任务分配和后续跟进"
+    },
+    "error": {
+      "retry": "重试"
+    },
+    "progress": "已完成 {{completed}} / {{total}}",
+    "empty": {
+      "title": "提取待办事项",
+      "hint": "AI 会分析完整的转写记录，找出待办事项、任务分配和后续跟进",
+      "tooltip": {
+        "noTranscript": "没有转写记录",
+        "noModel": "请先配置 AI 模型",
+        "busy": "AI 正在处理，请稍候",
+        "ready": "提取待办事项"
+      }
+    }
+  },
+  "bookmarks": {
+    "empty": {
+      "title": "还没有书签",
+      "hint": "可以在“转写记录”标签页中添加书签"
+    },
+    "analyzing": "正在分析…",
+    "suggest": {
+      "long": "推荐书签",
+      "short": "推荐"
+    },
+    "count_other": "{{count}} 个书签",
+    "suggestions": {
+      "title": "AI 推荐",
+      "acceptAll": "全部接受",
+      "accept": "接受推荐",
+      "dismiss": "忽略推荐"
+    },
+    "toast": {
+      "updateFailed": "更新书签备注失败",
+      "deleteFailed": "删除书签失败"
+    },
+    "row": {
+      "goTo": "跳转到转写记录中的这一刻",
+      "notePlaceholder": "添加备注…",
+      "editHint": "点击编辑备注",
+      "noNote": "没有备注，点击添加",
+      "edit": "编辑备注",
+      "delete": "删除书签"
+    }
+  },
+  "ask": {
+    "suggestions": {
+      "decided": "做了哪些决定？",
+      "openQuestions": "还有哪些问题没解决？",
+      "owners": "谁答应了做什么？"
+    },
+    "loading": "正在加载对话…",
+    "loadError": "无法加载之前的提问：{{detail}}",
+    "input": {
+      "placeholder": "就这场会议提问…",
+      "label": "就这场会议提问"
+    },
+    "stop": {
+      "label": "停止回答",
+      "title": "停止"
+    },
+    "send": {
+      "label": "发送问题",
+      "title": "发送（Enter）",
+      "waitTitle": "请等待当前的 AI 任务完成"
+    },
+    "hint": "Enter 发送 · Shift+Enter 换行",
+    "empty": {
+      "title": "关于这场会议，想问什么都可以",
+      "hint": "提问和回答会随会议一起保存。"
+    },
+    "thinking": "思考中…",
+    "stopped": "已停止 · 未保存",
+    "session": {
+      "starting": "会话启动中…",
+      "unavailable": "会话不可用"
+    }
+  },
+  "speakers": {
+    "originally": "原名 {{id}}",
+    "row": {
+      "saveName": "保存名称",
+      "rename": "重命名 {{name}}",
+      "talkTime": "发言时长 {{time}}",
+      "segments": "{{count}} 个片段",
+      "words": "{{words}} 词",
+      "microphone": "麦克风",
+      "systemAudio": "系统音频"
+    },
+    "empty": {
+      "title": "没有说话人数据",
+      "hint": "启用说话人分离的会议才会有说话人数据"
+    },
+    "count_other": "{{count}} 位说话人"
+  },
+  "aiLog": {
+    "empty": "没有 AI 交互记录",
+    "latency": "{{ms}} 毫秒",
+    "askMeeting": "问这场会议"
+  }
+}

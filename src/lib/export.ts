@@ -6,6 +6,7 @@ import type { Meeting, TranscriptSegment, AIScenario, SpeakerIdentity } from "./
 import { formatTimestamp, formatDurationLong, getSpeakerLabel, getModeLabel } from "./utils";
 import { showToast } from "../stores/toastStore";
 import { defaultRemoteSpeakerName, remoteKeyOf } from "./speakerLabels";
+import { formatDate, t } from "../i18n";
 
 /** Strip LLM thinking tags from text (Qwen3, DeepSeek, etc.) */
 function stripThinkTags(text: string): string {
@@ -45,6 +46,41 @@ function meetingStartMs(meeting: Meeting): number {
   return new Date(meeting.start_time).getTime();
 }
 
+/** The fields `Date.prototype.toLocaleString()` shows when given no options. */
+const DATE_TIME_FIELDS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+};
+
+/** Meeting start date and time, in the UI language. */
+function formatMeetingStart(meeting: Meeting): string {
+  return formatDate(new Date(meeting.start_time), DATE_TIME_FIELDS);
+}
+
+/** Scenario as the exported document shows it; an id we don't know shows as stored, underscores as spaces. */
+function scenarioLabel(scenario: AIScenario): string {
+  switch (scenario) {
+    case "team_meeting":
+      return t("misc:export.scenarios.teamMeeting");
+    case "lecture":
+      return t("misc:export.scenarios.lecture");
+    case "interview":
+      return t("misc:export.scenarios.interview");
+    case "webinar":
+      return t("misc:export.scenarios.webinar");
+    case "oral_exam":
+      return t("misc:export.scenarios.oralExam");
+    case "custom":
+      return t("misc:export.scenarios.custom");
+    default:
+      return String(scenario).replace(/_/g, " ");
+  }
+}
+
 function segmentTime(seg: TranscriptSegment, startMs: number): string {
   return formatTimestamp(Math.max(0, seg.timestamp_ms - startMs));
 }
@@ -59,24 +95,24 @@ export function exportToMarkdown(meeting: Meeting): string {
   const startMs = meetingStartMs(meeting);
   const speakerMap = buildSpeakerMap(meeting.speakers);
   let md = `# ${meeting.title}\n\n`;
-  md += `**Date:** ${new Date(meeting.start_time).toLocaleString()}\n`;
+  md += `**${t("misc:export.labels.date")}** ${formatMeetingStart(meeting)}\n`;
   if (meeting.duration_seconds) {
-    md += `**Duration:** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
+    md += `**${t("misc:export.labels.duration")}** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
   }
   if (meeting.audio_mode) {
-    md += `**Mode:** ${meeting.audio_mode === "online" ? "Online" : "In-Person"}\n`;
+    md += `**${t("misc:export.labels.mode")}** ${meeting.audio_mode === "online" ? t("common:labels.online") : t("common:labels.inPerson")}\n`;
   }
   if (meeting.ai_scenario) {
-    md += `**Scenario:** ${meeting.ai_scenario.replace(/_/g, " ")}\n`;
+    md += `**${t("misc:export.labels.scenario")}** ${scenarioLabel(meeting.ai_scenario)}\n`;
   }
-  md += `**Segments:** ${meeting.transcript.length}\n\n`;
+  md += `**${t("misc:export.labels.segments")}** ${meeting.transcript.length}\n\n`;
 
   if (meeting.summary) {
-    md += `## Summary\n\n${stripThinkTags(meeting.summary)}\n\n`;
+    md += `## ${t("misc:export.headings.summary")}\n\n${stripThinkTags(meeting.summary)}\n\n`;
   }
 
   if (meeting.action_items && meeting.action_items.length > 0) {
-    md += `## Action Items\n\n`;
+    md += `## ${t("misc:export.headings.actionItems")}\n\n`;
     for (const item of meeting.action_items) {
       md += `- [${item.completed ? "x" : " "}] ${item.text}\n`;
     }
@@ -84,24 +120,24 @@ export function exportToMarkdown(meeting: Meeting): string {
   }
 
   if (meeting.bookmarks && meeting.bookmarks.length > 0) {
-    md += `## Bookmarks\n\n`;
+    md += `## ${t("misc:export.headings.bookmarks")}\n\n`;
     const sortedBookmarks = [...meeting.bookmarks].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
     for (const b of sortedBookmarks) {
       const ts = formatTimestamp(Math.max(0, b.timestamp_ms - startMs));
-      md += b.note ? `- **[${ts}]** ${b.note}\n` : `- **[${ts}]** *(no note)*\n`;
+      md += b.note ? `- **[${ts}]** ${b.note}\n` : `- **[${ts}]** *${t("misc:export.noNote")}*\n`;
     }
     md += "\n";
   }
 
   if (meeting.transcript.length > 0) {
-    md += `## Transcript\n\n`;
+    md += `## ${t("misc:export.headings.transcript")}\n\n`;
     for (const seg of meeting.transcript) {
       md += `**[${segmentTime(seg, startMs)}] ${resolveSpeaker(seg, speakerMap)}:** ${seg.text}\n\n`;
     }
   }
 
   if (meeting.ai_interactions.length > 0) {
-    md += `## AI Interactions\n\n`;
+    md += `## ${t("misc:export.headings.aiInteractions")}\n\n`;
     for (const ai of meeting.ai_interactions) {
       md += `### ${getModeLabel(ai.mode)} (${ai.provider}/${ai.model})\n\n${ai.response}\n\n---\n\n`;
     }
@@ -172,22 +208,22 @@ export function exportToJSON(meeting: Meeting): string {
 
 export function exportStudyNotes(meeting: Meeting): string {
   const startMs = meetingStartMs(meeting);
-  let md = `# Study Notes — ${meeting.title}\n\n`;
-  md += `**Date:** ${new Date(meeting.start_time).toLocaleString()}\n`;
+  let md = `# ${t("misc:export.docs.heading", { kind: t("misc:export.docs.studyNotes"), title: meeting.title })}\n\n`;
+  md += `**${t("misc:export.labels.date")}** ${formatMeetingStart(meeting)}\n`;
   if (meeting.duration_seconds) {
-    md += `**Duration:** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
+    md += `**${t("misc:export.labels.duration")}** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
   }
   md += "\n";
 
   if (meeting.summary) {
-    md += `## Key Takeaways\n\n${stripThinkTags(meeting.summary)}\n\n`;
+    md += `## ${t("misc:export.headings.keyTakeaways")}\n\n${stripThinkTags(meeting.summary)}\n\n`;
   }
 
   if (meeting.topic_sections && meeting.topic_sections.length > 0) {
-    md += `## Topics Covered\n\n`;
+    md += `## ${t("misc:export.headings.topicsCovered")}\n\n`;
     for (const topic of meeting.topic_sections) {
       md += `### ${topic.title}\n`;
-      md += `*Starts at ${formatTimestamp(topic.start_ms)}*\n\n`;
+      md += `*${t("misc:export.startsAt", { time: formatTimestamp(topic.start_ms) })}*\n\n`;
       // Segments within this topic
       const topicEnd = topic.end_ms ?? Infinity;
       const topicSegs = meeting.transcript.filter(
@@ -199,7 +235,7 @@ export function exportStudyNotes(meeting: Meeting): string {
       md += "\n";
     }
   } else if (meeting.transcript.length > 0) {
-    md += `## Notes\n\n`;
+    md += `## ${t("misc:export.headings.notes")}\n\n`;
     for (const seg of meeting.transcript) {
       md += `- **[${segmentTime(seg, startMs)}]** ${seg.text}\n`;
     }
@@ -207,7 +243,7 @@ export function exportStudyNotes(meeting: Meeting): string {
   }
 
   if (meeting.action_items && meeting.action_items.length > 0) {
-    md += `## Follow-Up Actions\n\n`;
+    md += `## ${t("misc:export.headings.followUpActions")}\n\n`;
     for (const item of meeting.action_items) {
       md += `- [${item.completed ? "x" : " "}] ${item.text}\n`;
     }
@@ -222,22 +258,22 @@ export function exportStudyNotes(meeting: Meeting): string {
 export function exportMeetingMinutes(meeting: Meeting): string {
   const startMs = meetingStartMs(meeting);
   const speakerMap = buildSpeakerMap(meeting.speakers);
-  let md = `# Meeting Minutes — ${meeting.title}\n\n`;
-  md += `**Date:** ${new Date(meeting.start_time).toLocaleString()}\n`;
+  let md = `# ${t("misc:export.docs.heading", { kind: t("misc:export.docs.meetingMinutes"), title: meeting.title })}\n\n`;
+  md += `**${t("misc:export.labels.date")}** ${formatMeetingStart(meeting)}\n`;
   if (meeting.duration_seconds) {
-    md += `**Duration:** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
+    md += `**${t("misc:export.labels.duration")}** ${formatDurationLong(meeting.duration_seconds * 1000)}\n`;
   }
   if (meeting.speakers && meeting.speakers.length > 0) {
-    md += `**Attendees:** ${meeting.speakers.map((s) => s.display_name).join(", ")}\n`;
+    md += `**${t("misc:export.labels.attendees")}** ${meeting.speakers.map((s) => s.display_name).join(t("misc:export.attendeeSeparator"))}\n`;
   }
   md += "\n";
 
   if (meeting.summary) {
-    md += `## Summary\n\n${stripThinkTags(meeting.summary)}\n\n`;
+    md += `## ${t("misc:export.headings.summary")}\n\n${stripThinkTags(meeting.summary)}\n\n`;
   }
 
   if (meeting.topic_sections && meeting.topic_sections.length > 0) {
-    md += `## Agenda Items\n\n`;
+    md += `## ${t("misc:export.headings.agendaItems")}\n\n`;
     for (const topic of meeting.topic_sections) {
       md += `### ${topic.title}\n\n`;
       const topicEnd = topic.end_ms ?? Infinity;
@@ -249,14 +285,14 @@ export function exportMeetingMinutes(meeting: Meeting): string {
       }
     }
   } else if (meeting.transcript.length > 0) {
-    md += `## Discussion\n\n`;
+    md += `## ${t("misc:export.headings.discussion")}\n\n`;
     for (const seg of meeting.transcript) {
       md += `**${resolveSpeaker(seg, speakerMap)}** *(${segmentTime(seg, startMs)})*: ${seg.text}\n\n`;
     }
   }
 
   if (meeting.action_items && meeting.action_items.length > 0) {
-    md += `## Action Items\n\n`;
+    md += `## ${t("misc:export.headings.actionItems")}\n\n`;
     for (const item of meeting.action_items) {
       const assignee = meeting.speakers?.find((s) => s.id === item.assignee_speaker_id);
       md += `- [${item.completed ? "x" : " "}] ${item.text}`;
@@ -280,9 +316,9 @@ interface ScenarioExportFormat {
 export function getScenarioExportFormat(scenario: AIScenario | undefined): ScenarioExportFormat | null {
   switch (scenario) {
     case "lecture":
-      return { label: "Study Notes", extension: "md", fn: exportStudyNotes };
+      return { label: t("misc:export.docs.studyNotes"), extension: "md", fn: exportStudyNotes };
     case "team_meeting":
-      return { label: "Meeting Minutes", extension: "md", fn: exportMeetingMinutes };
+      return { label: t("misc:export.docs.meetingMinutes"), extension: "md", fn: exportMeetingMinutes };
     default:
       return null;
   }
@@ -307,11 +343,11 @@ export async function saveExportFile({ defaultName, extension, filterLabel, cont
     if (!filePath) return false;
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(filePath, content);
-    showToast("Exported successfully", "success");
+    showToast(t("misc:export.toast.exported"), "success");
     return true;
   } catch (err) {
     console.error("[Export] Failed:", err);
-    showToast("Export failed — check disk space", "error");
+    showToast(t("misc:export.toast.failed"), "error");
     return false;
   }
 }
@@ -322,7 +358,7 @@ export async function exportMeetingAsMarkdown(meeting: Meeting): Promise<boolean
   return saveExportFile({
     defaultName: meeting.title,
     extension: "md",
-    filterLabel: "Markdown",
+    filterLabel: "Markdown", // i18n-ignore: file format name
     content: exportToMarkdown(meeting),
   });
 }
@@ -332,7 +368,7 @@ export async function exportMeetingAsSRT(meeting: Meeting): Promise<boolean> {
   return saveExportFile({
     defaultName: meeting.title,
     extension: "srt",
-    filterLabel: "SRT Subtitles",
+    filterLabel: t("misc:export.filters.srt"),
     content: exportToSRT(meeting.transcript, startMs, meeting.speakers),
   });
 }

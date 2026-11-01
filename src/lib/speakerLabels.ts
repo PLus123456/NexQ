@@ -4,18 +4,25 @@
 // are unchanged) and carry `speaker_tag`; names live in the speaker store and
 // meeting_speakers under `them:<tag>`.
 
+import { t } from "../i18n";
 import { REMOTE_SPEAKER_COLORS } from "./speakerColors";
 import type { SpeakerIdentity } from "./types";
 
 /** Speaker-store / meeting_speakers id under which a remote tag's name is kept. */
 export function remoteSpeakerId(tag: string): string {
-  return `them:${tag}`;
+  return `them:${tag}`; // i18n-ignore: 说话人 id
 }
 
-/** Label of a remote tag nobody renamed: "S2" → "Speaker 2". */
+/** Label of a remote tag nobody renamed: "S2" → "Speaker 2" (in the UI language). */
 export function defaultRemoteSpeakerName(tag: string): string {
   const n = /^S(\d+)$/.exec(tag);
-  return n ? `Speaker ${n[1]}` : tag;
+  return n ? t("misc:speakerLabels.defaultName", { n: n[1] }) : tag;
+}
+
+/** The same label, always in English: AI context lines are not translated. */
+function englishSpeakerName(tag: string): string {
+  const n = /^S(\d+)$/.exec(tag);
+  return n ? `Speaker ${n[1]}` : tag; // i18n-ignore: 发给 AI 的说话人标签，保持英文
 }
 
 /** One quiet, stable color per remote person (by tag number). */
@@ -59,7 +66,7 @@ interface SpeakerFields {
  * speaker_id names the person itself).
  */
 export function remoteKeyOf(seg: SpeakerFields): string | null {
-  if (!seg.speaker_tag || seg.speaker === "User") return null;
+  if (!seg.speaker_tag || seg.speaker === "User") return null; // i18n-ignore: 枚举值
   const id = seg.speaker_id ?? "them";
   return id === "them" ? remoteSpeakerId(seg.speaker_tag) : null;
 }
@@ -73,7 +80,7 @@ export function assistSpeakerLabel(
   seg: SpeakerFields,
   nameOf: (speakerKey: string) => string | undefined,
 ): string {
-  if (!seg.speaker_tag || seg.speaker === "User") return seg.speaker;
+  if (!seg.speaker_tag || seg.speaker === "User") return seg.speaker; // i18n-ignore: 枚举值
   const key = remoteKeyOf(seg) ?? seg.speaker_id;
-  return (key && nameOf(key)) || defaultRemoteSpeakerName(seg.speaker_tag);
+  return (key && nameOf(key)) || englishSpeakerName(seg.speaker_tag);
 }

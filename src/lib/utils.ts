@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { formatDate, t } from "../i18n";
 import type { Speaker, IntelligenceMode } from "./types";
 
 // shadcn/ui utility
@@ -13,7 +14,7 @@ export function cn(...inputs: ClassValue[]) {
  */
 export function stripThinkTags(text: string): string {
   let result = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
-  const openIdx = result.indexOf("<think>");
+  const openIdx = result.indexOf("<think>"); // i18n-ignore: model output tag, not UI text
   if (openIdx !== -1) {
     result = result.substring(0, openIdx);
   }
@@ -57,11 +58,11 @@ export function formatRelativeTime(isoDate: string): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  if (diffMins < 1) return t("misc:time.justNow");
+  if (diffMins < 60) return t("misc:time.minutesAgo", { count: diffMins });
+  if (diffHours < 24) return t("misc:time.hoursAgo", { count: diffHours });
+  if (diffDays < 7) return t("misc:time.daysAgo", { count: diffDays });
+  return formatDate(date, { year: "numeric", month: "numeric", day: "numeric" });
 }
 
 // Get speaker display color class
@@ -81,13 +82,15 @@ export function getSpeakerColor(speaker: Speaker): string {
 export function getSpeakerLabel(speaker: Speaker): string {
   switch (speaker) {
     case "User":
-      return "You";
+      return t("common:labels.you");
     case "Interviewer":
-      return "Interviewer";
+      return t("common:labels.interviewer");
     case "Them":
-      return "Them";
+      return t("common:labels.them");
+    case "Unknown":
+      return t("common:labels.unknown");
     default:
-      return speaker || "Unknown";
+      return speaker || t("common:labels.unknown");
   }
 }
 
@@ -95,25 +98,25 @@ export function getSpeakerLabel(speaker: Speaker): string {
 export function getModeLabel(mode: IntelligenceMode): string {
   switch (mode) {
     case "Assist":
-      return "Assist";
+      return t("misc:modes.assist");
     case "WhatToSay":
-      return "Say";
+      return t("misc:modes.whatToSay");
     case "Shorten":
-      return "Short";
+      return t("misc:modes.shorten");
     case "FollowUp":
-      return "F/U";
+      return t("misc:modes.followUp");
     case "Recap":
-      return "Recap";
+      return t("misc:modes.recap");
     case "AskQuestion":
-      return "Ask";
+      return t("misc:modes.askQuestion");
     case "MeetingSummary":
-      return "Summary";
+      return t("misc:modes.meetingSummary");
     case "ActionItemsExtraction":
-      return "Actions";
+      return t("misc:modes.actionItems");
     case "BookmarkSuggestions":
-      return "Bookmarks";
+      return t("misc:modes.bookmarkSuggestions");
     case "MeetingAsk":
-      return "Ask meeting";
+      return t("misc:modes.meetingAsk");
   }
 }
 
@@ -121,17 +124,17 @@ export function getModeLabel(mode: IntelligenceMode): string {
 export function getModeShortcut(mode: IntelligenceMode): string {
   switch (mode) {
     case "Assist":
-      return "Space";
+      return "Space"; // i18n-ignore: shortcut key name
     case "WhatToSay":
-      return "Ctrl+1";
+      return "Ctrl+1"; // i18n-ignore: shortcut key name
     case "Shorten":
-      return "Ctrl+2";
+      return "Ctrl+2"; // i18n-ignore: shortcut key name
     case "FollowUp":
-      return "Ctrl+3";
+      return "Ctrl+3"; // i18n-ignore: shortcut key name
     case "Recap":
-      return "Ctrl+4";
+      return "Ctrl+4"; // i18n-ignore: shortcut key name
     case "AskQuestion":
-      return "Ctrl+5";
+      return "Ctrl+5"; // i18n-ignore: shortcut key name
     case "MeetingSummary":
       return "";
     case "ActionItemsExtraction":
@@ -146,11 +149,12 @@ export function getModeShortcut(mode: IntelligenceMode): string {
 // Format file size
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`; // i18n-ignore: file size unit
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`; // i18n-ignore: file size unit
 }
 
-// Group meetings by date category
+// Group meetings by date category. These are group ids, not display text:
+// RecentMeetings keys and sorts by them and translates the heading when shown.
 export function getDateGroup(isoDate: string): string {
   const date = new Date(isoDate);
   const now = new Date();
@@ -158,8 +162,8 @@ export function getDateGroup(isoDate: string): string {
     (now.getTime() - date.getTime()) / 86400000
   );
 
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return "This Week";
-  return "Earlier";
+  if (diffDays === 0) return "Today"; // i18n-ignore: group id, translated by RecentMeetings
+  if (diffDays === 1) return "Yesterday"; // i18n-ignore: group id, translated by RecentMeetings
+  if (diffDays < 7) return "This Week"; // i18n-ignore: group id, translated by RecentMeetings
+  return "Earlier"; // i18n-ignore: group id, translated by RecentMeetings
 }

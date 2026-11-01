@@ -171,5 +171,389 @@
       "meetingNotSaved": "Couldn't finish saving the meeting. Update postponed.",
       "notInstalled": "Update not installed: {{detail}}"
     }
+  },
+  "aiActions": {
+    "style": {
+      "title": "Response Style",
+      "subtitle": "How the AI formats and phrases its answers",
+      "tone": {
+        "label": "Tone",
+        "options": {
+          "professional": "Professional",
+          "casual": "Casual",
+          "formal": "Formal",
+          "friendly": "Friendly",
+          "direct": "Direct"
+        },
+        "help": "Sets the conversational voice of AI responses.\n\nProfessional — client-facing meetings & formal settings\nCasual — team standups & internal syncs\nFormal — board presentations & executive briefs\nFriendly — 1-on-1s & coaching sessions\nDirect — rapid Q&A & time-constrained calls\n\nClick a selected chip again to deselect."
+      },
+      "format": {
+        "label": "Format",
+        "options": {
+          "bullets": "Bullet Points",
+          "paragraphs": "Paragraphs",
+          "numbered": "Numbered List",
+          "oneliner": "One-liner"
+        },
+        "help": "Controls how AI structures its output.\n\nBullet Points — ideal for action items, meeting notes\nParagraphs — best for narrative summaries & explanations\nNumbered Lists — great for step-by-step procedures\nOne-liner — ultra-concise, glanceable suggestions"
+      },
+      "length": {
+        "label": "Length",
+        "options": {
+          "brief": "Brief",
+          "standard": "Standard",
+          "detailed": "Detailed"
+        },
+        "help": "Adjusts response verbosity.\n\nBrief (1-2 sentences) — fast-paced calls, overlay readability\nStandard (3-5 sentences) — balanced detail for most meetings\nDetailed — thorough analysis when you have time to read"
+      },
+      "perspective": {
+        "label": "Perspective",
+        "options": {
+          "factual": "Factual only",
+          "addTake": "Add my take"
+        },
+        "help": "Controls whether the AI adds its own analysis.\n\nFactual only — answers are grounded strictly in transcript/memory context, no interpretation (default)\nAdd my take — appends a short '## My Take' section with the AI's own analysis, interpretation, or recommendation after the factual answer"
+      },
+      "active": "Active",
+      "summary": {
+        "tone": "{{tone}} tone.",
+        "format": {
+          "bullets": "Use bullet points.",
+          "paragraphs": "Use paragraphs.",
+          "numbered": "Use a numbered list.",
+          "oneliner": "Keep it to one line.",
+          "other": "Use {{format}} format."
+        },
+        "length": {
+          "brief": "Brief responses.",
+          "standard": "Standard length responses.",
+          "detailed": "Detailed responses.",
+          "other": "{{length}} responses."
+        },
+        "perspective": "Adds a 'My Take' section with the AI's own analysis."
+      }
+    },
+    "instructions": {
+      "label": "Additional Instructions",
+      "help": "Free-form text injected into every AI prompt. Use this for:\n\n• Role context (e.g. \"I'm a Product Manager\")\n• Domain-specific terminology or acronyms\n• Additional formatting or style rules\n\nCombined with the preset selections above. Clear this field if it duplicates preset text.",
+      "placeholder": "Add extra instructions beyond the presets above...",
+      "charCount": "{{count}} chars",
+      "tokenCount": "~{{count}} tokens"
+    },
+    "behavior": {
+      "title": "AI Behavior",
+      "subtitle": "Control automation and response characteristics"
+    },
+    "autoTrigger": {
+      "label": "Auto-Trigger",
+      "ariaLabel": "Toggle auto-trigger",
+      "help": "When enabled, {{appName}} listens for questions directed at you during the meeting and automatically generates suggested answers.\n\nTurn OFF during presentations or when you want manual-only control. You can still trigger actions manually with the overlay buttons."
+    },
+    "temperature": {
+      "label": "Temperature",
+      "help": "Controls AI creativity and randomness.\n\nLow (0.0–0.3) — precise, consistent, factual. Best for technical discussions, data review, and compliance topics.\nMedium (0.4–0.6) — balanced blend of accuracy and variety.\nHigh (0.7–1.0) — varied, creative. Useful for brainstorming and ideation sessions.",
+      "precise": "Precise 0.0",
+      "creative": "Creative 1.0"
+    },
+    "context": {
+      "title": "Context Window",
+      "subtitle": "What data the AI considers when responding"
+    },
+    "transcriptWindow": {
+      "label": "Transcript Window",
+      "help": "How many minutes of recent conversation the AI reads before responding.\n\nShort (1-5 min) — focused on the immediate topic, faster responses. Good for quick meetings.\nLong (10-30 min) — broader context for complex, multi-topic discussions that reference earlier points.",
+      "all": "All"
+    },
+    "ragChunks": {
+      "label": "RAG Chunks",
+      "setElsewhere": "Set in Context Strategy",
+      "hint": "Document chunks per query are controlled by \"Results to Retrieve (top-K)\" in Context Strategy. Per-action overrides available in each action's Override Defaults."
+    },
+    "units": {
+      "minutes": "{{count}} min"
+    },
+    "actions": {
+      "title": "Actions",
+      "subtitle": "Built-in and custom AI action modes",
+      "builtIn": "Built-in ({{count}})",
+      "custom": "Custom ({{count}})",
+      "empty": "No custom actions yet",
+      "addButton": "Add Custom Action",
+      "namePlaceholder": "Action name",
+      "promptPlaceholder": "System prompt for this action...",
+      "descriptions": {
+        "assist": "Auto-responds when a question is detected from other participants",
+        "whatToSay": "Suggests what you should say next, written in first person",
+        "shorten": "Condenses the last response into a brief, speakable version",
+        "followUp": "Suggests questions you could ask the other participants",
+        "recap": "Summarizes the entire meeting so far with key points and action items",
+        "askQuestion": "You type a free-form question and the AI answers from context"
+      }
+    },
+    "card": {
+      "delete": {
+        "ariaLabel": "Delete {{name}}"
+      },
+      "visibility": {
+        "ariaLabel": "Toggle {{name}} visibility"
+      },
+      "systemPrompt": "System Prompt",
+      "sources": {
+        "label": "Context Sources",
+        "transcript": "Transcript",
+        "customInstructions": "Custom Instructions",
+        "detectedQuestion": "Detected Question",
+        "webSearch": "Web Search"
+      },
+      "overrides": {
+        "title": "Override Defaults",
+        "toggle": "Override",
+        "ragTopK": "RAG Top-K"
+      }
+    },
+    "help": {
+      "show": "Show explanation"
+    },
+    "cliUnused": {
+      "hint": "Not used with Claude CLI",
+      "webSearch": "Web Search: not used with Claude CLI"
+    }
+  },
+  "promptPreview": {
+    "title": "Prompt Preview",
+    "ariaLabel": "Prompt preview",
+    "subtitle": "{{name}} — {{mode}} mode",
+    "close": {
+      "title": "Close (Esc)",
+      "ariaLabel": "Close prompt preview"
+    },
+    "systemPrompt": "System Prompt",
+    "empty": "(empty)",
+    "tokens": "~{{value}} tokens",
+    "defaultPrompt": "(default prompt)",
+    "userMessage": "User Message",
+    "sections": {
+      "title": "Included Sections",
+      "transcript": "Transcript",
+      "ragChunks": "RAG Chunks",
+      "customInstructions": "Custom Instructions",
+      "detectedQuestion": "Detected Question",
+      "window": "({{seconds}}s window)",
+      "defaultWindow": "(default window)",
+      "topK": "(top {{count}})",
+      "topKDefault": "(top default)"
+    },
+    "totalTokens": "Estimated total tokens",
+    "totalValue": "~{{value}}",
+    "parameters": {
+      "title": "Parameters",
+      "temperature": "Temperature"
+    }
+  },
+  "hotkeys": {
+    "title": "Keyboard Shortcuts",
+    "intro": "Click on any binding to change it, then press your desired key combination.",
+    "reset": {
+      "label": "Reset to Defaults",
+      "ariaLabel": "Reset all hotkeys to defaults"
+    },
+    "table": {
+      "action": "Action",
+      "binding": "Binding"
+    },
+    "recording": "Press a key...",
+    "row": {
+      "ariaLabel": "Change hotkey for {{action}}, currently {{binding}}"
+    },
+    "conflict": "\"{{combo}}\" is already used by \"{{action}}\"",
+    "toast": {
+      "updated": "Hotkey updated: {{action}} = {{combo}}",
+      "reset": "Hotkeys reset to defaults"
+    },
+    "footer": "Changes are saved automatically. Global shortcuts require Ctrl or Cmd modifier.",
+    "actions": {
+      "toggleAssist": "Toggle AI Assist",
+      "startEndMeeting": "Start / End Meeting",
+      "showHide": "Show / Hide Overlay",
+      "openSettings": "Open Settings",
+      "escape": "Escape / Cancel",
+      "modeAssist": "Mode: Assist",
+      "modeSay": "Mode: What to Say",
+      "modeShorten": "Mode: Shorten",
+      "modeFollowUp": "Mode: Follow-Up",
+      "modeRecap": "Mode: Recap",
+      "modeAsk": "Mode: Ask Question"
+    }
+  },
+  "shortcutButton": {
+    "recording": "Press keys…",
+    "recordingAriaLabel": "Press the new shortcut, or Escape to cancel",
+    "changeAriaLabel": "Change shortcut, currently {{shortcut}}",
+    "taken": "{{shortcut}} is already used by \"{{action}}\"",
+    "set": "Shortcut set to {{shortcut}}"
+  },
+  "stealth": {
+    "label": "Hide from screen share",
+    "description": "{{appName}} stays on your screen but won't appear in screen sharing, recordings or screenshots (Zoom, Teams, Meet, OBS and others).",
+    "shortcut": {
+      "label": "Shortcut",
+      "hint": "Works from any app. Also in the tray menu and the meeting overlay."
+    },
+    "assist": {
+      "label": "Assist from any app",
+      "hint": "During a meeting, asks for an answer without switching to {{appName}}. Space works only in the overlay."
+    },
+    "notes": {
+      "windows": "Requires Windows 10 version 2004 or later.",
+      "macos": "Some recorders on macOS 14 and later (ScreenCaptureKit) can still capture windows.",
+      "unsupported": "Not available on this platform."
+    }
+  },
+  "meetingDetection": {
+    "label": "Detect meetings",
+    "description": "When a call starts in one of these apps, a small prompt offers to start {{appName}}, named after the call. {{appName}} only checks which app is using your microphone; it never listens until you start.",
+    "unsupported": "Available on Windows for now; macOS support is coming.",
+    "apps": {
+      "label": "Apps",
+      "ariaLabel": "Apps to detect",
+      "zoom": "Zoom",
+      "teams": "Microsoft Teams",
+      "googleMeet": "Google Meet",
+      "webex": "Webex",
+      "slack": "Slack huddles",
+      "discord": "Discord",
+      "note": "Google Meet, and Teams or Zoom in a browser, are recognized from the active tab."
+    },
+    "startAs": {
+      "label": "Start as"
+    },
+    "dismiss": {
+      "label": "Hide the prompt after",
+      "options": {
+        "seconds30": "30 seconds",
+        "minute1": "1 minute",
+        "minutes2": "2 minutes",
+        "untilCallEnds": "Until the call ends"
+      }
+    },
+    "check": {
+      "label": "Check for calls",
+      "options": {
+        "second1": "Every second",
+        "seconds2": "Every 2 seconds",
+        "seconds3": "Every 3 seconds",
+        "seconds5": "Every 5 seconds",
+        "seconds10": "Every 10 seconds"
+      },
+      "hint": "Each check takes a few milliseconds. More often means the prompt appears sooner after a call starts."
+    }
+  },
+  "audio": {
+    "errors": {
+      "detectFailed": "Couldn't detect audio devices — check your connections"
+    },
+    "deviceDefault": "{{name}} (Default)",
+    "detected": "Audio detected — device is working",
+    "test": {
+      "label": "Test",
+      "testing": "Testing..."
+    },
+    "refresh": {
+      "label": "Refresh devices",
+      "refreshing": "Refreshing..."
+    },
+    "meter": {
+      "ariaLabel": "{{label}} audio level"
+    },
+    "mic": {
+      "label": "Microphone",
+      "ariaLabel": "Microphone device",
+      "detecting": "Detecting microphones...",
+      "select": "Select microphone",
+      "testAriaLabel": "Test microphone",
+      "meterLabel": "Mic",
+      "prompt": "Speak into your microphone...",
+      "noAudio": "No audio detected — try speaking louder or check your mic"
+    },
+    "system": {
+      "label": "System Audio (Output)",
+      "ariaLabel": "System audio device",
+      "detecting": "Detecting outputs...",
+      "select": "Select output device",
+      "testAriaLabel": "Test system audio",
+      "meterLabel": "System",
+      "prompt": "Play some audio on your computer...",
+      "noAudio": "No audio detected — try playing something on your speakers"
+    }
+  },
+  "noisePresets": {
+    "title": "Noise Environment",
+    "hint": "Primarily affects in-person meetings",
+    "none": {
+      "hint": "No noise filtering — use provider defaults"
+    },
+    "metrics": "VAD {{sensitivity}}% · Gate {{gate}} dB"
+  },
+  "confidence": {
+    "title": "Confidence Highlighting",
+    "toggle": {
+      "label": "Highlight Low Confidence",
+      "hint": "Mark transcript words with uncertain recognition in amber",
+      "ariaLabel": "Toggle confidence highlighting"
+    },
+    "threshold": {
+      "label": "Confidence Threshold",
+      "hint": "Words below this score are highlighted",
+      "ariaLabel": "Confidence threshold",
+      "always": "0% (always)",
+      "never": "100% (never)"
+    }
+  },
+  "scenarios": {
+    "active": {
+      "label": "Active Scenario",
+      "hint": "Shapes how the AI interprets the meeting context"
+    },
+    "actions": {
+      "clone": "Clone",
+      "cloneTitle": "Clone this scenario",
+      "createCustom": "Create Custom",
+      "deleteTitle": "Delete this custom scenario",
+      "resetAll": "Reset all",
+      "resetAllTitle": "Reset all overrides to default"
+    },
+    "badges": {
+      "modified": "Modified",
+      "customTag": "custom"
+    },
+    "dialog": {
+      "cloneTitle": "Clone scenario as:",
+      "createTitle": "New scenario name:",
+      "namePlaceholder": "e.g. Sales Call, 1:1 Meeting",
+      "create": "Create"
+    },
+    "defaultDescription": "Custom scenario",
+    "copyName": "{{name}} (copy)",
+    "prompts": {
+      "title": "Prompts"
+    },
+    "prompt": {
+      "resetTitle": "Reset to default",
+      "editTitle": "Edit prompt"
+    },
+    "fields": {
+      "systemPrompt": {
+        "label": "System Prompt",
+        "description": "Instructions for the AI's role and behavior during the meeting"
+      },
+      "summaryPrompt": {
+        "label": "Summary Prompt",
+        "description": "Structure and focus for post-meeting summaries"
+      },
+      "questionDetection": {
+        "label": "Question Detection",
+        "description": "Rules for detecting and prioritizing questions from transcript"
+      }
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { useBookmarkStore } from "../stores/bookmarkStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { formatDurationLong } from "../lib/utils";
@@ -17,6 +18,7 @@ function scrollToSegment(segmentId?: string) {
 }
 
 export function BookmarkPanel() {
+  const { t } = useT("overlay");
   const bookmarks = useBookmarkStore((s) => s.bookmarks);
   const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
   const updateBookmarkNote = useBookmarkStore((s) => s.updateBookmarkNote);
@@ -26,7 +28,7 @@ export function BookmarkPanel() {
   if (sorted.length === 0) {
     return (
       <div className="flex items-center justify-center py-6 text-muted-foreground/40">
-        <p className="text-xs">No bookmarks yet. Right-click a line or use Ctrl+B to bookmark.</p>
+        <p className="text-xs">{t("bookmarks.panel.empty")}</p>
       </div>
     );
   }
@@ -36,7 +38,7 @@ export function BookmarkPanel() {
       <div className="mb-1 flex items-center gap-1.5 px-1">
         <Bookmark className="h-3 w-3 text-primary/60" />
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-          Bookmarks ({sorted.length})
+          {t("bookmarks.panel.title", { total: sorted.length })}
         </span>
       </div>
       <div className="space-y-0.5">
@@ -65,6 +67,7 @@ function BookmarkRow({
   onUpdateNote: (note: string) => void;
   onRemove: () => void;
 }) {
+  const { t } = useT("overlay");
   const [editNote, setEditNote] = useState(bookmark.note ?? "");
   const [editing, setEditing] = useState(false);
 
@@ -78,7 +81,7 @@ function BookmarkRow({
       <button
         onClick={() => scrollToSegment(bookmark.segment_id)}
         className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 hover:bg-primary/20 transition-colors cursor-pointer"
-        title="Jump to line"
+        title={t("bookmarks.panel.jump")}
       >
         <span className="tabular-nums text-[10px] font-semibold text-primary">
           {formatDurationLong(elapsedMs)}
@@ -96,7 +99,7 @@ function BookmarkRow({
               if (e.key === "Escape") setEditing(false);
             }}
             maxLength={500}
-            placeholder="Add note..."
+            placeholder={t("bookmarks.panel.notePlaceholder")}
             className="w-full bg-transparent text-xs text-foreground/80 placeholder:text-muted-foreground/30 outline-none"
           />
         ) : (
@@ -104,7 +107,7 @@ function BookmarkRow({
             onClick={() => setEditing(true)}
             className="block truncate text-xs text-foreground/60 hover:text-foreground/80 cursor-text"
           >
-            {bookmark.note || <span className="italic text-muted-foreground/30">Add note...</span>}
+            {bookmark.note || <span className="italic text-muted-foreground/30">{t("bookmarks.panel.notePlaceholder")}</span>}
           </span>
         )}
       </div>

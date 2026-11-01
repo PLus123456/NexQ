@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useT } from "../i18n";
 import { useCallLogStore } from "../stores/callLogStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { CallLogEntry } from "./CallLogEntry";
+import { filterLabel } from "./stats";
 import type { LogFilterKind } from "../lib/types";
 import {
   X,
@@ -12,20 +14,22 @@ import {
 
 // -- Filter options ----------------------------------------------------------
 
-const FILTER_OPTIONS: Array<{ label: string; value: LogFilterKind }> = [
-  { label: "All", value: "all" },
-  { label: "Assist", value: "Assist" },
-  { label: "Say", value: "WhatToSay" },
-  { label: "Short", value: "Shorten" },
-  { label: "F/U", value: "FollowUp" },
-  { label: "Recap", value: "Recap" },
-  { label: "Ask", value: "AskQuestion" },
-  { label: "Errors", value: "errors" },
+// The chip's label comes from filterLabel(): "All" / "Errors", or the mode's short name.
+const FILTER_OPTIONS: Array<{ value: LogFilterKind }> = [
+  { value: "all" },
+  { value: "Assist" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "WhatToSay" },
+  { value: "Shorten" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "FollowUp" },
+  { value: "Recap" }, // i18n-ignore: IntelligenceMode 枚举值
+  { value: "AskQuestion" },
+  { value: "errors" },
 ];
 
 // -- Main sidebar component --------------------------------------------------
 
 export function CallLogSidebar() {
+  const { t } = useT("calllog");
   const isOpen = useCallLogStore((s) => s.isOpen);
   const setOpen = useCallLogStore((s) => s.setOpen);
   const entries = useCallLogStore((s) => s.entries);
@@ -60,7 +64,7 @@ export function CallLogSidebar() {
   // Close on Escape (skip if settings overlay is open — it handles Escape first)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape") { // i18n-ignore: 键盘按键名
         if (useMeetingStore.getState().settingsOpen) return;
         handleClose();
       }
@@ -129,7 +133,7 @@ export function CallLogSidebar() {
             <div className="flex items-center gap-2">
               <Activity className="h-3.5 w-3.5 text-primary" />
               <span className="text-xs font-semibold text-foreground">
-                AI Call Log
+                {t("sidebar.title")}
               </span>
               {entries.length > 0 && (
                 <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-meta font-medium text-primary">
@@ -142,7 +146,7 @@ export function CallLogSidebar() {
                 <button
                   onClick={clearAll}
                   className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-destructive"
-                  title="Clear all"
+                  title={t("sidebar.clearAll")}
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -151,7 +155,7 @@ export function CallLogSidebar() {
                 ref={closeButtonRef}
                 onClick={handleClose}
                 className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-                title="Close (Esc)"
+                title={t("sidebar.close")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -160,7 +164,7 @@ export function CallLogSidebar() {
 
           {/* Filter chips */}
           <div className="mt-2 flex flex-wrap gap-1">
-            {FILTER_OPTIONS.map(({ label, value }) => {
+            {FILTER_OPTIONS.map(({ value }) => {
               const count = filterCounts[value] ?? 0;
               const isActive = activeFilter === value;
               return (
@@ -173,7 +177,7 @@ export function CallLogSidebar() {
                       : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground"
                   }`}
                 >
-                  {label}
+                  {filterLabel(value)}
                   {count > 0 && (
                     <span
                       className={
@@ -194,10 +198,10 @@ export function CallLogSidebar() {
         {/* Performance mini-dashboard */}
         {stats.total > 0 && (
           <div className="flex items-center justify-between border-b border-border/20 bg-secondary/20 px-3 py-1.5">
-            <StatTile label="Calls" value={`${stats.total}`} />
-            <StatTile label="Avg" value={`${stats.avgLatency}ms`} />
+            <StatTile label={t("sidebar.stats.calls")} value={`${stats.total}`} />
+            <StatTile label={t("sidebar.stats.avg")} value={t("sidebar.stats.avgValue", { ms: stats.avgLatency })} />
             <StatTile
-              label="Tokens"
+              label={t("sidebar.stats.tokens")}
               value={
                 stats.totalTokens > 999
                   ? `${(stats.totalTokens / 1000).toFixed(1)}k`
@@ -206,7 +210,7 @@ export function CallLogSidebar() {
             />
             {stats.errorCount > 0 && (
               <StatTile
-                label="Errors"
+                label={t("sidebar.stats.errors")}
                 value={`${stats.errorCount}`}
                 valueClass="text-destructive"
               />
@@ -221,8 +225,8 @@ export function CallLogSidebar() {
               <FileSearch className="h-6 w-6" />
               <span className="text-xs">
                 {entries.length === 0
-                  ? "No AI calls yet"
-                  : "No calls match filter"}
+                  ? t("sidebar.empty.none")
+                  : t("sidebar.empty.noMatch")}
               </span>
             </div>
           ) : (

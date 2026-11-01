@@ -1,5 +1,6 @@
 import type { AIInteraction } from "../../lib/types";
 import type { ChatItem } from "../../hooks/useMeetingChat";
+import { useT } from "../../i18n";
 import { formatRelativeTime, getModeLabel } from "../../lib/utils";
 import { MessageSquare, ChevronDown, ChevronUp } from "lucide-react";
 
@@ -12,11 +13,12 @@ interface AIInteractionLogProps {
 }
 
 export function AIInteractionLog({ interactions, chat = [], expandedId, onToggle }: AIInteractionLogProps) {
+  const { t } = useT("launcher");
   if (interactions.length === 0 && chat.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
         <MessageSquare className="mb-3 h-8 w-8 text-primary/20" />
-        <p className="text-sm font-medium text-muted-foreground/40">No AI interactions</p>
+        <p className="text-sm font-medium text-muted-foreground/40">{t("aiLog.empty")}</p>
       </div>
     );
   }
@@ -29,7 +31,7 @@ export function AIInteractionLog({ interactions, chat = [], expandedId, onToggle
           id={interaction.id}
           label={getModeLabel(interaction.mode)}
           title={interaction.question_context}
-          aside={`${interaction.latency_ms}ms`}
+          aside={t("aiLog.latency", { ms: interaction.latency_ms })}
           meta={`${interaction.provider}/${interaction.model}`}
           time={formatRelativeTime(interaction.timestamp)}
           body={interaction.response}
@@ -40,7 +42,7 @@ export function AIInteractionLog({ interactions, chat = [], expandedId, onToggle
       {chat.length > 0 && (
         <>
           <h3 className="px-1 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/50 first:pt-0">
-            Ask this meeting
+            {t("aiLog.askMeeting")}
           </h3>
           {chat.map(({ question, answer }) => (
             <LogRow

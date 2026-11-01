@@ -1,4 +1,6 @@
+import type { ParseKeys } from "i18next";
 import type { MeetingSummary } from "../lib/types";
+import { useT } from "../i18n";
 import { getDateGroup } from "../lib/utils";
 import { MeetingCard } from "./MeetingCard";
 import { Mic } from "lucide-react";
@@ -13,12 +15,23 @@ interface RecentMeetingsProps {
   activeMeetingId?: string | null;
 }
 
+/**
+ * Heading of each group `getDateGroup()` can return. The English names stay the
+ * Map keys and the sort order; only the heading shown is translated.
+ */
+const DATE_GROUP_KEYS: Record<string, ParseKeys<["launcher", "common"]>> = {
+  Today: "common:time.today",
+  Yesterday: "common:time.yesterday",
+  "This Week": "common:time.thisWeek",
+  Earlier: "common:time.earlier",
+};
+
 /** Groups meetings by date category: Today, Yesterday, This Week, Earlier */
 function groupMeetingsByDate(
   meetings: MeetingSummary[]
 ): Map<string, MeetingSummary[]> {
   const groups = new Map<string, MeetingSummary[]>();
-  const order = ["Today", "Yesterday", "This Week", "Earlier"];
+  const order = ["Today", "Yesterday", "This Week", "Earlier"]; // i18n-ignore: getDateGroup() 返回的分组 id，用作 Map 的 key 和排序，显示时才翻译
 
   for (const label of order) {
     groups.set(label, []);
@@ -52,6 +65,8 @@ export function RecentMeetings({
   onToggleFavorite,
   activeMeetingId,
 }: RecentMeetingsProps) {
+  const { t } = useT(["launcher", "common"]);
+
   if (meetings.length === 0) {
     return (
       <div className="dash-main flex flex-col items-center justify-center rounded-2xl border border-border/20 bg-secondary/10 py-14">
@@ -59,10 +74,10 @@ export function RecentMeetings({
           <Mic className="h-4.5 w-4.5 text-primary/30" />
         </div>
         <p className="text-xs font-medium text-muted-foreground/50">
-          No meetings yet
+          {t("recent.empty.title")}
         </p>
         <p className="mt-1 text-meta text-muted-foreground/60">
-          Start a meeting to see it here
+          {t("recent.empty.hint")}
         </p>
       </div>
     );
@@ -78,7 +93,7 @@ export function RecentMeetings({
       {Array.from(grouped.entries()).map(([dateGroup, groupMeetings]) => (
         <div key={dateGroup}>
           <h3 className="mb-2 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
-            {dateGroup}
+            {DATE_GROUP_KEYS[dateGroup] ? t(DATE_GROUP_KEYS[dateGroup]) : dateGroup}
           </h3>
           <div className="space-y-1.5">
             {groupMeetings.map((meeting) => {

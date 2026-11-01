@@ -1,8 +1,10 @@
 // AI Scenario settings — manage built-in & custom scenarios with prompt editing.
 
 import { useState, useCallback } from "react";
+import type { ParseKeys } from "i18next";
 import { useScenarioStore } from "../stores/scenarioStore";
-import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
+import { BUILT_IN_SCENARIOS, scenarioDescription, scenarioName } from "../lib/scenarios";
+import { useT } from "../i18n";
 import type { AIScenario, ScenarioTemplate } from "../lib/types";
 import {
   ChevronDown,
@@ -19,12 +21,12 @@ import {
 // ── Prompt field metadata ──
 const PROMPT_FIELDS: {
   key: keyof Pick<ScenarioTemplate, "system_prompt" | "summary_prompt" | "question_detection_prompt">;
-  label: string;
-  description: string;
+  labelKey: ParseKeys<"settings">;
+  descriptionKey: ParseKeys<"settings">;
 }[] = [
-  { key: "system_prompt", label: "System Prompt", description: "Instructions for the AI's role and behavior during the meeting" },
-  { key: "summary_prompt", label: "Summary Prompt", description: "Structure and focus for post-meeting summaries" },
-  { key: "question_detection_prompt", label: "Question Detection", description: "Rules for detecting and prioritizing questions from transcript" },
+  { key: "system_prompt", labelKey: "scenarios.fields.systemPrompt.label", descriptionKey: "scenarios.fields.systemPrompt.description" },
+  { key: "summary_prompt", labelKey: "scenarios.fields.summaryPrompt.label", descriptionKey: "scenarios.fields.summaryPrompt.description" },
+  { key: "question_detection_prompt", labelKey: "scenarios.fields.questionDetection.label", descriptionKey: "scenarios.fields.questionDetection.description" },
 ];
 
 // ── Collapsible Prompt Card ──
@@ -45,6 +47,7 @@ function PromptCard({
   onSave: (value: string) => void;
   onReset: () => void;
 }) {
+  const { t } = useT(["settings", "common"]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -88,7 +91,7 @@ function PromptCard({
               <span className="text-xs font-medium text-foreground">{label}</span>
               {isModified && (
                 <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  Modified
+                  {t("scenarios.badges.modified")}
                 </span>
               )}
             </div>
@@ -99,7 +102,7 @@ function PromptCard({
           {isModified && defaultValue !== undefined && (
             <button
               onClick={handleReset}
-              title="Reset to default"
+              title={t("scenarios.prompt.resetTitle")}
               className="rounded p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-accent/40 transition-colors duration-150 cursor-pointer"
             >
               <RotateCcw className="h-3.5 w-3.5" />
@@ -107,7 +110,7 @@ function PromptCard({
           )}
           <button
             onClick={handleEdit}
-            title="Edit prompt"
+            title={t("scenarios.prompt.editTitle")}
             className="rounded p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-accent/40 transition-colors duration-150 cursor-pointer"
           >
             <Edit2 className="h-3.5 w-3.5" />
@@ -133,14 +136,14 @@ function PromptCard({
                   className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-secondary/30 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 cursor-pointer"
                 >
                   <X className="h-3 w-3" />
-                  Cancel
+                  {t("common:actions.cancel")}
                 </button>
                 <button
                   onClick={handleSave}
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors duration-150 cursor-pointer shadow-sm shadow-primary/20"
                 >
                   <Check className="h-3 w-3" />
-                  Save
+                  {t("common:actions.save")}
                 </button>
               </div>
             </div>
@@ -167,17 +170,18 @@ function CreateScenarioDialog({
   mode: "create" | "clone";
   initialName: string;
 }) {
+  const { t } = useT(["settings", "common"]);
   const [name, setName] = useState(initialName);
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/60 p-4 shadow-lg">
       <p className="mb-3 text-xs font-medium text-foreground">
-        {mode === "clone" ? "Clone scenario as:" : "New scenario name:"}
+        {mode === "clone" ? t("scenarios.dialog.cloneTitle") : t("scenarios.dialog.createTitle")}
       </p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
-        placeholder="e.g. Sales Call, 1:1 Meeting"
+        placeholder={t("scenarios.dialog.namePlaceholder")}
         className="w-full rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 mb-3"
         autoFocus
         onKeyDown={(e) => {
@@ -190,14 +194,14 @@ function CreateScenarioDialog({
           onClick={onCancel}
           className="rounded-lg border border-border/40 bg-secondary/30 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 cursor-pointer"
         >
-          Cancel
+          {t("common:actions.cancel")}
         </button>
         <button
           onClick={() => name.trim() && onConfirm(name.trim())}
           disabled={!name.trim()}
           className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150 cursor-pointer shadow-sm shadow-primary/20"
         >
-          {mode === "clone" ? "Clone" : "Create"}
+          {mode === "clone" ? t("scenarios.actions.clone") : t("scenarios.dialog.create")}
         </button>
       </div>
     </div>
@@ -207,6 +211,7 @@ function CreateScenarioDialog({
 // ── Main Component ──
 
 export function ScenarioSettings() {
+  const { t } = useT(["settings", "common"]);
   const activeScenarioId = useScenarioStore((s) => s.activeScenarioId);
   const customScenarios = useScenarioStore((s) => s.customScenarios);
   const scenarioOverrides = useScenarioStore((s) => s.scenarioOverrides);
@@ -255,16 +260,16 @@ export function ScenarioSettings() {
     const newScenario: ScenarioTemplate = {
       id: `custom_${Date.now()}`,
       name,
-      description: "Custom scenario",
-      system_prompt: "You are an AI meeting assistant.",
-      summary_prompt: "Summarize this meeting with key points and action items.",
-      question_detection_prompt: "Detect questions from participants that need follow-up.",
+      description: t("scenarios.defaultDescription"),
+      system_prompt: "You are an AI meeting assistant.", // i18n-ignore: AI 提示词，存入自定义场景并发给 AI
+      summary_prompt: "Summarize this meeting with key points and action items.", // i18n-ignore: AI 提示词，存入自定义场景并发给 AI
+      question_detection_prompt: "Detect questions from participants that need follow-up.", // i18n-ignore: AI 提示词，存入自定义场景并发给 AI
       is_custom: true,
     };
     createCustomScenario(newScenario);
     setActiveScenario(newScenario.id as AIScenario);
     setShowCreate(false);
-  }, [createCustomScenario, setActiveScenario]);
+  }, [createCustomScenario, setActiveScenario, t]);
 
   const handleClone = useCallback((name: string) => {
     if (!cloneSourceId) return;
@@ -282,20 +287,20 @@ export function ScenarioSettings() {
       <div className="rounded-xl border border-border/30 bg-card/50 p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <label className="text-sm font-medium text-foreground">Active Scenario</label>
+            <label className="text-sm font-medium text-foreground">{t("scenarios.active.label")}</label>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Shapes how the AI interprets the meeting context
+              {t("scenarios.active.hint")}
             </p>
           </div>
           <div className="flex items-center gap-2">
             {/* Clone button */}
             <button
               onClick={() => { setCloneSourceId(activeScenarioId); setShowCreate(false); }}
-              title="Clone this scenario"
+              title={t("scenarios.actions.cloneTitle")}
               className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-secondary/30 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 cursor-pointer"
             >
               <Copy className="h-3.5 w-3.5" />
-              Clone
+              {t("scenarios.actions.clone")}
             </button>
             {/* New custom */}
             <button
@@ -303,7 +308,7 @@ export function ScenarioSettings() {
               className="flex items-center gap-1.5 rounded-lg bg-primary/10 border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors duration-150 cursor-pointer"
             >
               <Plus className="h-3.5 w-3.5" />
-              Create Custom
+              {t("scenarios.actions.createCustom")}
             </button>
           </div>
         </div>
@@ -320,9 +325,9 @@ export function ScenarioSettings() {
                   : "border-border/30 text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
               }`}
             >
-              {scenario.name}
+              {scenarioName(scenario)}
               {scenario.is_custom && (
-                <span className="ml-1.5 text-[10px] text-muted-foreground/50">custom</span>
+                <span className="ml-1.5 text-[10px] text-muted-foreground/50">{t("scenarios.badges.customTag")}</span>
               )}
             </button>
           ))}
@@ -332,25 +337,25 @@ export function ScenarioSettings() {
         <div className="rounded-lg border border-border/20 bg-background/40 px-3 py-2.5">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-xs font-medium text-foreground">{currentTemplate.name}</p>
-              <p className="mt-0.5 text-xs text-muted-foreground/70">{currentTemplate.description}</p>
+              <p className="text-xs font-medium text-foreground">{scenarioName(currentTemplate)}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground/70">{scenarioDescription(currentTemplate)}</p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {hasAnyOverride && !currentTemplate.is_custom && (
                 <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  Modified
+                  {t("scenarios.badges.modified")}
                 </span>
               )}
               {currentTemplate.is_custom && (
                 <>
                   <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                    Custom
+                    {t("common:labels.custom")}
                   </span>
                   <button
                     onClick={() => {
                       deleteCustomScenario(activeScenarioId);
                     }}
-                    title="Delete this custom scenario"
+                    title={t("scenarios.actions.deleteTitle")}
                     className="rounded p-1 text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors duration-150 cursor-pointer"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -360,11 +365,11 @@ export function ScenarioSettings() {
               {hasAnyOverride && !currentTemplate.is_custom && (
                 <button
                   onClick={() => resetScenarioOverrides(activeScenarioId)}
-                  title="Reset all overrides to default"
+                  title={t("scenarios.actions.resetAllTitle")}
                   className="flex items-center gap-1 rounded-lg border border-border/30 bg-secondary/30 px-2 py-1 text-[10px] text-muted-foreground/60 hover:text-foreground transition-colors duration-150 cursor-pointer"
                 >
                   <RotateCcw className="h-3 w-3" />
-                  Reset all
+                  {t("scenarios.actions.resetAll")}
                 </button>
               )}
             </div>
@@ -386,7 +391,7 @@ export function ScenarioSettings() {
           <div className="mt-3">
             <CreateScenarioDialog
               mode="clone"
-              initialName={`${currentTemplate.name} (copy)`}
+              initialName={t("scenarios.copyName", { name: scenarioName(currentTemplate) })}
               onConfirm={handleClone}
               onCancel={() => setCloneSourceId(null)}
             />
@@ -397,13 +402,13 @@ export function ScenarioSettings() {
       {/* ── Prompt Editing ── */}
       <div className="space-y-2">
         <h3 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
-          Prompts
+          {t("scenarios.prompts.title")}
         </h3>
         {PROMPT_FIELDS.map((field) => (
           <PromptCard
             key={field.key}
-            label={field.label}
-            description={field.description}
+            label={t(field.labelKey)}
+            description={t(field.descriptionKey)}
             value={getFieldValue(field.key)}
             defaultValue={getDefaultValue(field.key)}
             isModified={isFieldModified(field.key)}

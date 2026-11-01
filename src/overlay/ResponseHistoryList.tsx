@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Pin, X } from "lucide-react";
+import { useT } from "../i18n";
 import type { AIResponse } from "../lib/types";
 import { getModeLabel } from "../lib/utils";
 import { formatAnswerTime, formatDuration, previewLine } from "./responseFormat";
@@ -23,6 +24,7 @@ export function ResponseHistoryList({
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useT("overlay");
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // Focus the answer on screen (or the newest) when the list opens.
@@ -64,18 +66,18 @@ export function ResponseHistoryList({
     <div
       className="history-slide-enter absolute inset-0 z-10 flex flex-col rounded-lg bg-card/95 backdrop-blur-md"
       role="dialog"
-      aria-label="All answers"
+      aria-label={t("history.title")}
       onKeyDown={onKeyDown}
     >
       <div className="flex shrink-0 items-center justify-between px-1 pb-1.5">
         <span className="text-[0.6rem] font-medium uppercase tracking-widest text-muted-foreground/50">
-          All answers · {responses.length}
+          {t("history.title")} · {responses.length}
         </span>
         <button
           type="button"
           onClick={onClose}
           className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-          aria-label="Close answer history"
+          aria-label={t("history.close")}
         >
           <X className="h-3 w-3" aria-hidden="true" />
         </button>
@@ -101,7 +103,7 @@ export function ResponseHistoryList({
                   <span className={`text-meta font-semibold ${selected ? "text-primary" : "text-foreground/80"}`}>
                     {getModeLabel(r.mode)}
                   </span>
-                  {pinnedIds.has(r.id) && <Pin className="h-2.5 w-2.5 text-warning/70" aria-label="Pinned" />}
+                  {pinnedIds.has(r.id) && <Pin className="h-2.5 w-2.5 text-warning/70" aria-label={t("history.pinned")} />}
                   <span className="ml-auto shrink-0 font-mono text-meta tabular-nums text-muted-foreground/50">
                     {formatAnswerTime(r.timestamp, meetingStart)}
                     {timing ? ` · ${formatDuration(timing)}` : ""}

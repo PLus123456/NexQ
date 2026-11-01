@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useToastStore } from "../stores/toastStore";
 import type { Toast as ToastData } from "../stores/toastStore";
 import { CheckCircle, XCircle, Info, AlertTriangle, X } from "lucide-react";
+import { useT } from "../i18n";
 
 const iconMap = {
   success: CheckCircle,
@@ -43,6 +44,7 @@ const progressMap = {
 };
 
 function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => void }) {
+  const { t } = useT("misc");
   const Icon = iconMap[toast.type];
   const [exiting, setExiting] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -92,7 +94,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
       <button
         onClick={handleDismiss}
         className="shrink-0 rounded-lg p-1 text-muted-foreground/30 transition-all duration-150 hover:bg-accent hover:text-foreground/70 group-hover:text-muted-foreground/60"
-        aria-label="Dismiss notification"
+        aria-label={t("toast.dismiss.label")}
       >
         <X className="h-3.5 w-3.5" />
       </button>
@@ -110,6 +112,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
  * Mount once at the app root.
  */
 export function ToastContainer() {
+  const { t } = useT("misc");
   const toasts = useToastStore((s) => s.toasts);
   const removeToast = useToastStore((s) => s.removeToast);
 
@@ -118,7 +121,7 @@ export function ToastContainer() {
   return (
     <div
       className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2.5"
-      aria-label="Notifications"
+      aria-label={t("toast.container.label")}
     >
       {toasts.map((toast) => (
         <ToastItem

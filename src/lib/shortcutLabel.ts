@@ -1,3 +1,6 @@
+import type { ParseKeys } from "i18next";
+import { t } from "../i18n";
+
 /** True on macOS (shortcuts show ⌘ ⇧ ⌥ ⌃ there). */
 export function isMacPlatform(): boolean {
   return typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
@@ -95,20 +98,22 @@ export function normalizeAccelerator(accelerator: string, mac = isMacPlatform())
 /**
  * Shortcuts NexQ already uses (global: Ctrl+M, Ctrl+B, Ctrl+,; in-window:
  * Ctrl+Shift+L dev log, Ctrl+Shift+D demo). A user binding must not take one.
+ * The values are translation keys (misc namespace) of the action names; they
+ * are translated when `reservedShortcutAction` is called, not here.
  */
-export const RESERVED_SHORTCUTS: Record<string, string> = {
-  "CmdOrCtrl+M": "Start / end meeting",
-  "CmdOrCtrl+B": "Show / hide overlay",
-  "CmdOrCtrl+,": "Open settings",
-  "CmdOrCtrl+Shift+L": "Dev log",
-  "CmdOrCtrl+Shift+D": "Demo mode",
+export const RESERVED_SHORTCUTS: Record<string, ParseKeys<"misc">> = {
+  "CmdOrCtrl+M": "reservedShortcuts.startEndMeeting",
+  "CmdOrCtrl+B": "reservedShortcuts.showHideOverlay",
+  "CmdOrCtrl+,": "reservedShortcuts.openSettings",
+  "CmdOrCtrl+Shift+L": "reservedShortcuts.devLog",
+  "CmdOrCtrl+Shift+D": "reservedShortcuts.demoMode",
 };
 
-/** The action that already owns `accelerator`, if any. */
+/** The (translated) name of the action that already owns `accelerator`, if any. */
 export function reservedShortcutAction(accelerator: string, mac = isMacPlatform()): string | null {
   const wanted = normalizeAccelerator(accelerator, mac);
   for (const [accel, action] of Object.entries(RESERVED_SHORTCUTS)) {
-    if (normalizeAccelerator(accel, mac) === wanted) return action;
+    if (normalizeAccelerator(accel, mac) === wanted) return t(action, { ns: "misc" });
   }
   return null;
 }

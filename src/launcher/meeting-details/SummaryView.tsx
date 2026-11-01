@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Meeting } from "../../lib/types";
 import type { SummaryGenerationState } from "../../hooks/useSummaryGeneration";
+import { useT } from "../../i18n";
 import { useStreamStore } from "../../stores/streamStore";
 import { showToast } from "../../stores/toastStore";
 import { Sparkles, Copy, Download, Loader2, X } from "lucide-react";
@@ -102,6 +103,7 @@ interface SummaryViewProps {
 }
 
 export function SummaryView({ meeting, generation, onExport }: SummaryViewProps) {
+  const { t } = useT(["launcher", "common"]);
   const isOtherStreaming = useStreamStore((s) => s.isStreaming);
 
   const handleCopy = useCallback(async () => {
@@ -109,10 +111,10 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
     if (text) {
       try {
         await navigator.clipboard.writeText(stripThinkTags(text));
-        showToast("Copied to clipboard", "success");
-      } catch { showToast("Couldn't copy to clipboard", "error"); }
+        showToast(t("common:status.copiedToClipboard"), "success");
+      } catch { showToast(t("common:errors.copyFailed"), "error"); }
     }
-  }, [meeting.summary, generation.streamedContent]);
+  }, [meeting.summary, generation.streamedContent, t]);
 
   // Streaming
   if (generation.isGenerating) {
@@ -122,14 +124,14 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm text-primary">
             <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="font-medium">Generating summary...</span>
+            <span className="font-medium">{t("summary.generating")}</span>
           </div>
           <button
             onClick={generation.cancel}
             className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs text-muted-foreground/50 hover:bg-secondary hover:text-foreground cursor-pointer"
           >
             <X className="h-3.5 w-3.5" />
-            Cancel
+            {t("common:actions.cancel")}
           </button>
         </div>
         <div>
@@ -153,7 +155,7 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
           onClick={generation.generate}
           className="rounded-xl bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/20 cursor-pointer"
         >
-          Regenerate Summary
+          {t("summary.regenerate")}
         </button>
       </div>
     );
@@ -167,7 +169,7 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
         <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/20">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground/50">
             <Sparkles className="h-3 w-3" />
-            <span>AI Generated</span>
+            <span>{t("summary.aiGenerated")}</span>
           </div>
           <div className="flex-1" />
           <button
@@ -175,14 +177,14 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground/60 hover:bg-secondary hover:text-foreground transition-colors cursor-pointer"
           >
             <Copy className="h-3.5 w-3.5" />
-            Copy
+            {t("common:actions.copy")}
           </button>
           <button
             onClick={onExport}
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground/60 hover:bg-secondary hover:text-foreground transition-colors cursor-pointer"
           >
             <Download className="h-3.5 w-3.5" />
-            Export
+            {t("common:actions.export")}
           </button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">
@@ -198,15 +200,15 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
   return (
     <div className="flex flex-col items-center justify-center py-16">
       <Sparkles className="mb-4 h-8 w-8 text-primary/20" />
-      <p className="mb-1 text-sm font-semibold text-muted-foreground/50">No summary yet</p>
-      <p className="mb-5 text-xs text-muted-foreground/40">Generate an AI summary from the transcript</p>
+      <p className="mb-1 text-sm font-semibold text-muted-foreground/50">{t("summary.empty.title")}</p>
+      <p className="mb-5 text-xs text-muted-foreground/40">{t("summary.empty.hint")}</p>
       <button
         onClick={generation.generate}
         disabled={isOtherStreaming || meeting.transcript.length === 0}
         className="flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-md shadow-primary/10 transition-all duration-200 hover:shadow-lg hover:shadow-primary/20 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
       >
         <Sparkles className="h-4 w-4" />
-        Generate Summary
+        {t("summary.empty.generate")}
       </button>
     </div>
   );

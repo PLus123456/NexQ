@@ -1,24 +1,40 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { ScreenShareOff } from "lucide-react";
 import { DEFAULT_ASSIST_SHORTCUT, DEFAULT_STEALTH_SHORTCUT, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import { getStealthSupport } from "../lib/ipc";
+import { actionDisplayName } from "../lib/actionNames";
+import { useT } from "../i18n";
 import { ShortcutButton } from "./ShortcutButton";
 import type { StealthSupport } from "../lib/types";
+
+/**
+ * The notes the backend sends with `get_stealth_support` (stealth_commands.rs),
+ * by their English text, so they can be shown in the UI language. A note that
+ * isn't listed here is shown as the backend sent it.
+ */
+const SUPPORT_NOTE_KEYS = new Map<string, ParseKeys<"settings">>([
+  ["Requires Windows 10 version 2004 or later.", "stealth.notes.windows"],
+  ["Some recorders on macOS 14 and later (ScreenCaptureKit) can still capture windows.", "stealth.notes.macos"],
+  ["Not available on this platform.", "stealth.notes.unsupported"],
+]);
 
 /**
  * Settings → General: stealth mode ("Hide from screen share"), its shortcut,
  * and the Assist shortcut that works without switching to NexQ.
  */
 export function StealthSettings() {
+  const { t } = useT(["settings", "misc"]);
   const stealthMode = useConfigStore((s) => s.stealthMode);
   const setStealthMode = useConfigStore((s) => s.setStealthMode);
   const shortcut = useConfigStore((s) => s.stealthShortcut);
   const setShortcut = useConfigStore((s) => s.setStealthShortcut);
   const assistShortcut = useConfigStore((s) => s.assistShortcut);
   const setAssistShortcut = useConfigStore((s) => s.setAssistShortcut);
-  const stealthTaken = useMemo(() => ({ [assistShortcut]: "Assist" }), [assistShortcut]);
-  const assistTaken = useMemo(() => ({ [shortcut]: "Hide from screen share" }), [shortcut]);
+  const assistName = actionDisplayName({ id: "Assist", name: "Assist", isBuiltIn: true });
+  const stealthTaken = useMemo(() => ({ [assistShortcut]: assistName }), [assistShortcut, assistName]);
+  const assistTaken = useMemo(() => ({ [shortcut]: t("stealth.label") }), [shortcut, t]);
 
   const [support, setSupport] = useState<StealthSupport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,13 +44,14 @@ export function StealthSettings() {
   }, []);
 
   const unsupported = support?.supported === false;
+  const noteKey = support?.note ? SUPPORT_NOTE_KEYS.get(support.note) : undefined;
 
   const toggle = async () => {
     setBusy(true);
     try {
       await setStealthMode(!stealthMode);
     } catch (e) {
-      showToast(`Couldn't change screen-share visibility: ${e instanceof Error ? e.message : String(e)}`, "error");
+      showToast(t("misc:shortcuts.stealth.failed", { detail: e instanceof Error ? e.message : String(e) }), "error");
     } finally {
       setBusy(false);
     }
@@ -50,11 +67,10 @@ export function StealthSettings() {
           />
           <div>
             <label id="stealth-label" className="text-sm font-medium text-foreground">
-              Hide from screen share
+              {t("stealth.label")}
             </label>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              NexQ stays on your screen but won't appear in screen sharing, recordings or
-              screenshots (Zoom, Teams, Meet, OBS and others).
+              {t("stealth.description")}
             </p>
           </div>
         </div>
@@ -80,9 +96,9 @@ export function StealthSettings() {
 
       <div className="flex items-center justify-between gap-4">
         <div>
-          <span className="text-xs font-medium text-foreground/80">Shortcut</span>
+          <span className="text-xs font-medium text-foreground/80">{t("stealth.shortcut.label")}</span>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Works from any app. Also in the tray menu and the meeting overlay.
+            {t("stealth.shortcut.hint")}
           </p>
         </div>
         <ShortcutButton value={shortcut} defaultValue={DEFAULT_STEALTH_SHORTCUT} onChange={setShortcut} others={stealthTaken} />
@@ -90,15 +106,15 @@ export function StealthSettings() {
 
       <div className="flex items-center justify-between gap-4">
         <div>
-          <span className="text-xs font-medium text-foreground/80">Assist from any app</span>
+          <span className="text-xs font-medium text-foreground/80">{t("stealth.assist.label")}</span>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            During a meeting, asks for an answer without switching to NexQ. Space works only in the overlay.
+            {t("stealth.assist.hint")}
           </p>
         </div>
         <ShortcutButton value={assistShortcut} defaultValue={DEFAULT_ASSIST_SHORTCUT} onChange={setAssistShortcut} others={assistTaken} />
       </div>
 
-      {support?.note && <p className="text-meta text-muted-foreground/70">{support.note}</p>}
+      {support?.note && <p className="text-meta text-muted-foreground/70">{noteKey ? t(noteKey) : support.note}</p>}
     </div>
   );
 }

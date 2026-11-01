@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ParseKeys } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { ArrowUp, Loader2, MessageCircleQuestion, Square } from "lucide-react";
 import type { ChatItem, MeetingChatState } from "../../hooks/useMeetingChat";
+import { useT } from "../../i18n";
 import { mdComponents, stripThinkTags } from "./SummaryView";
 
 /** Summary markdown styles, with headings and paragraphs sized for a chat answer. */
@@ -15,7 +17,12 @@ const answerMd: Components = {
   p: ({ children }) => <p className="mb-2.5 text-sm leading-relaxed text-foreground/85 last:mb-0">{children}</p>,
 };
 
-const SUGGESTIONS = ["What was decided?", "What are the open questions?", "Who agreed to do what?"];
+/** Starter questions: clicking one asks it (in the UI language), like typing it. */
+const SUGGESTION_KEYS: ParseKeys<"launcher">[] = [
+  "ask.suggestions.decided",
+  "ask.suggestions.openQuestions",
+  "ask.suggestions.owners",
+];
 
 /** Distance from the bottom (px) within which new text keeps the view pinned. */
 const PIN_THRESHOLD = 80;
@@ -30,6 +37,7 @@ interface AskMeetingTabProps {
 
 /** "Ask this meeting": a chat about a past meeting, saved with it. */
 export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning = false }: AskMeetingTabProps) {
+  const { t } = useT("launcher");
   const { items, loading, loadError, isAsking, session, ask, stop } = chat;
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -89,10 +97,10 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
           {loading && (
             <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground/60">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Loading conversation…
+              {t("ask.loading")}
             </div>
           )}
-          {loadError && <p className="text-center text-xs text-destructive/80">Couldn't load earlier questions: {loadError}</p>}
+          {loadError && <p className="text-center text-xs text-destructive/80">{t("ask.loadError", { detail: loadError })}</p>}
           {!loading && items.length === 0 && (
             <EmptyState disabled={blocked || isAsking} onPick={submit} />
           )}
@@ -117,8 +125,8 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={unavailableReason ?? "Ask about this meeting…"}
-              aria-label="Ask about this meeting"
+              placeholder={unavailableReason ?? t("ask.input.placeholder")}
+              aria-label={t("ask.input.label")}
               disabled={!!unavailableReason}
               maxLength={4000}
               className="max-h-36 min-h-[28px] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-foreground/90 outline-none placeholder:text-muted-foreground/45 disabled:cursor-not-allowed"
@@ -127,8 +135,8 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
               <button
                 type="button"
                 onClick={stop}
-                aria-label="Stop answer"
-                title="Stop"
+                aria-label={t("ask.stop.label")}
+                title={t("ask.stop.title")}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-foreground/10 text-foreground/80 transition-colors duration-150 hover:bg-foreground/15 cursor-pointer"
               >
                 <Square className="h-3 w-3 fill-current" />
@@ -137,8 +145,8 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
               <button
                 type="submit"
                 disabled={!canSend}
-                aria-label="Send question"
-                title={otherTaskRunning ? "Wait for the current AI task to finish" : "Send (Enter)"}
+                aria-label={t("ask.send.label")}
+                title={otherTaskRunning ? t("ask.send.waitTitle") : t("ask.send.title")}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity duration-150 disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer"
               >
                 <ArrowUp className="h-3.5 w-3.5" />
@@ -147,7 +155,7 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
           </div>
           <div className="mt-1.5 flex h-4 items-center justify-between px-1 text-[11px] text-muted-foreground/50">
             <SessionLabel state={session?.state ?? null} detail={session?.detail ?? null} />
-            <span className="hidden sm:inline">Enter to send · Shift+Enter for a new line</span>
+            <span className="hidden sm:inline">{t("ask.hint")}</span>
           </div>
         </div>
       </form>
@@ -156,21 +164,22 @@ export function AskMeetingTab({ chat, unavailableReason = null, otherTaskRunning
 }
 
 function EmptyState({ disabled, onPick }: { disabled: boolean; onPick: (q: string) => void }) {
+  const { t } = useT("launcher");
   return (
     <div className="flex flex-col items-center py-14 text-center">
       <MessageCircleQuestion className="mb-3 h-7 w-7 text-primary/30" />
-      <p className="text-sm font-medium text-foreground/70">Ask anything about this meeting</p>
-      <p className="mt-1 text-xs text-muted-foreground/50">Questions and answers are saved with the meeting.</p>
+      <p className="text-sm font-medium text-foreground/70">{t("ask.empty.title")}</p>
+      <p className="mt-1 text-xs text-muted-foreground/50">{t("ask.empty.hint")}</p>
       <div className="mt-5 flex flex-wrap justify-center gap-1.5">
-        {SUGGESTIONS.map((q) => (
+        {SUGGESTION_KEYS.map((key) => (
           <button
-            key={q}
+            key={key}
             type="button"
             disabled={disabled}
-            onClick={() => onPick(q)}
+            onClick={() => onPick(t(key))}
             className="rounded-full border border-border/30 px-3 py-1 text-xs text-muted-foreground/70 transition-colors duration-150 hover:border-primary/30 hover:text-foreground disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
           >
-            {q}
+            {t(key)}
           </button>
         ))}
       </div>
@@ -193,6 +202,7 @@ function Question({ item }: { item: ChatItem }) {
 }
 
 function Answer({ item }: { item: ChatItem }) {
+  const { t } = useT("launcher");
   const text = stripThinkTags(item.content);
   const streaming = item.status === "streaming";
   return (
@@ -200,7 +210,7 @@ function Answer({ item }: { item: ChatItem }) {
       {streaming && !text ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-primary/70" />
-          Thinking…
+          {t("ask.thinking")}
         </div>
       ) : (
         text && (
@@ -212,22 +222,23 @@ function Answer({ item }: { item: ChatItem }) {
           </div>
         )
       )}
-      {item.status === "stopped" && <p className="mt-1.5 text-[11px] text-muted-foreground/50">Stopped · not saved</p>}
+      {item.status === "stopped" && <p className="mt-1.5 text-[11px] text-muted-foreground/50">{t("ask.stopped")}</p>}
       {item.error && <p className="mt-1.5 text-xs text-destructive/80">{item.error}</p>}
     </div>
   );
 }
 
 function SessionLabel({ state, detail }: { state: string | null; detail: string | null }) {
+  const { t } = useT(["launcher", "common"]);
   const label =
     state === "starting"
-      ? "Session starting…"
+      ? t("ask.session.starting")
       : state === "ready"
-        ? "Ready"
+        ? t("common:status.ready")
         : state === "busy"
-          ? "Thinking…"
+          ? t("ask.thinking")
           : state === "error"
-            ? "Session unavailable"
+            ? t("ask.session.unavailable")
             : null;
   if (!label) return <span />;
   const dot =

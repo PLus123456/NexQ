@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
+import { useT } from "../i18n";
 import { onQuestionDetected } from "../lib/events";
 import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
@@ -43,6 +44,7 @@ interface TrackedQuestion extends DetectedQuestion {
 }
 
 export function QuestionDetector() {
+  const { t } = useT("overlay");
   const [questions, setQuestions] = useState<TrackedQuestion[]>([]);
   // Text of each final line when it was last checked for a question.
   const checkedTextRef = useRef<Map<string, string>>(new Map());
@@ -128,7 +130,7 @@ export function QuestionDetector() {
   }, [waiting, latest?.text, otherPartyActivity, handleAssist]);
 
   return (
-    <div className="flex flex-col gap-2.5" role="region" aria-label="Detected questions">
+    <div className="flex flex-col gap-2.5" role="region" aria-label={t("question.region.ariaLabel")}>
       {/* Latest question — prominent card */}
       <div
         className={`group flex items-start gap-3 rounded-lg transition-all duration-200 ${
@@ -138,7 +140,11 @@ export function QuestionDetector() {
         onKeyDown={(e) => { if (latest && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleAssist(0); } }}
         role={latest ? "button" : undefined}
         tabIndex={latest ? 0 : undefined}
-        aria-label={latest ? `Question: ${latest.text}. ${latest.assisted ? "Answered" : "Click to assist"}` : undefined}
+        aria-label={
+          latest
+            ? t(latest.assisted ? "question.card.labelAnswered" : "question.card.labelPending", { text: latest.text })
+            : undefined
+        }
       >
         <div className="relative mt-0.5 shrink-0" aria-hidden="true">
           <HelpCircle className={`h-5 w-5 transition-colors ${latest ? "text-info" : "text-muted-foreground/50"}`} />
@@ -159,7 +165,7 @@ export function QuestionDetector() {
             </p>
           ) : (
             <p className="text-xs text-muted-foreground/50">
-              Listening for questions from the other party
+              {t("question.empty")}
             </p>
           )}
         </div>
@@ -168,7 +174,7 @@ export function QuestionDetector() {
           <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={(e) => { e.stopPropagation(); handleAssist(0); }}
-              aria-label={latest.assisted ? "Already answered" : "Get AI assistance for this question"}
+              aria-label={latest.assisted ? t("question.button.answeredLabel") : t("question.button.assistLabel")}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-150 cursor-pointer ${
                 latest.assisted
                   ? "bg-success/10 border border-success/20 text-success"
@@ -176,14 +182,14 @@ export function QuestionDetector() {
               }`}
             >
               {latest.assisted ? (
-                <><Check className="h-3.5 w-3.5" aria-hidden="true" />Answered</>
+                <><Check className="h-3.5 w-3.5" aria-hidden="true" />{t("question.answered")}</>
               ) : (
-                <><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />Assist</>
+                <><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />{t("question.assist")}</>
               )}
             </button>
             <button
               onClick={(e) => handleDismiss(0, e)}
-              aria-label="Dismiss question"
+              aria-label={t("question.dismiss")}
               className="rounded-lg p-1.5 text-muted-foreground/30 opacity-0 transition-all duration-150 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
@@ -236,7 +242,7 @@ export function QuestionDetector() {
                 )}
                 <button
                   onClick={(e) => handleDismiss(realIdx, e)}
-                  aria-label="Dismiss question"
+                  aria-label={t("question.dismiss")}
                   className="rounded p-0.5 text-muted-foreground/0 opacity-0 transition-all duration-150 hover:bg-destructive/10 hover:text-destructive group-hover/q:opacity-100 group-hover/q:text-muted-foreground/30 cursor-pointer"
                 >
                   <X className="h-3 w-3" />
