@@ -10,7 +10,7 @@ import { ModelCombobox } from "../ModelCombobox";
 import { cn } from "../../lib/utils";
 import { errorMessage } from "../../lib/llm/ipc";
 import { isEmbeddingModel, modelOptions } from "../../lib/llm/connection";
-import { effectiveRoute, isLlmTaskKey } from "../../lib/llm/tasks";
+import { effectiveRoute } from "../../lib/llm/tasks";
 import type { LlmConfigView, LlmConnection } from "../../lib/llm/types";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { useMeetingStore } from "../../stores/meetingStore";
@@ -18,6 +18,7 @@ import { showToast } from "../../stores/toastStore";
 import { useConfigStore } from "../../stores/configStore";
 import { claudeTierLabel } from "../../settings/ClaudeCliSettings";
 import { findTemplate } from "../../settings/llm/providerTemplates";
+import { useTaskLabel } from "../../settings/llm/taskLabels";
 
 type Group = "local" | "cloud" | "subscription";
 const GROUPS: readonly Group[] = ["local", "cloud", "subscription"];
@@ -114,8 +115,7 @@ export function LlmQuickPicker({ view, onClose }: { view: LlmConfigView; onClose
   const routed = Object.entries(view.routing.tasks)
     .filter(([, route]) => route.target && view.connections.some((c) => c.id === route.target?.connection_id))
     .map(([key]) => key);
-  const taskLabel = (key: string) =>
-    isLlmTaskKey(key) ? t(`tasks.${key}.label`) : key.startsWith("assist:") ? t("quickPicker.action", { name: key.slice(7) }) : key;
+  const taskLabel = useTaskLabel();
 
   const openSettings = () => {
     onClose();

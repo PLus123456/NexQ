@@ -696,6 +696,20 @@
       "highFrequency": "高频"
     },
     "fastModelHint": "每句话都会调用：建议选快模型，并关闭思考。",
+    "actions": {
+      "toggle": "按 AI 动作分别设置",
+      "toggleSet_other": "按 AI 动作分别设置（已设 {{count}} 个）",
+      "hint": "每个 AI 动作按钮都可以单独选模型；没设的跟随“AI 助手”。",
+      "names": {
+        "Assist": "回答问题",
+        "WhatToSay": "怎么说",
+        "Shorten": "精简",
+        "FollowUp": "追问",
+        "Recap": "回顾",
+        "AskQuestion": "提问"
+      },
+      "custom": "{{name}}（自定义）"
+    },
     "claudeFallbackLegacy": "这里没设置时，沿用 Claude 订阅设置里选的备用。",
     "translationOnly": "只在翻译服务选择“AI 模型”时生效。",
     "connection": {
@@ -780,7 +794,6 @@
     "refresh": "拉取模型列表",
     "typeModel": "输入其他模型 ID…",
     "unaffected": "以下任务单独指定了模型，不受影响：",
-    "action": "动作 {{name}}",
     "openSettings": "AI 模型设置…",
     "applyFailed": "切换默认模型失败：{{detail}}"
   }

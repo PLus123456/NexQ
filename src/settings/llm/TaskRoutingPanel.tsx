@@ -27,6 +27,7 @@ import { errorMessage } from "../../lib/llm/ipc";
 import { isEmbeddingModel, modelOptions } from "../../lib/llm/connection";
 import { effectiveRoute, isLlmTaskKey, LLM_TASKS, taskDef, type LlmTaskKey } from "../../lib/llm/tasks";
 import type { EffectiveRoute, LlmConfigView, LlmParams, RouteError, TaskRoute } from "../../lib/llm/types";
+import { useAIActionsStore } from "../../stores/aiActionsStore";
 import { useConfigStore } from "../../stores/configStore";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { showToast } from "../../stores/toastStore";
@@ -34,6 +35,7 @@ import { claudeTierLabel } from "../ClaudeCliSettings";
 import { ParamsFields } from "./ParamsFields";
 import { findTemplate } from "./providerTemplates";
 import { ResponseLanguageCard } from "./ResponseLanguageCard";
+import { BUILT_IN_ACTIONS, isBuiltInAction, useTaskLabel } from "./taskLabels";
 import { CARD, LABEL, SECTION_TITLE, SELECT } from "./ui";
 
 const TASK_ICONS: Record<LlmTaskKey, ComponentType<{ className?: string }>> = {
@@ -63,13 +65,31 @@ interface Row {
   parent: string | null;
 }
 
+/** `assist:<mode>` rows: the built-in actions, the custom ones, and any routed action no longer listed. */
+function useActionRows(view: LlmConfigView): Row[] {
+  const actions = useAIActionsStore((s) => s.configs.actions);
+  const modes = [
+    ...BUILT_IN_ACTIONS,
+    ...Object.values(actions)
+      .filter((action) => !action.isBuiltIn && !isBuiltInAction(action.mode))
+      .map((action) => action.mode),
+  ];
+  for (const key of Object.keys(view.routing.tasks)) {
+    if (key.startsWith("assist:") && !modes.includes(key.slice(7))) modes.push(key.slice(7));
+  }
+  return modes.map((mode) => ({ key: `assist:${mode}`, parent: "assist" }));
+}
+
 export function TaskRoutingPanel({ view }: { view: LlmConfigView }) {
   const { t } = useT("llm");
   // The built-in rows, then any task the backend knows that this version doesn't.
   const rows: Row[] = [
     ...LLM_TASKS.map(({ key, parent }) => ({ key, parent })),
-    ...view.known_tasks.filter((task) => !isLlmTaskKey(task.key)),
+    ...view.known_tasks.filter((task) => !isLlmTaskKey(task.key) && !task.key.startsWith("assist:")),
   ];
+  const actionRows = useActionRows(view);
+  const actionsSet = actionRows.filter((row) => view.routing.tasks[row.key]).length;
+  const [actionsOpen, setActionsOpen] = useState(() => actionsSet > 0);
   return (
     <div className="space-y-4">
       <ResponseLanguageCard view={view} />
@@ -79,7 +99,30 @@ export function TaskRoutingPanel({ view }: { view: LlmConfigView }) {
         {view.connections.length === 0 && <p className="mt-3 text-xs text-warning">{t("routing.noConnections")}</p>}
         <div className="mt-4 space-y-2.5">
           {rows.map((row) => (
-            <TaskRow key={row.key} row={row} view={view} />
+            <div key={row.key} className="space-y-2">
+              <TaskRow row={row} view={view} />
+              {row.key === "assist" && (
+                <div className="pl-6">
+                  <button
+                    type="button"
+                    onClick={() => setActionsOpen((open) => !open)}
+                    aria-expanded={actionsOpen}
+                    className="inline-flex items-center gap-1 text-meta font-medium text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <ChevronDown className={cn("h-3 w-3 transition-transform", actionsOpen && "rotate-180")} aria-hidden />
+                    {actionsSet > 0 ? t("routing.actions.toggleSet", { count: actionsSet }) : t("routing.actions.toggle")}
+                  </button>
+                  {actionsOpen && (
+                    <div className="mt-2 space-y-2">
+                      <p className="text-meta text-muted-foreground">{t("routing.actions.hint")}</p>
+                      {actionRows.map((action) => (
+                        <TaskRow key={action.key} row={action} view={view} nested />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -87,13 +130,7 @@ export function TaskRoutingPanel({ view }: { view: LlmConfigView }) {
   );
 }
 
-/** "AI assist" for a known task; an unknown key as it is. */
-function useTaskLabel() {
-  const { t } = useT("llm");
-  return (key: string | null) => (key && isLlmTaskKey(key) ? t(`tasks.${key}.label`) : key ?? "");
-}
-
-function TaskRow({ row, view }: { row: Row; view: LlmConfigView }) {
+function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView; nested?: boolean }) {
   const { t } = useT(["llm", "common"]);
   const taskLabel = useTaskLabel();
   const id = useId();
@@ -109,7 +146,7 @@ function TaskRow({ row, view }: { row: Row; view: LlmConfigView }) {
   const ownConnection = own ? view.connections.find((c) => c.id === own.connection_id) ?? null : null;
   const params: LlmParams = route?.params ?? {};
   const effective = effectiveRoute(view, key);
-  const Icon = known ? TASK_ICONS[known] : Tag;
+  const Icon = known ? TASK_ICONS[known] : nested ? Sparkles : Tag;
   const hasParams = Object.keys(params).length > 0;
   const effectiveConnection = view.connections.find((c) => c.id === effective.connection_id) ?? null;
 
@@ -173,7 +210,12 @@ function TaskRow({ row, view }: { row: Row; view: LlmConfigView }) {
         : t("routing.model.placeholder");
 
   return (
-    <div className={cn("rounded-lg border px-3.5 py-3", isDefault ? "border-primary/25 bg-primary/5" : "border-border/40")}>
+    <div
+      className={cn(
+        "rounded-lg border px-3.5 py-3",
+        isDefault ? "border-primary/25 bg-primary/5" : nested ? "border-border/30 bg-secondary/10" : "border-border/40",
+      )}
+    >
       <div className="flex items-start gap-3">
         <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border/40 bg-secondary/40 text-muted-foreground">
           <Icon className="h-3.5 w-3.5" />

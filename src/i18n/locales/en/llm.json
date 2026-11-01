@@ -703,6 +703,21 @@
       "highFrequency": "Frequent"
     },
     "fastModelHint": "Runs for every sentence: pick a fast model with thinking off.",
+    "actions": {
+      "toggle": "Set per AI action",
+      "toggleSet_one": "Per AI action ({{count}} set)",
+      "toggleSet_other": "Per AI action ({{count}} set)",
+      "hint": "Each AI action button can use its own model; an action without one follows AI assist.",
+      "names": {
+        "Assist": "Assist",
+        "WhatToSay": "What to say",
+        "Shorten": "Shorten",
+        "FollowUp": "Follow-up",
+        "Recap": "Recap",
+        "AskQuestion": "Ask"
+      },
+      "custom": "{{name}} (custom)"
+    },
     "claudeFallbackLegacy": "Not set here: the fallback chosen in the Claude subscription settings is used.",
     "translationOnly": "Only used when the translation service is set to the AI model.",
     "connection": {
@@ -789,7 +804,6 @@
     "refresh": "Fetch the model list",
     "typeModel": "Type another model ID…",
     "unaffected": "These tasks have their own model and stay as they are:",
-    "action": "Action {{name}}",
     "openSettings": "AI model settings…",
     "applyFailed": "Couldn't switch the default model: {{detail}}"
   }

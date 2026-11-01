@@ -197,6 +197,24 @@ describe("LlmSettingsPage", () => {
     await waitFor(() => expect(backend.view().routing.tasks.translation).toBeUndefined());
   });
 
+  it("routes a single AI action", async () => {
+    const { user, backend } = setup({
+      connections: [deepseek, ollama],
+      routing: { default: { target: { connection_id: deepseek.id, model: null }, params: {} }, tasks: {} },
+    });
+    await user.click(await screen.findByRole("tab", { name: "Task routing" }));
+    await user.click(screen.getByRole("button", { name: "Set per AI action" }));
+    const row = screen.getByText("What to say").closest("div.rounded-lg") as HTMLElement;
+    // Neither the action nor AI assist has a route: the default answers.
+    expect(within(row).getByText("Follows Default → DeepSeek / deepseek-chat")).toBeInTheDocument();
+    expect(within(row).getByRole("option", { name: "Follow AI assist" })).toBeInTheDocument();
+    await user.selectOptions(within(row).getByLabelText("Connection"), ollama.id);
+    await waitFor(() =>
+      expect(backend.view().routing.tasks["assist:WhatToSay"]?.target).toEqual({ connection_id: ollama.id, model: null }),
+    );
+    expect(screen.getByRole("button", { name: "Per AI action (1 set)" })).toBeInTheDocument();
+  });
+
   it("follows a change made in the other window", async () => {
     const { backend } = setup({ connections: [deepseek] });
     expect(await screen.findByLabelText("Connection name")).toBeInTheDocument();
