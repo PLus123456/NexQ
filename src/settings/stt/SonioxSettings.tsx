@@ -1,7 +1,7 @@
 // NexQ Plus: settings of the Soniox real-time engine (recognition and
-// one-way translation in the same WebSocket stream). Saved through
-// setSonioxConfig; text fields save on blur / Enter. The API key lives in
-// the keychain (slot `soniox`) and is never read back.
+// translation in the same WebSocket stream). Saved through setSonioxConfig;
+// text fields save on blur / Enter, sliders when released. The API key lives
+// in the keychain (slot `soniox`) and is never read back.
 
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Info, Loader2, Radio, Wifi } from "lucide-react";
@@ -33,6 +33,15 @@ import { sttEngineLabel } from "./sttEngines";
 const ENGINE = "soniox";
 const DELAY_MIN = 500;
 const DELAY_MAX = 3000;
+const SENSITIVITY_MIN = -1;
+const SENSITIVITY_MAX = 1;
+const LATENCY_LEVELS = [0, 1, 2, 3] as const;
+
+/** An endpoint sensitivity as saved: within -1.0–1.0, one decimal. */
+export function roundSensitivity(value: number): number {
+  const clamped = Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, value));
+  return Math.round(clamped * 10) / 10 || 0;
+}
 
 export type ExtraParamsProblem = "invalidJson" | "notObject" | "apiKey";
 
@@ -75,6 +84,10 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
   const [savingKey, setSavingKey] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [delayDraft, setDelayDraft] = useState(config.max_endpoint_delay_ms);
+  // null = server default (not sent); the slider keeps its last value meanwhile.
+  const sensitivity = config.endpoint_sensitivity ?? null;
+  const latencyLevel = config.endpoint_latency_adjustment_level ?? null;
+  const [sensitivityDraft, setSensitivityDraft] = useState(sensitivity ?? 0);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [testing, setTesting] = useState(false);
@@ -95,6 +108,9 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
   }, []);
 
   useEffect(() => setDelayDraft(config.max_endpoint_delay_ms), [config.max_endpoint_delay_ms]);
+  useEffect(() => {
+    if (sensitivity !== null) setSensitivityDraft(sensitivity);
+  }, [sensitivity]);
 
   /** Save a change on top of the latest stored settings. */
   const update = useCallback(
@@ -185,6 +201,14 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
     if (next !== useConfigStore.getState().sonioxConfig.max_endpoint_delay_ms) {
       update({ max_endpoint_delay_ms: next });
     }
+  };
+
+  const commitSensitivity = () => {
+    const saved = useConfigStore.getState().sonioxConfig.endpoint_sensitivity ?? null;
+    // The slider is off while the server default is in use.
+    if (saved === null) return;
+    const next = roundSensitivity(sensitivityDraft);
+    if (next !== saved) update({ endpoint_sensitivity: next });
   };
 
   const region = SONIOX_REGIONS.find((r) => r.id === config.region) ?? SONIOX_REGIONS[0];
@@ -367,6 +391,82 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
             </button>
             {showAdvanced && (
               <div className="space-y-4 border-t border-border/20 px-3 py-3">
+                {/* Sentence-end tuning: stt-rt-v5 only, so each goes out only when set */}
+                <div className="space-y-4 border-b border-border/20 pb-4">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">{t("stt:soniox.endpointTuning.title")}</p>
+                    <p className="mt-1 flex items-start gap-1.5 text-meta leading-relaxed text-muted-foreground">
+                      <Info className="mt-0.5 h-3 w-3 shrink-0 text-info" aria-hidden />
+                      <span>{t("stt:soniox.endpointTuning.note")}</span>
+                    </p>
+                  </div>
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <label htmlFor={`${idPrefix}-sensitivity`} className="text-xs font-medium text-foreground">
+                        {t("stt:soniox.endpointSensitivity.label")}
+                      </label>
+                      <span className="font-mono text-xs tabular-nums text-primary">
+                        {sensitivity === null
+                          ? t("stt:soniox.endpointTuning.serverDefault")
+                          : sensitivityDraft.toFixed(1)}
+                      </span>
+                    </div>
+                    <label className="mb-2 flex cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={sensitivity === null}
+                        onChange={(e) =>
+                          update({ endpoint_sensitivity: e.target.checked ? null : roundSensitivity(sensitivityDraft) })
+                        }
+                        className="h-3.5 w-3.5 rounded border-border/50 accent-primary"
+                      />
+                      <span className="text-xs text-foreground">{t("stt:soniox.endpointSensitivity.useDefault")}</span>
+                    </label>
+                    <input
+                      id={`${idPrefix}-sensitivity`}
+                      type="range"
+                      min={SENSITIVITY_MIN}
+                      max={SENSITIVITY_MAX}
+                      step={0.1}
+                      value={sensitivityDraft}
+                      disabled={sensitivity === null}
+                      onChange={(e) => setSensitivityDraft(parseFloat(e.target.value))}
+                      onMouseUp={commitSensitivity}
+                      onTouchEnd={commitSensitivity}
+                      onKeyUp={commitSensitivity}
+                      onBlur={commitSensitivity}
+                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <div className="mt-0.5 flex justify-between text-meta text-muted-foreground/70">
+                      <span>{t("stt:soniox.endpointSensitivity.min")}</span>
+                      <span>{t("stt:soniox.endpointSensitivity.max")}</span>
+                    </div>
+                    <p className={FIELD_HINT}>{t("stt:soniox.endpointSensitivity.hint")}</p>
+                  </div>
+                  <div>
+                    <label htmlFor={`${idPrefix}-latency-level`} className={FIELD_LABEL}>
+                      {t("stt:soniox.latencyAdjustment.label")}
+                    </label>
+                    <select
+                      id={`${idPrefix}-latency-level`}
+                      value={latencyLevel === null ? "" : String(Math.min(3, Math.max(0, Math.round(latencyLevel))))}
+                      onChange={(e) =>
+                        update({
+                          endpoint_latency_adjustment_level: e.target.value === "" ? null : Number(e.target.value),
+                        })
+                      }
+                      className={`${FIELD_INPUT} cursor-pointer`}
+                    >
+                      <option value="">{t("stt:soniox.endpointTuning.serverDefault")}</option>
+                      {LATENCY_LEVELS.map((level) => (
+                        <option key={level} value={String(level)}>
+                          {t("stt:soniox.latencyAdjustment.level", { level })}
+                        </option>
+                      ))}
+                    </select>
+                    <p className={FIELD_HINT}>{t("stt:soniox.latencyAdjustment.hint")}</p>
+                  </div>
+                </div>
                 <div>
                   <label htmlFor={`${idPrefix}-ws-url`} className={FIELD_LABEL}>
                     {t("stt:soniox.wsUrl.label")}

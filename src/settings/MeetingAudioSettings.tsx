@@ -49,7 +49,7 @@ import {
   type SttProviderMeta,
 } from "../lib/stt/providerMeta";
 import { LanguageCombobox } from "../components/LanguageCombobox";
-import { TRANSLATION_COMMON } from "../lib/languages";
+import { TRANSLATION_COMMON, baseLanguage } from "../lib/languages";
 import { LocalModelManager } from "./LocalModelManager";
 import { PartyLanguageField } from "./stt/PartyLanguageField";
 import {
@@ -799,9 +799,28 @@ function PartyPanel({
 
 // ── Soniox native translation ──
 
+type NativeTranslationMode = NativeTranslationConfig["mode"];
+
+const NATIVE_TRANSLATION_MODES: readonly NativeTranslationMode[] = ["off", "one_way", "two_way"];
+
+const TRANSLATION_FIELD_LABEL = "mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60";
+
 /**
- * Soniox's own translation of this party (`native_translation`). The
- * translation settings get a fuller control later; same field.
+ * Why a two-way pair can't run yet, or null. Soniox needs two different
+ * languages with two-letter codes (the backend turns translation off otherwise).
+ */
+export function sonioxPairProblem(a: string, b: string): "incomplete" | "unsupported" | "same" | null {
+  if (!a.trim() || !b.trim()) return "incomplete";
+  const [baseA, baseB] = [baseLanguage(a), baseLanguage(b)];
+  if (!/^[a-z]{2}$/.test(baseA) || !/^[a-z]{2}$/.test(baseB)) return "unsupported";
+  return baseA === baseB ? "same" : null;
+}
+
+/**
+ * Soniox's own translation of this party (`native_translation`): off,
+ * one-way into a target (empty = the Translation settings' target), or
+ * two-way between languages A and B (in-person meetings). Switching keeps
+ * the other mode's fields, so switching back finds them again.
  */
 function SonioxTranslationField({
   role,
@@ -813,13 +832,22 @@ function SonioxTranslationField({
   onChange: (value: NativeTranslationConfig) => void;
 }) {
   const { t } = useT(["stt", "common"]);
-  const mode = value?.mode ?? "off";
-  const on = mode !== "off";
+  const mode: NativeTranslationMode = value?.mode === "one_way" || value?.mode === "two_way" ? value.mode : "off";
   const target = value?.target_language ?? "";
+  const languageA = value?.language_a ?? "";
+  const languageB = value?.language_b ?? "";
+  const party = partyLabel(role);
+  const modeId = `meeting-audio-${role}-translation-mode`;
   const targetId = `meeting-audio-${role}-translation-target`;
+  const pairId = `meeting-audio-${role}-translation-pair`;
+  const pairProblem = mode === "two_way" ? sonioxPairProblem(languageA, languageB) : null;
 
-  function setOn(next: boolean) {
-    onChange({ ...value, mode: next ? "one_way" : "off" });
+  function setMode(next: NativeTranslationMode) {
+    onChange({ ...value, mode: next });
+  }
+
+  function setPair(side: "language_a" | "language_b", code: string) {
+    onChange({ ...value, mode: "two_way", [side]: code });
   }
 
   function clearTarget() {
@@ -832,21 +860,28 @@ function SonioxTranslationField({
     <div className="rounded-lg border border-border/30 bg-background/30 px-3 py-2.5">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-foreground">{t("stt:meetingAudio.nativeTranslation.label")}</p>
+          <label htmlFor={modeId} className="text-xs font-medium text-foreground">
+            {t("stt:meetingAudio.nativeTranslation.label")}
+          </label>
           <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:meetingAudio.nativeTranslation.hint")}</p>
         </div>
-        <ToggleSwitch
-          checked={on}
-          onChange={setOn}
-          label={t("stt:meetingAudio.nativeTranslation.ariaLabel", { party: partyLabel(role) })}
-        />
+        <select
+          id={modeId}
+          value={mode}
+          onChange={(e) => setMode(e.target.value as NativeTranslationMode)}
+          aria-label={t("stt:meetingAudio.nativeTranslation.ariaLabel", { party })}
+          className="shrink-0 cursor-pointer rounded-lg border border-border/40 bg-background/60 px-2 py-1.5 text-xs text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+        >
+          {NATIVE_TRANSLATION_MODES.map((m) => (
+            <option key={m} value={m}>
+              {t(`stt:meetingAudio.nativeTranslation.modes.${m}`)}
+            </option>
+          ))}
+        </select>
       </div>
       {mode === "one_way" && (
         <div className="mt-3">
-          <label
-            htmlFor={targetId}
-            className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60"
-          >
+          <label htmlFor={targetId} className={TRANSLATION_FIELD_LABEL}>
             {t("stt:meetingAudio.nativeTranslation.target.label")}
           </label>
           <LanguageCombobox
@@ -872,7 +907,35 @@ function SonioxTranslationField({
         </div>
       )}
       {mode === "two_way" && (
-        <p className="mt-2 text-meta text-muted-foreground/70">{t("stt:meetingAudio.nativeTranslation.twoWay")}</p>
+        <div className="mt-3 space-y-2.5">
+          {(["language_a", "language_b"] as const).map((side) => {
+            const id = `${pairId}-${side === "language_a" ? "a" : "b"}`;
+            const key = side === "language_a" ? "A" : "B";
+            return (
+              <div key={side}>
+                <label htmlFor={id} className={TRANSLATION_FIELD_LABEL}>
+                  {t(`stt:meetingAudio.nativeTranslation.pair.language${key}`)}
+                </label>
+                <LanguageCombobox
+                  id={id}
+                  value={side === "language_a" ? languageA : languageB}
+                  onChange={(code) => setPair(side, code)}
+                  common={TRANSLATION_COMMON}
+                  placeholder={t("stt:meetingAudio.nativeTranslation.pair.placeholder")}
+                  aria-label={t(`stt:meetingAudio.nativeTranslation.pair.ariaLabel${key}`, { party })}
+                />
+              </div>
+            );
+          })}
+          {pairProblem ? (
+            <p role="status" className="flex items-start gap-1.5 text-meta leading-relaxed text-amber-500">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+              <span>{t(`stt:meetingAudio.nativeTranslation.pair.${pairProblem}`)}</span>
+            </p>
+          ) : (
+            <p className="text-meta text-muted-foreground/70">{t("stt:meetingAudio.nativeTranslation.pair.hint")}</p>
+          )}
+        </div>
       )}
     </div>
   );

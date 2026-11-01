@@ -160,13 +160,28 @@
       "label": "用 Soniox 翻译",
       "hint": "Soniox 一边识别一边翻译，原文和译文在同一条流里返回。",
       "ariaLabel": "用 Soniox 翻译{{party}}的发言",
+      "modes": {
+        "off": "关闭",
+        "one_way": "单向翻译",
+        "two_way": "双向翻译"
+      },
       "target": {
         "label": "翻译成",
         "followPlaceholder": "跟随翻译设置",
         "follow": "改为跟随翻译设置的目标语言",
         "followHint": "留空时使用翻译设置里的目标语言。"
       },
-      "twoWay": "双向翻译请在翻译设置里配置。"
+      "pair": {
+        "languageA": "语言 A",
+        "languageB": "语言 B",
+        "ariaLabelA": "{{party}}的双向翻译语言 A",
+        "ariaLabelB": "{{party}}的双向翻译语言 B",
+        "placeholder": "选择语言",
+        "hint": "说其中一种语言就翻译成另一种，其他语言只转写、不翻译。适合同室会议。",
+        "incomplete": "两种语言都选好后，双向翻译才会生效。",
+        "unsupported": "Soniox 只支持两字母代码的语言（zh、en…）。",
+        "same": "请选择两种不同的语言。"
+      }
     },
     "diarization": {
       "label": "说话人分离",
@@ -549,6 +564,23 @@
       "min": "500 毫秒（更快）",
       "max": "3000 毫秒（断句更少）",
       "hint": "说话停下后，Soniox 等多久才结束这句话。字幕场景建议 1000–1500 毫秒。"
+    },
+    "endpointTuning": {
+      "title": "断句微调（仅 stt-rt-v5）",
+      "note": "这两项只有 stt-rt-v5 支持。用其他模型时只要设了其中一项，整个会话都会被拒绝（错误 400），所以请都保持“服务端默认”。",
+      "serverDefault": "服务端默认"
+    },
+    "endpointSensitivity": {
+      "label": "断句灵敏度",
+      "useDefault": "使用服务端默认值",
+      "min": "-1.0（等得更久）",
+      "max": "1.0（断得更快）",
+      "hint": "Soniox 判断一句话说完的积极程度。调高断句更快（行更多、更短）；调低会多等一会儿再定稿。服务端默认是 0.0。"
+    },
+    "latencyAdjustment": {
+      "label": "断句提速",
+      "level": "{{level}} 级",
+      "hint": "缩短一句话结束前的等待：级别越高断得越快、断句越多，准确率会略有下降。0 级为不提速（服务端默认）。"
     },
     "diarization": {
       "label": "区分远端说话人",
