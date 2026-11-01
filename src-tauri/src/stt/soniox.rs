@@ -183,6 +183,7 @@ impl STTProvider for SonioxSTT {
             translation_target: self.options.translation_target.clone(),
             sink,
             result_tx,
+            seen_speakers: Default::default(),
         };
         self.audio_tx = Some(audio_tx);
         self.dropped_chunks = 0;
@@ -242,6 +243,9 @@ trait SessionSink: Send + Sync {
     fn status(&self, status: &str, message: Option<String>);
     fn debug(&self, level: &str, message: &str);
     fn translation(&self, translation: &TranslationEvent);
+    /// A diarized speaker seen for the first time ("speaker_0"), as Deepgram
+    /// reports it: in-person meetings add them as speakers.
+    fn speaker_detected(&self, speaker_id: &str);
 }
 
 /// A `translation_result` payload (same fields as the frontend's TranslationResult).
@@ -303,6 +307,11 @@ impl SessionSink for AppSink {
         crate::stt::emit_stt_debug(&self.app, level, "soniox", &format!("[{}] {}", self.party, message));
     }
 
+    fn speaker_detected(&self, speaker_id: &str) {
+        let _ = self.app.emit("speaker_detected", serde_json::json!({ "speaker_id": speaker_id, "meeting_id": "" }));
+        log::info!("SonioxSTT[{}]: new speaker detected via diarization: {}", self.party, speaker_id);
+    }
+
     fn translation(&self, translation: &TranslationEvent) {
         let _ = self.app.emit("translation_result", translation);
         // An empty final withdraws a partial that turned out to be no
@@ -326,6 +335,8 @@ impl SessionSink for LogSink {
     }
 
     fn translation(&self, _translation: &TranslationEvent) {}
+
+    fn speaker_detected(&self, _speaker_id: &str) {}
 }
 
 // ── Audio frames and Soniox's clock ─────────────────────────────────────────
@@ -433,6 +444,8 @@ struct Session {
     translation_target: Option<String>,
     sink: Arc<dyn SessionSink>,
     result_tx: mpsc::Sender<TranscriptResult>,
+    /// Diarized speakers already announced for this party.
+    seen_speakers: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Why a connection ended.
@@ -705,12 +718,22 @@ impl Session {
             match event {
                 AssemblerEvent::Transcript(sentence) => {
                     let result = self.transcript_result(sentence, connection, timeline);
+                    self.announce_speaker(result.speaker_tag.as_deref());
                     if self.result_tx.send(result).await.is_err() {
                         return;
                     }
                 }
                 AssemblerEvent::Translation(update) => self.sink.translation(&self.translation_event(update, connection)),
             }
+        }
+    }
+
+    /// `speaker_detected` the first time a diarization tag shows up.
+    fn announce_speaker(&self, tag: Option<&str>) {
+        let Some(speaker_id) = tag.and_then(crate::stt::provider::diarized_speaker_id) else { return };
+        let new = self.seen_speakers.lock().map(|mut seen| seen.insert(speaker_id.clone())).unwrap_or(false);
+        if new {
+            self.sink.speaker_detected(&speaker_id);
         }
     }
 
@@ -905,6 +928,7 @@ mod tests {
     struct TestSink {
         statuses: Mutex<Vec<(String, Option<String>)>>,
         translations: Mutex<Vec<TranslationEvent>>,
+        speakers: Mutex<Vec<String>>,
     }
 
     impl SessionSink for TestSink {
@@ -914,6 +938,9 @@ mod tests {
         fn debug(&self, _level: &str, _message: &str) {}
         fn translation(&self, translation: &TranslationEvent) {
             self.translations.lock().unwrap().push(translation.clone());
+        }
+        fn speaker_detected(&self, speaker_id: &str) {
+            self.speakers.lock().unwrap().push(speaker_id.to_string());
         }
     }
 
@@ -1098,6 +1125,8 @@ mod tests {
         assert!(start.get("api_key").is_none());
         assert_eq!(start["sample_rate"], 16000);
         assert_eq!(frames, 3); // 300 ms of audio in 100 ms frames
+        // Speaker "1" announced once, as in-person mode expects ("S1" → "speaker_0").
+        assert_eq!(*sink.speakers.lock().unwrap(), vec!["speaker_0".to_string()]);
         let statuses: Vec<String> = sink.statuses.lock().unwrap().iter().map(|(s, _)| s.clone()).collect();
         assert_eq!(statuses.first().map(String::as_str), Some("connecting"));
         assert!(statuses.contains(&"connected".to_string()));
