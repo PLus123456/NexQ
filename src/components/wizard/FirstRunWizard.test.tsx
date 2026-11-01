@@ -2,11 +2,14 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuickSetupProps } from "../../settings/quickSetup";
+import type { STTProviderType } from "../../lib/types";
 import type * as IPC from "../../lib/ipc";
 
 const saved = vi.hoisted(() => new Map<string, unknown>());
 const keyListeners = vi.hoisted(() => [] as Array<{ key: string; cb: (v: unknown) => void }>);
-const audio = vi.hoisted(() => ({ detected: true }));
+const audio = vi.hoisted(() => ({ detected: true, failNext: false, started: [] as Array<[string, boolean]> }));
+const savedKeys = vi.hoisted(() => new Set<string>());
+const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: unknown): Promise<unknown> => null));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({
@@ -21,13 +24,22 @@ vi.mock("@tauri-apps/plugin-store", () => ({
     },
   }),
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: unknown) => invoke(cmd, args) }));
+vi.mock("../../lib/platform", () => ({ isMac: () => true, isWindows: () => false, currentPlatform: () => "macos" }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {}, emit: async () => {} }));
 vi.mock("../../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IPC>()),
   listAudioDevices: async () => ({ inputs: [], outputs: [] }),
-  startAudioTest: async () => {},
+  startAudioTest: async (deviceId: string, isInput: boolean) => {
+    if (audio.failNext) {
+      audio.failNext = false;
+      throw new Error("permission denied");
+    }
+    audio.started.push([deviceId, isInput]);
+  },
   stopAudioTest: async () => audio.detected,
+  hasApiKey: async (slot: string) => savedKeys.has(slot),
+  listLocalSTTEngines: async () => [],
 }));
 // The knowledge base panel talks to the backend; a stand-in shows it opened.
 vi.mock("../../context/ContextPanel", () => ({
@@ -54,6 +66,15 @@ import { resetOnboardingStoreForTests, useOnboardingStore } from "../../stores/o
 import { useConfigStore } from "../../stores/configStore";
 import { useMeetingStore } from "../../stores/meetingStore";
 
+function audioConfig(you: string, them: string) {
+  return {
+    you: { role: "You" as const, device_id: "default", is_input_device: true, stt_provider: you as STTProviderType },
+    them: { role: "Them" as const, device_id: "default", is_input_device: false, stt_provider: them as STTProviderType },
+    recording_enabled: false,
+    preset_name: null,
+  };
+}
+
 function heading() {
   return screen.getByRole("heading", { level: 2 });
 }
@@ -73,8 +94,12 @@ beforeEach(() => {
   saved.clear();
   keyListeners.length = 0;
   audio.detected = true;
+  audio.started = [];
+  audio.failNext = false;
+  invoke.mockClear();
+  savedKeys.clear();
   resetOnboardingStoreForTests();
-  useConfigStore.setState({ firstRunCompleted: false });
+  useConfigStore.setState({ firstRunCompleted: false, meetingAudioConfig: audioConfig("web_speech", "deepgram") });
   useMeetingStore.setState({ currentView: "launcher", previousView: null, settingsOpen: false, settingsTab: null });
 });
 
@@ -173,11 +198,11 @@ describe("FirstRunWizard", () => {
     expect(screen.queryByText("Picked up where you left off.")).toBeNull();
   });
 
-  it("the audio step is done when the microphone test hears sound", async () => {
+  it("the audio step is done when both the microphone and the system audio are heard", async () => {
     useConfigStore.setState({
       meetingAudioConfig: {
-        you: { role: "You", device_id: "default", is_input_device: true, stt_provider: "web_speech" },
-        them: { role: "Them", device_id: "default", is_input_device: false, stt_provider: "deepgram" },
+        you: { role: "You", device_id: "Built-in Mic", is_input_device: true, stt_provider: "web_speech" },
+        them: { role: "Them", device_id: "Speakers", is_input_device: false, stt_provider: "deepgram" },
         recording_enabled: false,
         preset_name: null,
       },
@@ -188,18 +213,60 @@ describe("FirstRunWizard", () => {
     await user.click(screen.getByRole("button", { name: "Skip" }));
     await user.click(screen.getByRole("button", { name: "Skip" }));
     expect(heading()).toHaveTextContent("Audio Setup");
+    const micTest = screen.getByRole("region", { name: "Microphone Test" });
+    const systemTest = screen.getByRole("region", { name: "System Audio Test" });
+    const next = () => screen.getByRole("button", { name: /^Next/ });
 
+    await user.click(within(micTest).getByRole("button", { name: "Test Audio" }));
+    expect(within(systemTest).getByRole("button", { name: "Test Audio" })).toBeDisabled();
+    await user.click(within(micTest).getByRole("button", { name: /^Stop/ }));
+    await within(micTest).findByText("Your microphone works.");
+    expect(useOnboardingStore.getState().progress.steps.audio?.status).toBe("incomplete");
+    expect(next()).toBeDisabled();
+
+    // Nothing heard from the system audio: what to check, and the permission page.
     audio.detected = false;
-    await user.click(screen.getByRole("button", { name: "Test Audio" }));
-    await user.click(screen.getByRole("button", { name: /^Stop/ }));
-    await waitFor(() => expect(useOnboardingStore.getState().progress.steps.audio?.status).toBe("error"));
-    expect(screen.getByRole("button", { name: /^Next/ })).toBeDisabled();
+    await user.click(within(systemTest).getByRole("button", { name: "Test Audio" }));
+    await user.click(within(systemTest).getByRole("button", { name: /^Stop/ }));
+    await within(systemTest).findByText("No system audio was heard.");
+    expect(audio.started).toEqual([["Built-in Mic", true], ["Speakers", false]]);
+    expect(useOnboardingStore.getState().progress.steps.audio).toEqual({
+      status: "error",
+      detail: "No system audio from the other side.",
+    });
+    expect(within(systemTest).getByText(/Screen & System Audio Recording/)).toBeInTheDocument();
+    await user.click(within(systemTest).getByRole("button", { name: "Open system audio recording settings" }));
+    expect(invoke).toHaveBeenCalledWith("open_privacy_settings", { pane: "system_audio" });
 
     audio.detected = true;
-    await user.click(screen.getByRole("button", { name: "Test Audio" }));
-    await user.click(screen.getByRole("button", { name: /^Stop/ }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Next/ })).toBeEnabled());
-    expect(screen.getByText("Your microphone works.")).toBeInTheDocument();
+    await user.click(within(systemTest).getByRole("button", { name: "Test Audio" }));
+    await user.click(within(systemTest).getByRole("button", { name: /^Stop/ }));
+    await waitFor(() => expect(next()).toBeEnabled());
+    expect(useOnboardingStore.getState().progress.steps.audio).toEqual({ status: "ok" });
+
+    // The results survive leaving the step; another source needs a new test.
+    await user.click(screen.getByRole("button", { name: "Previous" }));
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    expect(within(screen.getByRole("region", { name: "System Audio Test" })).getByText("The other side's audio comes through.")).toBeInTheDocument();
+    const themSource = screen.getAllByRole("combobox")[1];
+    await waitFor(() => expect(themSource).toBeEnabled());
+    await user.selectOptions(themSource, JSON.stringify([false, "default"]));
+    expect(useOnboardingStore.getState().progress.steps.audio).toEqual({ status: "incomplete" });
+  });
+
+  it("a microphone that can't be opened says why and links to its permission page", async () => {
+    const user = await renderWizard();
+    await user.click(screen.getByRole("button", { name: "Skip the remaining steps" }));
+    await user.click(screen.getByRole("button", { name: /^Change · Audio check/ }));
+
+    const micTest = screen.getByRole("region", { name: "Microphone Test" });
+    audio.failNext = true;
+    await user.click(within(micTest).getByRole("button", { name: "Test Audio" }));
+
+    await within(micTest).findByText("The test couldn't start: permission denied");
+    expect(useOnboardingStore.getState().progress.steps.audio?.status).toBe("error");
+    await user.click(within(micTest).getByRole("button", { name: "Open microphone settings" }));
+    expect(invoke).toHaveBeenCalledWith("open_privacy_settings", { pane: "microphone" });
   });
 
   it("\"Upload your resume\" opens the personal knowledge base", async () => {
@@ -218,10 +285,52 @@ describe("FirstRunWizard", () => {
     expect(useConfigStore.getState().firstRunCompleted).toBe(false);
   });
 
+  it("before finishing, checks that speech recognition can run for at least one side", async () => {
+    const user = await renderWizard();
+    await user.click(screen.getByRole("button", { name: "Skip the remaining steps" }));
+
+    const check = screen.getByRole("region", { name: "Before your first meeting" });
+    await within(check).findByText("API key missing");
+    expect(within(check).getByText("Ready")).toBeInTheDocument();
+    expect(within(check).getByText(/Web Speech/)).toBeInTheDocument();
+    expect(within(check).getByText(/Deepgram/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Start Meeting/ })).toBeEnabled();
+
+    // Neither side can run: no meeting until one is set up (the launcher stays open).
+    act(() => useConfigStore.setState({ meetingAudioConfig: audioConfig("deepgram", "groq_whisper") }));
+    expect(await within(check).findByRole("alert")).toHaveTextContent("Neither side's speech recognition can run yet");
+    expect(screen.getByRole("button", { name: /Start Meeting/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Go to Launcher" })).toBeEnabled();
+
+    savedKeys.add("groq_whisper");
+    await user.click(within(check).getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(within(check).queryByRole("alert")).toBeNull());
+    expect(screen.getByRole("button", { name: /Start Meeting/ })).toBeEnabled();
+
+    // A change in the audio settings is checked again by itself.
+    savedKeys.clear();
+    act(() => useConfigStore.setState({ meetingAudioConfig: audioConfig("deepgram", "groq_whisper") }));
+    await user.click(await within(check).findByRole("button", { name: "Set up speech recognition" }));
+    expect(heading()).toHaveTextContent("Set up speech recognition");
+  });
+
+  it("speech recognition tested in its step needs no further check", async () => {
+    useConfigStore.setState({ meetingAudioConfig: audioConfig("deepgram", "groq_whisper") });
+    saved.set("onboardingProgress", {
+      ...freshProgress(2),
+      current: "finish",
+      steps: { language: { status: "ok" }, stt: { status: "ok" }, finish: { status: "incomplete" } },
+    });
+    await renderWizard();
+    const check = screen.getByRole("region", { name: "Before your first meeting" });
+    expect(within(check).getByText("Speech recognition passed its test in step 3.")).toBeInTheDocument();
+    expect(within(check).queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: /Start Meeting/ })).toBeEnabled();
+  });
+
   it("finishing marks setup completed", async () => {
     const user = await renderWizard();
     await user.click(screen.getByRole("button", { name: "Skip the remaining steps" }));
-    expect(screen.getByRole("note")).toHaveTextContent("Speech recognition isn't set up yet");
 
     await user.click(screen.getByRole("button", { name: "Go to Launcher" }));
 

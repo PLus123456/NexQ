@@ -14,6 +14,7 @@ import {
 } from "../i18n";
 import { StealthSettings } from "./StealthSettings";
 import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
+import { RerunSetupCard } from "../components/wizard/RerunSetupCard";
 
 const THEME_OPTIONS: { value: ThemeMode; labelKey: ParseKeys<"settings">; icon: React.ReactNode }[] = [
   { value: "dark", labelKey: "general.theme.options.dark", icon: <Moon className="h-3.5 w-3.5" /> },
@@ -108,6 +109,9 @@ export function GeneralSettings() {
           />
         </div>
       </div>
+
+      {/* First-run setup again (NexQ Plus, P5) */}
+      <RerunSetupCard />
 
       {/* Theme Toggle */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5">

@@ -4,7 +4,7 @@
 // every change (stores/onboardingStore.ts), so setup continues where it was
 // left, and finishing it sets `firstRunCompleted`.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Brain, ChevronLeft, ChevronRight, FastForward, Globe, History, Mic, SkipForward } from "lucide-react";
 import { useT } from "../../i18n";
 import { APP_NAME } from "../../lib/brand";
@@ -20,6 +20,7 @@ import {
 import { LlmQuickSetup } from "../../settings/llm/LlmQuickSetup";
 import { SttQuickSetup } from "../../settings/stt/SttQuickSetup";
 import { TranslationQuickSetup } from "../../settings/translation/TranslationQuickSetup";
+import { audioStepState, type AudioChecks } from "../../lib/onboarding/audioChecks";
 import { initOnboarding, useOnboardingStore } from "../../stores/onboardingStore";
 import { AudioSetupStep } from "./AudioSetupStep";
 import { FinishStep } from "./FinishStep";
@@ -27,12 +28,24 @@ import { LanguageStep } from "./LanguageStep";
 import { QuickSetupStep, useStepReporter } from "./QuickSetupStep";
 import { StatusIcon, StepStatusNote } from "./parts";
 
+/** Done when both the microphone and the system audio were heard. */
 function AudioStep() {
+  const { t } = useT("onboarding");
   const state = useOnboardingStore((s) => s.progress.steps.audio);
-  const onStatusChange = useStepReporter("audio");
+  const checks = useOnboardingStore((s) => s.audioChecks);
+  const onChecksChange = useCallback(
+    (next: AudioChecks) => {
+      const store = useOnboardingStore.getState();
+      store.setAudioChecks(next);
+      const { status, problems } = audioStepState(next);
+      const detail = problems.map((kind) => t(`steps.audio.problems.${kind}`)).join(" ");
+      store.report("audio", status, detail || undefined);
+    },
+    [t],
+  );
   return (
     <div>
-      <AudioSetupStep onStatusChange={onStatusChange} />
+      <AudioSetupStep checks={checks} onChecksChange={onChecksChange} />
       <StepStatusNote status={state?.status ?? "incomplete"} detail={state?.detail} />
     </div>
   );

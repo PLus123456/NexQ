@@ -73,7 +73,7 @@
     "audio": {
       "name": "音频检查",
       "title": "音频检查",
-      "description": "选择“我”和“对方”的音频来源，再测试一下麦克风能不能采集到声音。",
+      "description": "选择“我”和“对方”的音频来源，再确认两路都能采集到声音。",
       "smartDetect": "自动识别音频来源",
       "scanning": "正在扫描设备…",
       "scanResults": "扫描结果",
@@ -87,17 +87,43 @@
       "outputs": "扬声器 / 输出设备",
       "deviceDefault": "{{name}}（默认）",
       "refresh": "刷新设备列表",
-      "micTest": {
-        "title": "麦克风测试",
+      "test": {
         "start": "开始测试",
         "stop": "停止（{{seconds}} 秒）",
+        "failed": "测试没能开始：{{detail}}"
+      },
+      "micTest": {
+        "title": "麦克风测试",
         "level": "麦克风",
         "meter": "麦克风音量",
         "speakNow": "现在说几句话，检查麦克风…",
         "idle": "点“开始测试”后说几句话",
         "detected": "麦克风正常。",
-        "silent": "没有检测到麦克风的声音。请检查上面选的来源和麦克风权限，再测一次。",
-        "failed": "测试没能开始：{{detail}}"
+        "silent": "没有检测到麦克风的声音。"
+      },
+      "systemTest": {
+        "title": "对方声音测试",
+        "level": "系统",
+        "meter": "系统声音音量",
+        "playNow": "现在播放一段声音（视频或音乐都行），并保持播放…",
+        "idle": "先播放一段视频或音乐，再点“开始测试”",
+        "detected": "能采集到对方的声音。",
+        "silent": "没有采集到系统声音。"
+      },
+      "help": {
+        "title": "可以检查这些：",
+        "micDevice": "上面选的是你正在用的麦克风。",
+        "micPermission": "系统设置 → 隐私与安全性 → 麦克风 里允许 {{appName}}。",
+        "micPermissionWindows": "设置 → 隐私和安全性 → 麦克风 里允许桌面应用使用麦克风。",
+        "systemPlaying": "测试时确实有声音在播放，而且是从上面选的输出设备播放。",
+        "systemPermission": "系统设置 → 隐私与安全性 → 屏幕与系统录音 里允许 {{appName}}（需要 macOS 14.2 及以上）。",
+        "openMicSettings": "打开麦克风权限设置",
+        "openSystemSettings": "打开系统录音权限设置",
+        "openFailed": "无法打开系统设置：{{detail}}"
+      },
+      "problems": {
+        "mic": "麦克风没有声音。",
+        "system": "没有采集到对方的声音。"
       }
     },
     "finish": {
@@ -105,7 +131,23 @@
       "title": "检查一下设置",
       "description": "下面是各步骤的状态。可以回到任意一步修改，之后也能在设置里调整。",
       "summary": "设置概览",
-      "sttWarning": "语音识别还没有配置好，会议中可能没有字幕。仍然可以开始会议。",
+      "check": {
+        "title": "开会前检查",
+        "hint": "按现在的配置检查语音识别能不能用：引擎、API Key、本地模型。",
+        "tested": "语音识别已在第 3 步测试通过。",
+        "recheck": "重新检查",
+        "checking": "检查中…",
+        "states": {
+          "ready": "可以用",
+          "needs_key": "缺少 API Key",
+          "needs_model": "模型还没下载",
+          "unsupported": "这台电脑上不能用",
+          "input_only": "只能识别麦克风",
+          "unknown": "无法确认"
+        },
+        "blocked": "两路语音识别都还不能用，开会也不会有字幕。先配置一个识别引擎，或者先进入主窗口。",
+        "goToStt": "去设置语音识别"
+      },
       "startMeeting": "开始会议",
       "goToLauncher": "进入主窗口",
       "startFailed": "无法开始会议：{{detail}}",
@@ -138,5 +180,11 @@
   "knowledgeBase": {
     "title": "个人知识库",
     "settings": "检索和向量化设置"
+  },
+  "rerun": {
+    "label": "首次设置",
+    "hint": "重新走一遍界面语言、AI 模型、语音识别、翻译和音频检查。立即打开，现有设置会保留。",
+    "inMeeting": "会议结束后才能重新运行。",
+    "action": "重新运行"
   }
 }

@@ -73,7 +73,7 @@
     "audio": {
       "name": "Audio check",
       "title": "Audio Setup",
-      "description": "Choose audio sources for you and the other party, then check that your microphone is heard.",
+      "description": "Choose audio sources for you and the other party, then check that both are heard.",
       "smartDetect": "Smart Detect Sources",
       "scanning": "Scanning devices...",
       "scanResults": "Scan Results",
@@ -87,17 +87,43 @@
       "outputs": "Speakers / Output",
       "deviceDefault": "{{name}} (Default)",
       "refresh": "Refresh devices",
-      "micTest": {
-        "title": "Microphone Test",
+      "test": {
         "start": "Test Audio",
         "stop": "Stop ({{seconds}}s)",
+        "failed": "The test couldn't start: {{detail}}"
+      },
+      "micTest": {
+        "title": "Microphone Test",
         "level": "Mic",
         "meter": "Microphone audio level",
         "speakNow": "Speak now to verify your microphone...",
         "idle": "Click \"Test Audio\" and speak to check",
         "detected": "Your microphone works.",
-        "silent": "No sound came from the microphone. Check the source above and the microphone permission, then test again.",
-        "failed": "The test couldn't start: {{detail}}"
+        "silent": "No sound came from the microphone."
+      },
+      "systemTest": {
+        "title": "System Audio Test",
+        "level": "System",
+        "meter": "System audio level",
+        "playNow": "Play something now (a video or music) and keep it playing...",
+        "idle": "Start playing a video or music, then click \"Test Audio\"",
+        "detected": "The other side's audio comes through.",
+        "silent": "No system audio was heard."
+      },
+      "help": {
+        "title": "What to check",
+        "micDevice": "The source above is the microphone you are using.",
+        "micPermission": "{{appName}} is allowed to use the microphone: System Settings → Privacy & Security → Microphone.",
+        "micPermissionWindows": "Desktop apps are allowed to use the microphone: Settings → Privacy & security → Microphone.",
+        "systemPlaying": "Sound was playing during the test, through the output device chosen above.",
+        "systemPermission": "{{appName}} is allowed to record system audio: System Settings → Privacy & Security → Screen & System Audio Recording (macOS 14.2 or later).",
+        "openMicSettings": "Open microphone settings",
+        "openSystemSettings": "Open system audio recording settings",
+        "openFailed": "Couldn't open the settings: {{detail}}"
+      },
+      "problems": {
+        "mic": "No sound from the microphone.",
+        "system": "No system audio from the other side."
       }
     },
     "finish": {
@@ -105,7 +131,23 @@
       "title": "Review your setup",
       "description": "Here is where each step stands. Go back to any step, or change things later in Settings.",
       "summary": "Setup summary",
-      "sttWarning": "Speech recognition isn't set up yet, so meetings may have no captions. You can still start one.",
+      "check": {
+        "title": "Before your first meeting",
+        "hint": "Can speech recognition run as it is set up? Checked from the settings: engine, API key, local model.",
+        "tested": "Speech recognition passed its test in step 3.",
+        "recheck": "Check again",
+        "checking": "Checking…",
+        "states": {
+          "ready": "Ready",
+          "needs_key": "API key missing",
+          "needs_model": "Model not downloaded",
+          "unsupported": "Not available on this computer",
+          "input_only": "Only hears a microphone",
+          "unknown": "Can't check"
+        },
+        "blocked": "Neither side's speech recognition can run yet, so a meeting would have no captions. Set up an engine first, or go to the launcher for now.",
+        "goToStt": "Set up speech recognition"
+      },
       "startMeeting": "Start Meeting",
       "goToLauncher": "Go to Launcher",
       "startFailed": "Couldn't start the meeting: {{detail}}",
@@ -138,5 +180,11 @@
   "knowledgeBase": {
     "title": "Personal knowledge base",
     "settings": "Search and embedding settings"
+  },
+  "rerun": {
+    "label": "First-run setup",
+    "hint": "Go through the language, AI model, speech recognition, translation and audio check again. Opens right away; your settings are kept.",
+    "inMeeting": "Available once the meeting has ended.",
+    "action": "Run setup again"
   }
 }

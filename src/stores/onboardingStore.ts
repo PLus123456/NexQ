@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { QuickSetupStatus } from "../settings/quickSetup";
+import { UNTESTED_AUDIO_CHECKS, type AudioChecks } from "../lib/onboarding/audioChecks";
 import {
   ONBOARDING_STEPS,
   PROGRESS_KEY,
@@ -35,6 +36,8 @@ interface OnboardingState {
   loaded: boolean;
   /** Setup reopened at this step (a run left unfinished earlier), until the user moves on. */
   resumedAt: OnboardingStepId | null;
+  /** The audio step's test results in this session (not saved: devices change between runs). */
+  audioChecks: AudioChecks;
 
   next: () => void;
   back: () => void;
@@ -43,6 +46,7 @@ interface OnboardingState {
   goTo: (step: OnboardingStepId) => void;
   /** A step's own report (QuickSetupProps.onStatusChange). */
   report: (step: OnboardingStepId, status: QuickSetupStatus, detail?: string) => void;
+  setAudioChecks: (checks: AudioChecks) => void;
   /** The wizard opened: continue the saved run, or start over after a finished one. */
   begin: () => void;
   /** Setup finished: sets `firstRunCompleted` and leaves the wizard for the launcher. */
@@ -98,6 +102,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   progress: freshProgress(),
   loaded: false,
   resumedAt: null,
+  audioChecks: UNTESTED_AUDIO_CHECKS,
 
   next: () => navigate(next),
   back: () => navigate(back),
@@ -105,7 +110,10 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   skipToFinish: () => navigate(skipToFinish),
   goTo: (step) => navigate((progress) => goTo(progress, step)),
   report: (step, status, detail) => apply((progress) => report(progress, step, status, detail)),
+  setAudioChecks: (checks) => set({ audioChecks: checks }),
   begin: () => {
+    // A finished run starts over, its audio results included.
+    if (get().progress.completedAt != null) set({ audioChecks: UNTESTED_AUDIO_CHECKS });
     apply(resume);
     // Only the first opening continues an earlier run; later ones (back from
     // settings opened during setup) just show the current step.
@@ -121,6 +129,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   },
   restart: () => {
     apply((progress) => freshProgress(progress.rev));
+    set({ audioChecks: UNTESTED_AUDIO_CHECKS });
     leaveForLauncher();
     useConfigStore.getState().setFirstRunCompleted(false);
   },
@@ -162,5 +171,5 @@ export function resetOnboardingStoreForTests(): void {
   initPromise = null;
   storePromise = null;
   begun = false;
-  useOnboardingStore.setState({ progress: freshProgress(), loaded: false, resumedAt: null });
+  useOnboardingStore.setState({ progress: freshProgress(), loaded: false, resumedAt: null, audioChecks: UNTESTED_AUDIO_CHECKS });
 }
