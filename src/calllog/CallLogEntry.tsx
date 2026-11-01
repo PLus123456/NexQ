@@ -1,4 +1,6 @@
 import { useCallback } from "react";
+import type { ParseKeys } from "i18next";
+import { formatDate, useT } from "../i18n";
 import { useCallLogStore } from "../stores/callLogStore";
 import { getModeLabel } from "../lib/utils";
 import { formatDuration } from "../lib/agentUsage";
@@ -37,11 +39,16 @@ const MODE_COLORS: Record<
 
 // -- Context source badges ---------------------------------------------------
 
-const SOURCE_BADGES = [
-  { key: "includeTranscript" as const, label: "T", color: "text-success/70 bg-success/10", title: "Transcript" },
-  { key: "includeRag" as const, label: "R", color: "text-info/70 bg-info/10", title: "Document Excerpts" },
-  { key: "includeInstructions" as const, label: "I", color: "text-warning/70 bg-warning/10", title: "Instructions" },
-  { key: "includeQuestion" as const, label: "Q", color: "text-destructive/70 bg-destructive/10", title: "Question" },
+const SOURCE_BADGES: {
+  key: "includeTranscript" | "includeRag" | "includeInstructions" | "includeQuestion";
+  labelKey: ParseKeys<"calllog">;
+  color: string;
+  titleKey: ParseKeys<"calllog">;
+}[] = [
+  { key: "includeTranscript", labelKey: "entry.sources.transcript.label", color: "text-success/70 bg-success/10", titleKey: "entry.sources.transcript.title" },
+  { key: "includeRag", labelKey: "entry.sources.rag.label", color: "text-info/70 bg-info/10", titleKey: "entry.sources.rag.title" },
+  { key: "includeInstructions", labelKey: "entry.sources.instructions.label", color: "text-warning/70 bg-warning/10", titleKey: "entry.sources.instructions.title" },
+  { key: "includeQuestion", labelKey: "entry.sources.question.label", color: "text-destructive/70 bg-destructive/10", titleKey: "entry.sources.question.title" },
 ];
 
 // -- Compact entry row -------------------------------------------------------
@@ -52,6 +59,7 @@ interface Props {
 }
 
 export function CallLogEntry({ entry, isSelected }: Props) {
+  const { t } = useT("calllog");
   const setExpanded = useCallLogStore((s) => s.setExpandedEntry);
   const colors = MODE_COLORS[entry.mode] ?? MODE_COLORS.Assist;
 
@@ -60,11 +68,13 @@ export function CallLogEntry({ entry, isSelected }: Props) {
   }, [entry.id, setExpanded]);
 
   const firstTokenMs = entryFirstTokenMs(entry);
-  const timeStr = new Date(entry.timestamp).toLocaleTimeString([], {
+  const timeStr = formatDate(entry.timestamp, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
   });
+  // The store keeps STALLED_MESSAGE (English) in errorMessage of a stalled entry; show it in the UI language.
+  const errorText = entry.stalled ? t("entry.stalled") : entry.errorMessage;
 
   return (
     <button
@@ -76,7 +86,7 @@ export function CallLogEntry({ entry, isSelected }: Props) {
       }`}
     >
       {/* Status indicator */}
-      <span className="flex shrink-0" title={entry.errorMessage ?? undefined}>
+      <span className="flex shrink-0" title={errorText ?? undefined}>
         <StatusDot status={entry.status} dotColor={colors.dot} />
       </span>
 
@@ -90,14 +100,14 @@ export function CallLogEntry({ entry, isSelected }: Props) {
 
       {/* Context source badges */}
       <div className="flex items-center gap-px shrink-0">
-        {SOURCE_BADGES.map(({ key, label, color, title }) =>
+        {SOURCE_BADGES.map(({ key, labelKey, color, titleKey }) =>
           entry[key] ? (
             <span
               key={key}
               className={`rounded px-1 py-px text-meta font-bold ${color}`}
-              title={title}
+              title={t(titleKey)}
             >
-              {label}
+              {t(labelKey)}
             </span>
           ) : null
         )}
@@ -112,7 +122,7 @@ export function CallLogEntry({ entry, isSelected }: Props) {
       </span>
 
       {entry.stalled && (
-        <span className="shrink-0 text-meta text-destructive/70">{entry.errorMessage}</span>
+        <span className="shrink-0 text-meta text-destructive/70">{errorText}</span>
       )}
 
       {/* Latency: first words · whole answer */}
@@ -121,8 +131,11 @@ export function CallLogEntry({ entry, isSelected }: Props) {
           className="shrink-0 text-xs tabular-nums text-muted-foreground/70"
           title={
             firstTokenMs != null
-              ? `Answered in ${formatDuration(entry.latencyMs)} — first words after ${formatDuration(firstTokenMs)}`
-              : `Answered in ${formatDuration(entry.latencyMs)}`
+              ? t("entry.latency.titleWithFirst", {
+                  total: formatDuration(entry.latencyMs),
+                  first: formatDuration(firstTokenMs),
+                })
+              : t("entry.latency.title", { total: formatDuration(entry.latencyMs) })
           }
           data-testid="entry-latency"
         >
@@ -142,9 +155,9 @@ export function CallLogEntry({ entry, isSelected }: Props) {
       {entry.temperature != null && !isClaudeEntry(entry) && (
         <span
           className="shrink-0 text-meta tabular-nums text-muted-foreground/50"
-          title={`Temperature: ${entry.temperature}`}
+          title={t("entry.temperature.title", { value: entry.temperature })}
         >
-          {entry.temperature.toFixed(1)}&deg;
+          {entry.temperature.toFixed(1)}&deg;{/* i18n-ignore: 度数符号 */}
         </span>
       )}
     </button>
