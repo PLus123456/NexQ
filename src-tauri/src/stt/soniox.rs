@@ -63,6 +63,15 @@ const STOP_WAIT: Duration = Duration::from_secs(8);
 const LONG_RETRY: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(250);
 
+/// `NEXQ_SONIOX_TRACE=1` logs every message Soniox sends (transcript text
+/// included, so it is off by default): for checking the protocol's open
+/// questions with a real key (when translations arrive, how speech already in
+/// the target language is marked).
+fn trace_enabled() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("NEXQ_SONIOX_TRACE").is_some_and(|v| !v.is_empty() && v != "0"))
+}
+
 /// Per-party facts a Soniox session needs besides the global config.
 #[derive(Debug, Clone, Default)]
 pub struct SonioxSessionOptions {
@@ -588,7 +597,12 @@ impl Session {
                 message = read.next() => {
                     let now = Instant::now();
                     match message {
-                        Some(Ok(Message::Text(text))) => match protocol::parse_server_message(text.as_str()) {
+                        Some(Ok(Message::Text(text))) => match {
+                            if trace_enabled() {
+                                log::info!("[soniox trace] {}sx{}: {}", self.segment_id_prefix, connection, text.as_str());
+                            }
+                            protocol::parse_server_message(text.as_str())
+                        } {
                             Ok(ServerMessage::Tokens { tokens, finished, .. }) => {
                                 let events = assembler.on_tokens(&tokens, now);
                                 self.emit(events, connection, &timeline).await;
