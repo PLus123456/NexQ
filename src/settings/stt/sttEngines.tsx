@@ -9,6 +9,9 @@ import { listen } from "@tauri-apps/api/event";
 import { Cloud, Cpu, Globe, HardDrive, Monitor, Zap } from "lucide-react";
 import { t } from "../../i18n";
 import { hasApiKey, listLocalSTTEngines } from "../../lib/ipc";
+import { currentPlatform } from "../../lib/platform";
+import { DEFAULT_STT_LANGUAGE, defaultMeetingAudioConfig as freshMeetingAudioConfig } from "../../lib/stt/migrations";
+import { useConfigStore } from "../../stores/configStore";
 import {
   EXCLUSIVE_FALLBACK_ORDER,
   STT_LABELS,
@@ -196,23 +199,15 @@ export function defaultMeetingAudioConfig(state: {
   micDeviceId: string | null;
   systemDeviceId: string | null;
   recordingEnabled: boolean;
+  sttLanguage?: string;
 }): MeetingAudioConfig {
-  return {
-    you: {
-      role: "You",
-      device_id: state.micDeviceId ?? "default",
-      is_input_device: true,
-      stt_provider: "web_speech",
-    },
-    them: {
-      role: "Them",
-      device_id: state.systemDeviceId ?? "default",
-      is_input_device: false,
-      stt_provider: "deepgram",
-    },
-    recording_enabled: state.recordingEnabled,
-    preset_name: null,
-  };
+  // The fresh-install default (same as the first-load migration), on the saved devices.
+  const language = state.sttLanguage ?? useConfigStore.getState().sttLanguage;
+  const config = freshMeetingAudioConfig(currentPlatform(), language || DEFAULT_STT_LANGUAGE);
+  config.you.device_id = state.micDeviceId ?? "default";
+  config.them.device_id = state.systemDeviceId ?? "default";
+  config.recording_enabled = state.recordingEnabled;
+  return config;
 }
 
 /** A party's recognition language: its own, else the global one. */

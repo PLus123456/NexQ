@@ -196,14 +196,15 @@ describe("SttQuickSetup", () => {
   });
 
   it("stores the default setup it tested when none was saved", async () => {
-    useConfigStore.setState({ meetingAudioConfig: null, micDeviceId: null, systemDeviceId: null });
+    useConfigStore.setState({ meetingAudioConfig: null, micDeviceId: null, systemDeviceId: null, sttLanguage: "zh-CN" });
     const { user } = setup();
     expect(screen.getByRole("combobox", { name: "Recognition engine for You" })).toHaveValue("web_speech");
     await user.click(screen.getByRole("button", { name: "Test" }));
+    // The fresh-install default on macOS (lib/stt/migrations): Whisper.cpp for the other side.
     await waitFor(() =>
       expect(useConfigStore.getState().meetingAudioConfig).toMatchObject({
-        you: { stt_provider: "web_speech", is_input_device: true },
-        them: { stt_provider: "deepgram", is_input_device: false },
+        you: { stt_provider: "web_speech", is_input_device: true, language: "zh-CN" },
+        them: { stt_provider: "whisper_cpp", is_input_device: false, language: "zh-CN" },
       }),
     );
   });
