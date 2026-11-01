@@ -13,7 +13,14 @@ import type {
 } from "../lib/types";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
+// A backend without the LLM connection commands (the old provider picker shows),
+// unless a test puts a view into the connections store itself.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: async (cmd: string) => {
+    if (cmd.startsWith("llm_")) throw `command ${cmd} not found`;
+    return null;
+  },
+}));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({ set: async () => {}, get: async () => undefined, onKeyChange: async () => () => {} }),
 }));
@@ -134,6 +141,10 @@ describe("ServiceStatusBar text", () => {
     );
     render(<ServiceStatusBar />);
     expect(screen.getByTitle("LLM: DeepSeek / deepseek-chat")).toBeInTheDocument();
+
+    // With connections, the chip opens the connection picker instead of the provider list.
+    fireEvent.click(screen.getByTitle("LLM: DeepSeek / deepseek-chat"));
+    expect(screen.getByRole("dialog", { name: "Switch the AI model" })).toBeInTheDocument();
   });
 
   it("names the room and counts the speakers in in-person mode", () => {

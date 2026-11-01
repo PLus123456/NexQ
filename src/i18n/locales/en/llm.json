@@ -772,5 +772,25 @@
     "retest": "Test again",
     "change": "Use another model",
     "loadFailed": "Couldn't load the AI model settings."
+  },
+  "quickPicker": {
+    "label": "Switch the AI model",
+    "noConnections": "No connections yet. Add one in Settings → AI models.",
+    "groups": {
+      "local": "Local",
+      "cloud": "Cloud",
+      "subscription": "Subscription"
+    },
+    "inUse": "in use",
+    "useClaude": "Use Claude",
+    "claudeInUse": "Using Claude",
+    "claudeTiers": "Fast {{fast}}, Deep {{deep}}",
+    "models": "Model — {{name}}",
+    "refresh": "Fetch the model list",
+    "typeModel": "Type another model ID…",
+    "unaffected": "These tasks have their own model and stay as they are:",
+    "action": "Action {{name}}",
+    "openSettings": "AI model settings…",
+    "applyFailed": "Couldn't switch the default model: {{detail}}"
   }
 }

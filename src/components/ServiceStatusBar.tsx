@@ -27,6 +27,7 @@ import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
 import { Trans, useT } from "../i18n";
 import { useLlmConfig } from "../stores/llmConnectionsStore";
+import { LlmQuickPicker } from "./llm/LlmQuickPicker";
 import { effectiveRoute } from "../lib/llm/tasks";
 
 // ── Human-friendly provider labels (product names; only "Custom" is translated) ──
@@ -216,7 +217,11 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             tooltip={t("statusBar.llmChip.tooltip", { provider: llmProviderLabel, model: llmModelLabel })}
           />
         )}
-        {pickerOpen === "llm" && (
+        {pickerOpen === "llm" && llmView && (
+          <LlmQuickPicker view={llmView} onClose={() => setPickerOpen(null)} />
+        )}
+        {/* Without LLM connections (older backend): the provider picker. */}
+        {pickerOpen === "llm" && !llmView && (
           <LLMPickerDropdown
             currentProvider={llmProvider}
             currentModel={llmModel}

@@ -763,5 +763,25 @@
     "retest": "重新测试",
     "change": "换一个",
     "loadFailed": "AI 模型设置加载失败。"
+  },
+  "quickPicker": {
+    "label": "切换 AI 模型",
+    "noConnections": "还没有连接，请在“设置 → AI 模型”里添加。",
+    "groups": {
+      "local": "本地",
+      "cloud": "云端",
+      "subscription": "订阅"
+    },
+    "inUse": "使用中",
+    "useClaude": "使用 Claude",
+    "claudeInUse": "正在使用 Claude",
+    "claudeTiers": "快速 {{fast}}，深度 {{deep}}",
+    "models": "模型 — {{name}}",
+    "refresh": "拉取模型列表",
+    "typeModel": "输入其他模型 ID…",
+    "unaffected": "以下任务单独指定了模型，不受影响：",
+    "action": "动作 {{name}}",
+    "openSettings": "AI 模型设置…",
+    "applyFailed": "切换默认模型失败：{{detail}}"
   }
 }
