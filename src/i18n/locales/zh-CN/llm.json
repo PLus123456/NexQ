@@ -1,1 +1,294 @@
-{}
+{
+  "agentUsage": {
+    "notes": {
+      "apiBilled": "此 Claude 登录向 API 账户计费，而不是使用你的订阅。",
+      "npmOnly": "发现通过 npm 安装的 Claude Code，{{appName}} 需要使用原生安装程序"
+    },
+    "duration": {
+      "milliseconds": "{{milliseconds}} 毫秒",
+      "seconds": "{{seconds}} 秒",
+      "minutes": "{{minutes}} 分钟",
+      "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒"
+    },
+    "ago": {
+      "justNow": "刚刚",
+      "seconds": "{{seconds}} 秒前",
+      "minutes": "{{minutes}} 分钟前",
+      "hours": "{{hours}} 小时前",
+      "days": "{{days}} 天前"
+    },
+    "lastAnswer": {
+      "total": "上次回答：总耗时 {{total}}",
+      "totalWithFirstWords": "上次回答：总耗时 {{total}}，首字延迟 {{firstWords}}"
+    },
+    "promptTokens": {
+      "plain": "输入 {{tokens}}",
+      "cached": "输入 {{tokens}}（缓存命中 {{cached}}）"
+    },
+    "tokenUsage": {
+      "in": "输入 {{tokens}}",
+      "inCached": "输入 {{tokens}}（缓存命中 {{cached}}）",
+      "out": "输出 {{tokens}}",
+      "outThinking": "输出 {{tokens}}（思考 {{thinking}}）"
+    },
+    "summary": {
+      "requests_other": "{{count}} 次请求",
+      "tokens": "{{prompt}} / 输出 {{output}}",
+      "average": "平均 {{duration}}"
+    },
+    "costEstimate": {
+      "subscription": "估算约 {{cost}}，已包含在你的订阅中",
+      "apiBilled": "估算约 {{cost}}，向你的 API 账户计费"
+    }
+  },
+  "claudeCli": {
+    "title": "订阅（本地 CLI）",
+    "beta": "测试版",
+    "credentialsNote": "使用这台电脑上你自己的 Claude 登录，{{appName}} 看不到你的登录凭据。",
+    "active": "使用中",
+    "comingSoon": "即将推出",
+    "providerRow": {
+      "ariaLabel": "Claude，{{state}}",
+      "ariaLabelActive": "Claude，{{state}}，使用中"
+    },
+    "effort": {
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "超高",
+      "max": "最高"
+    },
+    "rowState": {
+      "checking": "检查中…",
+      "failed": "无法检查",
+      "apiBilled": "API 账户",
+      "loggedOut": "未登录",
+      "unknown": "登录状态未知",
+      "notInstalled": "未安装",
+      "npmOnly": "需要原生安装"
+    },
+    "statusLine": {
+      "checking": "正在查找 Claude Code…",
+      "failed": "无法检查 Claude Code",
+      "notInstalled": "未安装",
+      "unknown": "已安装，但无法获取登录状态",
+      "loggedOut": "未登录",
+      "loggedIn": "已登录",
+      "apiAccount": "API 账户"
+    },
+    "checkResult": {
+      "failedWithDetail": "无法检查：{{detail}}",
+      "connected": "✓ 已连接",
+      "apiBilled": "API 账户，不是订阅",
+      "loggedOut": "未登录",
+      "unknown": "无法获取登录状态",
+      "npmOnly": "找到 npm 安装版，需要使用原生安装程序",
+      "notInstalled": "未安装",
+      "failed": "无法检查"
+    },
+    "connection": {
+      "check": "检查连接",
+      "checking": "检查中…",
+      "checkedAgo": "{{ago}}检查"
+    },
+    "inactive": {
+      "hint": "尚未使用：切换之前，回答仍由当前服务商提供。",
+      "useClaude": "使用 Claude"
+    },
+    "install": {
+      "npmOnly": "{{appName}} 运行的是 Claude Code 的原生应用，而不是 npm 包。请用原生安装程序安装，登录一次，然后检查连接。",
+      "notInstalled": "这台电脑上没有安装 Claude Code。请先安装，登录一次，然后检查连接。",
+      "link": "安装 Claude Code"
+    },
+    "login": {
+      "apiBilledDetail": "仍然可以使用，但按 API 价格计费。若要使用订阅，请在终端里用你的 Claude 账号登录（在终端中运行 /login）。",
+      "hint": "请在终端里登录一次：Claude 会在终端中打开并引导你完成。你的登录信息只在你和 Claude 之间。",
+      "openTerminal": "打开终端登录",
+      "waiting": "等待登录…"
+    },
+    "errors": {
+      "switchFailed": "无法切换到 Claude：{{detail}}",
+      "openTerminalFailed": "无法打开终端：{{detail}}",
+      "openBrowserFailed": "无法打开浏览器：{{detail}}"
+    },
+    "models": {
+      "title": "模型",
+      "appliesNextSession": "将在下一个会话中生效",
+      "listUnavailable": "无法获取模型列表，显示标准模型",
+      "refreshFailed": "无法刷新模型列表，显示上次已知的列表",
+      "groups": {
+        "latest": "最新版本",
+        "pinned": "固定版本"
+      },
+      "noLongerAvailable": "已不可用",
+      "effortUnsupported": "此模型不支持设置推理强度",
+      "effortNotSupported": "不支持",
+      "tiers": {
+        "fast": {
+          "name": "快速",
+          "hint": "实时回答和快捷操作",
+          "modelLabel": "快速模型",
+          "effortLabel": "快速推理强度",
+          "thinkingLabel": "快速扩展思考"
+        },
+        "deep": {
+          "name": "深度",
+          "hint": "会议回顾与历史会议",
+          "modelLabel": "深度模型",
+          "effortLabel": "深度推理强度",
+          "thinkingLabel": "深度扩展思考"
+        }
+      }
+    },
+    "thinking": {
+      "label": "扩展思考",
+      "hint": "关：回复最快 · 开：推理更深入，但更慢"
+    },
+    "fallback": {
+      "title": "备用",
+      "hint": "Claude 不可用时（未登录、达到用量上限、崩溃）由它来回答。",
+      "providerLabel": "备用服务商",
+      "modelLabel": "备用模型",
+      "modelPlaceholder": "服务商的第一个模型"
+    }
+  },
+  "agentChip": {
+    "ariaLabel": "AI 服务商：Claude",
+    "ariaLabelWithState": "AI 服务商：Claude，{{state}}",
+    "session": {
+      "usageLimit": "已达用量上限",
+      "error": "会话出错",
+      "thinking": "思考中…",
+      "starting": "启动中…",
+      "ready": "会话就绪"
+    },
+    "provider": {
+      "checking": "检查中…",
+      "needsNativeInstall": "需要原生安装",
+      "notInstalled": "未安装",
+      "notLoggedIn": "未登录",
+      "apiAccount": "API 账户"
+    },
+    "notes": {
+      "notInstalled": "这台电脑上没有安装 Claude Code",
+      "notLoggedIn": "未登录，请到设置里登录"
+    },
+    "login": {
+      "notLoggedIn": "未登录",
+      "signedIn": "已登录",
+      "signedInPlan": "已登录 · {{plan}} 套餐"
+    },
+    "tiers": {
+      "fast": "快速",
+      "deep": "深度"
+    },
+    "sessionState": {
+      "starting": "启动中",
+      "ready": "就绪",
+      "busy": "回答中",
+      "error": "出错",
+      "closed": "已关闭"
+    },
+    "hoverCard": {
+      "titleSubscription": "Claude（订阅）",
+      "titleApiAccount": "Claude（API 账户）",
+      "thinkingOn": "思考：开",
+      "thinkingOff": "思考：关",
+      "requests": "本场会议请求数",
+      "lastRequest": "上次请求",
+      "averageResponse": "平均响应",
+      "firstWords": "首字 {{duration}}",
+      "tokens": "Token"
+    }
+  },
+  "fallbackToast": {
+    "usageLimitUsing": "Claude 用量已达上限，已改用 {{provider}}",
+    "usageLimit": "Claude 用量已达上限",
+    "unavailable": "Claude 不可用（{{reason}}），已改用 {{provider}}",
+    "reasons": {
+      "notInstalled": "未安装",
+      "notLoggedIn": "未登录",
+      "conversationTooLong": "对话过长",
+      "sessionCrashed": "会话崩溃",
+      "unavailable": "其他原因"
+    }
+  },
+  "statusBar": {
+    "llmChip": {
+      "tooltip": "AI 模型：{{provider}} / {{model}}",
+      "switchFailed": "无法切换 AI 服务商：{{detail}}"
+    },
+    "sttChip": {
+      "tooltip": {
+        "room": "现场语音识别：{{engine}}",
+        "you": "我的语音识别：{{engine}}",
+        "them": "对方的语音识别：{{engine}}"
+      },
+      "speakersDetected_other": "检测到 {{count}} 位说话人"
+    },
+    "muteButton": {
+      "you": {
+        "mute": "静音我的声音",
+        "unmute": "取消静音我的声音"
+      },
+      "them": {
+        "mute": "静音对方的声音",
+        "unmute": "取消静音对方的声音"
+      }
+    },
+    "groups": {
+      "local": "本地",
+      "cloud": "云端",
+      "localBuiltIn": "本地与内置",
+      "subscription": "订阅"
+    },
+    "sttPicker": {
+      "loading": "正在加载识别引擎…",
+      "empty": "没有可用的识别引擎，请到设置里配置",
+      "inUseBy": "{{party}}正在使用",
+      "steal": {
+        "message": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方将改用 <fallback>{{fallback}}</fallback>。",
+        "messageNoFallback": "<engine>{{engine}}</engine> 同一时间只能用于一个音频来源。要改由这一方使用吗？另一方目前<fallback>没有可用的引擎</fallback>可改用。",
+        "confirm": "切换"
+      },
+      "toast": {
+        "noFallback": "没有可用的备用语音识别引擎，请先配置 API Key 或下载本地模型。",
+        "moved": "{{engine}} 已改由“{{to}}”使用，“{{from}}”已自动改用 {{fallback}}。"
+      }
+    },
+    "llmPicker": {
+      "active": "使用中",
+      "useClaude": "使用 Claude",
+      "usingClaude": "正在使用 Claude",
+      "claudeTiers": "快速 {{fast}}，深度 {{deep}}",
+      "noVerified": "还没有验证通过的服务商，请先到设置里测试连接",
+      "modelHeader": "模型：{{provider}}",
+      "loadingModels": "加载中…",
+      "noModels": "没有可用的模型"
+    },
+    "updatePill": {
+      "title": "重启 {{appName}} 以安装 v{{version}}",
+      "ready": "更新已就绪 · v{{version}}",
+      "restart": "重启",
+      "restarting": "正在重启…"
+    }
+  },
+  "actionItems": {
+    "toast": {
+      "noneFound": "这场会议里没有找到待办事项",
+      "found_other": "找到 {{count}} 项待办事项"
+    },
+    "errors": {
+      "parseFailed": "无法从 AI 的回复中解析出待办事项，请重试。"
+    }
+  },
+  "bookmarks": {
+    "info": {
+      "noNotableMoments": "这场会议里没有找到值得标记的重要时刻。你可以在“转写记录”标签页里手动添加书签。",
+      "notEnoughContent": "这场会议的内容不足以生成书签建议。你可以在“转写记录”标签页里手动添加书签。"
+    },
+    "errors": {
+      "parseFailed": "无法解析书签建议，请重试。"
+    }
+  }
+}

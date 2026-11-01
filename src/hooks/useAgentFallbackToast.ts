@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { t } from "../i18n";
 import { emitAgentFallbackShown, onAgentFallback, onAgentFallbackShown } from "../lib/events";
 import { isRateLimitText } from "../lib/agentUsage";
 import { isWindowShown } from "../lib/windows";
@@ -6,12 +7,34 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
 import type { AgentFallbackEvent } from "../lib/types";
 
+/**
+ * The reason as the user reads it. The backend sends a short English label
+ * (Rust `routing::reason_label`); those known labels are translated, anything
+ * else is shown as it came.
+ */
+function reasonText(reason: string): string {
+  switch (reason) {
+    case "not installed":
+      return t("llm:fallbackToast.reasons.notInstalled");
+    case "not logged in":
+      return t("llm:fallbackToast.reasons.notLoggedIn");
+    case "conversation too long":
+      return t("llm:fallbackToast.reasons.conversationTooLong");
+    case "session crashed":
+      return t("llm:fallbackToast.reasons.sessionCrashed");
+    case "unavailable":
+      return t("llm:fallbackToast.reasons.unavailable");
+    default:
+      return reason;
+  }
+}
+
 /** Toast copy for one `agent_fallback` event. */
 export function fallbackMessage({ reason, provider }: AgentFallbackEvent): string {
   if (isRateLimitText(reason)) {
-    return provider ? `Claude usage limit reached — using ${provider}` : "Claude usage limit reached";
+    return provider ? t("llm:fallbackToast.usageLimitUsing", { provider }) : t("llm:fallbackToast.usageLimit");
   }
-  return `Claude unavailable (${reason}) — using ${provider}`;
+  return t("llm:fallbackToast.unavailable", { reason: reasonText(reason), provider });
 }
 
 /**

@@ -1,5 +1,6 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { changeUiLanguage } from "../i18n";
 import type { Meeting } from "../lib/types";
 
 type Handler = (e: { payload: unknown }) => void;
@@ -64,7 +65,10 @@ beforeEach(() => {
   shown.overlay = true;
   useMeetingStore.setState({ activeMeeting: null, currentView: "launcher" });
 });
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  await act(() => changeUiLanguage("en"));
+});
 
 describe("fallbackMessage", () => {
   it("uses the usage-limit copy for rate limits", () => {
@@ -77,6 +81,36 @@ describe("fallbackMessage", () => {
     expect(fallbackMessage({ reason: "not logged in", provider: "Groq" })).toBe(
       "Claude unavailable (not logged in) — using Groq",
     );
+  });
+  it("keeps every label the backend sends as it is in English", () => {
+    for (const reason of ["not installed", "not logged in", "conversation too long", "session crashed", "unavailable"]) {
+      expect(fallbackMessage({ reason, provider: "Groq" })).toBe(`Claude unavailable (${reason}) — using Groq`);
+    }
+  });
+
+  describe("in Chinese", () => {
+    beforeEach(async () => {
+      await act(() => changeUiLanguage("zh-CN"));
+    });
+
+    it("translates the copy", () => {
+      expect(fallbackMessage(EVENT)).toBe("Claude 用量已达上限，已改用 Ollama");
+      expect(fallbackMessage({ reason: "usage limit reached", provider: "" })).toBe("Claude 用量已达上限");
+    });
+    it("translates the backend's known reasons and shows any other as it came", () => {
+      expect(fallbackMessage({ reason: "not logged in", provider: "Groq" })).toBe("Claude 不可用（未登录），已改用 Groq");
+      expect(fallbackMessage({ reason: "not installed", provider: "Groq" })).toBe("Claude 不可用（未安装），已改用 Groq");
+      expect(fallbackMessage({ reason: "conversation too long", provider: "Groq" })).toBe(
+        "Claude 不可用（对话过长），已改用 Groq",
+      );
+      expect(fallbackMessage({ reason: "session crashed", provider: "Groq" })).toBe(
+        "Claude 不可用（会话崩溃），已改用 Groq",
+      );
+      expect(fallbackMessage({ reason: "unavailable", provider: "Groq" })).toBe("Claude 不可用（其他原因），已改用 Groq");
+      expect(fallbackMessage({ reason: "spawn failed", provider: "Groq" })).toBe(
+        "Claude 不可用（spawn failed），已改用 Groq",
+      );
+    });
   });
 });
 
@@ -101,6 +135,13 @@ describe("useAgentFallbackToast", () => {
     await emitFallback();
     expect(toast).toHaveBeenCalledTimes(1);
     expect(toast).toHaveBeenCalledWith("Claude usage limit reached — using Ollama", "warning");
+  });
+
+  it("shows the notice in the UI language at the time it appears", async () => {
+    await mountBoth();
+    await act(() => changeUiLanguage("zh-CN"));
+    await emitFallback();
+    expect(toast).toHaveBeenCalledExactlyOnceWith("Claude 用量已达上限，已改用 Ollama", "warning");
   });
 
   it("during a meeting, the overlay toasts even while its settings are open", async () => {

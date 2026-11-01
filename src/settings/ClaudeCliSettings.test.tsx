@@ -1,6 +1,8 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { changeUiLanguage } from "../i18n";
 import type { AgentSessionStatus, ClaudeCliStatus, ClaudeModelInfo } from "../lib/types";
 
 // ── Tauri stubs ─────────────────────────────────────────────────────────────
@@ -100,6 +102,18 @@ function renderSettings() {
   return render(<ClaudeCliSettings selected active={false} onSelect={() => {}} />);
 }
 
+/** The fallback model field (a combobox: any model id can be typed in). */
+function fallbackModel(): HTMLInputElement {
+  return screen.getByRole("combobox", { name: /^(Fallback model|备用模型)$/ }) as HTMLInputElement;
+}
+
+/** The ids offered by the open fallback model list. */
+function fallbackModelOptions(): string[] {
+  return within(screen.getByRole("listbox", { name: "Fallback model" }))
+    .getAllByRole("option")
+    .map((o) => o.textContent ?? "");
+}
+
 describe("ClaudeCliSettings", () => {
   beforeEach(() => {
     listeners.clear();
@@ -121,8 +135,10 @@ describe("ClaudeCliSettings", () => {
     ipc.setActiveModel.mockReset().mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    cleanup();
+    await act(() => changeUiLanguage("en"));
   });
 
   it("links to the Claude Code install guide when the CLI is missing", async () => {
@@ -136,7 +152,7 @@ describe("ClaudeCliSettings", () => {
     ipc.claudeCliStatus.mockResolvedValue(NPM_ONLY);
     renderSettings();
     expect(
-      await screen.findByText("Found an npm install of Claude Code — NexQ needs the native installer"),
+      await screen.findByText("Found an npm install of Claude Code — NexQ Plus needs the native installer"),
     ).toBeInTheDocument();
     expect(screen.getByTestId("claude-status-dot")).toHaveAttribute("data-state", "npm_only");
     expect(screen.getByRole("link", { name: /install claude code/i })).toHaveAttribute(
@@ -276,7 +292,7 @@ describe("ClaudeCliSettings", () => {
     renderSettings();
     expect(screen.getByText("Beta")).toBeInTheDocument();
     expect(
-      screen.getByText("Uses your own Claude login on this PC. NexQ never sees your credentials."),
+      screen.getByText("Uses your own Claude login on this PC. NexQ Plus never sees your credentials."),
     ).toBeInTheDocument();
     await screen.findByText(/me@example\.com/);
   });
@@ -425,7 +441,191 @@ describe("ClaudeCliSettings", () => {
     expect(state.claudeCliConfig.fallback_provider).toBe("openai");
     expect(state.claudeCliConfig.fallback_model).toBe("gpt-4o");
     // The provider's model list loads for the model picker.
-    await screen.findByRole("option", { name: "Provider's first model" });
-    expect(ipc.listModels).toHaveBeenCalledWith(JSON.stringify({ provider_type: "openai" }));
+    await waitFor(() =>
+      expect(ipc.listModels).toHaveBeenCalledWith(JSON.stringify({ provider_type: "openai" })),
+    );
+    expect(fallbackModel()).toHaveValue("gpt-4o");
+  });
+
+  describe("fallback model", () => {
+    /** The fallback provider is set (as the user would), and the settings are shown. */
+    async function renderWithFallback(provider: string | null, model: string | null = null) {
+      useConfigStore.setState({
+        claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, fallback_provider: provider, fallback_model: model },
+      });
+      renderSettings();
+      await screen.findByText(/me@example\.com/);
+      if (provider) await waitFor(() => expect(ipc.listModels).toHaveBeenCalled());
+      await act(async () => {});
+    }
+
+    it("is a field to fill in once a fallback provider is chosen, and disabled before", async () => {
+      await renderWithFallback(null);
+      expect(fallbackModel()).toBeDisabled();
+      expect(fallbackModel()).toHaveAttribute("placeholder", "Provider's first model");
+      fireEvent.change(screen.getByLabelText("Fallback provider"), { target: { value: "groq" } });
+      expect(fallbackModel()).toBeEnabled();
+      expect(fallbackModel()).toHaveValue("");
+    });
+
+    it("takes any model id typed in, and saves it for the fallback provider", async () => {
+      const user = userEvent.setup();
+      await renderWithFallback("openai");
+      await user.type(fallbackModel(), "  my-finetune{Enter}");
+      const config = useConfigStore.getState().claudeCliConfig;
+      expect(config.fallback_provider).toBe("openai");
+      expect(config.fallback_model).toBe("my-finetune");
+      expect(useConfigStore.getState().claudeCliFallbackPinned).toBe(true);
+      await waitFor(() =>
+        expect(ipc.setClaudeCliConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ fallback_provider: "openai", fallback_model: "my-finetune" }),
+        ),
+      );
+      expect(fallbackModel()).toHaveValue("my-finetune");
+    });
+
+    it("saves typed text when the field loses focus", async () => {
+      const user = userEvent.setup();
+      await renderWithFallback("ollama");
+      await user.type(fallbackModel(), "llama3.1:8b");
+      expect(useConfigStore.getState().claudeCliConfig.fallback_model).toBeNull();
+      await user.tab();
+      expect(useConfigStore.getState().claudeCliConfig.fallback_model).toBe("llama3.1:8b");
+    });
+
+    it("lists the models the provider reports, and saves the one picked", async () => {
+      ipc.listModels.mockResolvedValue([
+        { id: "gpt-4o", name: "GPT-4o", provider: "openai", context_window: null },
+        { id: "gpt-4o-mini", name: "GPT-4o mini", provider: "openai", context_window: null },
+      ]);
+      const user = userEvent.setup();
+      await renderWithFallback("openai");
+      await user.click(fallbackModel());
+      expect(fallbackModelOptions()).toEqual(["gpt-4o", "gpt-4o-mini"]);
+      await user.click(screen.getByRole("option", { name: "gpt-4o-mini" }));
+      expect(useConfigStore.getState().claudeCliConfig.fallback_model).toBe("gpt-4o-mini");
+      expect(fallbackModel()).toHaveValue("gpt-4o-mini");
+    });
+
+    it("keeps a saved model the provider doesn't list at the top of the list", async () => {
+      ipc.listModels.mockResolvedValue([{ id: "gpt-4o", name: "GPT-4o", provider: "openai", context_window: null }]);
+      const user = userEvent.setup();
+      await renderWithFallback("openai", "my-finetune");
+      expect(fallbackModel()).toHaveValue("my-finetune");
+      await user.click(fallbackModel());
+      expect(fallbackModelOptions()).toEqual(["my-finetune", "gpt-4o"]);
+    });
+
+    it("clearing the field goes back to the provider's first model", async () => {
+      const user = userEvent.setup();
+      await renderWithFallback("openai", "gpt-4o");
+      await user.clear(fallbackModel());
+      await user.keyboard("{Enter}");
+      expect(useConfigStore.getState().claudeCliConfig.fallback_model).toBeNull();
+      expect(fallbackModel()).toHaveValue("");
+    });
+
+    it("clears the model together with the provider", async () => {
+      await renderWithFallback("openai", "gpt-4o");
+      fireEvent.change(screen.getByLabelText("Fallback provider"), { target: { value: "" } });
+      const config = useConfigStore.getState().claudeCliConfig;
+      expect(config.fallback_provider).toBeNull();
+      expect(config.fallback_model).toBeNull();
+      expect(fallbackModel()).toBeDisabled();
+    });
+  });
+
+  describe("in Chinese", () => {
+    beforeEach(async () => {
+      await act(() => changeUiLanguage("zh-CN"));
+    });
+
+    it("translates the provider row, the connection panel and the check result", async () => {
+      renderSettings();
+      await screen.findByText(/me@example\.com/);
+      expect(screen.getByText("订阅（本地 CLI）")).toBeInTheDocument();
+      expect(screen.getByText("测试版")).toBeInTheDocument();
+      expect(
+        screen.getByText("使用这台电脑上你自己的 Claude 登录，NexQ Plus 看不到你的登录凭据。"),
+      ).toBeInTheDocument();
+      // "Claude" and the other tools' names stay as they are.
+      expect(screen.getByRole("button", { name: "Claude，已连接" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /gemini cli/i })).toBeDisabled();
+      expect(screen.getAllByText("即将推出")).toHaveLength(2);
+      expect(screen.getByText("me@example.com · Max")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("✓ 已连接 · 刚刚检查");
+      expect(screen.getByRole("button", { name: "检查连接" })).toBeInTheDocument();
+    });
+
+    it("translates the model rows, the effort levels and the thinking switch", async () => {
+      useConfigStore.setState({ claudeModels: CATALOG });
+      renderSettings();
+      await screen.findByText(/me@example\.com/);
+      expect(screen.getByText("模型")).toBeInTheDocument();
+      expect(screen.getByText("实时回答和快捷操作")).toBeInTheDocument();
+      expect(screen.getByText("会议回顾与历史会议")).toBeInTheDocument();
+      expect(screen.getByLabelText("快速模型")).toHaveValue("haiku");
+      expect(screen.getByLabelText("深度模型")).toHaveValue("sonnet");
+      const groups = Array.from(screen.getByLabelText("深度模型").querySelectorAll("optgroup")).map((g) => g.label);
+      expect(groups).toEqual(["最新版本", "固定版本"]);
+      expect(optionTexts("深度推理强度")).toEqual(["低", "中", "高", "超高", "最高"]);
+      expect(optionTexts("快速推理强度")).toEqual(["不支持"]);
+      expect(screen.getByLabelText("快速推理强度")).toHaveAttribute("title", "此模型不支持设置推理强度");
+      expect(screen.getByRole("switch", { name: "深度扩展思考" })).toHaveAttribute("aria-checked", "true");
+      expect(screen.getAllByText("扩展思考")).toHaveLength(2);
+    });
+
+    it("translates the fallback section", async () => {
+      renderSettings();
+      await screen.findByText(/me@example\.com/);
+      expect(screen.getByText("备用")).toBeInTheDocument();
+      expect(screen.getByLabelText("备用服务商")).toHaveValue("");
+      expect(optionTexts("备用服务商")[0]).toBe("无");
+      expect(screen.getByRole("combobox", { name: "备用模型" })).toHaveAttribute("placeholder", "服务商的第一个模型");
+    });
+
+    it("translates the logged-out and not-installed help", async () => {
+      ipc.claudeCliStatus.mockResolvedValue(LOGGED_OUT);
+      renderSettings();
+      expect(await screen.findByRole("button", { name: "打开终端登录" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Claude，未登录/ })).toBeInTheDocument();
+      expect(screen.getByText(/请在终端里登录一次/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "使用 Claude" })).toBeDisabled();
+      cleanup();
+
+      ipc.claudeCliStatus.mockResolvedValue(NOT_INSTALLED);
+      renderSettings();
+      expect(await screen.findByRole("link", { name: "安装 Claude Code" })).toHaveAttribute(
+        "href",
+        "https://code.claude.com/docs/en/setup",
+      );
+      expect(screen.getByText("这台电脑上没有安装 Claude Code。请先安装，登录一次，然后检查连接。")).toBeInTheDocument();
+    });
+
+    it("says an API-billed login is not the subscription", async () => {
+      ipc.claudeCliStatus.mockResolvedValue(API_BILLED);
+      renderSettings();
+      expect(await screen.findByText("此 Claude 登录向 API 账户计费，而不是使用你的订阅。")).toBeInTheDocument();
+      expect(screen.getByText("me@example.com · API 账户")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("API 账户，不是订阅");
+    });
+
+    it("labels a tier with the effort in Chinese", () => {
+      expect(claudeTierLabel("haiku", "low", CATALOG)).toBe("Haiku");
+      expect(claudeTierLabel("claude-opus-4-6", "xhigh", CATALOG)).toBe("Opus 4.6 · 高");
+      expect(claudeTierLabel("sonnet", "medium", CATALOG)).toBe("Sonnet · 中");
+      expect(claudeTierLabel("opus", "xhigh", CATALOG)).toBe("Opus · 超高");
+      expect(claudeTierLabel("opus", "max", CATALOG)).toBe("Opus · 最高");
+    });
+  });
+
+  it("follows a language change while it is on screen", async () => {
+    renderSettings();
+    await screen.findByText("me@example.com · Max");
+    expect(screen.getByText("Subscription (local CLI)")).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("订阅（本地 CLI）")).toBeInTheDocument();
+    expect(screen.queryByText("Subscription (local CLI)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("深度推理强度")).toHaveValue("medium");
   });
 });

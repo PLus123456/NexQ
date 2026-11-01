@@ -22,6 +22,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
 }));
 
 import { AgentStatusChip } from "./AgentStatusChip";
+import { changeUiLanguage } from "../i18n";
 import { EMPTY_USAGE, isRateLimited, scopeUsage } from "../lib/agentUsage";
 import { agentSessionKey, resetAgentStoreForTests, useAgentStore } from "../stores/agentStore";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -65,9 +66,10 @@ beforeEach(() => {
   useMeetingStore.setState({ activeMeeting: { id: "m1" } as Meeting });
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   useMeetingStore.setState({ activeMeeting: null });
+  await act(() => changeUiLanguage("en"));
 });
 
 describe("AgentStatusChip", () => {
@@ -231,7 +233,7 @@ describe("AgentStatusChip", () => {
     render(<AgentStatusChip />);
     await act(async () => {});
     expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "attention");
-    expect(cardText()).toContain("NexQ needs the native installer");
+    expect(cardText()).toContain("NexQ Plus needs the native installer");
   });
 
   it("ignores sessions of other meetings and scopes", async () => {
@@ -270,6 +272,94 @@ describe("AgentStatusChip", () => {
       setSessions(session({ tier: "fast", state: "busy" }), session({ tier: "deep", state: "starting" })),
     );
     expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "busy");
+  });
+
+  it("follows a language change while it is on screen", async () => {
+    useMeetingStore.setState({ activeMeeting: null });
+    render(<AgentStatusChip />);
+    await act(async () => {});
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status-chip")).toHaveAttribute("aria-label", "AI provider: Claude, Ready");
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("就绪")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status-chip")).toHaveAttribute("aria-label", "AI 服务商：Claude，就绪");
+    // The product name is the same in every language.
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+  });
+
+  describe("in Chinese", () => {
+    beforeEach(async () => {
+      await act(() => changeUiLanguage("zh-CN"));
+    });
+
+    it("translates the live session's state and the hover card", async () => {
+      const now = Date.now();
+      useConfigStore.setState({
+        claudeCliConfig: { ...useConfigStore.getState().claudeCliConfig, fast_thinking: false, deep_thinking: true },
+      });
+      render(<AgentStatusChip />);
+      await act(async () => {});
+      await act(async () =>
+        setSessions(
+          session({
+            state: "busy",
+            usage: {
+              input_tokens: 210,
+              cache_read_tokens: 38000,
+              cache_write_tokens: 7000,
+              output_tokens: 1240,
+              thinking_tokens: 300,
+              cost_usd: 0.31,
+              requests: 4,
+              total_latency_ms: 5600,
+              total_first_token_ms: 2400,
+              last_latency_ms: 1200,
+              last_request_at_ms: now - 2 * 60_000 - 5_000,
+            },
+          }),
+        ),
+      );
+      expect(screen.getByText("思考中…")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-status-chip")).toHaveAttribute("aria-label", "AI 服务商：Claude，思考中…");
+      const text = cardText();
+      expect(text).toContain("Claude（订阅）");
+      expect(text).toContain("已登录 · Max 套餐");
+      expect(text).toContain("快速");
+      expect(text).toContain("Haiku · 低 · 思考：关 · 回答中");
+      expect(text).toContain("深度");
+      expect(text).toContain("Sonnet · 中 · 思考：开");
+      expect(text).toMatch(/本场会议请求数\s*4/);
+      expect(text).toContain("2 分钟前 · 1.2 秒");
+      expect(text).toContain("1.4 秒 · 首字 600 毫秒");
+      expect(text).toContain("输入 45,210（缓存命中 38,000） · 输出 1,240（思考 300）");
+      expect(text).toContain("估算约 $0.31，已包含在你的订阅中");
+    });
+
+    it("translates the provider status and its notes outside a meeting", async () => {
+      useMeetingStore.setState({ activeMeeting: null });
+      ipc.claudeCliStatus.mockResolvedValue({ installed: false, binary_path: null, version: null, auth: null, npm_only: true });
+      render(<AgentStatusChip />);
+      await act(async () => {});
+      expect(screen.getByText("需要原生安装")).toBeInTheDocument();
+      expect(cardText()).toContain("发现通过 npm 安装的 Claude Code，NexQ Plus 需要使用原生安装程序");
+    });
+
+    it("translates the API account state and its note", async () => {
+      useMeetingStore.setState({ activeMeeting: null });
+      ipc.claudeCliStatus.mockResolvedValue({
+        installed: true,
+        binary_path: "claude",
+        version: "2.1.0",
+        auth: { logged_in: true, auth_method: "api_key", subscription_type: null, email: null, login: "api_billed" },
+        npm_only: false,
+      });
+      render(<AgentStatusChip />);
+      await act(async () => {});
+      expect(screen.getByText("API 账户")).toBeInTheDocument();
+      const tip = cardText();
+      expect(tip).toContain("Claude（API 账户）");
+      expect(tip).toContain("此 Claude 登录向 API 账户计费，而不是使用你的订阅。");
+    });
   });
 });
 

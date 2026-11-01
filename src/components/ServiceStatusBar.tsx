@@ -25,8 +25,9 @@ import { AgentStatusChip } from "./AgentStatusChip";
 import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
+import { Trans, useT } from "../i18n";
 
-// ── Human-friendly provider labels ──
+// ── Human-friendly provider labels (product names; only "Custom" is translated) ──
 const LLM_LABELS: Record<string, string> = {
   ollama: "Ollama",
   lm_studio: "LM Studio",
@@ -35,9 +36,18 @@ const LLM_LABELS: Record<string, string> = {
   groq: "Groq",
   gemini: "Gemini",
   openrouter: "OpenRouter",
-  custom: "Custom",
   claude_cli: "Claude",
 };
+
+/** Display name of an LLM provider; `customLabel` is the translated "Custom". */
+function llmLabel(provider: string, customLabel: string): string {
+  return provider === "custom" ? customLabel : LLM_LABELS[provider] || provider;
+}
+
+/** "Provider / model" (just the provider when there is no model), for the chip tooltips. */
+function sttEngineText({ provider, model }: { provider: string; model: string }): string {
+  return model ? `${provider} / ${model}` : provider;
+}
 
 // STT labels, picker options and exclusion rules live in lib/stt/providerMeta.
 export { STT_LABELS } from "../lib/stt/providerMeta";
@@ -52,22 +62,21 @@ const STT_ICONS: Record<SttIconKey, React.ComponentType<{ className?: string }>>
   cloud: Cloud,
 };
 
-// ── LLM provider options for quick-swap ──
+// ── LLM provider options for quick-swap (names come from `llmLabel`) ──
 const LLM_PROVIDER_OPTIONS: {
   value: LLMProviderType;
-  label: string;
-  IconComponent: React.ComponentType<{ className?: string }>;
+  IconComponent: React.ComponentType<{ className?: string }>; // i18n-ignore: a type, not text
   requiresKey: boolean;
   isLocal: boolean;
 }[] = [
-  { value: "ollama", label: "Ollama", IconComponent: Monitor, requiresKey: false, isLocal: true },
-  { value: "lm_studio", label: "LM Studio", IconComponent: Monitor, requiresKey: false, isLocal: true },
-  { value: "openai", label: "OpenAI", IconComponent: Cloud, requiresKey: true, isLocal: false },
-  { value: "anthropic", label: "Anthropic", IconComponent: Cloud, requiresKey: true, isLocal: false },
-  { value: "groq", label: "Groq", IconComponent: Zap, requiresKey: true, isLocal: false },
-  { value: "gemini", label: "Gemini", IconComponent: Cloud, requiresKey: true, isLocal: false },
-  { value: "openrouter", label: "OpenRouter", IconComponent: Globe, requiresKey: true, isLocal: false },
-  { value: "custom", label: "Custom", IconComponent: HardDrive, requiresKey: false, isLocal: false },
+  { value: "ollama", IconComponent: Monitor, requiresKey: false, isLocal: true },
+  { value: "lm_studio", IconComponent: Monitor, requiresKey: false, isLocal: true },
+  { value: "openai", IconComponent: Cloud, requiresKey: true, isLocal: false },
+  { value: "anthropic", IconComponent: Cloud, requiresKey: true, isLocal: false },
+  { value: "groq", IconComponent: Zap, requiresKey: true, isLocal: false },
+  { value: "gemini", IconComponent: Cloud, requiresKey: true, isLocal: false },
+  { value: "openrouter", IconComponent: Globe, requiresKey: true, isLocal: false },
+  { value: "custom", IconComponent: HardDrive, requiresKey: false, isLocal: false },
 ];
 
 function formatModel(model: string): string {
@@ -106,6 +115,8 @@ function formatSttLabel(provider: string, localModelId?: string): { provider: st
  * - Mute toggle button to silence each audio source
  */
 export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
+  const { t } = useT(["llm", "common"]);
+
   // Config (reactive)
   const llmProvider = useConfigStore((s) => s.llmProvider);
   const llmModel = useConfigStore((s) => s.llmModel);
@@ -139,7 +150,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   // provider until the meeting ends, so it must not outlive the stream.
   const shownProvider = (isStreaming && streamProvider) || llmProvider;
   const shownModel = (isStreaming && streamModel) || llmModel;
-  const llmProviderLabel = LLM_LABELS[shownProvider] || shownProvider;
+  const llmProviderLabel = llmLabel(shownProvider, t("common:labels.custom"));
   const llmModelLabel = formatModel(shownModel);
 
   const youSttProvider = meetingAudioConfig?.you.stt_provider ?? "web_speech";
@@ -194,7 +205,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             interactive={true}
             pickerOpen={pickerOpen === "llm"}
             onClick={() => setPickerOpen(pickerOpen === "llm" ? null : "llm")}
-            tooltip={`LLM: ${llmProviderLabel} / ${llmModelLabel}`}
+            tooltip={t("statusBar.llmChip.tooltip", { provider: llmProviderLabel, model: llmModelLabel })}
           />
         )}
         {pickerOpen === "llm" && (
@@ -206,7 +217,10 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 await activateLLMProvider(provider as LLMProviderType, { model });
               } catch (e) {
                 console.warn("[ServiceStatusBar] Failed to switch LLM:", e);
-                showToast(`Couldn't switch the AI provider: ${e instanceof Error ? e.message : String(e)}`, "error");
+                showToast(
+                  t("statusBar.llmChip.switchFailed", { detail: e instanceof Error ? e.message : String(e) }),
+                  "error",
+                );
               }
               setPickerOpen(null);
             }}
@@ -227,12 +241,12 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
               model={themStt.model}
               active={themActive || youActive}
               color="purple"
-              label="ROOM"
+              label={t("common:labels.room")} /* shown uppercase by the chip */
               muted={mutedThem}
               interactive={isRecording}
               pickerOpen={pickerOpen === "them"}
               onClick={() => setPickerOpen(pickerOpen === "them" ? null : "them")}
-              tooltip={`Room STT: ${themStt.provider}${themStt.model ? ` / ${themStt.model}` : ""}`}
+              tooltip={t("statusBar.sttChip.tooltip.room", { engine: sttEngineText(themStt) })}
             />
             {pickerOpen === "them" && (
               <STTPickerDropdown
@@ -241,13 +255,13 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 onSelect={(p) => handleProviderChange("them", p)}
                 onClose={() => setPickerOpen(null)}
                 otherPartyProvider={meetingAudioConfig?.you.stt_provider ?? null}
-                otherPartyLabel="You"
+                otherPartyLabel={t("common:labels.you")}
               />
             )}
           </div>
           <span className="text-xs text-muted-foreground/60">
             {speakerOrder.length > 0
-              ? `${speakerOrder.length} speaker${speakerOrder.length !== 1 ? "s" : ""} detected`
+              ? t("statusBar.sttChip.speakersDetected", { count: speakerOrder.length })
               : ""}
           </span>
         </div>
@@ -262,12 +276,12 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 model={youStt.model}
                 active={youActive}
                 color="sky"
-                label="You"
+                label={t("common:labels.you")}
                 muted={mutedYou}
                 interactive={isRecording}
                 pickerOpen={pickerOpen === "you"}
                 onClick={() => setPickerOpen(pickerOpen === "you" ? null : "you")}
-                tooltip={`Your STT: ${youStt.provider}${youStt.model ? ` / ${youStt.model}` : ""}`}
+                tooltip={t("statusBar.sttChip.tooltip.you", { engine: sttEngineText(youStt) })}
               />
               {pickerOpen === "you" && (
                 <STTPickerDropdown
@@ -276,12 +290,12 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                   onSelect={(p) => handleProviderChange("you", p)}
                   onClose={() => setPickerOpen(null)}
                   otherPartyProvider={meetingAudioConfig?.them.stt_provider ?? null}
-                  otherPartyLabel="Them"
+                  otherPartyLabel={t("common:labels.them")}
                 />
               )}
             </div>
             {isRecording && (
-              <MuteButton type="mic" muted={mutedYou} onToggle={toggleMuteYou} label="You" />
+              <MuteButton type="mic" muted={mutedYou} onToggle={toggleMuteYou} party="you" />
             )}
           </div>
 
@@ -296,12 +310,12 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 model={themStt.model}
                 active={themActive}
                 color="amber"
-                label="Them"
+                label={t("common:labels.them")}
                 muted={mutedThem}
                 interactive={isRecording}
                 pickerOpen={pickerOpen === "them"}
                 onClick={() => setPickerOpen(pickerOpen === "them" ? null : "them")}
-                tooltip={`Their STT: ${themStt.provider}${themStt.model ? ` / ${themStt.model}` : ""}`}
+                tooltip={t("statusBar.sttChip.tooltip.them", { engine: sttEngineText(themStt) })}
           />
           {pickerOpen === "them" && (
             <STTPickerDropdown
@@ -310,12 +324,12 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
               onSelect={(p) => handleProviderChange("them", p)}
               onClose={() => setPickerOpen(null)}
               otherPartyProvider={meetingAudioConfig?.you.stt_provider ?? null}
-              otherPartyLabel="You"
+              otherPartyLabel={t("common:labels.you")}
             />
           )}
             </div>
             {isRecording && (
-              <MuteButton type="speaker" muted={mutedThem} onToggle={toggleMuteThem} label="Them" />
+              <MuteButton type="speaker" muted={mutedThem} onToggle={toggleMuteThem} party="them" />
             )}
           </div>
         </>
@@ -333,6 +347,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
 // ── Update Pill ────────────────────────────────────────────────────
 
 function UpdatePill() {
+  const { t } = useT("llm");
   const phase = useUpdaterStore((s) => s.phase);
   const version = useUpdaterStore((s) => s.version);
   const [installing, setInstalling] = useState(false);
@@ -355,13 +370,15 @@ function UpdatePill() {
       <button
         onClick={handleClick}
         disabled={installing}
-        title={`Restart NexQ to install v${version}`}
+        title={t("statusBar.updatePill.title", { version })}
         className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60"
       >
         <ArrowUpCircle className="h-3 w-3" />
-        <span>Update ready · v{version}</span>
+        <span>{t("statusBar.updatePill.ready", { version })}</span>
         <span className="text-primary/50">—</span>
-        <span className="font-semibold">{installing ? "Restarting…" : "Restart"}</span>
+        <span className="font-semibold">
+          {installing ? t("statusBar.updatePill.restarting") : t("statusBar.updatePill.restart")}
+        </span>
       </button>
     </>
   );
@@ -555,17 +572,23 @@ function STTChip({
 
 // ── Mute Button ─────────────────────────────────────────────────────
 
+const MUTE_TITLE_KEYS = {
+  you: { mute: "statusBar.muteButton.you.mute", unmute: "statusBar.muteButton.you.unmute" },
+  them: { mute: "statusBar.muteButton.them.mute", unmute: "statusBar.muteButton.them.unmute" },
+} as const;
+
 function MuteButton({
   type,
   muted,
   onToggle,
-  label,
+  party,
 }: {
   type: "mic" | "speaker";
   muted: boolean;
   onToggle: () => void;
-  label: string;
+  party: "you" | "them";
 }) {
+  const { t } = useT("llm");
   return (
     <button
       onClick={onToggle}
@@ -574,7 +597,7 @@ function MuteButton({
           ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
           : "text-muted-foreground/60 hover:text-foreground/70 hover:bg-accent/40"
       }`}
-      title={muted ? `Unmute ${label}` : `Mute ${label}`}
+      title={t(MUTE_TITLE_KEYS[party][muted ? "unmute" : "mute"])}
     >
       {type === "mic"
         ? (muted ? <MicOff className="h-3 w-3" /> : <Mic className="h-3 w-3" />)
@@ -601,6 +624,7 @@ function STTPickerDropdown({
   otherPartyProvider: STTProviderType | null;
   otherPartyLabel: string;
 }) {
+  const { t } = useT(["llm", "common"]);
   const ref = useRef<HTMLDivElement>(null);
   const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, boolean>>({});
   const [localEngines, setLocalEngines] = useState<LocalSTTEngineInfo[]>([]);
@@ -702,7 +726,7 @@ function STTPickerDropdown({
 
     const fallback = findExclusiveFallback();
     if (!fallback) {
-      showToast("No fallback STT engine available. Configure an API key or download a local model first.", "error");
+      showToast(t("statusBar.sttPicker.toast.noFallback"), "error");
       setStealTarget(null);
       return;
     }
@@ -722,8 +746,14 @@ function STTPickerDropdown({
 
     const stealLabel = STT_PROVIDER_OPTIONS.find((o) => o.id === stealTarget)?.pickerLabel ?? stealTarget;
     const fallbackLabel = STT_PROVIDER_OPTIONS.find((o) => o.id === fallback)?.pickerLabel ?? fallback;
+    const partyLabel = (role: "you" | "them") => t(role === "you" ? "common:labels.you" : "common:labels.them");
     showToast(
-      `${stealLabel} moved to ${thisRole === "you" ? "You" : "Them"}. ${otherRole === "you" ? "You" : "Them"} fell back to ${fallbackLabel}.`,
+      t("statusBar.sttPicker.toast.moved", {
+        engine: stealLabel,
+        to: partyLabel(thisRole),
+        from: partyLabel(otherRole),
+        fallback: fallbackLabel,
+      }),
       "info"
     );
 
@@ -734,13 +764,19 @@ function STTPickerDropdown({
   const localOpts = STT_PROVIDER_OPTIONS.filter((o) => !o.isCloud && isAvailable(o));
   const cloudOpts = STT_PROVIDER_OPTIONS.filter((o) => o.isCloud && isAvailable(o));
 
+  // What the other party would fall back to if `stealTarget` moved to this one (null: nothing is available).
+  const stealFallbackId = stealTarget ? findExclusiveFallback() : null;
+  const stealFallbackLabel = stealFallbackId
+    ? (STT_PROVIDER_OPTIONS.find((o) => o.id === stealFallbackId)?.pickerLabel ?? stealFallbackId)
+    : null;
+
   return (
     <div
       ref={ref}
       className="absolute bottom-full left-0 mb-2 min-w-[200px] rounded-xl border border-border/30 bg-popover/90 backdrop-blur-md shadow-2xl z-50 overflow-hidden animate-in slide-in-from-bottom-2 fade-in duration-150"
     >
       {loading ? (
-        <div className="px-4 py-3 text-xs text-muted-foreground">Loading providers...</div>
+        <div className="px-4 py-3 text-xs text-muted-foreground">{t("statusBar.sttPicker.loading")}</div>
       ) : (
         <>
           {localOpts.length > 0 && (
@@ -748,7 +784,7 @@ function STTPickerDropdown({
               <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
                 <HardDrive className="h-2.5 w-2.5 text-emerald-400" />
                 <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  Local & Built-in
+                  {t("statusBar.groups.localBuiltIn")}
                 </span>
               </div>
               {localOpts.map((opt) => {
@@ -775,7 +811,9 @@ function STTPickerDropdown({
                     <span className="flex-1 text-left font-medium">
                       {opt.pickerLabel}
                       {locked && (
-                        <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
+                        <span className="block text-meta text-muted-foreground/50">
+                          {t("statusBar.sttPicker.inUseBy", { party: otherPartyLabel })}
+                        </span>
                       )}
                     </span>
                     {selected && !locked && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
@@ -790,7 +828,7 @@ function STTPickerDropdown({
               <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
                 <Cloud className="h-2.5 w-2.5 text-blue-400" />
                 <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  Cloud
+                  {t("statusBar.groups.cloud")}
                 </span>
               </div>
               {cloudOpts.map((opt) => {
@@ -817,7 +855,9 @@ function STTPickerDropdown({
                     <span className="flex-1 text-left font-medium">
                       {opt.pickerLabel}
                       {locked && (
-                        <span className="block text-meta text-muted-foreground/50">In use by {otherPartyLabel}</span>
+                        <span className="block text-meta text-muted-foreground/50">
+                          {t("statusBar.sttPicker.inUseBy", { party: otherPartyLabel })}
+                        </span>
                       )}
                     </span>
                     {selected && !locked && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
@@ -829,24 +869,25 @@ function STTPickerDropdown({
 
           {localOpts.length === 0 && cloudOpts.length === 0 && (
             <p className="px-4 py-3 text-meta text-muted-foreground/60">
-              No providers available — configure in Settings
+              {t("statusBar.sttPicker.empty")}
             </p>
           )}
 
           {stealTarget && (
             <div className="border-t border-border/20 bg-amber-500/5 px-3 py-2.5">
               <p className="text-meta leading-relaxed text-amber-200/80 mb-2">
-                <span className="font-semibold text-amber-400">
-                  {STT_PROVIDER_OPTIONS.find((o) => o.id === stealTarget)?.pickerLabel}
-                </span>{" "}
-                can only run on one source at a time. Switch to this party?
-                The other party will fall back to{" "}
-                <span className="font-medium">
-                  {(() => {
-                    const fb = findExclusiveFallback();
-                    return fb ? (STT_PROVIDER_OPTIONS.find((o) => o.id === fb)?.pickerLabel ?? fb) : "no available engine";
-                  })()}
-                </span>.
+                <Trans
+                  t={t}
+                  i18nKey={stealFallbackLabel ? "statusBar.sttPicker.steal.message" : "statusBar.sttPicker.steal.messageNoFallback"}
+                  values={{
+                    engine: STT_PROVIDER_OPTIONS.find((o) => o.id === stealTarget)?.pickerLabel,
+                    fallback: stealFallbackLabel,
+                  }}
+                  components={{
+                    engine: <span className="font-semibold text-amber-400" />,
+                    fallback: <span className="font-medium" />,
+                  }}
+                />
               </p>
               <div className="flex gap-2">
                 <button
@@ -854,14 +895,14 @@ function STTPickerDropdown({
                   onClick={handleStealConfirm}
                   className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-3 py-1 text-meta font-semibold text-amber-400 hover:bg-amber-500/30 cursor-pointer"
                 >
-                  Switch
+                  {t("statusBar.sttPicker.steal.confirm")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setStealTarget(null)}
                   className="rounded-lg bg-muted/30 px-3 py-1 text-meta font-medium text-muted-foreground hover:bg-muted/50 cursor-pointer"
                 >
-                  Cancel
+                  {t("common:actions.cancel")}
                 </button>
               </div>
             </div>
@@ -892,6 +933,8 @@ function LLMPickerDropdown({
   onApply: (provider: string, model: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useT(["llm", "common"]);
+  const customLabel = t("common:labels.custom");
   const ref = useRef<HTMLDivElement>(null);
   const verifiedProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
@@ -983,7 +1026,9 @@ function LLMPickerDropdown({
         <div>
           <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
             <HardDrive className="h-2.5 w-2.5 text-emerald-400" />
-            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">Local</span>
+            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
+              {t("statusBar.groups.local")}
+            </span>
           </div>
           {localOpts.map((opt) => {
             const Icon = opt.IconComponent;
@@ -998,8 +1043,8 @@ function LLMPickerDropdown({
                 }`}
               >
                 <Icon className={`h-3.5 w-3.5 shrink-0 ${isPending ? "text-primary" : "text-emerald-400"}`} />
-                <span className="flex-1 text-left font-medium">{opt.label}</span>
-                {isActive && <span className="text-meta text-primary/80">active</span>}
+                <span className="flex-1 text-left font-medium">{llmLabel(opt.value, customLabel)}</span>
+                {isActive && <span className="text-meta text-primary/80">{t("statusBar.llmPicker.active")}</span>}
               </button>
             );
           })}
@@ -1010,7 +1055,9 @@ function LLMPickerDropdown({
         <div className={localOpts.length > 0 ? "border-t border-border/20" : ""}>
           <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
             <Cloud className="h-2.5 w-2.5 text-blue-400" />
-            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">Cloud</span>
+            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
+              {t("statusBar.groups.cloud")}
+            </span>
           </div>
           {cloudOpts.map((opt) => {
             const Icon = opt.IconComponent;
@@ -1025,8 +1072,8 @@ function LLMPickerDropdown({
                 }`}
               >
                 <Icon className={`h-3.5 w-3.5 shrink-0 ${isPending ? "text-primary" : "text-blue-400"}`} />
-                <span className="flex-1 text-left font-medium">{opt.label}</span>
-                {isActive && <span className="text-meta text-primary/80">active</span>}
+                <span className="flex-1 text-left font-medium">{llmLabel(opt.value, customLabel)}</span>
+                {isActive && <span className="text-meta text-primary/80">{t("statusBar.llmPicker.active")}</span>}
               </button>
             );
           })}
@@ -1037,7 +1084,9 @@ function LLMPickerDropdown({
         <div className={available.length > 0 ? "border-t border-border/20" : ""}>
           <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
             <Cpu className="h-2.5 w-2.5 text-muted-foreground" />
-            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">Subscription</span>
+            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
+              {t("statusBar.groups.subscription")}
+            </span>
           </div>
           <button
             onClick={() => setPendingProvider("claude_cli")}
@@ -1046,15 +1095,17 @@ function LLMPickerDropdown({
             }`}
           >
             <Brain className={`h-3.5 w-3.5 shrink-0 ${pendingProvider === "claude_cli" ? "text-primary" : "text-muted-foreground"}`} />
-            <span className="flex-1 text-left font-medium">Claude</span>
-            {currentProvider === "claude_cli" && <span className="text-meta text-primary/80">active</span>}
+            <span className="flex-1 text-left font-medium">{LLM_LABELS.claude_cli}</span>
+            {currentProvider === "claude_cli" && (
+              <span className="text-meta text-primary/80">{t("statusBar.llmPicker.active")}</span>
+            )}
           </button>
         </div>
       )}
 
       {available.length === 0 && !claudeAvailable && (
         <div className="px-4 py-3 text-meta text-muted-foreground/60">
-          No verified providers — test connection in Settings first
+          {t("statusBar.llmPicker.noVerified")}
         </div>
       )}
 
@@ -1069,11 +1120,13 @@ function LLMPickerDropdown({
           >
             <span className="flex-1 text-left">
               <span className="block font-medium">
-                {currentProvider === "claude_cli" ? "Using Claude" : "Use Claude"}
+                {currentProvider === "claude_cli" ? t("statusBar.llmPicker.usingClaude") : t("statusBar.llmPicker.useClaude")}
               </span>
               <span className="block text-meta text-muted-foreground">
-                Fast {claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels)}, Deep{" "}
-                {claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels)}
+                {t("statusBar.llmPicker.claudeTiers", {
+                  fast: claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels),
+                  deep: claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels),
+                })}
               </span>
             </span>
             {currentProvider === "claude_cli" && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
@@ -1085,10 +1138,12 @@ function LLMPickerDropdown({
           <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
             <Brain className="h-2.5 w-2.5 text-violet-400" />
             <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
-              Model — {LLM_LABELS[pendingProvider] || pendingProvider}
+              {t("statusBar.llmPicker.modelHeader", { provider: llmLabel(pendingProvider, customLabel) })}
             </span>
             {modelsLoading && (
-              <span className="text-meta text-muted-foreground/60 animate-pulse ml-auto">loading...</span>
+              <span className="text-meta text-muted-foreground/60 animate-pulse ml-auto">
+                {t("statusBar.llmPicker.loadingModels")}
+              </span>
             )}
           </div>
           {models.length > 0 ? (
@@ -1111,7 +1166,7 @@ function LLMPickerDropdown({
             </div>
           ) : !modelsLoading ? (
             <div className="px-3 py-2 text-meta text-muted-foreground/60">
-              No models available
+              {t("statusBar.llmPicker.noModels")}
             </div>
           ) : null}
         </div>

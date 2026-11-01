@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { changeUiLanguage } from "../i18n";
 import type { ClaudeModelInfo } from "./types";
 import {
   STATIC_CLAUDE_MODELS,
@@ -92,5 +93,19 @@ describe("formatCheckedAgo", () => {
     expect(formatCheckedAgo(now - 5 * 60_000, now)).toBe("5 min ago");
     expect(formatCheckedAgo(now - 2 * 3_600_000, now)).toBe("2 h ago");
     expect(formatCheckedAgo(now - 3 * 86_400_000, now)).toBe("3 d ago");
+  });
+
+  describe("in Chinese", () => {
+    afterEach(async () => {
+      await changeUiLanguage("en");
+    });
+
+    it("follows the UI language", async () => {
+      await changeUiLanguage("zh-CN");
+      expect(formatCheckedAgo(now, now)).toBe("刚刚");
+      expect(formatCheckedAgo(now - 5 * 60_000, now)).toBe("5 分钟前");
+      expect(formatCheckedAgo(now - 2 * 3_600_000, now)).toBe("2 小时前");
+      expect(formatCheckedAgo(now - 3 * 86_400_000, now)).toBe("3 天前");
+    });
   });
 });

@@ -1,1 +1,297 @@
-{}
+{
+  "agentUsage": {
+    "notes": {
+      "apiBilled": "This Claude login bills an API account, not your subscription.",
+      "npmOnly": "Found an npm install of Claude Code — {{appName}} needs the native installer"
+    },
+    "duration": {
+      "milliseconds": "{{milliseconds}} ms",
+      "seconds": "{{seconds}} s",
+      "minutes": "{{minutes}} min",
+      "minutesSeconds": "{{minutes}} min {{seconds}} s"
+    },
+    "ago": {
+      "justNow": "just now",
+      "seconds": "{{seconds}} s ago",
+      "minutes": "{{minutes}} min ago",
+      "hours": "{{hours}} h ago",
+      "days": "{{days}} d ago"
+    },
+    "lastAnswer": {
+      "total": "Last answer: {{total}} total",
+      "totalWithFirstWords": "Last answer: {{total}} total, first words after {{firstWords}}"
+    },
+    "promptTokens": {
+      "plain": "{{tokens}} in",
+      "cached": "{{tokens}} in ({{cached}} cached)"
+    },
+    "tokenUsage": {
+      "in": "in {{tokens}}",
+      "inCached": "in {{tokens}} ({{cached}} cached)",
+      "out": "out {{tokens}}",
+      "outThinking": "out {{tokens}} (thinking {{thinking}})"
+    },
+    "summary": {
+      "requests_one": "{{count}} request",
+      "requests_other": "{{count}} requests",
+      "tokens": "{{prompt}} / {{output}} out",
+      "average": "avg {{duration}}"
+    },
+    "costEstimate": {
+      "subscription": "≈ {{cost}} estimate — included in your subscription",
+      "apiBilled": "≈ {{cost}} estimate — billed to your API account"
+    }
+  },
+  "claudeCli": {
+    "title": "Subscription (local CLI)",
+    "beta": "Beta",
+    "credentialsNote": "Uses your own Claude login on this PC. {{appName}} never sees your credentials.",
+    "active": "Active",
+    "comingSoon": "Coming soon",
+    "providerRow": {
+      "ariaLabel": "Claude, {{state}}",
+      "ariaLabelActive": "Claude, {{state}}, active"
+    },
+    "effort": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra high",
+      "max": "Max"
+    },
+    "rowState": {
+      "checking": "Checking…",
+      "failed": "Couldn't check",
+      "apiBilled": "API account",
+      "loggedOut": "Not logged in",
+      "unknown": "Login state unknown",
+      "notInstalled": "Not installed",
+      "npmOnly": "Needs native install"
+    },
+    "statusLine": {
+      "checking": "Looking for Claude Code…",
+      "failed": "Couldn't check for Claude Code",
+      "notInstalled": "Not installed",
+      "unknown": "Installed — login state unavailable",
+      "loggedOut": "Not logged in",
+      "loggedIn": "Logged in",
+      "apiAccount": "API account"
+    },
+    "checkResult": {
+      "failedWithDetail": "Couldn't check: {{detail}}",
+      "connected": "✓ Connected",
+      "apiBilled": "API account, not your subscription",
+      "loggedOut": "Not logged in",
+      "unknown": "Login state unavailable",
+      "npmOnly": "npm install found — needs the native installer",
+      "notInstalled": "Not installed",
+      "failed": "Couldn't check"
+    },
+    "connection": {
+      "check": "Check connection",
+      "checking": "Checking…",
+      "checkedAgo": "checked {{ago}}"
+    },
+    "inactive": {
+      "hint": "Not in use — answers come from your current provider until you switch.",
+      "useClaude": "Use Claude"
+    },
+    "install": {
+      "npmOnly": "{{appName}} runs Claude Code's native app, not the npm package. Install it with the native installer, log in once, then check the connection.",
+      "notInstalled": "Claude Code isn't installed on this PC. Install it, log in once, then check the connection.",
+      "link": "Install Claude Code"
+    },
+    "login": {
+      "apiBilledDetail": "It still works, at API prices. To use your subscription, log in with your Claude account in a terminal (run /login there).",
+      "hint": "Log in once in a terminal: Claude opens there and walks you through it. Your login stays between you and Claude.",
+      "openTerminal": "Open terminal to log in",
+      "waiting": "Waiting for login…"
+    },
+    "errors": {
+      "switchFailed": "Couldn't switch to Claude: {{detail}}",
+      "openTerminalFailed": "Couldn't open a terminal: {{detail}}",
+      "openBrowserFailed": "Couldn't open the browser: {{detail}}"
+    },
+    "models": {
+      "title": "Models",
+      "appliesNextSession": "Applies to the next session",
+      "listUnavailable": "Model list unavailable — showing the standard models",
+      "refreshFailed": "Couldn't refresh model list — showing last known",
+      "groups": {
+        "latest": "Latest",
+        "pinned": "Pinned versions"
+      },
+      "noLongerAvailable": "No longer available",
+      "effortUnsupported": "This model doesn't take an effort level",
+      "effortNotSupported": "Not supported",
+      "tiers": {
+        "fast": {
+          "name": "Fast",
+          "hint": "Live answers and quick actions",
+          "modelLabel": "Fast model",
+          "effortLabel": "Fast effort",
+          "thinkingLabel": "Fast extended thinking"
+        },
+        "deep": {
+          "name": "Deep",
+          "hint": "Recaps and past meetings",
+          "modelLabel": "Deep model",
+          "effortLabel": "Deep effort",
+          "thinkingLabel": "Deep extended thinking"
+        }
+      }
+    },
+    "thinking": {
+      "label": "Extended thinking",
+      "hint": "Off: fastest replies · On: deeper reasoning, slower"
+    },
+    "fallback": {
+      "title": "Fallback",
+      "hint": "Answers while Claude is unavailable (not logged in, usage limit, crash).",
+      "providerLabel": "Fallback provider",
+      "modelLabel": "Fallback model",
+      "modelPlaceholder": "Provider's first model"
+    }
+  },
+  "agentChip": {
+    "ariaLabel": "AI provider: Claude",
+    "ariaLabelWithState": "AI provider: Claude, {{state}}",
+    "session": {
+      "usageLimit": "Usage limit",
+      "error": "Session error",
+      "thinking": "Thinking…",
+      "starting": "Starting…",
+      "ready": "Session ready"
+    },
+    "provider": {
+      "checking": "Checking…",
+      "needsNativeInstall": "Needs native install",
+      "notInstalled": "Not installed",
+      "notLoggedIn": "Not logged in",
+      "apiAccount": "API account"
+    },
+    "notes": {
+      "notInstalled": "Claude Code is not installed on this PC",
+      "notLoggedIn": "Not logged in — sign in from Settings"
+    },
+    "login": {
+      "notLoggedIn": "Not logged in",
+      "signedIn": "Signed in",
+      "signedInPlan": "Signed in · {{plan}} plan"
+    },
+    "tiers": {
+      "fast": "Fast",
+      "deep": "Deep"
+    },
+    "sessionState": {
+      "starting": "starting",
+      "ready": "ready",
+      "busy": "answering",
+      "error": "error",
+      "closed": "closed"
+    },
+    "hoverCard": {
+      "titleSubscription": "Claude (subscription)",
+      "titleApiAccount": "Claude (API account)",
+      "thinkingOn": "thinking on",
+      "thinkingOff": "thinking off",
+      "requests": "Requests this meeting",
+      "lastRequest": "Last request",
+      "averageResponse": "Average response",
+      "firstWords": "first words {{duration}}",
+      "tokens": "Tokens"
+    }
+  },
+  "fallbackToast": {
+    "usageLimitUsing": "Claude usage limit reached — using {{provider}}",
+    "usageLimit": "Claude usage limit reached",
+    "unavailable": "Claude unavailable ({{reason}}) — using {{provider}}",
+    "reasons": {
+      "notInstalled": "not installed",
+      "notLoggedIn": "not logged in",
+      "conversationTooLong": "conversation too long",
+      "sessionCrashed": "session crashed",
+      "unavailable": "unavailable"
+    }
+  },
+  "statusBar": {
+    "llmChip": {
+      "tooltip": "LLM: {{provider}} / {{model}}",
+      "switchFailed": "Couldn't switch the AI provider: {{detail}}"
+    },
+    "sttChip": {
+      "tooltip": {
+        "room": "Room STT: {{engine}}",
+        "you": "Your STT: {{engine}}",
+        "them": "Their STT: {{engine}}"
+      },
+      "speakersDetected_one": "{{count}} speaker detected",
+      "speakersDetected_other": "{{count}} speakers detected"
+    },
+    "muteButton": {
+      "you": {
+        "mute": "Mute You",
+        "unmute": "Unmute You"
+      },
+      "them": {
+        "mute": "Mute Them",
+        "unmute": "Unmute Them"
+      }
+    },
+    "groups": {
+      "local": "Local",
+      "cloud": "Cloud",
+      "localBuiltIn": "Local & Built-in",
+      "subscription": "Subscription"
+    },
+    "sttPicker": {
+      "loading": "Loading providers...",
+      "empty": "No providers available — configure in Settings",
+      "inUseBy": "In use by {{party}}",
+      "steal": {
+        "message": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>{{fallback}}</fallback>.",
+        "messageNoFallback": "<engine>{{engine}}</engine> can only run on one source at a time. Switch to this party? The other party will fall back to <fallback>no available engine</fallback>.",
+        "confirm": "Switch"
+      },
+      "toast": {
+        "noFallback": "No fallback STT engine available. Configure an API key or download a local model first.",
+        "moved": "{{engine}} moved to {{to}}. {{from}} fell back to {{fallback}}."
+      }
+    },
+    "llmPicker": {
+      "active": "active",
+      "useClaude": "Use Claude",
+      "usingClaude": "Using Claude",
+      "claudeTiers": "Fast {{fast}}, Deep {{deep}}",
+      "noVerified": "No verified providers — test connection in Settings first",
+      "modelHeader": "Model — {{provider}}",
+      "loadingModels": "loading...",
+      "noModels": "No models available"
+    },
+    "updatePill": {
+      "title": "Restart {{appName}} to install v{{version}}",
+      "ready": "Update ready · v{{version}}",
+      "restart": "Restart",
+      "restarting": "Restarting…"
+    }
+  },
+  "actionItems": {
+    "toast": {
+      "noneFound": "No action items found in this meeting",
+      "found_one": "Found {{count}} action item",
+      "found_other": "Found {{count}} action items"
+    },
+    "errors": {
+      "parseFailed": "Couldn't parse action items from AI response. Try again."
+    }
+  },
+  "bookmarks": {
+    "info": {
+      "noNotableMoments": "No notable moments found in this meeting. You can add bookmarks manually from the Transcript tab.",
+      "notEnoughContent": "This meeting doesn't have enough content to suggest bookmarks. You can add bookmarks manually from the Transcript tab."
+    },
+    "errors": {
+      "parseFailed": "Couldn't parse bookmark suggestions. Try again."
+    }
+  }
+}

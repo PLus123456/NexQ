@@ -10,6 +10,7 @@ import type { Meeting, MeetingBookmark } from "../lib/types";
 import { pastMeetingIdFor } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
 import { assistSegments } from "../lib/assistSegments";
+import { t } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -295,7 +296,8 @@ export function useBookmarkSuggestions(
           try {
             const items = parseSuggestionsJSON(contentRef.current, allSegments);
             if (items.length === 0) {
-              setError("info:No notable moments found in this meeting. You can add bookmarks manually from the Transcript tab.");
+              // "info:" marks a message that isn't an error (BookmarksTab strips it).
+              setError(`info:${t("llm:bookmarks.info.noNotableMoments")}`);
             } else {
               setSuggestions(items);
             }
@@ -304,9 +306,9 @@ export function useBookmarkSuggestions(
             const msg = err instanceof Error ? err.message : String(err);
             if (msg.includes("No JSON array found")) {
               // LLM returned prose instead of JSON — meeting too short or nothing to bookmark
-              setError("info:This meeting doesn't have enough content to suggest bookmarks. You can add bookmarks manually from the Transcript tab.");
+              setError(`info:${t("llm:bookmarks.info.notEnoughContent")}`);
             } else {
-              setError("Couldn't parse bookmark suggestions. Try again.");
+              setError(t("llm:bookmarks.errors.parseFailed"));
             }
           }
         }
