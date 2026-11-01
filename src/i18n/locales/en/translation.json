@@ -268,7 +268,7 @@
     "openModelSettings": "Open AI model settings",
     "systemPrompt": {
       "label": "System prompt",
-      "hint": "Empty uses the default shown above. {source}, {target} and {glossary} are filled in."
+      "hint": "Empty uses the default shown in the box. {source}, {target} and {glossary} are filled in."
     },
     "userTemplate": {
       "label": "Message template",

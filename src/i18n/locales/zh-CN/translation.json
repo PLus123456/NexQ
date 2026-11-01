@@ -265,7 +265,7 @@
     "openModelSettings": "打开 AI 模型设置",
     "systemPrompt": {
       "label": "系统提示词",
-      "hint": "留空使用上面显示的默认提示词。{source}、{target}、{glossary} 会被替换。"
+      "hint": "留空使用框里显示的默认提示词。{source}、{target}、{glossary} 会被替换。"
     },
     "userTemplate": {
       "label": "消息模板",
