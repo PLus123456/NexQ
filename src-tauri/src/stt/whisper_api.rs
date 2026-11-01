@@ -124,11 +124,10 @@ impl WhisperApiSTT {
             .text("response_format", "json")
             .part("file", file_part);
 
-        // Only add language if it's not empty
-        if !language.is_empty() {
-            // Whisper API uses ISO 639-1 codes (e.g., "en", "es", "fr")
-            let lang_code = language.split('-').next().unwrap_or(language);
-            form = form.text("language", lang_code.to_string());
+        // Whisper API uses ISO 639-1 codes (e.g., "en", "es", "fr"); auto-detect
+        // leaves the field out ("auto" is rejected with HTTP 400).
+        if let Some(lang_code) = crate::stt::language::whisper_api_language(language) {
+            form = form.text("language", lang_code);
         }
 
         let response = client

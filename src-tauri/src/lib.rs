@@ -555,6 +555,7 @@ pub fn run() {
             stt_commands::update_soniox_config,
             stt_commands::probe_openai_compat_stt,
             stt_commands::probe_soniox,
+            stt_commands::set_whisper_use_gpu,
             // == COMMANDS: llm ==
             llm_commands::set_llm_provider,
             llm_commands::list_models,

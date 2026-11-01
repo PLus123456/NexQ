@@ -133,6 +133,9 @@ pub struct GroqWhisperSTT {
     /// Shared config Arc for live updates from settings UI.
     /// When present, the provider reads the latest config before each API call.
     shared_config: Option<Arc<RwLock<GroqConfig>>>,
+    /// This instance's language ("auto" = detect). Wins over the shared
+    /// config's language, so each party keeps its own.
+    language_override: Option<String>,
     is_streaming: bool,
     result_tx: Option<mpsc::Sender<TranscriptResult>>,
     stop_flag: Arc<AtomicBool>,
@@ -160,6 +163,7 @@ impl GroqWhisperSTT {
             api_key: String::new(),
             config: GroqConfig::default(),
             shared_config: None,
+            language_override: None,
             is_streaming: false,
             result_tx: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
@@ -213,14 +217,18 @@ impl GroqWhisperSTT {
         self.config = config;
     }
 
-    /// Get the current config, preferring shared (live) over local.
+    /// Get the current config, preferring shared (live) over local, with this
+    /// instance's language.
     fn current_config(&self) -> GroqConfig {
-        if let Some(ref arc) = self.shared_config {
-            if let Ok(cfg) = arc.read() {
-                return cfg.clone();
-            }
+        let mut config = self
+            .shared_config
+            .as_ref()
+            .and_then(|arc| arc.read().ok().map(|cfg| cfg.clone()))
+            .unwrap_or_else(|| self.config.clone());
+        if let Some(ref language) = self.language_override {
+            config.language = language.clone();
         }
-        self.config.clone()
+        config
     }
 
     /// Emit a debug event to both log and frontend DevLog.
@@ -323,11 +331,9 @@ impl GroqWhisperSTT {
             .text("temperature", config.temperature.to_string())
             .part("file", file_part);
 
-        // Add language if not empty and not "auto"
-        let lang = &config.language;
-        if !lang.is_empty() && lang != "auto" {
-            let lang_code = lang.split('-').next().unwrap_or(lang);
-            form = form.text("language", lang_code.to_string());
+        // Add language unless it is auto-detect (two-letter code)
+        if let Some(lang_code) = crate::stt::language::whisper_api_language(&config.language) {
+            form = form.text("language", lang_code);
         }
 
         // Add prompt if provided
@@ -818,7 +824,8 @@ impl STTProvider for GroqWhisperSTT {
 
     fn set_language(&mut self, language: &str) {
         self.config.language = language.to_string();
-        log::info!("GroqWhisperSTT: Language set to {}", self.config.language);
+        self.language_override = Some(language.to_string());
+        log::info!("GroqWhisperSTT: Language set to {}", language);
     }
 }
 
@@ -836,6 +843,27 @@ fn preview(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_instance_language_wins_over_the_shared_config() {
+        let shared = Arc::new(RwLock::new(GroqConfig { language: "en-US".into(), ..GroqConfig::default() }));
+        let mut you = GroqWhisperSTT::new();
+        you.set_shared_config(shared.clone());
+        you.set_language("zh-CN");
+        let mut them = GroqWhisperSTT::new();
+        them.set_language("auto");
+        them.set_shared_config(shared.clone());
+        // set_stt_language rewrites the shared language later: parties keep theirs.
+        shared.write().unwrap().language = "fr-FR".into();
+        shared.write().unwrap().model = "whisper-large-v3".into();
+        assert_eq!(you.current_config().language, "zh-CN");
+        assert_eq!(them.current_config().language, "auto");
+        assert_eq!(you.current_config().model, "whisper-large-v3");
+        // Without a party language the shared one applies.
+        let mut legacy = GroqWhisperSTT::new();
+        legacy.set_shared_config(shared);
+        assert_eq!(legacy.current_config().language, "fr-FR");
+    }
 
     #[test]
     fn preview_cuts_on_character_boundaries() {

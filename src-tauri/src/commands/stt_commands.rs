@@ -426,3 +426,13 @@ pub async fn probe_soniox(app: AppHandle, config_json: String) -> Result<String,
     let result = crate::stt::soniox::probe(&config, key.as_deref()).await;
     serde_json::to_string(&result).map_err(|e| format!("Failed to serialize probe result: {}", e))
 }
+
+/// Run whisper.cpp on the GPU (Metal on macOS) or the CPU. Applies when a
+/// party next starts (a running meeting restarts its capture on config changes).
+#[command]
+pub async fn set_whisper_use_gpu(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    app.state::<SttPlusState>().whisper_use_gpu.store(enabled, Ordering::Relaxed);
+    log::info!("whisper.cpp GPU {}", if enabled { "on" } else { "off" });
+    Ok(())
+}

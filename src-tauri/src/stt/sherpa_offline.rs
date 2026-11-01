@@ -218,13 +218,8 @@ impl STTProvider for SherpaOfflineSTT {
 
                     // SenseVoice-specific: set language and enable ITN
                     if matches!(model_type, OfflineModelType::SenseVoice) {
-                        let sv_lang = match language.split('-').next().unwrap_or("en") {
-                            "zh" => "zh",
-                            "ja" => "ja",
-                            "ko" => "ko",
-                            "yue" => "yue",
-                            _ => "en",
-                        };
+                        // zh / en / ja / ko / yue, else "auto" (SenseVoice detects).
+                        let sv_lang = crate::stt::language::sense_voice_language(&language);
                         args.push("--sense-voice-language".to_string());
                         args.push(sv_lang.to_string());
                         args.push("--sense-voice-use-itn".to_string());
@@ -379,13 +374,8 @@ impl STTProvider for SherpaOfflineSTT {
                     ];
 
                     if matches!(model_type, OfflineModelType::SenseVoice) {
-                        let sv_lang = match language.split('-').next().unwrap_or("en") {
-                            "zh" => "zh",
-                            "ja" => "ja",
-                            "ko" => "ko",
-                            "yue" => "yue",
-                            _ => "en",
-                        };
+                        // zh / en / ja / ko / yue, else "auto" (SenseVoice detects).
+                        let sv_lang = crate::stt::language::sense_voice_language(&language);
                         args.push("--sense-voice-language".to_string());
                         args.push(sv_lang.to_string());
                         args.push("--sense-voice-use-itn".to_string());

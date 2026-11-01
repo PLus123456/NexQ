@@ -7,6 +7,7 @@
 // engine reads it before every request, Soniox when it (re)connects.
 // API keys live in the keychain (slots `openai_compat_stt`, `soniox`), never here.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -153,11 +154,23 @@ impl SttProbeResult {
     }
 }
 
-/// The two shared configs, managed by Tauri (`app.state::<SttPlusState>()`).
-#[derive(Debug, Default, Clone)]
+/// The shared STT settings, managed by Tauri (`app.state::<SttPlusState>()`).
+#[derive(Debug, Clone)]
 pub struct SttPlusState {
     pub openai_compat: Arc<RwLock<OpenAICompatSttConfig>>,
     pub soniox: Arc<RwLock<SonioxConfig>>,
+    /// whisper.cpp runs on the GPU (Metal on macOS) unless switched off.
+    pub whisper_use_gpu: Arc<AtomicBool>,
+}
+
+impl Default for SttPlusState {
+    fn default() -> Self {
+        Self {
+            openai_compat: Arc::default(),
+            soniox: Arc::default(),
+            whisper_use_gpu: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 impl SttPlusState {
