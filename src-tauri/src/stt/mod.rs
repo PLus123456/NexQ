@@ -29,6 +29,26 @@ use tokio::sync::mpsc;
 
 use crate::audio::{AudioChunk, AudioSource};
 
+/// Append `piece` to a transcript line: a space between words, none next to
+/// CJK text (Chinese / Japanese chunks must not come out as "我们 今天 开会").
+pub fn push_joined(line: &mut String, piece: &str) {
+    let piece = piece.trim();
+    if piece.is_empty() {
+        return;
+    }
+    let is_cjk = |c: char| {
+        matches!(c as u32, 0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+    };
+    let needs_space = match (line.chars().last(), piece.chars().next()) {
+        (Some(last), Some(first)) => !last.is_whitespace() && !is_cjk(last) && !is_cjk(first),
+        _ => false,
+    };
+    if needs_space {
+        line.push(' ');
+    }
+    line.push_str(piece);
+}
+
 /// Emit an STT debug event to the frontend and log it.
 /// Use this for pipeline diagnostics that should appear in the DevLog panel.
 pub fn emit_stt_debug(app_handle: &tauri::AppHandle, level: &str, source: &str, message: &str) {

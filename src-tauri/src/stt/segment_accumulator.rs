@@ -120,7 +120,7 @@ impl SegmentAccumulator {
                 // tag), so the interim replaces it in place instead of
                 // adding a duplicate line in the UI.
                 let mut out = self.output(false, result.confidence);
-                out.text = format!("{} {}", self.current_text, result.text);
+                crate::stt::push_joined(&mut out.text, &result.text);
                 return vec![out];
             }
             return vec![AccumulatorOutput {
@@ -146,10 +146,7 @@ impl SegmentAccumulator {
 
         let mut outputs = Vec::new();
         if self.has_active && !self.starts_new_paragraph(&result, &speaker) {
-            if !self.current_text.is_empty() {
-                self.current_text.push(' ');
-            }
-            self.current_text.push_str(&result.text);
+            crate::stt::push_joined(&mut self.current_text, &result.text);
             self.last_end_ms = self.last_end_ms.max(end_ms);
             // Updated paragraph as a final (replaces the previous one with the same ID)
             outputs.push(self.output(true, result.confidence));
@@ -249,6 +246,20 @@ mod tests {
         assert!(outs.iter().all(|o| o.id == "acc_1" && o.is_final));
         assert_eq!(outs.last().unwrap().text, "part0 part1 part2 part3 part4 part5");
         assert_eq!(outs.last().unwrap().timestamp_ms, T0);
+    }
+
+    #[test]
+    fn chinese_finals_merge_without_spaces() {
+        let mut a = acc();
+        a.feed_result(fin("我们今天讨论预算。", T0, Some(2_000), None));
+        let outs = a.feed_result(fin("下周再定。", T0 + 2_300, Some(1_500), None));
+        assert_eq!(outs.last().unwrap().text, "我们今天讨论预算。下周再定。");
+        let shown = a.feed_result(interim("谢谢", T0 + 4_000));
+        assert_eq!(shown[0].text, "我们今天讨论预算。下周再定。谢谢");
+        // Latin words keep their space, also next to an interim.
+        let mut b = acc();
+        b.feed_result(fin("Hello", T0, Some(500), None));
+        assert_eq!(b.feed_result(interim("world", T0 + 600))[0].text, "Hello world");
     }
 
     #[test]
