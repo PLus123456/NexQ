@@ -29,8 +29,8 @@ function SaveButton() {
 ```
 
 - React components: `useT(namespace)`. It is react-i18next's `useTranslation`
-  under another name, because `src/hooks/useTranslation.ts` is the transcript
-  translation feature. The key types only allow the namespaces you pass:
+  under another name, so it never reads as the transcript translation hooks
+  (`src/hooks/useTranslationEvents.ts`, `useAutoTranslate.ts`). The key types only allow the namespaces you pass:
   `useT("settings")` rejects `t("common:…")`, so write
   `useT(["settings", "common"])`. `useT()` alone means `common`.
 - Markup inside a translated string: `<Trans t={t} i18nKey="…" components={{

@@ -3,8 +3,8 @@
 // - React components: `const { t } = useT("settings")`, then `t("about.title")`.
 //   Keys of other namespaces need them listed: `useT(["settings", "common"])`
 //   allows `t("common:actions.save")` (the first namespace is the default).
-//   Named `useT` because `useTranslation` is already the transcript-translation
-//   hook in src/hooks. Markup inside a string: `<Trans>` (re-exported here).
+//   Named `useT` so it never reads as the transcript translation hooks in
+//   src/hooks. Markup inside a string: `<Trans>` (re-exported here).
 // - Outside React: `t("settings:updates.toast.title")`, called at use time,
 //   never at module top level (it would not follow language changes).
 // - Dates and numbers: `formatDate()` / `formatNumber()` follow the UI language.
