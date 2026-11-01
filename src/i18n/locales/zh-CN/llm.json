@@ -577,7 +577,7 @@
       "label": "额外请求体（JSON）",
       "placeholder": "{\"reasoning_effort\": \"low\"}",
       "hint": "合并进每个请求（model、messages、stream 不能覆盖）。",
-      "disableThinking": "填入“关闭思考”",
+      "disableThinking": "填入“关闭/降低思考”",
       "errors": {
         "invalid": "不是有效的 JSON。",
         "notObject": "必须是 JSON 对象，例如 {\"key\": \"value\"}。",
@@ -605,17 +605,18 @@
     "items": {
       "openai": {
         "name": "OpenAI",
-        "note": "推理模型（o 系列、GPT-5）只接受 max_completion_tokens 和默认温度；请求失败时可以在“高级”里把温度改成“不发送”。"
+        "note": "当前的模型默认会推理：不发送温度，输出长度用 max_completion_tokens（见“高级”）。gpt-6.1-terra、gpt-6-luna 可以关闭推理。"
       },
       "anthropic": {
-        "name": "Anthropic"
+        "name": "Anthropic",
+        "note": "地址不带 /v1。Claude 模型不接受温度参数，所以不发送。"
       },
       "gemini": {
         "name": "Google Gemini"
       },
       "openrouter": {
         "name": "OpenRouter",
-        "note": "模型 ID 形如“厂商/模型”。在模型 ID 后加 :online（或在“高级”里打开联网搜索）可以联网。"
+        "note": "模型 ID 形如“厂商/模型”（版本号用点，例如 anthropic/claude-sonnet-5.5）。部分模型必须推理，不要给它们发“关闭思考”。"
       },
       "groq": {
         "name": "Groq"
@@ -632,34 +633,37 @@
       },
       "deepseek": {
         "name": "DeepSeek（深度求索）",
-        "note": "deepseek-chat 直接回答；deepseek-reasoner 会先思考（更慢，不适合实时翻译）。"
+        "note": "DeepSeek 的模型默认会先思考。实时翻译建议在任务参数里点“填入关闭/降低思考”。这个地址不需要 /v1。"
       },
       "kimi": {
-        "name": "Kimi（月之暗面）"
+        "name": "Kimi（月之暗面）",
+        "note": "Kimi 的温度是固定的，所以不发送。K3 系列总会推理，“填入关闭/降低思考”会设成最低强度。国内站（platform.kimi.com）和国际站（platform.kimi.ai）的 Key 不通用。"
       },
       "zhipu": {
         "name": "智谱 GLM",
-        "note": "路径是 /api/paas/v4，不是 /v1。GLM 默认会思考：实时翻译建议在任务参数里点“填入关闭思考”。"
+        "note": "路径是 /api/paas/v4，不是 /v1，也没有模型列表，请手动填写模型。GLM 默认会思考：glm-5.3 无法关闭，glm-5.2 可以（在任务参数里点“填入关闭/降低思考”）。"
       },
       "qwen": {
         "name": "通义千问（百炼，兼容模式）",
-        "note": "Qwen3 模型可能默认思考：实时翻译建议在任务参数里点“填入关闭思考”。"
+        "note": "API Key 和地域绑定：国际站的 Key 要配国际站地址。qwen-plus、qwen-flash 默认不思考，qwen3.x 系列默认会思考。"
       },
       "volcengine": {
         "name": "火山方舟（豆包）",
-        "note": "路径是 /api/v3。模型可以填推理接入点 ID（ep-…）或模型名称；可能拉不到模型列表，请手动填写。"
+        "note": "路径是 /api/v3。模型填模型 ID（需要先在控制台开通）或推理接入点 ID（ep-…）；没有模型列表，请手动填写。"
       },
       "siliconflow": {
         "name": "硅基流动"
       },
       "minimax": {
-        "name": "MiniMax"
+        "name": "MiniMax",
+        "note": "MiniMax-M3 可以关闭思考，MiniMax-M3.1-Flash 不能。国内站和国际站的 Key 不通用。"
       },
       "qianfan": {
         "name": "百度千帆"
       },
       "hunyuan": {
-        "name": "腾讯混元"
+        "name": "腾讯混元（TokenHub）",
+        "note": "混元现在通过 TokenHub 提供，需要先在控制台开通模型（否则会返回 HTTP 402）。原混元老用户仍可使用 https://api.hunyuan.cloud.tencent.com/v1。"
       },
       "stepfun": {
         "name": "阶跃星辰"
@@ -673,7 +677,7 @@
       },
       "selfhosted": {
         "name": "自建服务（vLLM、LiteLLM、One API…）",
-        "note": "填写你的服务地址，带上版本前缀（通常是 /v1）。API Key 可选。"
+        "note": "填写你的服务地址并带上版本前缀：vLLM 是 http://主机:8000/v1，LiteLLM 是 http://主机:4000/v1，One API / New API 是 http://主机:3000/v1。API Key 可选（One API / New API 填网关自己的令牌）。"
       },
       "claude_cli": {
         "name": "Claude（订阅）",

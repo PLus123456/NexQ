@@ -320,7 +320,7 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
               const path = modelsPath(connection.kind, connection.base_url);
               return path ? [{ label: t("editor.modelsUrlLabel"), path }] : [];
             })()}
-            versionHint={wantsVersionPrefix(connection.kind)}
+            versionHint={wantsVersionPrefix(connection.kind) && !template?.noVersionPrefix}
             baseUrlPlaceholder={template?.baseUrlPlaceholder}
             secretStatus={secret ? { saved: true, hint: secret.slice(-4) } : { saved: false }}
             onSecretChange={(value) => {

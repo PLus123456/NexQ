@@ -53,11 +53,11 @@ describe("LlmQuickSetup", () => {
 
     await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("ok"));
     const [saved] = backend.view().connections;
-    expect(saved).toMatchObject({ template: "deepseek", default_model: "deepseek-chat" });
+    expect(saved).toMatchObject({ template: "deepseek", default_model: "deepseek-flash" });
     expect(saved.verified_at_ms).toEqual(expect.any(Number));
     expect(backend.secrets.get(saved.id)).toBe("sk-quick-1234");
     expect(backend.view().routing.default.target).toEqual({ connection_id: saved.id, model: null });
-    expect(await screen.findByText("AI model ready: DeepSeek / deepseek-chat")).toBeInTheDocument();
+    expect(await screen.findByText("AI model ready: DeepSeek / deepseek-flash")).toBeInTheDocument();
     // Saved first, then tested by id, so Rust records the success.
     const test = backend.calls.find((c) => c.cmd === "llm_test_connection");
     expect(test?.args).toMatchObject({ id: saved.id, mode: "chat" });

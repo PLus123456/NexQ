@@ -297,7 +297,7 @@ export function ConnectionEditor({ view, saved, draft, onDraftChange, onSaved, o
               onChange={handleFields}
               path={path}
               extraPaths={listPath ? [{ label: t("editor.modelsUrlLabel"), path: listPath }] : []}
-              versionHint={wantsVersionPrefix(c.kind)}
+              versionHint={wantsVersionPrefix(c.kind) && !template?.noVersionPrefix}
               baseUrlPlaceholder={template?.baseUrlPlaceholder}
               secretStatus={shownSecret}
               onSecretChange={handleSecret}

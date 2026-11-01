@@ -72,9 +72,10 @@ describe("LlmSettingsPage", () => {
 
     await user.click(screen.getByRole("button", { name: /DeepSeek/ }));
     expect(screen.getByLabelText<HTMLInputElement>("Connection name").value).toBe("DeepSeek");
-    expect(screen.getByLabelText<HTMLInputElement>("Base URL").value).toBe("https://api.deepseek.com/v1");
-    // The address the request really goes to.
-    expect(screen.getByText("https://api.deepseek.com/v1/chat/completions")).toBeInTheDocument();
+    expect(screen.getByLabelText<HTMLInputElement>("Base URL").value).toBe("https://api.deepseek.com");
+    // The address the request really goes to; DeepSeek needs no version prefix, so no "/v1" hint.
+    expect(screen.getByText("https://api.deepseek.com/chat/completions")).toBeInTheDocument();
+    expect(screen.queryByText(/need a version prefix/)).toBeNull();
 
     await user.type(screen.getByLabelText("API Key"), "sk-secret-1234{Enter}");
     expect(screen.getByText("The new key is saved when you click Save.")).toBeInTheDocument();
@@ -84,12 +85,12 @@ describe("LlmSettingsPage", () => {
     const saved = backend.view().connections[0];
     expect(saved.name).toBe("DeepSeek");
     expect(saved.template).toBe("deepseek");
-    expect(saved.default_model).toBe("deepseek-chat");
+    expect(saved.default_model).toBe("deepseek-flash");
     expect(backend.secrets.get(saved.id)).toBe("sk-secret-1234");
     await waitFor(() => expect(backend.view().routing.default.target).toEqual({ connection_id: saved.id, model: null }));
     // Created with an empty id and the key in the same call.
     expect(backend.calls.find((c) => c.cmd === "llm_upsert_connection")?.args).toMatchObject({ connection: { id: "" }, secret: "sk-secret-1234" });
-    expect(await screen.findByText("Default: DeepSeek / deepseek-chat")).toBeInTheDocument();
+    expect(await screen.findByText("Default: DeepSeek / deepseek-flash")).toBeInTheDocument();
     expect(screen.getByText("All changes saved")).toBeInTheDocument();
   });
 

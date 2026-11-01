@@ -584,7 +584,7 @@
       "label": "Extra request body (JSON)",
       "placeholder": "{\"reasoning_effort\": \"low\"}",
       "hint": "Merged into every request (model, messages and stream can't be overridden).",
-      "disableThinking": "Insert “thinking off”",
+      "disableThinking": "Insert “thinking off/low”",
       "errors": {
         "invalid": "Not valid JSON.",
         "notObject": "Must be a JSON object, e.g. {\"key\": \"value\"}.",
@@ -612,17 +612,18 @@
     "items": {
       "openai": {
         "name": "OpenAI",
-        "note": "Reasoning models (o-series, GPT-5) take max_completion_tokens and only the default temperature: set Temperature to “Don't send” under Advanced if requests fail."
+        "note": "Current models reason by default: temperature isn't sent and the output limit goes in max_completion_tokens (see Advanced). gpt-6.1-terra and gpt-6-luna can turn reasoning off."
       },
       "anthropic": {
-        "name": "Anthropic"
+        "name": "Anthropic",
+        "note": "The address is without /v1. Claude models reject a temperature, so it isn't sent."
       },
       "gemini": {
         "name": "Google Gemini"
       },
       "openrouter": {
         "name": "OpenRouter",
-        "note": "Model IDs look like vendor/model. Append :online to a model ID (or turn on web search under Advanced) for web results."
+        "note": "Model IDs look like vendor/model (versions with dots, e.g. anthropic/claude-sonnet-5.5). Some models must reason: don't send “thinking off” to them."
       },
       "groq": {
         "name": "Groq"
@@ -639,34 +640,37 @@
       },
       "deepseek": {
         "name": "DeepSeek",
-        "note": "deepseek-chat answers directly; deepseek-reasoner thinks first (slower — not for live translation)."
+        "note": "DeepSeek models think first by default. For live translation, use “Insert thinking off/low” in the task's parameters. The address works without /v1."
       },
       "kimi": {
-        "name": "Kimi (Moonshot)"
+        "name": "Kimi (Moonshot)",
+        "note": "Kimi fixes the temperature, so it isn't sent. K3 models always reason; “Insert thinking off/low” sets the lowest effort. Keys from platform.kimi.com (China) and platform.kimi.ai (international) are separate."
       },
       "zhipu": {
         "name": "Zhipu GLM",
-        "note": "The path is /api/paas/v4, not /v1. GLM models think by default: for live translation, use “Insert thinking off” in the task's parameters."
+        "note": "The path is /api/paas/v4, not /v1, and there's no model list: type the model. GLM thinks by default; glm-5.3 can't turn it off, glm-5.2 can (“Insert thinking off/low” in the task's parameters)."
       },
       "qwen": {
         "name": "Qwen (DashScope, OpenAI-compatible)",
-        "note": "Qwen3 models may think by default: for live translation, use “Insert thinking off” in the task's parameters."
+        "note": "Keys are tied to their region: use the international address with an international key. qwen-plus and qwen-flash don't think by default; the qwen3.x models do."
       },
       "volcengine": {
         "name": "Volcengine Ark (Doubao)",
-        "note": "The path is /api/v3. The model can be an inference endpoint ID (ep-…) or a model name; the model list may be unavailable, so type it."
+        "note": "The path is /api/v3. The model is a model ID (activate it in the console first) or an inference endpoint ID (ep-…); there's no model list, so type it."
       },
       "siliconflow": {
         "name": "SiliconFlow"
       },
       "minimax": {
-        "name": "MiniMax"
+        "name": "MiniMax",
+        "note": "MiniMax-M3 can turn thinking off; MiniMax-M3.1-Flash can't. China and international keys are separate."
       },
       "qianfan": {
         "name": "Baidu Qianfan"
       },
       "hunyuan": {
-        "name": "Tencent Hunyuan"
+        "name": "Tencent Hunyuan (TokenHub)",
+        "note": "Hunyuan is served through TokenHub now; activate the model in the console first (otherwise HTTP 402). Existing Hunyuan accounts can still use https://api.hunyuan.cloud.tencent.com/v1."
       },
       "stepfun": {
         "name": "StepFun"
@@ -680,7 +684,7 @@
       },
       "selfhosted": {
         "name": "Self-hosted (vLLM, LiteLLM, One API…)",
-        "note": "Enter your server's address including its version prefix (often /v1). The key is optional."
+        "note": "Enter your server's address including its version prefix: vLLM http://host:8000/v1, LiteLLM http://host:4000/v1, One API / New API http://host:3000/v1. The key is optional (the gateway's own token for One API / New API)."
       },
       "claude_cli": {
         "name": "Claude (subscription)",
