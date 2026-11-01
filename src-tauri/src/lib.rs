@@ -51,7 +51,6 @@ use commands::stealth_commands;
 use commands::gemini_cache_commands;
 // == MODULE COMMANDS: rag ==
 use commands::rag_commands;
-use commands::rag_engine_commands;
 // == MODULE COMMANDS: recording ==
 use commands::recording_commands;
 // == MODULE COMMANDS: translation ==
@@ -651,14 +650,14 @@ pub fn run() {
             rag_commands::test_rag_answer,
             rag_commands::remove_file_rag_index,
             // == PLUS COMMANDS: p4-rag ==
-            rag_engine_commands::rag_get_settings,
-            rag_engine_commands::rag_update_config,
-            rag_engine_commands::rag_set_secret,
-            rag_engine_commands::rag_test_embedding,
-            rag_engine_commands::rag_get_index_info,
-            rag_engine_commands::rag_sync_index,
-            rag_engine_commands::rag_rebuild_index,
-            rag_engine_commands::rag_cancel_indexing,
+            commands::rag_engine_commands::rag_get_settings,
+            commands::rag_engine_commands::rag_update_config,
+            commands::rag_engine_commands::rag_set_secret,
+            commands::rag_engine_commands::rag_test_embedding,
+            commands::rag_engine_commands::rag_get_index_info,
+            commands::rag_engine_commands::rag_sync_index,
+            commands::rag_engine_commands::rag_rebuild_index,
+            commands::rag_engine_commands::rag_cancel_indexing,
             // == COMMANDS: recording ==
             recording_commands::get_recording_info,
             recording_commands::get_recording_file_url,
