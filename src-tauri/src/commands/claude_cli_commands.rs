@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::{command, State};
+use tauri::{command, AppHandle, State};
 
 use crate::llm::cli_agent::detect::{
     claude_auth_status, claude_version, find_claude_binary, find_npm_claude, ClaudeAuthStatus,
@@ -139,14 +139,26 @@ fn validate_config(config: &ClaudeCliConfig) -> Result<(), String> {
 #[command]
 pub async fn set_claude_cli_config(
     config: ClaudeCliConfig,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     validate_config(&config)?;
-    let mut current = state
-        .claude_cli_config
-        .write()
-        .map_err(|_| "Claude CLI config lock poisoned".to_string())?;
-    *current = config;
+    let routing_changed = {
+        let mut current = state
+            .claude_cli_config
+            .write()
+            .map_err(|_| "Claude CLI config lock poisoned".to_string())?;
+        let changed = current.fallback_provider != config.fallback_provider
+            || current.fallback_model != config.fallback_model
+            || current.fast_model != config.fast_model;
+        *current = config;
+        changed
+    };
+    // The AI Models settings show the fallback (used while the
+    // `claude_fallback` route is empty) and mirror the Fast model.
+    if routing_changed {
+        crate::llm::registry::after_change(&app);
+    }
     Ok(())
 }
 
