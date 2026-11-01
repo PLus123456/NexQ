@@ -58,3 +58,30 @@ pub fn build_tooltip(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{set_current, UiLanguage};
+    use crate::tray::TrayState;
+
+    // The only test that changes the global UI language; it puts English back.
+    #[test]
+    fn tooltip_follows_the_ui_language() {
+        assert_eq!(build_tooltip(TrayState::Idle, None, false, None), "NexQ Plus — Idle");
+        assert_eq!(
+            build_tooltip(TrayState::Recording, None, true, None),
+            "NexQ Plus — Recording (Mic Muted) · 00:00 elapsed"
+        );
+
+        set_current(UiLanguage::ZhCn);
+        let idle = build_tooltip(TrayState::Idle, None, false, Some("3 场会议"));
+        let stealth = build_tooltip(TrayState::Stealth, None, false, None);
+        let indexing = build_tooltip(TrayState::Indexing, None, false, None);
+        set_current(UiLanguage::En);
+
+        assert_eq!(idle, "NexQ Plus — 空闲 · 3 场会议");
+        assert_eq!(stealth, "NexQ Plus — 录音中（悬浮窗已隐藏） · 已进行 00:00");
+        assert_eq!(indexing, "NexQ Plus — 正在建立索引…");
+    }
+}

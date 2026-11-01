@@ -15,6 +15,7 @@ pub mod translation;
 pub mod tray;
 // == PLUS MODULES ==
 pub mod i18n;
+pub mod net;
 pub mod paths;
 
 use state::AppState;
@@ -187,6 +188,7 @@ pub fn run() {
             let rag_mgr = rag::RagManager::new(rag_config);
             app_state.rag = Some(Arc::new(Mutex::new(rag_mgr)));
             log::info!("RAG manager initialized");
+            // == PLUS INIT: p4-rag ==
 
             // -- Restore persisted context resources from DB --
             // Load stored metadata first (while holding DB lock), then restore into
@@ -248,6 +250,7 @@ pub fn run() {
             stt_router.set_app_handle(app.handle().clone());
             app_state.stt = Some(Arc::new(Mutex::new(stt_router)));
             log::info!("STT router initialized");
+            // == PLUS INIT: p2-stt ==
 
             // -- Initialize LLMRouter with auto-detected provider --
             let mut llm_router = llm::LLMRouter::new();
@@ -272,6 +275,7 @@ pub fn run() {
 
             app_state.llm = Some(Arc::new(Mutex::new(llm_router)));
             log::info!("LLM router initialized");
+            // == PLUS INIT: p1-llm ==
 
             // -- Initialize IntelligenceEngine --
             let intel_engine = intelligence::IntelligenceEngine::new();
@@ -545,6 +549,7 @@ pub fn run() {
             stt_commands::update_groq_config,
             stt_commands::set_pause_threshold,
             stt_commands::get_pause_threshold,
+            // == PLUS COMMANDS: p2-stt ==
             // == COMMANDS: llm ==
             llm_commands::set_llm_provider,
             llm_commands::list_models,
@@ -552,6 +557,7 @@ pub fn run() {
             llm_commands::test_llm_connection,
             llm_commands::get_llm_providers,
             llm_commands::list_openrouter_models,
+            // == PLUS COMMANDS: p1-llm ==
             // == COMMANDS: intelligence ==
             intelligence_commands::generate_assist,
             intelligence_commands::cancel_generation,
@@ -627,6 +633,7 @@ pub fn run() {
             tray_commands::rebuild_tray_menu,
             // == PLUS COMMANDS: p0-ui ==
             commands::ui_commands::set_ui_language,
+            // == PLUS COMMANDS: p5-onboarding ==
             // == COMMANDS: gemini cache ==
             gemini_cache_commands::create_gemini_context_cache,
             gemini_cache_commands::delete_gemini_context_cache,
@@ -643,6 +650,7 @@ pub fn run() {
             rag_commands::pull_embedding_model,
             rag_commands::test_rag_answer,
             rag_commands::remove_file_rag_index,
+            // == PLUS COMMANDS: p4-rag ==
             // == COMMANDS: recording ==
             recording_commands::get_recording_info,
             recording_commands::get_recording_file_url,

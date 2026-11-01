@@ -20,4 +20,8 @@ pub mod tray_commands;
 pub mod updater_commands;
 
 // == PLUS ==
+// One line per package below its own marker, so parallel branches merge cleanly.
 pub mod ui_commands;
+// p1-llm:
+// p4-rag:
+// p5-onboarding:
