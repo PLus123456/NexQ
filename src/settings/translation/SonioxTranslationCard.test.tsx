@@ -27,8 +27,19 @@ function audio(them: Partial<PartyAudioConfig> = {}): MeetingAudioConfig {
   return { you: party("You"), them: party("Them", them), recording_enabled: false, preset_name: "Free" };
 }
 
+/** Whether a region the Soniox settings may use has a key (`soniox_key_status`); the old slot always has one. */
 function keySaved(saved: boolean) {
-  invoke.mockImplementation(async (cmd: string) => (cmd === "has_api_key" ? saved : undefined));
+  invoke.mockImplementation(async (cmd: string) => {
+    if (cmd === "soniox_key_status") {
+      return JSON.stringify({
+        regions: { us: false, eu: false, jp: saved, in: false },
+        legacy: true,
+        legacy_region: "us",
+        any_enabled: saved,
+      });
+    }
+    return cmd === "has_api_key" ? true : undefined;
+  });
 }
 
 async function renderCard() {
@@ -89,14 +100,26 @@ describe("SonioxTranslationCard", () => {
     expect(useTranslationStore.getState().translateParties.them).toBe(true);
   });
 
-  it("points to the Soniox key when none is saved", async () => {
+  it("points to the Soniox key when no region the Soniox settings may use has one", async () => {
     keySaved(false);
     await renderCard();
+    // The regions decide, with the current Soniox settings (the old slot alone doesn't).
     expect(screen.getByText(/No Soniox API key yet/)).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("soniox_key_status", {
+      configJson: JSON.stringify(useConfigStore.getState().sonioxConfig),
+    });
 
     useMeetingStore.setState({ currentView: "launcher", settingsTab: null });
     fireEvent.click(screen.getByRole("button", { name: "Add key" }));
     expect(useMeetingStore.getState().settingsTab).toBe("stt");
+
+    // Checked again when the Soniox settings change.
+    keySaved(true);
+    const config = useConfigStore.getState().sonioxConfig;
+    await act(async () => {
+      useConfigStore.setState({ sonioxConfig: { ...config, regions: config.regions.map((r) => ({ ...r, enabled: r.id === "jp" })) } });
+    });
+    expect(screen.queryByText(/No Soniox API key yet/)).toBeNull();
   });
 
   it("says nothing about the key when one is saved", async () => {

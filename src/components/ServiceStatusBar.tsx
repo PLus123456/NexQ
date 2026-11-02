@@ -11,8 +11,10 @@ import { useConfigStore } from "../stores/configStore";
 import { useStreamStore } from "../stores/streamStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useSpeakerStore } from "../stores/speakerStore";
+import { useSttRegionStore } from "../stores/sttRegionStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
-import { hasApiKey, listLocalSTTEngines, getApiKey } from "../lib/ipc";
+import { listLocalSTTEngines, getApiKey } from "../lib/ipc";
+import { hasSttKeySlot } from "../lib/stt/keys";
 import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../lib/types";
 import {
   STT_LABELS, STT_PROVIDER_OPTIONS, EXCLUSIVE_FALLBACK_ORDER, isExclusiveProvider,
@@ -25,6 +27,7 @@ import { useAgentStore } from "../stores/agentStore";
 import { AgentStatusChip } from "./AgentStatusChip";
 import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
+import { sonioxRegionName } from "../settings/stt/sonioxRegions";
 import { restartToUpdate } from "../hooks/useUpdater";
 import { Trans, useT } from "../i18n";
 import { useLlmConfig } from "../stores/llmConnectionsStore";
@@ -51,6 +54,11 @@ function llmLabel(provider: string, customLabel: string): string {
 /** "Provider / model" (just the provider when there is no model), for the chip tooltips. */
 function sttEngineText({ provider, model }: { provider: string; model: string }): string {
   return model ? `${provider} / ${model}` : provider;
+}
+
+/** A Soniox chip's tooltip text with the region the party is connected to ("Soniox · Japan"). */
+function withSonioxRegion(text: string, engine: string, region: string | undefined): string {
+  return engine === "soniox" && region ? `${text} · ${sonioxRegionName(region)}` : text;
 }
 
 // STT labels, picker options and exclusion rules live in lib/stt/providerMeta.
@@ -133,6 +141,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   const isRecording = useMeetingStore((s) => s.isRecording);
   const audioMode = useMeetingStore((s) => s.audioMode);
   const speakerOrder = useSpeakerStore((s) => s.speakerOrder);
+  const sonioxRegions = useSttRegionStore((s) => s.regions);
   const isStreaming = useStreamStore((s) => s.isStreaming);
   const streamProvider = useStreamStore((s) => s.currentProvider);
   const streamModel = useStreamStore((s) => s.currentModel);
@@ -260,7 +269,9 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
               interactive={isRecording}
               pickerOpen={pickerOpen === "them"}
               onClick={() => setPickerOpen(pickerOpen === "them" ? null : "them")}
-              tooltip={t("statusBar.sttChip.tooltip.room", { engine: sttEngineText(themStt) })}
+              tooltip={t("statusBar.sttChip.tooltip.room", {
+                engine: withSonioxRegion(sttEngineText(themStt), themSttProvider, sonioxRegions.Them),
+              })}
             />
             {pickerOpen === "them" && (
               <STTPickerDropdown
@@ -295,7 +306,9 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 interactive={isRecording}
                 pickerOpen={pickerOpen === "you"}
                 onClick={() => setPickerOpen(pickerOpen === "you" ? null : "you")}
-                tooltip={t("statusBar.sttChip.tooltip.you", { engine: sttEngineText(youStt) })}
+                tooltip={t("statusBar.sttChip.tooltip.you", {
+                  engine: withSonioxRegion(sttEngineText(youStt), youSttProvider, sonioxRegions.You),
+                })}
               />
               {pickerOpen === "you" && (
                 <STTPickerDropdown
@@ -329,7 +342,9 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 interactive={isRecording}
                 pickerOpen={pickerOpen === "them"}
                 onClick={() => setPickerOpen(pickerOpen === "them" ? null : "them")}
-                tooltip={t("statusBar.sttChip.tooltip.them", { engine: sttEngineText(themStt) })}
+                tooltip={t("statusBar.sttChip.tooltip.them", {
+                  engine: withSonioxRegion(sttEngineText(themStt), themSttProvider, sonioxRegions.Them),
+                })}
           />
           {pickerOpen === "them" && (
             <STTPickerDropdown
@@ -654,7 +669,7 @@ function STTPickerDropdown({
         const [engines, ...keyResults] = await Promise.all([
           listLocalSTTEngines(),
           ...keyProviders.map(async (p) => {
-            try { return { p, ok: await hasApiKey(p) }; }
+            try { return { p, ok: await hasSttKeySlot(p) }; }
             catch { return { p, ok: false }; }
           }),
         ]);

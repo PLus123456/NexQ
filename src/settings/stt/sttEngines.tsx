@@ -9,8 +9,10 @@ import type { MeetingPreset } from "../presets";
 import { listen } from "@tauri-apps/api/event";
 import { Cloud, Cpu, Globe, HardDrive, Monitor, Zap } from "lucide-react";
 import { t } from "../../i18n";
-import { hasApiKey, listLocalSTTEngines } from "../../lib/ipc";
+import { listLocalSTTEngines } from "../../lib/ipc";
 import { currentPlatform } from "../../lib/platform";
+import { hasSttKeySlot } from "../../lib/stt/keys";
+import { sonioxKeyScope } from "./sonioxRegions";
 import { DEFAULT_STT_LANGUAGE, defaultMeetingAudioConfig as freshMeetingAudioConfig } from "../../lib/stt/migrations";
 import { useConfigStore } from "../../stores/configStore";
 import {
@@ -109,13 +111,17 @@ export interface SttReadiness {
 
 /**
  * Loads which local models are downloaded and which engine keys are stored,
- * and reloads the models when a download completes.
+ * and reloads the models when a download completes. Soniox has a key when a
+ * region its settings may use has one, so keys are read again when those
+ * settings change.
  */
 export function useSttReadiness(): SttReadiness {
   const [localEngines, setLocalEngines] = useState<LocalSTTEngineInfo[] | null>(null);
   const [keys, setKeys] = useState<Record<string, boolean>>({});
   const [keysLoaded, setKeysLoaded] = useState(false);
+  const sonioxKeys = useConfigStore((s) => sonioxKeyScope(s.sonioxConfig));
   const alive = useRef(true);
+  const keysRun = useRef(0);
 
   const loadEngines = useCallback(async () => {
     try {
@@ -127,16 +133,18 @@ export function useSttReadiness(): SttReadiness {
   }, []);
 
   const loadKeys = useCallback(async () => {
+    const run = ++keysRun.current;
     const entries = await Promise.all(
       STT_KEY_SLOTS.map(async (slot) => {
         try {
-          return [slot, await hasApiKey(slot)] as const;
+          return [slot, await hasSttKeySlot(slot)] as const;
         } catch {
           return [slot, false] as const;
         }
       }),
     );
-    if (!alive.current) return;
+    // A newer check (the Soniox settings changed meanwhile) has the last word.
+    if (!alive.current || run !== keysRun.current) return;
     setKeys(Object.fromEntries(entries));
     setKeysLoaded(true);
   }, []);
@@ -144,7 +152,6 @@ export function useSttReadiness(): SttReadiness {
   useEffect(() => {
     alive.current = true;
     void loadEngines();
-    void loadKeys();
     let unlisten: (() => void) | null = null;
     listen<{ status: string }>("model_download_progress", (event) => {
       if (event.payload.status === "complete") void loadEngines();
@@ -158,7 +165,11 @@ export function useSttReadiness(): SttReadiness {
       alive.current = false;
       unlisten?.();
     };
-  }, [loadEngines, loadKeys]);
+  }, [loadEngines]);
+
+  useEffect(() => {
+    void loadKeys();
+  }, [loadKeys, sonioxKeys]);
 
   const refresh = useCallback(() => {
     void loadEngines();

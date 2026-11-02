@@ -10,7 +10,7 @@ import { useT } from "../../i18n";
 import { useConfigStore } from "../../stores/configStore";
 import { useTranslationStore } from "../../stores/translationStore";
 import { useMeetingStore } from "../../stores/meetingStore";
-import { hasApiKey } from "../../lib/ipc";
+import { hasSttKeySlot } from "../../lib/stt/keys";
 import { sttKeySlot, sttProviderMeta } from "../../lib/stt/providerMeta";
 import {
   TRANSLATION_PARTIES,
@@ -20,6 +20,7 @@ import {
   partyTranslationMode,
 } from "../../lib/translation/nativeTranslation";
 import type { TranslationParty } from "../../lib/translation/types";
+import { sonioxKeyScope } from "../stt/sonioxRegions";
 import { withPartyEngine } from "../stt/sttEngines";
 import { engineName } from "./PartyTranslationPicker";
 
@@ -30,19 +31,23 @@ const PARTY_KEYS = {
   them: "common:labels.them",
 } as const;
 
-/** Whether a Soniox key is saved (undefined until known, or when it can't be read). */
+/**
+ * Whether a region the Soniox settings may use has a key (undefined until
+ * known, or when it can't be read); checked again when those settings change.
+ */
 function useSonioxKeySaved(): boolean | undefined {
   const [saved, setSaved] = useState<boolean | undefined>(undefined);
+  const sonioxKeys = useConfigStore((s) => sonioxKeyScope(s.sonioxConfig));
   useEffect(() => {
     let cancelled = false;
     const meta = sttProviderMeta(SONIOX);
-    hasApiKey(meta ? sttKeySlot(meta) : SONIOX)
+    hasSttKeySlot(meta ? sttKeySlot(meta) : SONIOX)
       .then((ok) => !cancelled && setSaved(ok))
       .catch(() => !cancelled && setSaved(undefined));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sonioxKeys]);
   return saved;
 }
 

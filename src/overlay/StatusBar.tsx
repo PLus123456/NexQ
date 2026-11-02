@@ -16,6 +16,8 @@ import {
 import { useCallback } from "react";
 import { useT } from "../i18n";
 import { STT_LABELS } from "../lib/stt/providerMeta";
+import { sonioxRegionName } from "../settings/stt/sonioxRegions";
+import { useSttRegionStore } from "../stores/sttRegionStore";
 
 // STT provider short labels for compact display
 const STT_SHORT_LABELS: Record<string, string> = {
@@ -72,6 +74,13 @@ export function StatusBar() {
     ? formatSTTLabel(meetingAudioConfig.them.stt_provider)
     : "---";
 
+  // Soniox: the region each party is connected to, in the tooltips ("Soniox · Japan").
+  const sonioxRegions = useSttRegionStore((s) => s.regions);
+  const withRegion = (label: string, provider: string | undefined, party: "You" | "Them") => {
+    const region = provider === "soniox" ? sonioxRegions[party] : undefined;
+    return region ? `${label} · ${sonioxRegionName(region)}` : label;
+  };
+
   const handleEndMeeting = useCallback(async () => {
     try {
       await endMeetingFlow();
@@ -105,7 +114,7 @@ export function StatusBar() {
             active={micActive}
             activeColor="text-speaker-user"
             title={t("stt:statusBar.youTitle", {
-              engine: youSTT,
+              engine: withRegion(youSTT, meetingAudioConfig?.you.stt_provider, "You"),
               state: micActive ? t("stt:statusBar.receiving") : t("stt:statusBar.silent"),
             })}
           />
@@ -119,7 +128,7 @@ export function StatusBar() {
             active={systemActive}
             activeColor="text-speaker-interviewer"
             title={t("stt:statusBar.themTitle", {
-              engine: themSTT,
+              engine: withRegion(themSTT, meetingAudioConfig?.them.stt_provider, "Them"),
               state: systemActive ? t("stt:statusBar.receiving") : t("stt:statusBar.silent"),
             })}
           />

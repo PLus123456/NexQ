@@ -314,6 +314,26 @@ describe("FirstRunWizard", () => {
     expect(heading()).toHaveTextContent("Set up speech recognition");
   });
 
+  it("counts Soniox as ready when a region its settings may use has a key", async () => {
+    useConfigStore.setState({ meetingAudioConfig: audioConfig("deepgram", "soniox") });
+    // No key in the old `soniox` slot (savedKeys is empty), one for Japan.
+    invoke.mockImplementation(async (cmd) =>
+      cmd === "soniox_key_status"
+        ? JSON.stringify({ regions: { us: false, eu: false, jp: true, in: false }, legacy: false, legacy_region: "us", any_enabled: true })
+        : null,
+    );
+    try {
+      const user = await renderWizard();
+      await user.click(screen.getByRole("button", { name: "Skip the remaining steps" }));
+      const check = screen.getByRole("region", { name: "Before your first meeting" });
+      expect(await within(check).findByText("Ready")).toBeInTheDocument();
+      expect(within(check).getByText("API key missing")).toBeInTheDocument(); // Deepgram
+      expect(invoke).toHaveBeenCalledWith("soniox_key_status", expect.anything());
+    } finally {
+      invoke.mockImplementation(async () => null);
+    }
+  });
+
   it("speech recognition tested in its step needs no further check", async () => {
     useConfigStore.setState({ meetingAudioConfig: audioConfig("deepgram", "groq_whisper") });
     saved.set("onboardingProgress", {
