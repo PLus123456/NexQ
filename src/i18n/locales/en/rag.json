@@ -161,7 +161,8 @@
     "connection": {
       "label": "Connection",
       "own": "Own address and key",
-      "hint": "Reuse an LLM connection's address, key and headers."
+      "hint": "Reuse an LLM connection's address, key and headers.",
+      "gone": "The LLM connection reused here no longer exists. Save to use the address and key below instead."
     },
     "model": {
       "label": "Model",
@@ -230,7 +231,8 @@
     "connection": {
       "label": "Connection",
       "own": "Own address and key",
-      "hint": "Reuse an OpenAI-compatible LLM connection's address, key and headers. Requests go to its Base URL + /rerank."
+      "hint": "Reuse an OpenAI-compatible LLM connection's address, key and headers. Requests go to its Base URL + /rerank.",
+      "gone": "The LLM connection reused here no longer exists. Save to use the address and key below instead."
     },
     "model": {
       "label": "Model",

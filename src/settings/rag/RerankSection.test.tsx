@@ -242,6 +242,12 @@ describe("rerank settings", () => {
     render(<RerankSection />);
     const select = screen.getByLabelText("Connection");
     expect(select).toHaveValue("");
+    // The saved connection is gone: shown as own fields, savable without an edit.
+    expect(
+      screen.getByText("The LLM connection reused here no longer exists. Save to use the address and key below instead."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Discard changes" })).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "SiliconFlow — https://api.siliconflow.cn/v1" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Local Ollama/ })).not.toBeInTheDocument();
 
@@ -257,6 +263,19 @@ describe("rerank settings", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(calls("rag_update_config")).toHaveLength(2));
     expect(calls("rag_update_config")[1].patch.rerank).toMatchObject({ connection_id: "", base_url: "http://localhost:9997/v1" });
+  });
+
+  it("saves a deleted connection as own fields without any edit", async () => {
+    const user = userEvent.setup();
+    backend.connections = [{ id: "sf", name: "SiliconFlow", kind: "openai_compat", base_url: "https://api.siliconflow.cn/v1" }];
+    backend.rerank = rerankConfig({ connection_id: "gone", base_url: "http://localhost:8080", format: "tei" });
+    useRagStore.setState({ settings: view() });
+    render(<RerankSection />);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls("rag_update_config")).toHaveLength(1));
+    expect(calls("rag_update_config")[0].patch.rerank).toMatchObject({ connection_id: "", base_url: "http://localhost:8080" });
+    await waitFor(() => expect(screen.queryByText(/no longer exists/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
   it("follows settings saved in another window unless there are unsaved edits", async () => {

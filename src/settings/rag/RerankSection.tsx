@@ -73,11 +73,11 @@ export function RerankSection() {
 
   const savedEditable = useMemo(() => (saved ? editable(saved) : null), [saved]);
   const current = draft ?? savedEditable;
-  const dirty = !!draft && !!savedEditable && !same(draft, savedEditable);
+  const edited = !!draft && !!savedEditable && !same(draft, savedEditable);
 
   // Follow the saved settings (another window, or our own save) while not editing.
   useEffect(() => {
-    if (!savedEditable || dirty) return;
+    if (!savedEditable || edited) return;
     setDraft(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedEditable]);
@@ -92,6 +92,11 @@ export function RerankSection() {
   // Only OpenAI-compatible services answer `{base}/rerank`.
   const connections = settings.connections.filter((c) => c.kind === "openai_compat");
   const usingConnection = current.connection_id !== "" && connections.some((c) => c.id === current.connection_id);
+  // The saved settings reuse an LLM connection that no longer exists: the
+  // own fields are shown, and saving stores them without it.
+  const staleConnection =
+    !!savedEditable && savedEditable.connection_id !== "" && !connections.some((c) => c.id === savedEditable.connection_id);
+  const dirty = edited || staleConnection;
   const effectiveBase = usingConnection
     ? connections.find((c) => c.id === current.connection_id)?.base_url ?? ""
     : current.base_url;
@@ -189,6 +194,12 @@ export function RerankSection() {
             </select>
             <p className={HINT}>{t("rerank.connection.hint")}</p>
           </div>
+        )}
+        {staleConnection && !usingConnection && (
+          <p className="flex items-start gap-1.5 text-xs text-amber-500">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {t("rerank.connection.gone")}
+          </p>
         )}
 
         {!usingConnection && (
@@ -307,7 +318,7 @@ export function RerankSection() {
             {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {saving ? t("common:status.saving") : t("common:actions.save")}
           </button>
-          {dirty && (
+          {edited && (
             <button type="button" onClick={revert} className={BUTTON}>
               {t("rerank.actions.revert")}
             </button>

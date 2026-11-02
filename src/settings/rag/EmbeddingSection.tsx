@@ -104,11 +104,11 @@ export function EmbeddingSection() {
 
   const savedEditable = useMemo(() => (saved ? editable(saved) : null), [saved]);
   const current = draft ?? savedEditable;
-  const dirty = !!draft && !!savedEditable && !same(draft, savedEditable);
+  const edited = !!draft && !!savedEditable && !same(draft, savedEditable);
 
   // Follow the saved settings (another window, or our own save) while not editing.
   useEffect(() => {
-    if (!savedEditable || dirty) return;
+    if (!savedEditable || edited) return;
     setDraft(null);
     setJsonText({
       query: JSON.stringify(savedEditable.extra_body_query ?? {}, null, 2),
@@ -149,6 +149,11 @@ export function EmbeddingSection() {
 
   const connections = settings.connections;
   const usingConnection = current.connection_id !== "" && connections.some((c) => c.id === current.connection_id);
+  // The saved settings reuse an LLM connection that no longer exists: the
+  // own fields are shown, and saving stores them without it.
+  const staleConnection =
+    !!savedEditable && savedEditable.connection_id !== "" && !connections.some((c) => c.id === savedEditable.connection_id);
+  const dirty = edited || staleConnection;
   const effectiveBase = usingConnection
     ? connections.find((c) => c.id === current.connection_id)?.base_url ?? ""
     : current.base_url;
@@ -169,7 +174,10 @@ export function EmbeddingSection() {
   ];
   const acceptsDimensions = suggestions.find((m) => m.id === current.model)?.acceptsDimensions;
 
-  const patchFromDraft = (): RagConfigPatch => ({ embedding: { ...current } });
+  // A connection that no longer exists is shown (and saved) as "own address".
+  const patchFromDraft = (): RagConfigPatch => ({
+    embedding: { ...current, connection_id: usingConnection ? current.connection_id : "" },
+  });
 
   const save = async (confirmed: Pending["kind"][] = []) => {
     if (jsonErrors.query || jsonErrors.document || !savedEditable) return;
@@ -303,6 +311,12 @@ export function EmbeddingSection() {
             <p className={HINT}>{t("embedding.connection.hint")}</p>
           </div>
         )}
+        {staleConnection && !usingConnection && (
+          <p className="flex items-start gap-1.5 text-xs text-amber-500">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {t("embedding.connection.gone")}
+          </p>
+        )}
 
         {!usingConnection && (
           <EndpointFields
@@ -342,9 +356,9 @@ export function EmbeddingSection() {
               <button
                 type="button"
                 onClick={() => void pullModel(current.model)}
-                disabled={isPullingModel || !current.model || dirty}
+                disabled={isPullingModel || !current.model || edited}
                 className={BUTTON}
-                title={dirty ? t("embedding.actions.pullSaveFirst") : undefined}
+                title={edited ? t("embedding.actions.pullSaveFirst") : undefined}
               >
                 {isPullingModel ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                 {isPullingModel ? t("embedding.actions.pulling") : t("embedding.actions.pull")}
@@ -605,7 +619,7 @@ export function EmbeddingSection() {
             {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {saving ? t("common:status.saving") : t("common:actions.save")}
           </button>
-          {dirty && (
+          {edited && (
             <button type="button" onClick={revert} className={BUTTON}>
               {t("embedding.actions.revert")}
             </button>

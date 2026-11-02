@@ -159,7 +159,8 @@
     "connection": {
       "label": "连接",
       "own": "单独填写地址和 Key",
-      "hint": "复用某个 LLM 连接的地址、Key 和请求头。"
+      "hint": "复用某个 LLM 连接的地址、Key 和请求头。",
+      "gone": "这里复用的 LLM 连接已经不存在了。保存后改用下面填写的地址和 Key。"
     },
     "model": {
       "label": "模型",
@@ -227,7 +228,8 @@
     "connection": {
       "label": "连接",
       "own": "单独填写地址和 Key",
-      "hint": "复用某个 OpenAI 兼容 LLM 连接的地址、Key 和请求头，请求发到它的 Base URL + /rerank。"
+      "hint": "复用某个 OpenAI 兼容 LLM 连接的地址、Key 和请求头，请求发到它的 Base URL + /rerank。",
+      "gone": "这里复用的 LLM 连接已经不存在了。保存后改用下面填写的地址和 Key。"
     },
     "model": {
       "label": "模型",

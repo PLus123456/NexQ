@@ -408,16 +408,39 @@ impl RagEngine {
         let connection = if config.embedding.connection_id.is_empty() {
             None
         } else {
-            Some(self.host.resolve_connection(&config.embedding.connection_id).map_err(EmbedError::Config)?)
+            Some(self.reused_connection(&config.embedding.connection_id, "embeddings")?)
         };
         let secret = if connection.is_some() { None } else { self.secret(config) };
         EmbedderSettings::from_config(config, secret.as_deref(), connection.as_ref())
     }
 
+    /// Whether settings built from LLM connection `id` at `base_url` still
+    /// match it: false once it was deleted or got another address (cached
+    /// settings are rebuilt then). Own addresses (`id` empty) always match.
+    fn connection_current(&self, id: &str, base_url: &str) -> bool {
+        id.is_empty() || self.host.list_connections().iter().any(|c| c.id == id && c.base_url == base_url)
+    }
+
+    /// The LLM connection reused for `used_for`. One that was deleted or
+    /// turned off is a settings error saying so: the own address and key
+    /// are used only once the settings say so.
+    fn reused_connection(&self, id: &str, used_for: &str) -> Result<ResolvedConnection, EmbedError> {
+        self.host.resolve_connection(id).map_err(|e| {
+            EmbedError::Config(format!(
+                "The LLM connection reused for {used_for} can't be used ({e}). Choose another connection, or your own address and key, and save."
+            ))
+        })
+    }
+
     /// The cached embedding client for the current config.
     pub(super) fn embedder(&self, config: &RagConfig) -> Result<Arc<Embedder>, EmbedError> {
-        if let Some(e) = self.embedder.lock().unwrap_or_else(|p| p.into_inner()).clone() {
-            return Ok(e);
+        // A statement of its own: the lock must be released before `drop_embedder`.
+        let cached = self.embedder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(e) = cached {
+            if self.connection_current(&config.embedding.connection_id, &e.settings().base_url) {
+                return Ok(e);
+            }
+            self.drop_embedder();
         }
         let settings = self.embedder_settings(config)?;
         let e = Arc::new(Embedder::new(settings, self.http.clone()).with_retry(self.retry));
@@ -466,7 +489,7 @@ impl RagEngine {
         let connection = if r.connection_id.is_empty() {
             None
         } else {
-            Some(self.host.resolve_connection(&r.connection_id).map_err(EmbedError::Config)?)
+            Some(self.reused_connection(&r.connection_id, "reranking")?)
         };
         let secret = match connection {
             Some(_) => None,
@@ -476,12 +499,14 @@ impl RagEngine {
     }
 
     /// The cached rerank settings, rebuilt when `config.rerank` differs from
-    /// the config they were built from.
+    /// the config they were built from or their LLM connection changed.
     fn reranker(&self, config: &RagConfig) -> Result<Arc<RerankSettings>, EmbedError> {
-        if let Some((built_from, settings)) = self.reranker.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            if *built_from == config.rerank {
-                return Ok(settings.clone());
+        let cached = self.reranker.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some((built_from, settings)) = cached {
+            if built_from == config.rerank && self.connection_current(&config.rerank.connection_id, &settings.base_url) {
+                return Ok(settings);
             }
+            *self.reranker.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
         let settings = Arc::new(self.rerank_settings(config)?);
         *self.reranker.lock().unwrap_or_else(|p| p.into_inner()) = Some((config.rerank.clone(), settings.clone()));

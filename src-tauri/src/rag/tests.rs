@@ -63,7 +63,12 @@ impl RagHost for FakeHost {
             .ok_or_else(|| format!("no connection {id}"))
     }
     fn list_connections(&self) -> Vec<ConnectionSummary> {
-        Vec::new()
+        self.connections
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| ConnectionSummary { id: c.id.clone(), name: c.id.clone(), kind: c.kind, base_url: c.base_url.clone() })
+            .collect()
     }
 }
 
@@ -824,11 +829,66 @@ async fn rerank_can_reuse_an_llm_connection() {
     assert_eq!(call.path, "/v1/rerank");
     assert_eq!(call.auth.as_deref(), Some("Bearer llm-key"));
 
-    // A connection that is gone: fusion order, with the reason.
+    // The connection gets another address in the LLM settings: the next search follows it.
+    let moved = reranker(generic_reply).await;
+    f.host.connections.lock().unwrap()[0].base_url = moved.server.base();
+    assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Applied);
+    assert_eq!((rr.server.hits(), moved.server.hits()), (1, 1));
+
+    // The connection is deleted: nothing more goes through it, and the report says why.
+    f.host.connections.lock().unwrap().clear();
+    let report = f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap();
+    assert_eq!(report.status, RerankStatus::Unconfigured);
+    let error = report.error.unwrap();
+    assert!(error.contains("reused for reranking") && error.contains("llm-1"), "{error}");
+    assert_eq!((rr.server.hits(), moved.server.hits()), (1, 1));
+
+    // A connection id that never existed: the same.
     f.engine.update_config(&json!({"rerank": {"connection_id": "llm-2"}})).unwrap();
     let report = f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap();
     assert_eq!(report.status, RerankStatus::Unconfigured);
     assert!(report.error.unwrap().contains("llm-2"));
+}
+
+#[tokio::test]
+async fn embeddings_reuse_an_llm_connection_and_a_deleted_one_is_a_clear_error() {
+    let svc = service().await;
+    let f = Fixture::new("embedding-connection", "http://127.0.0.1:9/v1").await;
+    f.host.connections.lock().unwrap().push(ResolvedConnection {
+        id: "llm-1".into(),
+        kind: LlmKind::OpenAiCompat,
+        base_url: svc.server.base(),
+        headers: vec![("Authorization".into(), "Bearer llm-key".into())],
+        timeout: None,
+    });
+    f.engine.update_config(&json!({"embedding": {"connection_id": "llm-1"}})).unwrap();
+    let s = f.sync().await;
+    assert!(s.error.is_none() && s.vectors_embedded > 0, "{s:?}");
+    assert!(f.search("预算会议", SearchMode::Hybrid).await.vector_used);
+
+    // Deleted in the LLM settings: no request goes through it any more,
+    // keywords still answer, and every place that shows errors says why.
+    f.host.connections.lock().unwrap().clear();
+    let hits = svc.server.hits();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert!(!out.vector_used);
+    assert_eq!(out.chunks[0].source_file, "b.txt");
+    let degraded = out.degraded.unwrap();
+    assert!(degraded.contains("reused for embeddings") && degraded.contains("llm-1"), "{degraded}");
+    let err = f.engine.test_embedding(None).await.unwrap_err();
+    assert!(err.contains("reused for embeddings"), "{err}");
+    f.write("d", APPENDED);
+    let s = f.sync().await;
+    assert_eq!(s.error_kind.as_deref(), Some("config"));
+    assert!(s.error.unwrap().contains("reused for embeddings"));
+    assert!(f.engine.index_info().await.last_error.unwrap().message.contains("llm-1"));
+    assert_eq!(svc.server.hits(), hits);
+
+    // Saving the own address instead (what the settings page sends) works at once.
+    f.engine.update_config(&json!({"embedding": {"connection_id": "", "base_url": svc.server.base()}})).unwrap();
+    assert!(f.engine.test_embedding(None).await.unwrap().ok);
+    assert_eq!(f.sync().await.error, None);
+    assert!(f.search("预算会议", SearchMode::Hybrid).await.vector_used);
 }
 
 #[tokio::test]

@@ -30,6 +30,8 @@ pub enum RerankFormat {
 /// Everything needed to send rerank requests.
 #[derive(Clone)]
 pub struct RerankSettings {
+    /// The base URL as configured (the reused connection's when one is).
+    pub base_url: String,
     pub endpoint: Url,
     /// Auth header and custom headers; the secret is inside: never log.
     pub headers: Vec<(String, String)>,
@@ -71,7 +73,7 @@ impl RerankSettings {
         }
         let endpoint = endpoint::join_endpoint(&base_url, endpoint::RERANK_PATH)
             .map_err(|e| EmbedError::Config(e.to_string()))?;
-        Ok(Self { endpoint, headers, model: r.model.clone(), format })
+        Ok(Self { base_url, endpoint, headers, model: r.model.clone(), format })
     }
 }
 
