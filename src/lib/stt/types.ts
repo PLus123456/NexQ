@@ -49,6 +49,28 @@ export const SONIOX_REGIONS: readonly { id: SonioxRegion; rest: string; ws: stri
   { id: "in", rest: "https://api.in.soniox.com", ws: "wss://stt-rt.in.soniox.com/transcribe-websocket" },
 ];
 
+/** Region ids in the default priority order. */
+export const SONIOX_REGION_IDS: readonly SonioxRegion[] = ["us", "eu", "jp", "in"];
+
+/** Keychain slot of a region's Soniox key. The old `soniox` slot is read as the key of `region`. */
+export function sonioxKeySlot(region: SonioxRegion): string {
+  return `soniox_${region}`;
+}
+
+/**
+ * How a Soniox session picks its region:
+ * - "fixed": only `region` (what configs saved before the setting mean);
+ * - "auto": enabled regions that have a key, fastest first (latency test);
+ * - "ordered": enabled regions that have a key, in the list order.
+ */
+export type SonioxRegionMode = "fixed" | "auto" | "ordered";
+
+/** One region of the list; the list order is the priority. */
+export interface SonioxRegionSetting {
+  id: SonioxRegion;
+  enabled: boolean;
+}
+
 /** Real-time models offered before `/v1/models` has been fetched (any id can be typed). */
 export const SONIOX_SUGGESTED_MODELS: readonly string[] = ["stt-rt-v5"];
 
@@ -70,8 +92,14 @@ export interface SonioxConfig {
   rest_url: string;
   /** JSON object merged into the start message; never api_key or the audio format. */
   extra_start_params: string;
+  region_mode: SonioxRegionMode;
+  /** All four regions in priority order (see `sonioxRegionList`). */
+  regions: SonioxRegionSetting[];
+  /** When a region is full, down or refuses the key, try the next one. */
+  failover: boolean;
 }
 
+/** A fresh install: regions chosen by latency, each enabled when its key is added. */
 export const DEFAULT_SONIOX_CONFIG: SonioxConfig = {
   region: "us",
   model: "stt-rt-v5",
@@ -83,7 +111,100 @@ export const DEFAULT_SONIOX_CONFIG: SonioxConfig = {
   ws_url: "",
   rest_url: "",
   extra_start_params: "",
+  region_mode: "auto",
+  regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: false })),
+  failover: true,
 };
+
+function isRegion(value: unknown): value is SonioxRegion {
+  return typeof value === "string" && (SONIOX_REGION_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * All four regions in the user's order (mirrors Rust `SonioxConfig::region_list`):
+ * known ids first (first occurrence wins), then the missing ones, disabled.
+ * An empty list (a config from before the setting): `region` first and enabled.
+ */
+export function sonioxRegionList(config: Pick<SonioxConfig, "region" | "regions">): SonioxRegionSetting[] {
+  const list: SonioxRegionSetting[] = [];
+  for (const entry of config.regions ?? []) {
+    if (isRegion(entry?.id) && !list.some((e) => e.id === entry.id)) {
+      list.push({ id: entry.id, enabled: !!entry.enabled });
+    }
+  }
+  if (list.length === 0) list.push({ id: isRegion(config.region) ? config.region : "us", enabled: true });
+  for (const id of SONIOX_REGION_IDS) {
+    if (!list.some((e) => e.id === id)) list.push({ id, enabled: false });
+  }
+  return list;
+}
+
+/**
+ * A saved Soniox config over the defaults. Nothing saved = a fresh install
+ * (`DEFAULT_SONIOX_CONFIG`); a config saved before the region settings keeps
+ * using its one region (`fixed`, that region enabled).
+ */
+export function normalizeSonioxConfig(saved: Partial<SonioxConfig> | null | undefined): SonioxConfig {
+  if (!saved) return { ...DEFAULT_SONIOX_CONFIG, regions: DEFAULT_SONIOX_CONFIG.regions.map((r) => ({ ...r })) };
+  const region = isRegion(saved.region) ? saved.region : "us";
+  const mode: SonioxRegionMode =
+    saved.region_mode === "auto" || saved.region_mode === "ordered" ? saved.region_mode : "fixed";
+  return {
+    ...DEFAULT_SONIOX_CONFIG,
+    ...saved,
+    region,
+    region_mode: mode,
+    regions: sonioxRegionList({ region, regions: saved.regions ?? [] }),
+    failover: saved.failover ?? true,
+  };
+}
+
+/** Which regions have a key (`soniox_key_status`). */
+export interface SonioxKeyStatus {
+  /** A key in the region's own slot. */
+  regions: Record<SonioxRegion, boolean>;
+  /** A key in the old `soniox` slot (it counts as `legacy_region`'s). */
+  legacy: boolean;
+  legacy_region: SonioxRegion;
+  /** The config given can connect: a key for a region it may use. */
+  any_enabled: boolean;
+}
+
+/** Latency of each region's REST host, without a key (`soniox_measure_latency`). */
+export interface SonioxLatency {
+  regions: Record<SonioxRegion, { ms: number | null; error: string | null }>;
+  /** When it was measured (epoch ms). */
+  measured_at_ms: number;
+  /** Served from the ~10 min cache. */
+  cached: boolean;
+}
+
+/** What `soniox_add_key` found: the key's region (null = not found or ambiguous). */
+export interface SonioxAddKeyResult {
+  region: SonioxRegion | null;
+  /** The key was saved in that region's slot. */
+  stored: boolean;
+  /** Per region: HTTP status of `/v1/models` with the key (200/403 = this region, 401 = not), or the error. */
+  statuses: Partial<Record<SonioxRegion, { status: number | null; error: string | null; matches: boolean }>>;
+}
+
+/** Why a session moved to another region (`soniox_region_switch`). */
+export type SonioxSwitchReason =
+  | "concurrency"
+  | "unavailable"
+  | "model_not_available"
+  | "budget"
+  | "network"
+  | "key_rejected"
+  | "internal_error";
+
+export interface SonioxRegionSwitchEvent {
+  /** "You" | "Them" */
+  party: string;
+  from: SonioxRegion | "custom";
+  to: SonioxRegion | "custom";
+  reason: SonioxSwitchReason;
+}
 
 /** Stable outcome codes of a probe (the UI words them; `detail` is the raw server text). */
 export type SttProbeCode =

@@ -102,7 +102,7 @@ pub async fn test_stt_connection(app: AppHandle, provider: String) -> Result<boo
         }
         STTProviderType::Soniox => {
             let cfg = app.state::<SttPlusState>().soniox_snapshot();
-            let key = read_key(&app.state::<AppState>(), SONIOX_KEY_SLOT);
+            let key = soniox_region_key(&app, cfg.fixed_region());
             let result = crate::stt::soniox::probe(&cfg, key.as_deref()).await;
             return if result.ok { Ok(true) } else { Err(probe_error(&result)) };
         }
@@ -416,13 +416,22 @@ pub async fn probe_openai_compat_stt(app: AppHandle, config_json: String) -> Res
     serde_json::to_string(&result).map_err(|e| format!("Failed to serialize probe result: {}", e))
 }
 
-/// Test the stored Soniox key against the region's `/v1/models`. Returns
-/// `SttProbeResult` JSON (real-time model ids included).
+/// A region's Soniox key: its own slot, else the old `soniox` slot when the
+/// region is the saved config's `region` (the old key's region).
+fn soniox_region_key(app: &AppHandle, region: &str) -> Option<String> {
+    let state = app.state::<AppState>();
+    let legacy_region = app.state::<SttPlusState>().soniox_snapshot().fixed_region();
+    read_key(&state, &crate::stt::plus_config::soniox_key_slot(region))
+        .or_else(|| (region == legacy_region).then(|| read_key(&state, SONIOX_KEY_SLOT)).flatten())
+}
+
+/// Test the stored Soniox key of `config.region` against that region's
+/// `/v1/models`. Returns `SttProbeResult` JSON (real-time model ids included).
 #[command]
 pub async fn probe_soniox(app: AppHandle, config_json: String) -> Result<String, String> {
     let config: SonioxConfig = serde_json::from_str(&config_json)
         .map_err(|e| format!("Invalid Soniox config JSON: {}", e))?;
-    let key = read_key(&app.state::<AppState>(), SONIOX_KEY_SLOT);
+    let key = soniox_region_key(&app, config.fixed_region());
     let result = crate::stt::soniox::probe(&config, key.as_deref()).await;
     serde_json::to_string(&result).map_err(|e| format!("Failed to serialize probe result: {}", e))
 }
@@ -435,4 +444,48 @@ pub async fn set_whisper_use_gpu(app: AppHandle, enabled: bool) -> Result<(), St
     app.state::<SttPlusState>().whisper_use_gpu.store(enabled, Ordering::Relaxed);
     log::info!("whisper.cpp GPU {}", if enabled { "on" } else { "off" });
     Ok(())
+}
+
+// == NexQ Plus: Soniox regions ==
+
+/// Which regions have a Soniox key (never the keys), and whether the given
+/// config can connect: a key for a region it may use. JSON `SonioxKeyStatus`.
+#[command]
+pub async fn soniox_key_status(app: AppHandle, config_json: String) -> Result<String, String> {
+    let config: SonioxConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid Soniox config JSON: {}", e))?;
+    let state = app.state::<AppState>();
+    let status = crate::stt::soniox_regions::key_status(&config, |slot| read_key(&state, slot).is_some());
+    serde_json::to_string(&status).map_err(|e| format!("Failed to serialize key status: {}", e))
+}
+
+/// Latency of the four regions' REST hosts (no key), from the ~10 min cache
+/// unless `force`. JSON `SonioxLatency`.
+#[command]
+pub async fn soniox_measure_latency(force: bool) -> Result<String, String> {
+    let latency = crate::stt::soniox_regions::measure_latency(force).await;
+    serde_json::to_string(&latency).map_err(|e| format!("Failed to serialize latency: {}", e))
+}
+
+/// Save a Soniox key in its region's slot; without `region`, find the region
+/// first (each region's `/v1/models`: 200 / 403 = it, 401 = not). Nothing is
+/// saved when that is unclear. JSON `SonioxAddKeyResult`.
+#[command]
+pub async fn soniox_add_key(app: AppHandle, key: String, region: Option<String>) -> Result<String, String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("Empty Soniox key".to_string());
+    }
+    let mut result = match region.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(region) => crate::stt::soniox_regions::AddKeyResult::chosen(crate::stt::plus_config::soniox_region(region)),
+        None => crate::stt::soniox_regions::detect_key_region(&key, &crate::stt::soniox_regions::default_rest_bases()).await,
+    };
+    if let Some(region) = result.region.clone() {
+        let state = app.state::<AppState>();
+        let cred = state.credentials.as_ref().ok_or("Credential store not available")?;
+        let cred = cred.lock().map_err(|_| "Credential store lock poisoned".to_string())?;
+        cred.store_key(&crate::stt::plus_config::soniox_key_slot(&region), &key)?;
+        result.stored = true;
+    }
+    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
 }

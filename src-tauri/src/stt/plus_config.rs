@@ -14,8 +14,75 @@ use serde::{Deserialize, Serialize};
 
 /// Keychain slot of the remote STT key (optional: empty = no auth header).
 pub const OPENAI_COMPAT_STT_KEY_SLOT: &str = "openai_compat_stt";
-/// Keychain slot of the Soniox API key.
+/// Keychain slot of the Soniox key saved before per-region keys: read as the
+/// key of `SonioxConfig::region` (never moved or deleted).
 pub const SONIOX_KEY_SLOT: &str = "soniox";
+
+/// Soniox regions, in the default priority order. A key belongs to the region
+/// of its Soniox project.
+pub const SONIOX_REGIONS: [&str; 4] = ["us", "eu", "jp", "in"];
+
+/// Keychain slot of a region's Soniox key (`soniox_us`, `soniox_eu`, …).
+pub fn soniox_key_slot(region: &str) -> String {
+    format!("soniox_{}", region)
+}
+
+/// The known region for `id` (`us` for anything else).
+pub fn soniox_region(id: &str) -> &'static str {
+    SONIOX_REGIONS.iter().copied().find(|r| *r == id.trim()).unwrap_or("us")
+}
+
+/// REST base URL of a region (no trailing `/`).
+pub fn soniox_region_rest_base(region: &str) -> &'static str {
+    match soniox_region(region) {
+        "eu" => "https://api.eu.soniox.com",
+        "jp" => "https://api.jp.soniox.com",
+        "in" => "https://api.in.soniox.com",
+        _ => "https://api.soniox.com",
+    }
+}
+
+/// Real-time WebSocket URL of a region.
+pub fn soniox_region_ws_url(region: &str) -> &'static str {
+    match soniox_region(region) {
+        "eu" => "wss://stt-rt.eu.soniox.com/transcribe-websocket",
+        "jp" => "wss://stt-rt.jp.soniox.com/transcribe-websocket",
+        "in" => "wss://stt-rt.in.soniox.com/transcribe-websocket",
+        _ => "wss://stt-rt.soniox.com/transcribe-websocket",
+    }
+}
+
+/// How a Soniox session picks its region. Unknown values read as `fixed`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SonioxRegionMode {
+    /// Only `region` (what configs saved before the multi-region settings mean).
+    #[default]
+    Fixed,
+    /// Enabled regions that have a key, fastest first (latency test); list order when unknown.
+    Auto,
+    /// Enabled regions that have a key, in the user's order.
+    Ordered,
+}
+
+impl<'de> Deserialize<'de> for SonioxRegionMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(match value.as_str() {
+            Some("auto") => Self::Auto,
+            Some("ordered") => Self::Ordered,
+            _ => Self::Fixed,
+        })
+    }
+}
+
+/// One region in the user's list; the list order is the priority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SonioxRegionSetting {
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
 
 /// Remote Whisper over an OpenAI-compatible `/audio/transcriptions` endpoint
 /// (faster-whisper-server / speaches, vLLM, LocalAI...). One global copy; the
@@ -88,6 +155,13 @@ pub struct SonioxConfig {
     /// JSON object merged into the start message (forward compatibility).
     /// `api_key` and the audio format fields are never taken from it.
     pub extra_start_params: String,
+    /// Which region a session uses. Configs without it are `fixed` (`region`).
+    pub region_mode: SonioxRegionMode,
+    /// The four regions in priority order, each enabled or not (`auto` / `ordered`).
+    /// Missing or partial lists are completed by `region_list`.
+    pub regions: Vec<SonioxRegionSetting>,
+    /// When a region is full, down or refuses the key, try the next one.
+    pub failover: bool,
 }
 
 impl Default for SonioxConfig {
@@ -103,24 +177,68 @@ impl Default for SonioxConfig {
             ws_url: String::new(),
             rest_url: String::new(),
             extra_start_params: String::new(),
+            region_mode: SonioxRegionMode::Fixed,
+            regions: Vec::new(),
+            failover: true,
         }
     }
 }
 
 impl SonioxConfig {
+    /// The fixed region (`region`, `us` when unknown).
+    pub fn fixed_region(&self) -> &'static str {
+        soniox_region(&self.region)
+    }
+
+    /// A gateway is configured: its URLs are used as they are, without regions.
+    pub fn uses_custom_endpoint(&self) -> bool {
+        !self.ws_url.trim().is_empty() || !self.rest_url.trim().is_empty()
+    }
+
+    /// All four regions in the user's order: known ids from `regions` (first
+    /// occurrence wins), then the missing ones. An empty list means a config
+    /// from before the setting: `region` first and enabled, the others off.
+    pub fn region_list(&self) -> Vec<SonioxRegionSetting> {
+        let mut list: Vec<SonioxRegionSetting> = Vec::new();
+        for entry in &self.regions {
+            let id = entry.id.trim();
+            if SONIOX_REGIONS.contains(&id) && !list.iter().any(|e| e.id == id) {
+                list.push(SonioxRegionSetting { id: id.to_string(), enabled: entry.enabled });
+            }
+        }
+        if list.is_empty() {
+            let fixed = self.fixed_region();
+            list.push(SonioxRegionSetting { id: fixed.to_string(), enabled: true });
+        }
+        for region in SONIOX_REGIONS {
+            if !list.iter().any(|e| e.id == region) {
+                list.push(SonioxRegionSetting { id: region.to_string(), enabled: false });
+            }
+        }
+        list
+    }
+
+    /// The regions a session may use, before keys and latency: `region` for
+    /// `fixed`, else the enabled ones in list order.
+    pub fn allowed_regions(&self) -> Vec<&'static str> {
+        match self.region_mode {
+            SonioxRegionMode::Fixed => vec![self.fixed_region()],
+            SonioxRegionMode::Auto | SonioxRegionMode::Ordered => self
+                .region_list()
+                .into_iter()
+                .filter(|e| e.enabled)
+                .map(|e| soniox_region(&e.id))
+                .collect(),
+        }
+    }
+
     /// REST base URL (no trailing `/`): the custom one, else the region's.
     pub fn rest_base(&self) -> String {
         let custom = self.rest_url.trim().trim_end_matches('/');
         if !custom.is_empty() {
             return custom.to_string();
         }
-        match self.region.trim() {
-            "eu" => "https://api.eu.soniox.com",
-            "jp" => "https://api.jp.soniox.com",
-            "in" => "https://api.in.soniox.com",
-            _ => "https://api.soniox.com",
-        }
-        .to_string()
+        soniox_region_rest_base(&self.region).to_string()
     }
 
     /// Real-time WebSocket URL: the custom one, else the region's.
@@ -129,13 +247,7 @@ impl SonioxConfig {
         if !custom.is_empty() {
             return custom.to_string();
         }
-        match self.region.trim() {
-            "eu" => "wss://stt-rt.eu.soniox.com/transcribe-websocket",
-            "jp" => "wss://stt-rt.jp.soniox.com/transcribe-websocket",
-            "in" => "wss://stt-rt.in.soniox.com/transcribe-websocket",
-            _ => "wss://stt-rt.soniox.com/transcribe-websocket",
-        }
-        .to_string()
+        soniox_region_ws_url(&self.region).to_string()
     }
 }
 
@@ -215,6 +327,40 @@ mod tests {
         assert_eq!((sx.endpoint_sensitivity, sx.endpoint_latency_adjustment_level), (None, Some(2)));
         let sx: SonioxConfig = serde_json::from_str(r#"{"endpoint_sensitivity":-0.4}"#).unwrap();
         assert_eq!(sx.endpoint_sensitivity, Some(-0.4));
+    }
+
+    #[test]
+    fn a_config_from_before_regions_reads_as_fixed_on_its_region() {
+        let old: SonioxConfig = serde_json::from_str(r#"{"region":"jp","model":"stt-rt-v5"}"#).unwrap();
+        assert_eq!(old.region_mode, SonioxRegionMode::Fixed);
+        assert!(old.failover);
+        let ids: Vec<(String, bool)> = old.region_list().into_iter().map(|e| (e.id, e.enabled)).collect();
+        assert_eq!(
+            ids,
+            vec![("jp".into(), true), ("us".into(), false), ("eu".into(), false), ("in".into(), false)]
+        );
+        assert_eq!(old.allowed_regions(), vec!["jp"]);
+        // An unknown mode never fails the whole config.
+        let odd: SonioxConfig = serde_json::from_str(r#"{"region_mode":"fastest","failover":false}"#).unwrap();
+        assert_eq!(odd.region_mode, SonioxRegionMode::Fixed);
+        assert!(!odd.failover);
+    }
+
+    #[test]
+    fn the_region_list_keeps_the_users_order_and_completes_itself() {
+        let cfg: SonioxConfig = serde_json::from_str(
+            r#"{"region_mode":"ordered","regions":[{"id":"in","enabled":true},{"id":"xx","enabled":true},
+                {"id":"eu"},{"id":"in","enabled":false},{"id":"jp","enabled":true}]}"#,
+        )
+        .unwrap();
+        let ids: Vec<(String, bool)> = cfg.region_list().into_iter().map(|e| (e.id, e.enabled)).collect();
+        assert_eq!(
+            ids,
+            vec![("in".into(), true), ("eu".into(), false), ("jp".into(), true), ("us".into(), false)]
+        );
+        assert_eq!(cfg.allowed_regions(), vec!["in", "jp"]);
+        assert_eq!(soniox_key_slot("jp"), "soniox_jp");
+        assert_eq!(soniox_region_ws_url("in"), "wss://stt-rt.in.soniox.com/transcribe-websocket");
     }
 
     #[test]

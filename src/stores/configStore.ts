@@ -22,6 +22,7 @@ import { clampMinutes, DEFAULT_CONTEXT_SCOPE, SCOPE_KINDS } from "../lib/context
 import {
   DEFAULT_OPENAI_COMPAT_STT_CONFIG,
   DEFAULT_SONIOX_CONFIG,
+  normalizeSonioxConfig,
   type OpenAICompatSttConfig,
   type SonioxConfig,
 } from "../lib/stt/types";
@@ -1031,7 +1032,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         DEFAULT_OPENAI_COMPAT_STT_CONFIG,
         await store.get<Partial<OpenAICompatSttConfig>>("openaiCompatSttConfig"),
       );
-      const sonioxConfig = withDefaults(DEFAULT_SONIOX_CONFIG, await store.get<Partial<SonioxConfig>>("sonioxConfig"));
+      // A config saved before the region settings keeps its one region (fixed).
+      const sonioxConfig = normalizeSonioxConfig(await store.get<Partial<SonioxConfig>>("sonioxConfig"));
       const pauseThresholdMs = await store.get<number>("pauseThresholdMs");
       const activeModelPerEngine = await store.get<Record<string, string>>("activeModelPerEngine");
       const rememberedMeetingSetup = await store.get<{ audioMode: AudioMode; scenario: AIScenario } | null>("rememberedMeetingSetup");
@@ -1272,7 +1274,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         if (val != null) set({ openaiCompatSttConfig: withDefaults(DEFAULT_OPENAI_COMPAT_STT_CONFIG, val) });
       });
       store.onKeyChange<Partial<SonioxConfig>>("sonioxConfig", (val) => {
-        if (val != null) set({ sonioxConfig: withDefaults(DEFAULT_SONIOX_CONFIG, val) });
+        if (val != null) set({ sonioxConfig: normalizeSonioxConfig(val) });
       });
 
       // The backend detector stays idle until it has the saved settings.
