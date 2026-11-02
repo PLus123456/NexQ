@@ -13,6 +13,9 @@ use tokio::sync::Notify;
 pub struct GenerationParams {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+    /// Request JSON output only when supported by the selected connection.
+    #[serde(default)]
+    pub json_mode: bool,
     /// Gemini context cache name (e.g. "cachedContents/abc123").
     /// When set, GeminiClient uses the cached content instead of re-sending documents.
     /// Ignored by all other providers.
@@ -44,6 +47,7 @@ impl Default for GenerationParams {
         Self {
             temperature: None,
             max_tokens: None,
+            json_mode: false,
             cache_name: None,
             enable_web_search: false,
             request_id: None,

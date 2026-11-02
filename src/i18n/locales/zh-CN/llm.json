@@ -385,6 +385,11 @@
       "label": "Claude 备用",
       "short": "备用",
       "hint": "Claude 订阅不可用时（未登录、用量上限、崩溃）改用它回答。"
+    },
+    "question_detect": {
+      "label": "提问检测",
+      "short": "提问检测",
+      "hint": "检测对方每句已完成的原文。推荐选择本地小模型，例如 Ollama 上的 Qwen3 1.7B 或 4B，并关闭思考。"
     }
   },
   "editor": {
@@ -562,6 +567,10 @@
           "openrouter_online": "OpenRouter :online",
           "gemini_google_search": "Google 搜索增强"
         }
+      },
+      "supportsJsonMode": {
+        "label": "服务支持 JSON 模式",
+        "hint": "允许提问检测等后台任务请求 JSON 响应。仅在服务支持 JSON 模式时开启。"
       }
     }
   },
@@ -865,5 +874,36 @@
     "noMatches": "没有符合筛选条件的模型",
     "resetFilters": "重置筛选",
     "showMore": "显示更多（还有 {{remaining}} 个）"
+  },
+  "questionDetection": {
+    "title": "用模型判断对方是否在提问",
+    "hint": "结合最近 90 秒的对话判断最新一句。确认后可自动触发「回答问题」，并用上下文补全问题中的指代。",
+    "modeLabel": "判定模式",
+    "modes": {
+      "rules": "仅规则",
+      "hybrid": "规则 + 模型确认（推荐）",
+      "model": "仅模型"
+    },
+    "descriptions": {
+      "rules": "根据疑问词和标点判断，不发送提问检测的模型请求。",
+      "hybrid": "规则命中后由模型确认或否决，也能识别规则未命中的隐含提问。",
+      "model": "由模型判断对方是否在向你提问，也包括没有疑问词的提问。"
+    },
+    "threshold": "置信度阈值",
+    "thresholdHint": "范围 0–1。越高越要求模型有把握。",
+    "logRequests": "在 AI 调用日志中记录提问检测",
+    "logHint": "每句都会检测，因此默认不记录。需要排查提示词、响应和失败原因时可临时开启。",
+    "routeDisabled": "未配置 — 使用规则",
+    "routeFallback": "为此任务选择连接前，使用仅规则模式。",
+    "fallback": {
+      "routeMissing": "已退回仅规则：请在下方为「提问检测」选择连接和模型。此任务不会沿用默认模型。",
+      "unavailable": "已退回仅规则：「提问检测」的连接或模型不可用，请检查任务路由和连接设置。",
+      "timeout": "本句已退回规则：模型未能在 2.5 秒内响应，下一句会重新尝试模型检测。",
+      "invalidResponse": "本句已退回规则：模型返回的检测结果无效，下一句会重新尝试模型检测。",
+      "failed": "本句已退回规则：检测请求失败，下一句会重新尝试模型检测。"
+    },
+    "loading": "正在加载检测设置…",
+    "loadFailed": "无法加载检测设置：{{detail}}",
+    "httpOnly": "提问检测支持 HTTP 连接；选择 Claude 订阅时会退回规则检测。"
   }
 }

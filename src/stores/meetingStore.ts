@@ -325,7 +325,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         const entries = useCallLogStore.getState().entries;
         if (entries.length > 0) {
           const interactions = entries
-            .filter((e) => e.status === "complete" && !["MeetingSummary", "ActionItemsExtraction", "BookmarkSuggestions", "MeetingAsk"].includes(e.mode))
+            .filter((e) => e.status === "complete" && !["MeetingSummary", "ActionItemsExtraction", "BookmarkSuggestions", "MeetingAsk", "question_detect"].includes(e.mode))
             .map((e) => ({
               id: e.id,
               meeting_id: meeting.id,

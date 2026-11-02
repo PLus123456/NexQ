@@ -5,7 +5,7 @@ import { useCallLogStore } from "../stores/callLogStore";
 import { getModeLabel } from "../lib/utils";
 import { formatDuration } from "../lib/agentUsage";
 import { entryFirstTokenMs, isClaudeEntry } from "./stats";
-import type { LogEntry, IntelligenceMode } from "../lib/types";
+import type { LogEntry } from "../lib/types";
 import {
   CheckCircle2,
   AlertCircle,
@@ -16,9 +16,10 @@ import {
 // -- Mode color coding -------------------------------------------------------
 
 const MODE_COLORS: Record<
-  IntelligenceMode,
+  LogEntry["mode"],
   { badge: string; dot: string }
 > = {
+  question_detect: { badge: "bg-info/20 text-info", dot: "bg-info" },
   Assist: { badge: "bg-info/20 text-info", dot: "bg-info" },
   WhatToSay: {
     badge: "bg-primary/20 text-primary",

@@ -1051,31 +1051,9 @@ pub async fn push_transcript(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let intel = state
-        .intelligence
-        .as_ref()
-        .ok_or_else(|| "Intelligence engine not initialized".to_string())?;
-
-    let mut engine = intel
-        .lock()
-        .map_err(|e| format!("Failed to lock intelligence engine: {}", e))?;
-
-    // Clone text and speaker before they are moved into push_transcript
     let text_clone = text.clone();
     let speaker_clone = speaker.clone();
-
-    let questions = engine.push_transcript(text, speaker, timestamp_ms, is_final);
-
-    // Emit question detected events
-    for q in questions {
-        let payload = serde_json::json!({
-            "text": q.text,
-            "confidence": q.confidence,
-            "timestamp_ms": q.timestamp_ms,
-            "source": q.source,
-        });
-        let _ = app_handle.emit("question_detected", &payload);
-    }
+    crate::intelligence::ingest_transcript(&app_handle, text, speaker, timestamp_ms, is_final);
 
     // Feed transcript to RAG indexer if enabled
     if is_final {

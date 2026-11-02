@@ -148,18 +148,12 @@ fn spawn_party_emitter(
     let id_prefix = party.segment_prefix(session_prefix);
     let accumulate = !self_segmenting(provider);
     let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
-    let intel_arc = match party {
-        Party::Them => app.state::<AppState>().intelligence.clone(),
-        Party::You => None,
-    };
     let mut tally = TranscriptTally::new(party.role(), provider);
-
+    let detection_app = app.clone();
     let push_final = move |text: &str, timestamp_ms: u64| {
-        if let Some(ref intel) = intel_arc {
-            if let Ok(mut engine) = intel.lock() {
-                engine.push_transcript(text.to_string(), "Them".to_string(), timestamp_ms, true);
-            }
-        }
+        crate::intelligence::ingest_transcript(
+            &detection_app, text.to_string(), party.speaker().to_string(), timestamp_ms, true,
+        );
     };
     let emit = move |app: &AppHandle, segment: serde_json::Value, is_final: bool| {
         let event_name = if is_final { "transcript_final" } else { "transcript_update" };
@@ -357,7 +351,6 @@ pub async fn start_capture(
     // configurable pause threshold, producing longer, more readable lines.
     if has_system_stt {
         let stt_app = app.clone();
-        let intel_arc = app.state::<AppState>().intelligence.clone();
         let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
         tasks.push(tokio::spawn(async move {
             use std::sync::atomic::Ordering;
@@ -382,19 +375,10 @@ pub async fn start_capture(
                     });
                     let _ = stt_app.emit(event_name, &payload);
 
-                    // Push final segments to the intelligence engine's
-                    // transcript buffer so the AI has access to what "Them" said.
                     if output.is_final {
-                        if let Some(ref intel) = intel_arc {
-                            if let Ok(mut engine) = intel.lock() {
-                                engine.push_transcript(
-                                    output.text.clone(),
-                                    "Them".to_string(),
-                                    output.timestamp_ms,
-                                    true,
-                                );
-                            }
-                        }
+                        crate::intelligence::ingest_transcript(
+                            &stt_app, output.text.clone(), "Them".to_string(), output.timestamp_ms, true,
+                        );
                     }
                 }
             }

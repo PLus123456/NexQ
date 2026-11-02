@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
 import { useT } from "../i18n";
-import { onQuestionDetected } from "../lib/events";
+import { onQuestionDetectionPending, onQuestionDetectionResult } from "../lib/questionDetection/events";
 import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -14,55 +14,29 @@ import type { DetectedQuestion } from "../lib/types";
  */
 export const AUTO_TRIGGER_DELAY_MS = 1500;
 
-const isOtherParty = (speaker: string) => speaker === "Them" || speaker === "Interviewer";
-
-export function looksLikeQuestion(text: string): boolean {
-  const trimmed = text.trim().replace(/["'”’」』]+$/u, "");
-  if (!/[\p{L}\p{N}]/u.test(trimmed)) return false;
-  if (/[?？]$/u.test(trimmed)) return true;
-  const body = trimmed.replace(/[.!。！…]+$/u, "");
-  // Keep the local/Web Speech fallback aligned with the Rust detector.
-  if (/[吗嗎呢]$/u.test(body) ||
-      /什么|什麼|为何|為何|为什么|為什麼|怎么|怎麼|怎样|怎樣|如何|何时|何時|哪里|哪裡|哪儿|哪兒|哪个|哪個|哪些|谁|誰|多少|几时|幾時|几点|幾點|多久|能不能|可不可以|会不会|會不會|是不是|有没有|有沒有|要不要|是否|能否/u.test(body) ||
-      /请介绍|請介紹|请描述|請描述|请解释|請解釋|请举例|請舉例|介绍一下|介紹一下|描述一下|解释一下|解釋一下|说说|說說|谈谈|談談|举个例子|舉個例子/u.test(body)) return true;
-  const lower = trimmed.toLowerCase();
-  const qWords = [
-    "what ", "how ", "why ", "when ", "where ", "who ", "which ",
-    "can you", "could you", "would you", "do you", "are you",
-    "is there", "have you", "tell me", "explain",
-  ];
-  return qWords.some((w) => lower.startsWith(w));
-}
-
-/**
- * The newest sentence of a transcript line. Lines grow into paragraphs, so a
- * question is usually the last sentence, not the whole line.
- */
-export function lastSentence(text: string): string {
-  const sentences = (text.trim().match(/[^.?!。？！\n]+[.?!。？！]*[”’」』]*/gu) ?? [])
-    .filter((sentence) => /[\p{L}\p{N}]/u.test(sentence));
-  return (sentences[sentences.length - 1] ?? "").trim();
-}
+const isOtherParty = (speaker: string) => ["them", "interviewer"].includes(speaker.toLowerCase());
 
 interface TrackedQuestion extends DetectedQuestion {
   assisted: boolean;
-  /** Transcript line the question came from (lines grow while someone talks). */
-  segmentId?: string;
+  revision: number;
 }
 
 export function QuestionDetector() {
   const { t } = useT("overlay");
   const [questions, setQuestions] = useState<TrackedQuestion[]>([]);
-  // Text of each final line when it was last checked for a question.
-  const checkedTextRef = useRef<Map<string, string>>(new Map());
-  const segments = useTranscriptStore((s) => s.segments);
+  const revisionRef = useRef(0);
+  const [autoRevision, setAutoRevision] = useState<number | null>(null);
+  const otherPartyTalking = useTranscriptStore((s) => {
+    const latest = [...s.segments].reverse().find((seg) => isOtherParty(seg.speaker));
+    return !!latest && (!latest.is_final || !!latest.pending_text);
+  });
   const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
   const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
   // Changes whenever the other party says more (a new line, or a line growing).
   const otherPartyActivity = useTranscriptStore((s) => {
     for (let i = s.segments.length - 1; i >= 0; i--) {
       const seg = s.segments[i];
-      if (isOtherParty(seg.speaker)) return `${seg.id}:${seg.text.length}`;
+      if (isOtherParty(seg.speaker)) return `${seg.id}:${seg.text}:${seg.pending_text ?? ""}`;
     }
     return "";
   });
@@ -71,45 +45,32 @@ export function QuestionDetector() {
   // previous meeting doesn't linger in the overlay.
   useEffect(() => {
     setQuestions([]);
-    checkedTextRef.current = new Map();
+    setAutoRevision(null);
+    revisionRef.current = 0;
   }, [activeMeetingId]);
 
-  const addQuestion = useCallback((q: DetectedQuestion, segmentId?: string) => {
-    setQuestions((prev) => {
-      // The same line grew: update its question in place (unless already answered).
-      if (segmentId) {
-        const i = prev.findIndex((p) => p.segmentId === segmentId);
-        if (i >= 0) {
-          if (prev[i].assisted || prev[i].text === q.text) return prev;
-          return prev.map((p, j) => (j === i ? { ...p, text: q.text } : p));
-        }
-      }
-      if (prev.length > 0 && prev[0].text === q.text) return prev;
-      return [{ ...q, assisted: false, segmentId }, ...prev].slice(0, 10);
-    });
-  }, []);
-
   useEffect(() => {
-    const p = onQuestionDetected((event) => {
-      if (isOtherParty(event.source)) {
-        addQuestion(event);
-      }
+    const pending = onQuestionDetectionPending((event) => {
+      if (event.revision < revisionRef.current) return;
+      revisionRef.current = event.revision;
+      setAutoRevision(null);
     });
-    return () => { p.then((u) => u()); };
-  }, [addQuestion]);
-
-  useEffect(() => {
-    const checked = checkedTextRef.current;
-    for (const seg of segments) {
-      if (!seg.is_final || checked.get(seg.id) === seg.text) continue;
-      checked.set(seg.id, seg.text);
-      if (!isOtherParty(seg.speaker)) continue;
-      const sentence = lastSentence(seg.text);
-      if (sentence && looksLikeQuestion(sentence)) {
-        addQuestion({ text: sentence, confidence: 0.8, timestamp_ms: seg.timestamp_ms, source: seg.speaker }, seg.id);
-      }
-    }
-  }, [segments, addQuestion]);
+    const result = onQuestionDetectionResult((event) => {
+      if (event.revision < revisionRef.current || !isOtherParty(event.source)) return;
+      revisionRef.current = event.revision;
+      setAutoRevision(event.question ? event.revision : null);
+      setQuestions((previous) => {
+        // A growing line replaces its last decision. A model veto also removes
+        // that line's provisional card; no local heuristic can bypass it.
+        const existing = previous.find((q) => !q.assisted && q.timestamp_ms === event.timestamp_ms && q.source === event.source);
+        const rest = previous.filter((q) => q !== existing);
+        if (!event.question) return rest;
+        if (previous[0]?.assisted && previous[0].text === event.question.text) return previous;
+        return [{ ...event.question, assisted: false, revision: event.revision }, ...rest].slice(0, 10);
+      });
+    });
+    return () => { pending.then((u) => u()); result.then((u) => u()); };
+  }, [activeMeetingId]);
 
   const handleAssist = useCallback((index: number) => {
     const questionText = questions[index]?.text;
@@ -129,7 +90,8 @@ export function QuestionDetector() {
 
   // Auto-Trigger: answer the newest question once the other party has been
   // quiet for a moment. More words from them restart the wait.
-  const waiting = autoTrigger && !!latest && !latest.assisted;
+  const waiting = autoTrigger && !!latest && !latest.assisted &&
+    latest.revision === autoRevision && !otherPartyTalking;
   useEffect(() => {
     if (!waiting) return;
     const timer = setTimeout(() => handleAssist(0), AUTO_TRIGGER_DELAY_MS);

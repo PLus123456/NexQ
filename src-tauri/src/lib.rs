@@ -257,6 +257,11 @@ pub fn run() {
             // == PLUS INIT: p1-llm ==
             llm::registry::init(app.handle(), &mut app_state, &app_data_dir);
 
+            // == PLUS INIT: question detection ==
+            app.manage(intelligence::llm_question::QuestionDetectionService::new(
+                app_data_dir.join("question-detection.json"),
+            ));
+
             // -- Initialize IntelligenceEngine --
             let intel_engine = intelligence::IntelligenceEngine::new();
             app_state.intelligence = Some(Arc::new(Mutex::new(intel_engine)));
@@ -511,6 +516,8 @@ pub fn run() {
             intelligence_commands::generate_assist,
             intelligence_commands::cancel_generation,
             intelligence_commands::set_auto_trigger,
+            commands::question_detection_commands::get_question_detection_settings,
+            commands::question_detection_commands::set_question_detection_settings,
             intelligence_commands::set_context_window_seconds,
             intelligence_commands::push_transcript,
             intelligence_commands::update_action_configs,

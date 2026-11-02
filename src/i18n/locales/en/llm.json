@@ -389,6 +389,11 @@
       "label": "Claude fallback",
       "short": "Fallback",
       "hint": "Answers while the Claude subscription is unavailable (logged out, usage limit, crash)."
+    },
+    "question_detect": {
+      "label": "Question detection",
+      "short": "Questions",
+      "hint": "Checks each completed sentence from the other person. Choose a local small model, such as Qwen3 1.7B or 4B in Ollama, and turn thinking off."
     }
   },
   "editor": {
@@ -569,6 +574,10 @@
           "openrouter_online": "OpenRouter :online",
           "gemini_google_search": "Google Search grounding"
         }
+      },
+      "supportsJsonMode": {
+        "label": "Server supports JSON mode",
+        "hint": "Allow background tasks such as question detection to request JSON responses. Enable only if this server supports JSON mode."
       }
     }
   },
@@ -876,5 +885,36 @@
     "noMatches": "No models match your filters",
     "resetFilters": "Reset filters",
     "showMore": "Show more ({{remaining}} remaining)"
+  },
+  "questionDetection": {
+    "title": "Detect questions with an AI model",
+    "hint": "Checks the latest sentence against the last 90 seconds of conversation. Confirmed questions can trigger Assist with references filled in from context.",
+    "modeLabel": "Detection mode",
+    "modes": {
+      "rules": "Rules only",
+      "hybrid": "Rules + model confirmation (recommended)",
+      "model": "Model only"
+    },
+    "descriptions": {
+      "rules": "Uses question wording and punctuation. No detection requests are sent to a model.",
+      "hybrid": "The model confirms or rejects rule matches and can identify implicit questions.",
+      "model": "The model decides whether a question is directed at you, including questions that have no question words."
+    },
+    "threshold": "Confidence threshold",
+    "thresholdHint": "0–1. A higher value requires more confidence from the model.",
+    "logRequests": "Record question detection in AI call logs",
+    "logHint": "Off by default because detection runs after each sentence. Enable temporarily to inspect prompts, responses and failures.",
+    "routeDisabled": "Not configured — use rules",
+    "routeFallback": "Rules only until a connection is chosen for this task.",
+    "fallback": {
+      "routeMissing": "Using rules only: choose a connection and model for Question detection below. This task does not inherit the default model.",
+      "unavailable": "Using rules only: the Question detection connection or model is unavailable. Check its route and connection settings.",
+      "timeout": "Using rules for this sentence: the model did not respond within 2.5 seconds. The next sentence will try the model again.",
+      "invalidResponse": "Using rules for this sentence: the model returned an invalid detection result. The next sentence will try the model again.",
+      "failed": "Using rules for this sentence: the detection request failed. The next sentence will try the model again."
+    },
+    "loading": "Loading detection settings…",
+    "loadFailed": "Could not load detection settings: {{detail}}",
+    "httpOnly": "Question detection supports HTTP connections. A Claude subscription route falls back to rules."
   }
 }

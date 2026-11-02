@@ -28,3 +28,6 @@ pub mod llm_connection_commands;
 pub mod rag_engine_commands;
 // p5-onboarding:
 pub mod onboarding_commands;
+
+// plus-question-detection:
+pub mod question_detection_commands;

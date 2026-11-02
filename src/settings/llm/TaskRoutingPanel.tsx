@@ -1,7 +1,8 @@
 // "Task routing" tab: which connection and model answers each task (AI
 // assist, meeting summary, live translation, …), with per-task parameter
-// overrides. A task without a connection follows its parent, ending at the
-// default. Each row shows what actually answers (Rust's `effective`).
+// overrides. Most tasks without a connection follow their parent, ending at
+// the default; question detection requires its own route. Each row shows what
+// actually answers (Rust's `effective`).
 // Changes save immediately.
 
 import { useId, useState, type ComponentType } from "react";
@@ -35,12 +36,14 @@ import { claudeTierLabel } from "../ClaudeCliSettings";
 import { ParamsFields } from "./ParamsFields";
 import { findTemplate } from "./providerTemplates";
 import { ResponseLanguageCard } from "./ResponseLanguageCard";
+import { QuestionDetectionCard } from "./QuestionDetectionCard";
 import { BUILT_IN_ACTIONS, isBuiltInAction, useTaskLabel } from "./taskLabels";
 import { CARD, LABEL, SECTION_TITLE, SELECT } from "./ui";
 
 const TASK_ICONS: Record<LlmTaskKey, ComponentType<{ className?: string }>> = {
   default: Star,
   assist: Sparkles,
+  question_detect: MessageCircleQuestion,
   meeting_summary: FileText,
   action_items: ListChecks,
   bookmark_suggestions: Bookmark,
@@ -93,6 +96,7 @@ export function TaskRoutingPanel({ view }: { view: LlmConfigView }) {
   return (
     <div className="space-y-4">
       <ResponseLanguageCard view={view} />
+      <QuestionDetectionCard view={view} />
       <div className={CARD}>
         <h3 className={SECTION_TITLE}>{t("routing.title")}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{t("routing.hint")}</p>
@@ -233,6 +237,7 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
             )}
           </div>
           {known && <p className="mt-0.5 text-meta text-muted-foreground">{t(`tasks.${known}.hint`)}</p>}
+          {key === "question_detect" && <p className="mt-0.5 text-meta text-muted-foreground">{t("questionDetection.httpOnly")}</p>}
           {def?.highFrequency && <p className="mt-0.5 text-meta text-warning/90">{t("routing.fastModelHint")}</p>}
           {def?.translationOnly && <p className="mt-0.5 text-meta text-muted-foreground/80">{t("routing.translationOnly")}</p>}
           {key === "claude_fallback" && !own && (
@@ -257,10 +262,10 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
             {isDefault ? (
               !ownConnection && <option value="">{t("routing.connection.choose")}</option>
             ) : (
-              <option value="">{t("routing.connection.follow", { task: taskLabel(row.parent) })}</option>
+              <option value="">{key === "question_detect" ? t("questionDetection.routeDisabled") : t("routing.connection.follow", { task: taskLabel(row.parent) })}</option>
             )}
             {view.connections.map((connection) => (
-              <option key={connection.id} value={connection.id} disabled={!connection.enabled && connection.id !== ownConnection?.id}>
+              <option key={connection.id} value={connection.id} disabled={(key === "question_detect" && connection.kind === "claude_cli") || (!connection.enabled && connection.id !== ownConnection?.id)}>
                 {connection.name || t("connections.untitled")}
                 {!connection.enabled ? t("routing.connection.disabledSuffix") : ""}
               </option>
@@ -327,6 +332,7 @@ function describeEffective(
   if (effective.error) {
     switch (error) {
       case "not_configured":
+        if (key === "question_detect") return { text: t(effective.kind === "claude_cli" ? "questionDetection.httpOnly" : "questionDetection.routeFallback"), warn: true };
         return { text: key === "default" ? t("routing.effective.noDefault") : t("routing.effective.notConfigured"), warn: true };
       case "connection_missing":
         return { text: t("routing.effective.connectionMissing"), warn: true };
