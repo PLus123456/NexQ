@@ -1,6 +1,8 @@
 // First-run / quick setup for speech recognition (STT package): an engine and
 // a language for You and for Them, the configuration those engines need
 // (Soniox key, Remote Whisper server, local model download) and a test.
+// Soniox: a pasted key is saved for the region that accepts it; the test
+// tries a key of a region the Soniox settings may use.
 //
 // Status (QuickSetupProps): "ok" once a test passed for both parties, "error"
 // when the last test failed for one, "incomplete" otherwise (also as soon as
@@ -10,9 +12,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle, Loader2, Sparkles, Wifi, XCircle } from "lucide-react";
 import { useT } from "../../i18n";
-import { hasApiKey, listAudioDevices, listLocalSTTEngines } from "../../lib/ipc";
+import { listAudioDevices, listLocalSTTEngines } from "../../lib/ipc";
 import { currentPlatform } from "../../lib/platform";
-import { probeOpenAICompatStt, probeSoniox } from "../../lib/stt/ipc";
+import { probeOpenAICompatStt } from "../../lib/stt/ipc";
+import { hasSttKeySlot } from "../../lib/stt/keys";
 import {
   isExclusiveProvider,
   sttKeySlot,
@@ -31,6 +34,7 @@ import { OpenAICompatSttSettings } from "./OpenAICompatSttSettings";
 import { PartyLanguageField } from "./PartyLanguageField";
 import { ProbeResultView, probeMessage, probeUsable, type ProbeEngine } from "./ProbeResult";
 import { SonioxSettings } from "./SonioxSettings";
+import { probeUsableSonioxKey } from "./sonioxRegions";
 import {
   PARTIES,
   defaultMeetingAudioConfig,
@@ -95,7 +99,7 @@ export function SttQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
   const signature = JSON.stringify([
     PARTIES.map((p) => [config[p].stt_provider, config[p].is_input_device]),
     [openaiCompat.base_url, openaiCompat.url_override, openaiCompat.model],
-    [soniox.region, soniox.rest_url, soniox.model],
+    [soniox.region, soniox.region_mode, soniox.regions, soniox.rest_url, soniox.ws_url, soniox.model],
     keyRevision,
   ]);
   // A model downloaded or deleted since the test makes it stale; the list loading late doesn't.
@@ -181,16 +185,18 @@ export function SttQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
     if (!state.meetingAudioConfig) updateConfig(cfg);
     setTesting(true);
 
-    const probes = new Map<ProbeEngine, Promise<{ result: SttProbeResult | null; error: string | null }>>();
+    // Soniox: a key of a region the settings may use; `noKey` when none has one.
+    type ProbeOutcome = { result: SttProbeResult | null; error: string | null; noKey?: boolean };
+    const probes = new Map<ProbeEngine, Promise<ProbeOutcome>>();
     const probeOnce = (engine: ProbeEngine) => {
       let pending = probes.get(engine);
       if (!pending) {
-        const run = engine === "soniox"
-          ? probeSoniox(state.sonioxConfig)
+        const run: Promise<SttProbeResult | null> = engine === "soniox"
+          ? probeUsableSonioxKey(state.sonioxConfig)
           : probeOpenAICompatStt(state.openaiCompatSttConfig);
         pending = run.then(
-          (result) => ({ result, error: null }),
-          (err) => ({ result: null, error: String(err) }),
+          (result): ProbeOutcome => (result ? { result, error: null } : { result: null, error: null, noKey: true }),
+          (err): ProbeOutcome => ({ result: null, error: String(err) }),
         );
         probes.set(engine, pending);
       }
@@ -217,7 +223,8 @@ export function SttQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
           return fail(t("stt:probe.codes.no_base_url"));
         }
         const outcome = await probeOnce(engine);
-        const probe = { engine, ...outcome };
+        if (outcome.noKey) return fail(t("stt:quickSetup.checks.sonioxNoKey"));
+        const probe = { engine, result: outcome.result, error: outcome.error };
         if (!outcome.result) {
           return { status: "error", message: t("common:errors.testFailed", { detail: outcome.error ?? "" }), probe };
         }
@@ -244,7 +251,7 @@ export function SttQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
       if (meta.requiresApiKey) {
         let saved = false;
         try {
-          saved = await hasApiKey(sttKeySlot(meta));
+          saved = await hasSttKeySlot(sttKeySlot(meta));
         } catch {
           saved = false;
         }

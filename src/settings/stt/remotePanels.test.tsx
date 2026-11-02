@@ -1,8 +1,18 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as IPC from "../../lib/ipc";
-import type { SttProbeResult } from "../../lib/stt/types";
+import type {
+  SonioxAddKeyResult,
+  SonioxConfig,
+  SonioxKeyStatus,
+  SonioxLatency,
+  SonioxRegion,
+  SttProbeResult,
+} from "../../lib/stt/types";
+
+// The keychain as the Soniox commands see it: per-region slots and the old `soniox` slot.
+const keychain = vi.hoisted(() => ({ regions: {} as Partial<Record<string, boolean>>, legacy: false }));
 
 const ipc = vi.hoisted(() => ({
   hasApiKey: vi.fn(async (_slot: string): Promise<boolean> => false),
@@ -13,6 +23,15 @@ const ipc = vi.hoisted(() => ({
     throw new Error("not stubbed");
   }),
   probeOpenAICompatStt: vi.fn(async (_config: unknown): Promise<SttProbeResult> => {
+    throw new Error("not stubbed");
+  }),
+  sonioxKeyStatus: vi.fn(async (_config: SonioxConfig): Promise<SonioxKeyStatus> => {
+    throw new Error("not stubbed");
+  }),
+  sonioxAddKey: vi.fn(async (_key: string, _region?: SonioxRegion): Promise<SonioxAddKeyResult> => {
+    throw new Error("not stubbed");
+  }),
+  sonioxMeasureLatency: vi.fn(async (_force?: boolean): Promise<SonioxLatency> => {
     throw new Error("not stubbed");
   }),
 }));
@@ -32,21 +51,63 @@ vi.mock("../../lib/ipc", async (importOriginal) => ({
 vi.mock("../../lib/stt/ipc", () => ({
   probeSoniox: ipc.probeSoniox,
   probeOpenAICompatStt: ipc.probeOpenAICompatStt,
+  sonioxKeyStatus: ipc.sonioxKeyStatus,
+  sonioxAddKey: ipc.sonioxAddKey,
+  sonioxMeasureLatency: ipc.sonioxMeasureLatency,
   updateOpenAICompatSttConfig: async () => {},
   updateSonioxConfig: async () => {},
 }));
 
 import { OpenAICompatSttSettings } from "./OpenAICompatSttSettings";
 import { SonioxSettings, checkExtraStartParams, roundSensitivity } from "./SonioxSettings";
+import { regionModeChosen } from "./sonioxRegions";
 import { useConfigStore } from "../../stores/configStore";
-import { DEFAULT_OPENAI_COMPAT_STT_CONFIG, DEFAULT_SONIOX_CONFIG } from "../../lib/stt/types";
+import { memoryStorage } from "../../test/memoryStorage";
+import {
+  DEFAULT_OPENAI_COMPAT_STT_CONFIG,
+  DEFAULT_SONIOX_CONFIG,
+  SONIOX_REGION_IDS,
+  normalizeSonioxConfig,
+  sonioxRegionList,
+} from "../../lib/stt/types";
 
 function probe(result: Partial<SttProbeResult>): SttProbeResult {
   return { ok: false, code: "network", url: null, status: null, latency_ms: 30, detail: "", models: [], ...result };
 }
 
+/** `soniox_key_status` for `config` (mirrors Rust `key_status`): the old key counts as `region`'s. */
+function keyStatusFor(config: SonioxConfig): SonioxKeyStatus {
+  const regions = Object.fromEntries(SONIOX_REGION_IDS.map((id) => [id, !!keychain.regions[id]])) as Record<
+    SonioxRegion,
+    boolean
+  >;
+  const has = (id: SonioxRegion) => regions[id] || (keychain.legacy && id === config.region);
+  const usable =
+    config.region_mode === "fixed" ? [config.region] : sonioxRegionList(config).filter((e) => e.enabled).map((e) => e.id);
+  return { regions, legacy: keychain.legacy, legacy_region: config.region, any_enabled: usable.some(has) };
+}
+
+/** Auto with these regions turned on (in the default order). */
+function autoWith(...enabled: SonioxRegion[]): SonioxConfig {
+  return {
+    ...DEFAULT_SONIOX_CONFIG,
+    regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: enabled.includes(id) })),
+  };
+}
+
+const soniox = () => useConfigStore.getState().sonioxConfig;
+const order = () => soniox().regions.map((r) => `${r.id}${r.enabled ? "+" : "-"}`).join(" ");
+
 beforeEach(() => {
+  keychain.regions = {};
+  keychain.legacy = false;
+  vi.stubGlobal("localStorage", memoryStorage());
   ipc.hasApiKey.mockImplementation(async () => false);
+  ipc.sonioxKeyStatus.mockImplementation(async (config) => keyStatusFor(config));
+  ipc.deleteApiKey.mockImplementation(async (slot) => {
+    if (slot === "soniox") keychain.legacy = false;
+    else keychain.regions[slot.replace("soniox_", "")] = false;
+  });
   useConfigStore.setState({
     openaiCompatSttConfig: { ...DEFAULT_OPENAI_COMPAT_STT_CONFIG },
     sonioxConfig: { ...DEFAULT_SONIOX_CONFIG },
@@ -57,6 +118,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("checkExtraStartParams", () => {
@@ -86,33 +148,233 @@ describe("roundSensitivity", () => {
   });
 });
 
+/** The region row whose name is `name` (Auto / Ordered). */
+function regionRow(name: string): HTMLElement {
+  const row = screen.getAllByRole("listitem").find((li) => li.querySelector("p")?.textContent === name);
+  if (!row) throw new Error(`No region row "${name}"`);
+  return row;
+}
+
 describe("SonioxSettings", () => {
-  it("saves the key without ever reading it back, and keeps it when a test fails", async () => {
-    ipc.probeSoniox.mockImplementation(async () => probe({ code: "unauthorized", status: 401 }));
+  it("saves a pasted key for the region that accepts it and turns that region on, never reading a key back", async () => {
+    ipc.sonioxAddKey.mockImplementation(async () => {
+      keychain.regions.jp = true;
+      return {
+        region: "jp",
+        stored: true,
+        statuses: { us: { status: 401, error: null, matches: false }, jp: { status: 200, error: null, matches: true } },
+      };
+    });
     const user = userEvent.setup();
     render(<SonioxSettings />);
-    expect(await screen.findByText("No key saved yet.")).toBeInTheDocument();
+    expect(await within(regionRow("Japan")).findByText("Key: None")).toBeInTheDocument();
+    expect(screen.getByText(/Security & compliance → Request access/)).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("API Key"), "sx-secret");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(ipc.storeApiKey).toHaveBeenCalledWith("soniox", "sx-secret");
-    expect(await screen.findByText("Saved securely on this computer. It's never shown again.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add key" }));
+    expect(ipc.sonioxAddKey).toHaveBeenCalledWith("sx-secret", undefined);
+    expect(await screen.findByText("Saved for the Japan region and turned it on.")).toBeInTheDocument();
+    expect(soniox().region_mode).toBe("auto");
+    expect(order()).toBe("us- eu- jp+ in-");
+    expect(await within(regionRow("Japan")).findByText("Key: Saved")).toBeInTheDocument();
     expect(screen.getByLabelText("API Key")).toHaveValue("");
-
-    await user.click(screen.getByRole("button", { name: "Test key" }));
-    expect(await screen.findByText("Invalid API key (401). Check the key and its region.")).toBeInTheDocument();
-    expect(ipc.deleteApiKey).not.toHaveBeenCalled();
+    // Its region listed the models with it (200): the key works.
+    expect(useConfigStore.getState().verifiedCloudProviders).toContain("soniox");
+    expect(ipc.storeApiKey).not.toHaveBeenCalled();
     expect(ipc.getApiKey).not.toHaveBeenCalled();
+  });
+
+  it("uses the region a key was found for in Fixed mode", async () => {
+    // A config saved before the region settings: Fixed on its region.
+    useConfigStore.setState({ sonioxConfig: normalizeSonioxConfig({ region: "us" }) });
+    ipc.sonioxAddKey.mockImplementation(async () => {
+      keychain.regions.eu = true;
+      return { region: "eu", stored: true, statuses: { eu: { status: 403, error: null, matches: true } } };
+    });
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    expect(screen.getByLabelText("Region selection")).toHaveValue("fixed");
+    expect(await screen.findByText("Key: None")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("API Key"), "sx-eu{Enter}");
+    expect(await screen.findByText("Saved for the EU region, now the region in use.")).toBeInTheDocument();
+    expect(soniox()).toMatchObject({ region_mode: "fixed", region: "eu" });
+    expect(screen.getByLabelText("Region")).toHaveValue("eu");
+    expect(await screen.findByText("Key: Saved")).toBeInTheDocument();
+    // 403 (valid, can't list models) doesn't verify it by itself.
     expect(useConfigStore.getState().verifiedCloudProviders).not.toContain("soniox");
   });
 
-  it("marks Soniox verified after a successful test", async () => {
-    ipc.hasApiKey.mockImplementation(async (slot) => slot === "soniox");
+  it("asks for the key's region when no single region accepted it, then saves it there", async () => {
+    ipc.sonioxAddKey.mockImplementation(async (_key, region) => {
+      if (!region) {
+        return {
+          region: null,
+          stored: false,
+          statuses: {
+            us: { status: 401, error: null, matches: false },
+            eu: { status: null, error: "timeout", matches: false },
+            jp: { status: 401, error: null, matches: false },
+            in: { status: null, error: "unreachable", matches: false },
+          },
+        };
+      }
+      keychain.regions[region] = true;
+      return { region, stored: true, statuses: {} };
+    });
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    await user.type(screen.getByLabelText("API Key"), "sx-new");
+    await user.click(screen.getByRole("button", { name: "Add key" }));
+    expect(await screen.findByText(/Couldn't tell which region this key belongs to/)).toBeInTheDocument();
+    expect(screen.getByText("US: 401, not this region")).toBeInTheDocument();
+    expect(screen.getByText("EU: timed out")).toBeInTheDocument();
+    expect(screen.getByText("India: unreachable")).toBeInTheDocument();
+    // Nothing saved or turned on yet.
+    expect(order()).toBe("us- eu- jp- in-");
+
+    await user.click(screen.getByRole("button", { name: "India" }));
+    expect(ipc.sonioxAddKey).toHaveBeenLastCalledWith("sx-new", "in");
+    expect(await screen.findByText("Saved for the India region and turned it on.")).toBeInTheDocument();
+    expect(order()).toBe("us- eu- jp- in+");
+    expect(screen.queryByText(/Couldn't tell/)).toBeNull();
+    // A picked region isn't tested yet.
+    expect(useConfigStore.getState().verifiedCloudProviders).not.toContain("soniox");
+  });
+
+  it("writes the region mode, explains it and remembers that it was picked", async () => {
+    keychain.regions.jp = true;
+    useConfigStore.setState({ sonioxConfig: autoWith("jp") });
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    const select = screen.getByLabelText("Region selection");
+    expect(select).toHaveValue("auto");
+    expect(screen.getByText(/The fastest of the enabled regions that have a key/)).toBeInTheDocument();
+    expect(await within(regionRow("Japan")).findByText("Key: Saved")).toBeInTheDocument();
+    expect(regionModeChosen()).toBe(false);
+
+    await user.selectOptions(select, "Ordered");
+    expect(soniox().region_mode).toBe("ordered");
+    expect(screen.getByText(/in your order below/)).toBeInTheDocument();
+    expect(regionModeChosen()).toBe(true);
+
+    // Fixed on a region without a key takes the one that has a key.
+    await user.selectOptions(select, "Fixed");
+    expect(soniox()).toMatchObject({ region_mode: "fixed", region: "jp" });
+    expect(screen.getByLabelText("Region")).toHaveValue("jp");
+    expect(screen.queryByRole("button", { name: "Test latency" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Test key" })).toBeInTheDocument();
+  });
+
+  it("turns regions on and off and reorders them", async () => {
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    expect(order()).toBe("us- eu- jp- in-");
+    await user.click(screen.getByRole("switch", { name: "Use Japan" }));
+    expect(order()).toBe("us- eu- jp+ in-");
+    await user.click(screen.getByRole("button", { name: "Move Japan up" }));
+    await user.click(screen.getByRole("button", { name: "Move Japan up" }));
+    expect(order()).toBe("jp+ us- eu- in-");
+    expect(screen.getByRole("button", { name: "Move Japan up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move India down" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Move US down" }));
+    expect(order()).toBe("jp+ eu- us- in-");
+    expect(screen.getAllByRole("listitem").map((li) => li.querySelector("p")?.textContent)).toEqual([
+      "Japan",
+      "EU",
+      "US",
+      "India",
+    ]);
+    await user.click(screen.getByRole("switch", { name: "Use Japan" }));
+    expect(order()).toBe("jp- eu- us- in-");
+  });
+
+  it("measures the latency of every region on demand", async () => {
+    ipc.sonioxMeasureLatency.mockImplementation(async () => ({
+      regions: {
+        us: { ms: 180, error: null },
+        eu: { ms: null, error: "timeout" },
+        jp: { ms: 42, error: null },
+        in: { ms: null, error: "unreachable" },
+      },
+      measured_at_ms: 1,
+      cached: false,
+    }));
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    expect(within(regionRow("Japan")).getByText("Latency: —")).toBeInTheDocument();
+    expect(ipc.sonioxMeasureLatency).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Test latency" }));
+    expect(ipc.sonioxMeasureLatency).toHaveBeenCalledWith(true);
+    expect(await within(regionRow("Japan")).findByText("Latency: 42 ms")).toBeInTheDocument();
+    expect(within(regionRow("US")).getByText("Latency: 180 ms")).toBeInTheDocument();
+    expect(within(regionRow("EU")).getByText("Latency: timed out")).toBeInTheDocument();
+    expect(within(regionRow("India")).getByText("Latency: unreachable")).toBeInTheDocument();
+  });
+
+  it("turns switching region on failure off and on", async () => {
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    const failover = screen.getByRole("switch", { name: "Switch region on failure" });
+    expect(failover).toHaveAttribute("aria-checked", "true");
+    await user.click(failover);
+    expect(soniox().failover).toBe(false);
+    expect(failover).toHaveAttribute("aria-checked", "false");
+    await user.click(failover);
+    expect(soniox().failover).toBe(true);
+  });
+
+  it("marks a refused key invalid, keeps it, and deletes it only when asked", async () => {
+    keychain.regions.jp = true;
+    useConfigStore.setState({ sonioxConfig: autoWith("jp"), verifiedCloudProviders: ["soniox"] });
+    ipc.probeSoniox.mockImplementation(async () =>
+      probe({ code: "unauthorized", status: 401, url: "https://api.jp.soniox.com/v1/models" }),
+    );
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    const japan = () => within(regionRow("Japan"));
+    expect(await japan().findByText("Key: Saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test the US key" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Test the Japan key" }));
+    // The region itself, with its own key.
+    expect(ipc.probeSoniox).toHaveBeenCalledWith(expect.objectContaining({ region: "jp", ws_url: "", rest_url: "" }));
+    expect(await screen.findByText("Invalid API key (401). Check the key and its region.")).toBeInTheDocument();
+    expect(japan().getByText("Key: Invalid")).toBeInTheDocument();
+    expect(ipc.deleteApiKey).not.toHaveBeenCalled();
+    expect(useConfigStore.getState().verifiedCloudProviders).not.toContain("soniox");
+
+    await user.click(screen.getByRole("button", { name: "Delete the Japan key" }));
+    expect(ipc.deleteApiKey).toHaveBeenCalledWith("soniox_jp");
+    expect(await japan().findByText("Key: None")).toBeInTheDocument();
+    expect(screen.getByText(/No enabled region has a key yet/)).toBeInTheDocument();
+    expect(ipc.getApiKey).not.toHaveBeenCalled();
+  });
+
+  it("shows the older key on the settings' region and deletes it from the old slot", async () => {
+    keychain.legacy = true;
+    useConfigStore.setState({ sonioxConfig: { ...autoWith("eu"), region: "eu" } });
+    const user = userEvent.setup();
+    render(<SonioxSettings />);
+    expect(await within(regionRow("EU")).findByText("Key: Saved (older key)")).toBeInTheDocument();
+    expect(within(regionRow("US")).getByText("Key: None")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete the EU key" }));
+    expect(ipc.deleteApiKey).toHaveBeenCalledWith("soniox");
+    expect(await within(regionRow("EU")).findByText("Key: None")).toBeInTheDocument();
+  });
+
+  it("tests the fixed region's key and marks Soniox verified", async () => {
+    keychain.legacy = true;
+    useConfigStore.setState({ sonioxConfig: normalizeSonioxConfig({ region: "us" }) });
     ipc.probeSoniox.mockImplementation(async () => probe({ ok: true, code: "ok", status: 200, models: ["stt-rt-v5"] }));
     const user = userEvent.setup();
     render(<SonioxSettings />);
+    expect(await screen.findByText("Key: Saved (older key)")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Test key" }));
     expect(await screen.findByText("The key works — 1 real-time model available.")).toBeInTheDocument();
+    expect(ipc.probeSoniox).toHaveBeenCalledWith(expect.objectContaining({ region: "us", region_mode: "fixed" }));
     expect(useConfigStore.getState().verifiedCloudProviders).toContain("soniox");
   });
 

@@ -549,21 +549,94 @@
     "description": "Real-time recognition with live translation in the same stream. Each side gets its own session.",
     "key": {
       "label": "API Key",
-      "placeholder": "Enter your Soniox API key",
-      "savedPlaceholder": "Saved — type a new key to replace it",
-      "saved": "Saved securely on this computer. It's never shown again.",
-      "notSaved": "No key saved yet."
+      "placeholder": "Paste a Soniox API key",
+      "add": "Add key",
+      "adding": "Finding its region…",
+      "hint": "Each region is asked whether it accepts the key; it's saved for the one that does and never shown again.",
+      "notSaved": "No key saved yet.",
+      "savedFor": "Keys saved for: {{regions}}",
+      "legacyName": "{{region}} (older key)",
+      "added": {
+        "enabled": "Saved for {{region}} and turned it on.",
+        "fixed": "Saved for {{region}}, now the region in use.",
+        "saved": "Saved for {{region}}."
+      },
+      "unclear": {
+        "title": "Couldn't tell which region this key belongs to. What each region answered:",
+        "answer": "{{region}}: {{answer}}",
+        "pick": "Pick the key's region to save it:"
+      },
+      "answers": {
+        "accepted": "{{status}}, accepts the key",
+        "forbidden": "403, accepts the key (can't list models)",
+        "rejected": "401, not this region",
+        "status": "HTTP {{status}}",
+        "none": "no answer"
+      }
     },
     "region": {
       "label": "Region",
-      "hint": "Choose the region of the Soniox project your key belongs to: a key only works in its own region.",
+      "hint": "Choose the region of the Soniox project your key belongs to: a key only works in its own region."
+    },
+    "regionNames": {
+      "us": "US",
+      "eu": "EU",
+      "jp": "Japan",
+      "in": "India",
+      "custom": "Custom URL"
+    },
+    "regionInText": {
+      "us": "the US region",
+      "eu": "the EU region",
+      "jp": "the Japan region",
+      "in": "the India region",
+      "custom": "the custom URL"
+    },
+    "mode": {
+      "label": "Region selection",
       "options": {
-        "us": "United States",
-        "eu": "European Union",
-        "jp": "Japan",
-        "in": "India"
+        "fixed": "Fixed",
+        "auto": "Auto",
+        "ordered": "Ordered"
+      },
+      "hints": {
+        "fixed": "One region: always the one chosen below.",
+        "auto": "The fastest of the enabled regions that have a key (measured when a meeting starts).",
+        "ordered": "The enabled regions that have a key, in your order below: the first one, the next when it fails."
       }
     },
+    "regions": {
+      "label": "Regions",
+      "testLatency": "Test latency",
+      "enable": "Use {{region}}",
+      "keyStatus": "Key: {{status}}",
+      "keyStates": {
+        "saved": "Saved",
+        "legacy": "Saved (older key)",
+        "none": "None",
+        "invalid": "Invalid"
+      },
+      "latency": "Latency: {{value}}",
+      "latencyMs": "{{ms}} ms",
+      "test": "Test",
+      "testAria": "Test the {{region}} key",
+      "deleteKey": "Delete key",
+      "deleteAria": "Delete the {{region}} key",
+      "moveUp": "Move {{region}} up",
+      "moveDown": "Move {{region}} down",
+      "noneUsable": "No enabled region has a key yet: add a key, or turn on a region that has one."
+    },
+    "failover": {
+      "label": "Switch region on failure",
+      "hint": "When a region is full, down or refuses the key, connect to the next enabled region that has a key."
+    },
+    "customEndpoint": "A custom URL is set (Advanced): sessions connect there with the key of {{region}}, without regions.",
+    "access": "A Soniox key belongs to a project, and a project to one region, so each region needs its own key. Regions other than the US must be requested in the Soniox console (Security & compliance → Request access); India opened on 2026-08-31, also on request. Concurrency limits apply per organization and per project: another region's project only helps with the project limit.",
+    "errors": {
+      "timeout": "timed out",
+      "unreachable": "unreachable"
+    },
+    "listSeparator": ", ",
     "model": {
       "label": "Model",
       "hint": "Real-time model. Refresh lists the models your key can use."
@@ -619,7 +692,17 @@
       }
     },
     "testKey": "Test key",
-    "cost": "Costs about $0.12 per hour for each side Soniox transcribes; translation adds output tokens."
+    "cost": "Costs about $0.12 per hour for each side Soniox transcribes; translation adds output tokens.",
+    "switch": {
+      "concurrency": "{{party}}: {{from}} is at its concurrency limit, switching to {{to}}",
+      "unavailable": "{{party}}: {{from}} is unavailable, switching to {{to}}",
+      "model_not_available": "{{party}}: the model isn't available in {{from}}, switching to {{to}}",
+      "budget": "{{party}}: {{from}} has used up its monthly budget, switching to {{to}}",
+      "network": "{{party}}: can't reach {{from}}, switching to {{to}}",
+      "key_rejected": "{{party}}: {{from}} refused the key, switching to {{to}}",
+      "internal_error": "{{party}}: {{from}} had a server error, switching to {{to}}",
+      "other": "{{party}}: switching from {{from}} to {{to}}"
+    }
   },
   "quickSetup": {
     "intro": "Choose how {{appName}} recognizes you and the other side, and in which language. You can change this any time in Settings.",
@@ -656,7 +739,8 @@
       "modelReady": "{{engine}} model downloaded.",
       "builtIn": "{{engine}} is built in.",
       "keySaved": "{{engine}} API key saved.",
-      "needsKey": "No API key saved for {{engine}}: add it in Settings → {{tab}}."
+      "needsKey": "No API key saved for {{engine}}: add it in Settings → {{tab}}.",
+      "sonioxNoKey": "No Soniox key for the regions in use: add one above."
     },
     "summary": {
       "each": "{{them}} for Them, {{you}} for You",
