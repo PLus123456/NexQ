@@ -179,6 +179,12 @@ pub fn resolve_task(cfg: &LlmConfigFile, key: &str, claude: &ClaudeContext) -> R
         via_fallback: false,
         no_fallback: false,
     };
+    // Frequent, deadline-bound detection needs cancellation-safe HTTP requests.
+    // Claude Utility sessions initialize outside cancellation and may outlive a
+    // 2.5-second detector deadline. Use local rules instead of a CLI/fallback.
+    if key == "question_detect" && primary.connection.kind == LlmKind::ClaudeCli {
+        return Err((RouteError::NotConfigured, Some(primary.connection)));
+    }
     if primary.connection.kind != LlmKind::ClaudeCli || claude.available {
         return Ok(primary);
     }
@@ -241,6 +247,8 @@ fn fallback(cfg: &LlmConfigFile, claude: &ClaudeContext) -> Option<Resolved> {
 pub fn route_error_message(key: &str, error: RouteError, conn: Option<&LlmConnection>) -> String {
     let name = conn.map(|c| c.display_name()).unwrap_or_default();
     match error {
+        RouteError::NotConfigured if key == "question_detect" =>
+            "Question detection needs its own available connection and model in Settings → AI Models → Task routing".to_string(),
         RouteError::NotConfigured => format!(
             "No AI model is set up for \"{key}\": pick a default connection and model in Settings → AI Models"
         ),
@@ -1368,6 +1376,18 @@ mod tests {
         cfg.connections = conns;
         cfg.routing.default.target = Some(RouteTarget { connection_id: default.into(), model: None });
         cfg
+    }
+
+    #[test]
+    fn question_detection_rejects_claude_cli_and_never_switches_to_fallback() {
+        let claude = legacy_connection(&ProviderType::ClaudeCli, None, None, None);
+        let mut cfg = with_default(vec![claude.clone(), compat("paid", "https://paid/v1")], "paid");
+        cfg.routing.tasks.insert("question_detect".into(), TaskRoute {
+            target: Some(RouteTarget { connection_id: claude.id.clone(), model: None }),
+            ..Default::default()
+        });
+        assert_eq!(resolve_task(&cfg, "question_detect", &ClaudeContext::default()).unwrap_err().0, RouteError::NotConfigured);
+        assert_eq!(resolve_task(&cfg, "question_detect", &claude_down(Some(("groq", None)))).unwrap_err().0, RouteError::NotConfigured);
     }
 
     #[test]

@@ -373,6 +373,7 @@ fn partial_suffix_len(text: &str, tag: &str) -> usize {
 /// and route overrides.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EffectiveParams {
+    pub json_mode: bool,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
     pub extra_body: Option<Value>,
@@ -452,6 +453,9 @@ pub fn openai_chat_body(model: &str, messages: &[LLMMessage], params: &Effective
             MaxTokensField::Omit => {}
         }
     }
+    if params.json_mode && compat.supports_json_mode {
+        body["response_format"] = json!({"type": "json_object"});
+    }
     if compat.stream_usage {
         body["stream_options"] = json!({"include_usage": true});
     }
@@ -472,6 +476,9 @@ pub fn ollama_chat_body(model: &str, messages: &[LLMMessage], params: &Effective
     // are often further apart, and reloading from disk on CPU-only machines
     // adds many seconds before the first token.
     let mut body = json!({"model": model, "messages": msgs, "stream": true, "keep_alive": keep_alive});
+    if params.json_mode && compat.supports_json_mode {
+        body["format"] = json!("json");
+    }
     let mut options = Map::new();
     if let Some(t) = temperature_to_send(compat, params.temperature) {
         options.insert("temperature".to_string(), json!(t));
@@ -676,6 +683,7 @@ mod tests {
             temperature: Some(0.2),
             max_tokens: Some(64),
             extra_body: Some(json!({"model": "evil", "stream": false, "thinking": {"type": "disabled"}})),
+            ..Default::default()
         };
         let body = openai_chat_body("m", &messages, &params, &CompatFlags::default());
         assert_eq!(body["model"], "m");
@@ -706,7 +714,7 @@ mod tests {
     #[test]
     fn ollama_body_uses_options_and_keep_alive() {
         let messages = vec![LLMMessage { role: "user".into(), content: "hi".into() }];
-        let params = EffectiveParams { temperature: Some(0.5), max_tokens: Some(10), extra_body: Some(json!({"options": {"num_ctx": 8192}, "think": false})) };
+        let params = EffectiveParams { temperature: Some(0.5), max_tokens: Some(10), extra_body: Some(json!({"options": {"num_ctx": 8192}, "think": false})), ..Default::default() };
         let body = ollama_chat_body("llama3", &messages, &params, &CompatFlags::default());
         assert_eq!(body["keep_alive"], "30m");
         assert_eq!(body["options"], json!({"temperature": 0.5, "num_predict": 10, "num_ctx": 8192}));

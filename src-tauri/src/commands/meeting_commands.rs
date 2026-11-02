@@ -347,6 +347,7 @@ pub async fn start_meeting(
     // meetings otherwise, leaking the previous meeting's transcript into
     // the first AI call of the new meeting.
     drop(db); // release DB lock before acquiring other locks
+    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session();
     if let Some(intel_arc) = state.intelligence.as_ref() {
         if let Ok(mut engine) = intel_arc.lock() {
             engine.clear_session();
@@ -391,6 +392,7 @@ pub async fn end_meeting(
     app: AppHandle,
 ) -> Result<(), String> {
     state.meeting_active.store(false, Ordering::SeqCst);
+    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session();
     if let Ok(mut live) = state.live_meeting.lock() {
         if live.as_ref().map(|m| m.id == meeting_id).unwrap_or(true) {
             *live = None;

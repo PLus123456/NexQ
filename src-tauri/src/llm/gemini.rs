@@ -68,6 +68,10 @@ pub fn chat_body(
         gen_config["temperature"] = json!(temp);
     }
 
+    if params.json_mode && compat.supports_json_mode {
+        gen_config["responseMimeType"] = json!("application/json");
+    }
+
     let mut body = if let Some(cache_name) = cache_name {
         // Cache active: reference cached content, skip systemInstruction (it's in the cache).
         // Only dynamic contents (transcript + question) are sent fresh.

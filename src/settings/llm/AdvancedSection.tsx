@@ -154,7 +154,7 @@ function CompatFields({
         ? ["auto", "none", "openrouter_online"]
         : null;
 
-  const row = (labelKey: "reasoning" | "stripThink" | "streamUsage" | "ollamaFallback", checked: boolean, onToggle: (v: boolean) => void) => (
+  const row = (labelKey: "reasoning" | "stripThink" | "streamUsage" | "ollamaFallback" | "supportsJsonMode", checked: boolean, onToggle: (v: boolean) => void) => (
     <div className="flex items-start gap-2.5">
       <Toggle
         checked={checked}
@@ -235,6 +235,7 @@ function CompatFields({
       )}
 
       {row("reasoning", compat.reasoning !== "off", (on) => setCompat({ reasoning: on ? "auto" : "off" }))}
+      {(openAiLike || c.kind === "ollama" || c.kind === "gemini") && row("supportsJsonMode", compat.supports_json_mode === true, (on) => setCompat({ supports_json_mode: on }))}
       {row("stripThink", compat.strip_think_tags, (on) => setCompat({ strip_think_tags: on }))}
       {openAiLike && row("streamUsage", compat.stream_usage, (on) => setCompat({ stream_usage: on }))}
       {openAiLike &&

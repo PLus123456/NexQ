@@ -153,6 +153,8 @@ impl fmt::Debug for ResolvedLlm {
 pub struct CompleteOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+    /// Request native JSON output when the connection declares support.
+    pub json_mode: bool,
     /// Whole-call limit; `None` = no limit.
     pub timeout: Option<Duration>,
     pub cancel: Option<Arc<CancelToken>>,
@@ -481,6 +483,7 @@ where
     let params = GenerationParams {
         temperature: opts.temperature,
         max_tokens: opts.max_tokens,
+        json_mode: opts.json_mode,
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         silent: true,
         cancel: Some(cancel.clone()),
@@ -580,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn complete_text_collects_a_silent_stream_from_a_fake_provider() {
         let fake = FakeProvider::answering(&["你好", "，", "world"]);
-        let opts = CompleteOptions { temperature: Some(0.2), max_tokens: Some(64), ..Default::default() };
+        let opts = CompleteOptions { temperature: Some(0.2), max_tokens: Some(64), json_mode: true, ..Default::default() };
 
         let (result, params) = complete_with(&fake, opts).await;
 
@@ -590,6 +593,7 @@ mod tests {
         assert!(params.request_id.is_some());
         assert_eq!(params.temperature, Some(0.2));
         assert_eq!(params.max_tokens, Some(64));
+        assert!(params.json_mode);
         assert!(params.cancel.is_some());
     }
 

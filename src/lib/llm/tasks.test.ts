@@ -19,6 +19,14 @@ describe("resolveRoute", () => {
     expect(resolveRoute(view(null), "assist").error).toBe("not_configured");
   });
 
+  it("requires a dedicated question detector route and never inherits the default", () => {
+    const defaultTarget = { connection_id: "c_ds", model: "deepseek-chat" };
+    expect(resolveRoute(view(defaultTarget), "question_detect")).toMatchObject({ error: "not_configured", connection_id: null });
+    expect(resolveRoute(view(defaultTarget, { question_detect: route({ connection_id: "c_gone", model: "x" }) }), "question_detect").error).toBe("connection_missing");
+    expect(resolveRoute(view(defaultTarget, { question_detect: route({ connection_id: "c_ol", model: "qwen3:1.7b" }) }), "question_detect")).toMatchObject({ error: null, source: "question_detect", connection_id: "c_ol", model: "qwen3:1.7b" });
+    expect(resolveRoute(view(defaultTarget, { question_detect: route({ connection_id: "c_cl", model: null }) }), "question_detect")).toMatchObject({ error: "not_configured", kind: "claude_cli" });
+  });
+
   it("follows the parent chain up to default, model from the connection", () => {
     const r = resolveRoute(view({ connection_id: "c_ds", model: null }), "translation_batch");
     expect(r).toMatchObject({ source: "default", connection_id: "c_ds", connection_name: "DeepSeek", model: "deepseek-chat", error: null });

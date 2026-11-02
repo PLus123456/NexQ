@@ -14,6 +14,7 @@ import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useAudioConfigSync } from "../hooks/useAudioConfigSync";
 import { useStreamBuffer } from "../hooks/useStreamBuffer";
 import { useCallLogCapture } from "../hooks/useCallLogCapture";
+import { useQuestionDetectionLog } from "../hooks/useQuestionDetectionLog";
 import { useSTTStatus, useSonioxRegionSwitchToast } from "../hooks/useSTTStatus";
 import { useDevLog } from "../hooks/useDevLog";
 
@@ -48,6 +49,7 @@ function LauncherMeetingHooks() {
   useTranscriptPersistence(); // transcript store → SQLite DB
   useStreamBuffer();
   useCallLogCapture();
+  useQuestionDetectionLog();
   useSTTStatus();
   useDevLog();
   return null;

@@ -215,6 +215,21 @@ describe("LlmSettingsPage", () => {
     expect(screen.getByRole("button", { name: "Per AI action (1 set)" })).toBeInTheDocument();
   });
 
+  it("requires a dedicated HTTP connection for sentence-by-sentence question detection", async () => {
+    const subscription = mockConnection({ id: "claude-subscription", name: "Claude subscription", kind: "claude_cli" });
+    const { user } = setup({
+      connections: [deepseek, subscription],
+      routing: { default: { target: { connection_id: deepseek.id, model: null }, params: {} }, tasks: {} },
+    });
+    await user.click(await screen.findByRole("tab", { name: "Task routing" }));
+    const row = screen.getByText("Question detection").closest("div.rounded-lg") as HTMLElement;
+    expect(within(row).getByRole("option", { name: "Claude subscription" })).toBeDisabled();
+    expect(within(row).getByRole("option", { name: "Not configured — use rules" })).toBeInTheDocument();
+    expect(within(row).getByText("Rules only until a connection is chosen for this task.")).toBeInTheDocument();
+    const assist = screen.getByText("AI assist").closest("div.rounded-lg") as HTMLElement;
+    expect(within(assist).getByRole("option", { name: "Claude subscription" })).toBeEnabled();
+  });
+
   it("picks an OpenRouter model from its catalog", async () => {
     const openrouter = mockConnection({
       id: "c_0000a0a0",

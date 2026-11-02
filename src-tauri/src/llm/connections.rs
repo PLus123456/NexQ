@@ -104,6 +104,8 @@ pub struct CompatFlags {
     pub reasoning: ReasoningMode,
     pub strip_think_tags: bool,
     pub stream_usage: bool,
+    /// Allow callers to request the protocol's native JSON output mode.
+    pub supports_json_mode: bool,
     /// The chat address answers 404 / 405: try Ollama's `{base}/api/chat`
     /// (the old custom endpoint did this on every failure, hiding the error).
     pub ollama_fallback_on_404: bool,
@@ -120,6 +122,7 @@ impl Default for CompatFlags {
             reasoning: ReasoningMode::Auto,
             strip_think_tags: true,
             stream_usage: false,
+            supports_json_mode: false,
             ollama_fallback_on_404: false,
             keep_alive: None,
             web_search: WebSearch::Auto,
@@ -917,6 +920,8 @@ pub fn accept_input_aliases(input: &mut Value) {
 pub const KNOWN_TASKS: &[(&str, Option<&str>)] = &[
     ("default", None),
     ("assist", Some("default")),
+    // Frequent background detection is opt-in and never inherits a paid default.
+    ("question_detect", None),
     ("meeting_summary", Some("default")),
     ("action_items", Some("default")),
     ("bookmark_suggestions", Some("default")),
@@ -1328,6 +1333,23 @@ mod tests {
         cfg.connections[1].enabled = true;
         cfg.connections[1].default_model = None;
         assert_eq!(resolve_route(&cfg, "translation").unwrap_err().0, RouteError::NoModel);
+    }
+
+    #[test]
+    fn question_detection_requires_its_own_usable_route() {
+        let mut cfg = LlmConfigFile::default();
+        cfg.connections = vec![conn("paid", LlmKind::OpenAiCompat, "https://paid/v1"), conn("local", LlmKind::Ollama, "http://localhost:11434")];
+        cfg.routing.default.target = target("paid", Some("large-model"));
+        assert_eq!(task_parent("question_detect"), None);
+        assert_eq!(resolve_route(&cfg, "question_detect").unwrap_err().0, RouteError::NotConfigured);
+        cfg.routing.tasks.insert("question_detect".into(), TaskRoute { target: target("gone", None), ..Default::default() });
+        assert_eq!(resolve_route(&cfg, "question_detect").unwrap_err().0, RouteError::ConnectionMissing);
+        cfg.routing.tasks.insert("question_detect".into(), TaskRoute { target: target("local", None), ..Default::default() });
+        let route = resolve_route(&cfg, "question_detect").unwrap();
+        assert_eq!(route.connection.id, "local");
+        assert_eq!(route.source, "question_detect");
+        cfg.connections[1].enabled = false;
+        assert_eq!(resolve_route(&cfg, "question_detect").unwrap_err().0, RouteError::ConnectionDisabled);
     }
 
     #[test]

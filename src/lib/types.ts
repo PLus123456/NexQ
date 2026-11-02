@@ -788,12 +788,12 @@ export type LogEntryStatus =
   | "error"
   | "cancelled";
 
-export type LogFilterKind = IntelligenceMode | "all" | "errors";
+export type LogFilterKind = IntelligenceMode | "question_detect" | "all" | "errors";
 
 export interface LogEntry {
   id: string;
   timestamp: number;
-  mode: IntelligenceMode;
+  mode: IntelligenceMode | "question_detect";
   provider: string;
   model: string;
   status: LogEntryStatus;

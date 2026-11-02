@@ -3,6 +3,7 @@ pub mod context_builder;
 pub mod context_scope;
 pub mod prompt_templates;
 pub mod question_detector;
+pub mod llm_question;
 pub mod transcript_buffer;
 
 use std::collections::HashMap;
@@ -10,11 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use action_config::AllActionConfigs;
 use context_builder::ContextBuilder;
-use question_detector::{DetectedQuestion, QuestionDetector};
+use question_detector::DetectedQuestion;
 use transcript_buffer::TranscriptBuffer;
 
 use crate::llm::provider::{CancelToken, GenerationParams};
@@ -70,7 +71,6 @@ impl Drop for GenerationGuard {
 /// Orchestrates: read transcript -> detect question -> load context -> build prompt -> LLM stream
 pub struct IntelligenceEngine {
     pub transcript_buffer: TranscriptBuffer,
-    question_detector: QuestionDetector,
     auto_trigger: AtomicBool,
     /// Request-specific lanes and cancellation; held until the provider exits.
     in_flight: Arc<Mutex<InFlight>>,
@@ -82,7 +82,6 @@ impl IntelligenceEngine {
     pub fn new() -> Self {
         Self {
             transcript_buffer: TranscriptBuffer::new(),
-            question_detector: QuestionDetector::new(),
             auto_trigger: AtomicBool::new(true),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             last_detected_question: None,
@@ -90,37 +89,17 @@ impl IntelligenceEngine {
         }
     }
 
-    /// Push a transcript segment into the buffer and run question detection.
-    /// Returns detected questions (if any) so the caller can emit events.
+    /// Store transcript context. The shared detector publishes the decision
+    /// after model confirmation, so a preliminary rule match never leaks here.
     pub fn push_transcript(
         &mut self,
         text: String,
         speaker: String,
         timestamp_ms: u64,
         is_final: bool,
-    ) -> Vec<DetectedQuestion> {
+    ) {
         self.transcript_buffer
-            .push_segment(text.clone(), speaker.clone(), timestamp_ms, is_final);
-
-        // Only detect questions on final segments
-        if !is_final {
-            return Vec::new();
-        }
-
-        let questions = self
-            .question_detector
-            .detect_questions(&text, timestamp_ms, &speaker);
-
-        // Store the most recent high-confidence question
-        if let Some(q) = questions.iter().max_by(|a, b| {
-            a.confidence
-                .partial_cmp(&b.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            self.last_detected_question = Some(q.clone());
-        }
-
-        questions
+            .push_segment(text, speaker, timestamp_ms, is_final);
     }
 
     /// Main entry point: generate AI assistance in the given mode.
@@ -298,6 +277,10 @@ impl IntelligenceEngine {
         self.last_detected_question.as_ref()
     }
 
+    pub fn set_detected_question(&mut self, question: Option<DetectedQuestion>) {
+        self.last_detected_question = question;
+    }
+
     /// Get recent transcript text within the configured window.
     pub fn get_recent_transcript(&self) -> String {
         let window = self.transcript_buffer.window_seconds();
@@ -330,6 +313,27 @@ impl IntelligenceEngine {
         self.transcript_buffer.clear();
         self.last_detected_question = None;
         log::info!("[intelligence] session cleared for new meeting");
+    }
+}
+
+/// One ingestion path for native STT and Web Speech. Do not hold the engine
+/// lock while scheduling detection: a completed decision also updates it.
+pub fn ingest_transcript(
+    app: &tauri::AppHandle,
+    text: String,
+    speaker: String,
+    timestamp_ms: u64,
+    is_final: bool,
+) {
+    let state = app.state::<crate::state::AppState>();
+    if let Some(intel) = &state.intelligence {
+        if let Ok(mut engine) = intel.lock() {
+            engine.push_transcript(text.clone(), speaker.clone(), timestamp_ms, is_final);
+        }
+    }
+    if state.meeting_active.load(Ordering::SeqCst) {
+        app.state::<llm_question::QuestionDetectionService>()
+            .observe(app, text, speaker, timestamp_ms, is_final);
     }
 }
 

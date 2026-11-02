@@ -442,7 +442,10 @@ impl HttpLlmClient {
             max_tokens: params.max_tokens,
             extra_body: params.extra_body.as_ref().and_then(|v| v.as_object().cloned()),
         };
-        merge_params([&self.conn.params, &caller])
+        EffectiveParams {
+            json_mode: params.json_mode,
+            ..merge_params([&self.conn.params, &caller])
+        }
     }
 
     /// Chat address and body for one request.
@@ -862,6 +865,7 @@ mod tests {
     use super::*;
     use crate::llm::connections::{LlmHeader, ModelsEndpoint};
     use crate::net::endpoint::AuthMode;
+    use serde_json::json;
 
     fn messages() -> Vec<LLMMessage> {
         vec![
@@ -879,6 +883,43 @@ mod tests {
             auth: AuthConfig { mode: AuthMode::Bearer, ..Default::default() },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn native_json_mode_needs_both_caller_request_and_connection_support() {
+        for (kind, base, field, value) in [
+            (LlmKind::OpenAiCompat, "http://localhost:8000/custom-prefix", "/response_format", json!({"type": "json_object"})),
+            (LlmKind::Ollama, "http://localhost:11434", "/format", json!("json")),
+            (LlmKind::Gemini, "https://generativelanguage.googleapis.com", "/generationConfig/responseMimeType", json!("application/json")),
+        ] {
+            let mut conn = compat_conn(base);
+            conn.kind = kind;
+            conn.auth = AuthConfig { mode: AuthMode::None, ..Default::default() };
+            for supported in [false, true] {
+                conn.compat.supports_json_mode = supported;
+                let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+                for requested in [false, true] {
+                    let params = GenerationParams { json_mode: requested, ..Default::default() };
+                    let (_, body) = client.chat_request(&messages(), "small-model", &params).unwrap();
+                    assert_eq!(body.pointer(field), (supported && requested).then_some(&value), "{kind:?}, supported={supported}, requested={requested}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn json_mode_keeps_explicit_body_overrides_and_custom_endpoint() {
+        let mut conn = compat_conn("http://localhost:8000/my/llm");
+        conn.compat.supports_json_mode = true;
+        conn.params.extra_body = Some(json!({"response_format": {"type": "json_schema", "json_schema": {"name": "answer"}}}).as_object().unwrap().clone());
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let params = GenerationParams { json_mode: true, ..Default::default() };
+        let (url, body) = client.chat_request(&messages(), "m", &params).unwrap();
+        assert_eq!(url, "http://localhost:8000/my/llm/chat/completions");
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        let params = GenerationParams { extra_body: Some(json!({"response_format": {"type": "text"}})), ..params };
+        let (_, body) = client.chat_request(&messages(), "m", &params).unwrap();
+        assert_eq!(body["response_format"]["type"], "text");
     }
 
     #[tokio::test]

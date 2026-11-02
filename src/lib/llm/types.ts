@@ -52,6 +52,8 @@ export interface LlmCompat {
   strip_think_tags: boolean;
   /** Ask for usage in the stream (`stream_options.include_usage`). */
   stream_usage: boolean;
+  /** Allow individual background tasks to request native JSON output. */
+  supports_json_mode?: boolean;
   /** Old custom endpoints: retry Ollama's `/api/chat` on 404/405 only. */
   ollama_fallback_on_404: boolean;
   /** Ollama only; null = "30m". */

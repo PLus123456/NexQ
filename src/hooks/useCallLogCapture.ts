@@ -26,7 +26,7 @@ export const STALL_TIMEOUT_MS = 120_000;
 
 /** Entries worth keeping with the meeting: answered, or stopped part-way. */
 function isPersistable(e: LogEntry): boolean {
-  return !PAST_MEETING_MODES.has(e.mode) &&
+  return e.mode !== "question_detect" && !PAST_MEETING_MODES.has(e.mode) &&
     (e.status === "complete" || (e.status === "cancelled" && !!(e.responseContentClean || e.responseContent)));
 }
 
