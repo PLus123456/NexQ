@@ -97,9 +97,20 @@ export interface SonioxConfig {
   regions: SonioxRegionSetting[];
   /** When a region is full, down or refuses the key, try the next one. */
   failover: boolean;
+  /**
+   * The region of the key in the old `soniox` slot, pinned to `region` when
+   * the settings are first read (`normalizeSonioxConfig`), so that key stays
+   * with its region when `region` changes. Missing: `region`.
+   */
+  legacy_key_region?: SonioxRegion;
 }
 
-/** A fresh install: regions chosen by latency, each enabled when its key is added. */
+/**
+ * Nothing saved yet: one region (`fixed`, US), like a config saved before the
+ * region settings, so a key an older version saved (the `soniox` slot, saved
+ * without any settings) keeps working. The quick setup switches to `auto`
+ * when it adds a key.
+ */
 export const DEFAULT_SONIOX_CONFIG: SonioxConfig = {
   region: "us",
   model: "stt-rt-v5",
@@ -111,9 +122,10 @@ export const DEFAULT_SONIOX_CONFIG: SonioxConfig = {
   ws_url: "",
   rest_url: "",
   extra_start_params: "",
-  region_mode: "auto",
-  regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: false })),
+  region_mode: "fixed",
+  regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: id === "us" })),
   failover: true,
+  legacy_key_region: "us",
 };
 
 function isRegion(value: unknown): value is SonioxRegion {
@@ -140,22 +152,23 @@ export function sonioxRegionList(config: Pick<SonioxConfig, "region" | "regions"
 }
 
 /**
- * A saved Soniox config over the defaults. Nothing saved = a fresh install
- * (`DEFAULT_SONIOX_CONFIG`); a config saved before the region settings keeps
- * using its one region (`fixed`, that region enabled).
+ * A saved Soniox config over the defaults. A config saved before the region
+ * settings, or nothing saved, uses one region (`fixed`, that region enabled);
+ * the old key's region is pinned to `region` the first time.
  */
 export function normalizeSonioxConfig(saved: Partial<SonioxConfig> | null | undefined): SonioxConfig {
-  if (!saved) return { ...DEFAULT_SONIOX_CONFIG, regions: DEFAULT_SONIOX_CONFIG.regions.map((r) => ({ ...r })) };
-  const region = isRegion(saved.region) ? saved.region : "us";
+  const from = saved ?? {};
+  const region = isRegion(from.region) ? from.region : "us";
   const mode: SonioxRegionMode =
-    saved.region_mode === "auto" || saved.region_mode === "ordered" ? saved.region_mode : "fixed";
+    from.region_mode === "auto" || from.region_mode === "ordered" ? from.region_mode : "fixed";
   return {
     ...DEFAULT_SONIOX_CONFIG,
-    ...saved,
+    ...from,
     region,
     region_mode: mode,
-    regions: sonioxRegionList({ region, regions: saved.regions ?? [] }),
-    failover: saved.failover ?? true,
+    regions: sonioxRegionList({ region, regions: from.regions ?? [] }),
+    failover: from.failover ?? true,
+    legacy_key_region: isRegion(from.legacy_key_region) ? from.legacy_key_region : region,
   };
 }
 
@@ -163,7 +176,7 @@ export function normalizeSonioxConfig(saved: Partial<SonioxConfig> | null | unde
 export interface SonioxKeyStatus {
   /** A key in the region's own slot. */
   regions: Record<SonioxRegion, boolean>;
-  /** A key in the old `soniox` slot (it counts as `legacy_region`'s). */
+  /** A key in the old `soniox` slot (it counts as `legacy_region`'s: `legacy_key_region`, else `region`). */
   legacy: boolean;
   legacy_region: SonioxRegion;
   /** The config given can connect: a key for a region it may use. */

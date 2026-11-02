@@ -56,6 +56,12 @@ export async function sonioxMeasureLatency(force = false): Promise<SonioxLatency
   return JSON.parse(json) as SonioxLatency;
 }
 
+/** The last latency test, without measuring (`measured_at_ms` 0: none yet). */
+export async function sonioxCachedLatency(): Promise<SonioxLatency> {
+  const json = await invoke<string>("soniox_cached_latency");
+  return JSON.parse(json) as SonioxLatency;
+}
+
 /**
  * Save a Soniox key in its region's slot. Without `region`, finds the region
  * first (`/v1/models` of each: 200 or 403 = its region, 401 = not); when that

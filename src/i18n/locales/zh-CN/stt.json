@@ -551,7 +551,7 @@
       "hint": "会询问每个区域是否接受这个 Key，并保存到接受它的区域；保存后不会再显示。",
       "notSaved": "还没有保存 Key。",
       "savedFor": "已保存 Key 的区域：{{regions}}",
-      "legacyName": "{{region}}（旧版 Key）",
+      "legacyName": "{{region}}（旧版本存的）",
       "added": {
         "enabled": "已保存为{{region}}的 Key，并已启用该区域。",
         "fixed": "已保存为{{region}}的 Key，并已改用该区域。",
@@ -603,12 +603,12 @@
     },
     "regions": {
       "label": "区域",
-      "testLatency": "测试延迟",
+      "testLatency": "测速",
       "enable": "启用{{region}}区",
       "keyStatus": "Key：{{status}}",
       "keyStates": {
         "saved": "已保存",
-        "legacy": "已保存（旧版 Key）",
+        "legacy": "已保存（旧版本存的）",
         "none": "无",
         "invalid": "无效"
       },
@@ -693,9 +693,9 @@
       "concurrency": "{{party}}：{{from}}并发已满，改连{{to}}",
       "unavailable": "{{party}}：{{from}}暂时不可用，改连{{to}}",
       "model_not_available": "{{party}}：{{from}}没有这个模型，改连{{to}}",
-      "budget": "{{party}}：{{from}}的月度预算已用完，改连{{to}}",
+      "budget": "{{party}}：{{from}}项目的月度预算已用完，改连{{to}}",
       "network": "{{party}}：连不上{{from}}，改连{{to}}",
-      "key_rejected": "{{party}}：{{from}}不接受这个 Key，改连{{to}}",
+      "key_rejected": "{{party}}：{{from}}的 Key 被拒绝，改连{{to}}",
       "internal_error": "{{party}}：{{from}}服务出错，改连{{to}}",
       "other": "{{party}}：从{{from}}改连{{to}}"
     }

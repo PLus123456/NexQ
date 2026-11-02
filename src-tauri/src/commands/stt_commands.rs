@@ -417,10 +417,11 @@ pub async fn probe_openai_compat_stt(app: AppHandle, config_json: String) -> Res
 }
 
 /// A region's Soniox key: its own slot, else the old `soniox` slot when the
-/// region is the saved config's `region` (the old key's region).
+/// region is the old key's (`legacy_region` of the current settings, not of a
+/// test's region override).
 fn soniox_region_key(app: &AppHandle, region: &str) -> Option<String> {
     let state = app.state::<AppState>();
-    let legacy_region = app.state::<SttPlusState>().soniox_snapshot().fixed_region();
+    let legacy_region = app.state::<SttPlusState>().soniox_snapshot().legacy_region();
     read_key(&state, &crate::stt::plus_config::soniox_key_slot(region))
         .or_else(|| (region == legacy_region).then(|| read_key(&state, SONIOX_KEY_SLOT)).flatten())
 }
@@ -464,6 +465,14 @@ pub async fn soniox_key_status(app: AppHandle, config_json: String) -> Result<St
 #[command]
 pub async fn soniox_measure_latency(force: bool) -> Result<String, String> {
     let latency = crate::stt::soniox_regions::measure_latency(force).await;
+    serde_json::to_string(&latency).map_err(|e| format!("Failed to serialize latency: {}", e))
+}
+
+/// The last latency test without measuring again (`measured_at_ms` 0: none
+/// yet), for the settings to show when they open. JSON `SonioxLatency`.
+#[command]
+pub async fn soniox_cached_latency() -> Result<String, String> {
+    let latency = crate::stt::soniox_regions::cached_latency();
     serde_json::to_string(&latency).map_err(|e| format!("Failed to serialize latency: {}", e))
 }
 

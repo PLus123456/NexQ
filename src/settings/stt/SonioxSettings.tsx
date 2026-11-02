@@ -3,12 +3,13 @@
 // text fields save on blur / Enter, sliders when released.
 //
 // Keys live in the keychain, one per region (`soniox_us`…; the old `soniox`
-// slot counts as `region`'s), and are never read back. A pasted key is saved
+// slot counts for the region it was saved with), and are never read back. A pasted key is saved
 // for the region that accepts it (`sonioxAddKey`); when that is unclear the
 // user picks the region. Regions: Fixed (one), Auto (the fastest enabled
 // region with a key) or Ordered (the user's order), and failover. The compact
 // form (quick setup) only adds keys — turning their region on, and Auto
-// unless a mode was picked here before — and picks the model.
+// unless a mode was picked here before — and picks the model. The last
+// latency test shows when the panel opens; the button measures again.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -28,7 +29,13 @@ import {
 import { useT } from "../../i18n";
 import { ModelCombobox, type ModelOption } from "../../components/ModelCombobox";
 import { deleteApiKey } from "../../lib/ipc";
-import { probeSoniox, sonioxAddKey, sonioxKeyStatus, sonioxMeasureLatency } from "../../lib/stt/ipc";
+import {
+  probeSoniox,
+  sonioxAddKey,
+  sonioxCachedLatency,
+  sonioxKeyStatus,
+  sonioxMeasureLatency,
+} from "../../lib/stt/ipc";
 import {
   SONIOX_KEY_SLOT,
   SONIOX_REGIONS,
@@ -42,6 +49,7 @@ import {
   type SonioxLatency,
   type SonioxRegion,
   type SonioxRegionMode,
+  type SonioxRegionSetting,
   type SttProbeResult,
 } from "../../lib/stt/types";
 import { useConfigStore } from "../../stores/configStore";
@@ -192,7 +200,7 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
     };
   }, []);
 
-  /** Reads which regions have a key for the latest settings (the old key follows `region`). */
+  /** Reads which regions have a key for the latest settings. */
   const statusRun = useRef(0);
   const refreshStatus = useCallback(async (): Promise<SonioxKeyStatus | null> => {
     const run = ++statusRun.current;
@@ -215,6 +223,16 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus, keyScope]);
+
+  // The last latency test (a meeting in Auto keeps it current), without measuring.
+  useEffect(() => {
+    if (compact) return;
+    sonioxCachedLatency()
+      .then((cached) => {
+        if (alive.current && cached && cached.measured_at_ms > 0) setLatency((shown) => shown ?? cached);
+      })
+      .catch(() => {});
+  }, [compact]);
 
   useEffect(() => setDelayDraft(config.max_endpoint_delay_ms), [config.max_endpoint_delay_ms]);
   useEffect(() => {
@@ -245,7 +263,10 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
       compact && current.region_mode === "fixed" && !regionModeChosen() ? "auto" : current.region_mode;
     const list = sonioxRegionList(current);
     const wasOn = list.some((entry) => entry.id === region && entry.enabled);
-    const regions = list.map((entry) => (entry.id === region ? { ...entry, enabled: true } : entry));
+    // Becoming Auto: the list was hidden until now, so only regions with a key stay on.
+    const keepOn = (entry: SonioxRegionSetting) =>
+      entry.enabled && (mode === current.region_mode || !status || regionHasKey(status, entry.id));
+    const regions = list.map((entry) => ({ ...entry, enabled: entry.id === region || keepOn(entry) }));
     if (mode === "fixed") {
       if (current.region !== region || !wasOn) update({ region, regions });
       return current.region === region ? "saved" : "fixed";
@@ -483,7 +504,7 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
     return entry.error ? errorText(entry.error) : "—";
   };
 
-  /** The regions that have a key, for the quick setup ("Japan, US (older key)"). */
+  /** The regions that have a key, for the quick setup ("Japan, US (saved by an older version)"). */
   const keySummary = (): string => {
     if (!status) {
       return statusError ? t("common:errors.loadFailed", { detail: statusError }) : t("common:status.loading");

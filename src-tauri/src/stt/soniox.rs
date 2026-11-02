@@ -227,7 +227,7 @@ impl SonioxSTT {
     }
 
     /// The keys of the regions this config may use: their own keychain slots,
-    /// plus the old `soniox` key (given to `new`) for `region`.
+    /// plus the old `soniox` key (given to `new`) for its region (`legacy_region`).
     fn read_region_keys(&self) -> RegionKeys {
         if let Some(keys) = &self.region_keys {
             return keys.clone();
@@ -250,7 +250,7 @@ impl SonioxSTT {
         RegionKeys {
             per_region,
             legacy: self.api_key.clone(),
-            legacy_region: self.config.fixed_region().to_string(),
+            legacy_region: self.config.legacy_region().to_string(),
         }
     }
 

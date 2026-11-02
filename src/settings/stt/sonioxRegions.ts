@@ -35,12 +35,18 @@ export function usesCustomEndpoint(config: Pick<SonioxConfig, "ws_url" | "rest_u
 }
 
 /**
- * What decides Soniox's key status (`soniox_key_status`): the region (the
- * old key's), the mode, the region list and a gateway. Checks of "has a
+ * What decides Soniox's key status (`soniox_key_status`): the region, the old
+ * key's region, the mode, the region list and a gateway. Checks of "has a
  * Soniox key" run again when this changes, not on every other edit.
  */
 export function sonioxKeyScope(config: SonioxConfig): string {
-  return JSON.stringify([config.region, config.region_mode, config.regions, usesCustomEndpoint(config)]);
+  return JSON.stringify([
+    config.region,
+    config.legacy_key_region ?? null,
+    config.region_mode,
+    config.regions,
+    usesCustomEndpoint(config),
+  ]);
 }
 
 /** Which key a region uses: its own slot, the old `soniox` slot (the key of `legacy_region`) or none. */

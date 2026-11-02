@@ -68,21 +68,26 @@ import {
   sonioxRegionList,
 } from "../../lib/stt/types";
 
-/** `soniox_key_status` for `config` (mirrors Rust `key_status`): the old key counts as `region`'s. */
+/** `soniox_key_status` for `config` (mirrors Rust `key_status`): the old key counts as `legacy_key_region`'s. */
 function keyStatusFor(config: SonioxConfig): SonioxKeyStatus {
   const regions = Object.fromEntries(SONIOX_REGION_IDS.map((id) => [id, !!keychain.regions[id]])) as Record<
     SonioxRegion,
     boolean
   >;
-  const has = (id: SonioxRegion) => regions[id] || (keychain.legacy && id === config.region);
+  const legacyRegion = config.legacy_key_region ?? config.region;
+  const has = (id: SonioxRegion) => regions[id] || (keychain.legacy && id === legacyRegion);
   const usable =
     config.region_mode === "fixed" ? [config.region] : sonioxRegionList(config).filter((e) => e.enabled).map((e) => e.id);
-  return { regions, legacy: keychain.legacy, legacy_region: config.region, any_enabled: usable.some(has) };
+  return { regions, legacy: keychain.legacy, legacy_region: legacyRegion, any_enabled: usable.some(has) };
 }
 
 /** Auto with these regions turned on (in the default order). */
 function autoWith(...enabled: SonioxRegion[]): SonioxConfig {
-  return { ...DEFAULT_SONIOX_CONFIG, regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: enabled.includes(id) })) };
+  return {
+    ...DEFAULT_SONIOX_CONFIG,
+    region_mode: "auto",
+    regions: SONIOX_REGION_IDS.map((id) => ({ id, enabled: enabled.includes(id) })),
+  };
 }
 
 const soniox = () => useConfigStore.getState().sonioxConfig;
@@ -314,7 +319,7 @@ describe("SttQuickSetup", () => {
       return { region: "jp", stored: true, statuses: { jp: { status: 200, error: null, matches: true } } };
     });
     const { onStatusChange, user } = setup();
-    expect(await screen.findByText("Keys saved for: US (older key)")).toBeInTheDocument();
+    expect(await screen.findByText("Keys saved for: US (saved by an older version)")).toBeInTheDocument();
     // One key field, no region settings.
     expect(screen.queryByLabelText("Region selection")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Test" }));
@@ -326,9 +331,24 @@ describe("SttQuickSetup", () => {
     expect(await screen.findByText("Saved for the Japan region and turned it on.")).toBeInTheDocument();
     expect(soniox().region_mode).toBe("auto");
     expect(enabledRegions()).toEqual(["us", "jp"]);
-    expect(await screen.findByText("Keys saved for: US (older key), Japan")).toBeInTheDocument();
+    expect(await screen.findByText("Keys saved for: US (saved by an older version), Japan")).toBeInTheDocument();
     // A new key: the last test no longer counts.
     await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("incomplete"));
+  });
+
+  it("with nothing saved and no key, Auto keeps only the region of the added key on", async () => {
+    keychain.regions = {};
+    useConfigStore.setState({ sonioxConfig: normalizeSonioxConfig(null) });
+    ipc.sonioxAddKey.mockImplementation(async () => {
+      keychain.regions.jp = true;
+      return { region: "jp", stored: true, statuses: { jp: { status: 200, error: null, matches: true } } };
+    });
+    const { user } = setup();
+    expect(await screen.findByText("No key saved yet.")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("API Key"), "sx-jp{Enter}");
+    expect(await screen.findByText("Saved for the Japan region and turned it on.")).toBeInTheDocument();
+    expect(soniox().region_mode).toBe("auto");
+    expect(enabledRegions()).toEqual(["jp"]);
   });
 
   it("keeps a Fixed region picked in the Soniox settings and moves it to the key's region", async () => {

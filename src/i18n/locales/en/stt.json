@@ -555,7 +555,7 @@
       "hint": "Each region is asked whether it accepts the key; it's saved for the one that does and never shown again.",
       "notSaved": "No key saved yet.",
       "savedFor": "Keys saved for: {{regions}}",
-      "legacyName": "{{region}} (older key)",
+      "legacyName": "{{region}} (saved by an older version)",
       "added": {
         "enabled": "Saved for {{region}} and turned it on.",
         "fixed": "Saved for {{region}}, now the region in use.",
@@ -612,7 +612,7 @@
       "keyStatus": "Key: {{status}}",
       "keyStates": {
         "saved": "Saved",
-        "legacy": "Saved (older key)",
+        "legacy": "Saved (by an older version)",
         "none": "None",
         "invalid": "Invalid"
       },

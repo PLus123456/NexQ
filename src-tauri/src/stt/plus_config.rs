@@ -162,6 +162,10 @@ pub struct SonioxConfig {
     pub regions: Vec<SonioxRegionSetting>,
     /// When a region is full, down or refuses the key, try the next one.
     pub failover: bool,
+    /// The region the key in the old `soniox` slot belongs to: the app sets
+    /// it once from `region`, so the old key stays with its region when
+    /// `region` changes. None: `region`.
+    pub legacy_key_region: Option<String>,
 }
 
 impl Default for SonioxConfig {
@@ -180,6 +184,7 @@ impl Default for SonioxConfig {
             region_mode: SonioxRegionMode::Fixed,
             regions: Vec::new(),
             failover: true,
+            legacy_key_region: None,
         }
     }
 }
@@ -188,6 +193,11 @@ impl SonioxConfig {
     /// The fixed region (`region`, `us` when unknown).
     pub fn fixed_region(&self) -> &'static str {
         soniox_region(&self.region)
+    }
+
+    /// The region the old `soniox` slot's key counts for (`legacy_key_region`, else `region`).
+    pub fn legacy_region(&self) -> &'static str {
+        soniox_region(self.legacy_key_region.as_deref().unwrap_or(&self.region))
     }
 
     /// A gateway is configured: its URLs are used as they are, without regions.
@@ -340,6 +350,10 @@ mod tests {
             vec![("jp".into(), true), ("us".into(), false), ("eu".into(), false), ("in".into(), false)]
         );
         assert_eq!(old.allowed_regions(), vec!["jp"]);
+        // The old key is `region`'s until the app pins it, then it stays put.
+        assert_eq!(old.legacy_region(), "jp");
+        let moved: SonioxConfig = serde_json::from_str(r#"{"region":"eu","legacy_key_region":"jp"}"#).unwrap();
+        assert_eq!((moved.fixed_region(), moved.legacy_region()), ("eu", "jp"));
         // An unknown mode never fails the whole config.
         let odd: SonioxConfig = serde_json::from_str(r#"{"region_mode":"fastest","failover":false}"#).unwrap();
         assert_eq!(odd.region_mode, SonioxRegionMode::Fixed);

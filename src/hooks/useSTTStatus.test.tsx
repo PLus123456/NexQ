@@ -92,10 +92,10 @@ describe("Soniox region switches in a meeting", () => {
       "对方：日本区并发已满，改连印度区",
     );
     expect(regionSwitchMessage({ party: "You", from: "us", to: "eu", reason: "key_rejected" })).toBe(
-      "我：美国区不接受这个 Key，改连欧盟区",
+      "我：美国区的 Key 被拒绝，改连欧盟区",
     );
     expect(regionSwitchMessage({ party: "Them", from: "eu", to: "jp", reason: "budget" })).toBe(
-      "对方：欧盟区的月度预算已用完，改连日本区",
+      "对方：欧盟区项目的月度预算已用完，改连日本区",
     );
   });
 

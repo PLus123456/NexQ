@@ -2,14 +2,24 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SONIOX_CONFIG, normalizeSonioxConfig, sonioxKeySlot, sonioxRegionList } from "./types";
 
 describe("Soniox region settings", () => {
-  it("a fresh install picks regions by latency, each enabled once its key is added", () => {
+  it("nothing saved reads like an old config: the US alone, so a key saved without settings keeps working", () => {
     const fresh = normalizeSonioxConfig(undefined);
     expect(fresh).toEqual(DEFAULT_SONIOX_CONFIG);
-    expect(fresh.region_mode).toBe("auto");
-    expect(fresh.regions.every((r) => !r.enabled)).toBe(true);
+    expect(fresh).toEqual(normalizeSonioxConfig({}));
+    expect(fresh.region_mode).toBe("fixed");
+    expect(fresh.regions.filter((r) => r.enabled).map((r) => r.id)).toEqual(["us"]);
+    expect(fresh.legacy_key_region).toBe("us");
     // A copy: changing it doesn't change the defaults.
-    fresh.regions[0].enabled = true;
-    expect(DEFAULT_SONIOX_CONFIG.regions[0].enabled).toBe(false);
+    fresh.regions[0].enabled = false;
+    expect(DEFAULT_SONIOX_CONFIG.regions[0].enabled).toBe(true);
+  });
+
+  it("pins the old key's region once and keeps it when the region changes", () => {
+    const old = normalizeSonioxConfig({ region: "jp" });
+    expect(old.legacy_key_region).toBe("jp");
+    const moved = normalizeSonioxConfig({ ...old, region: "eu" });
+    expect(moved).toMatchObject({ region: "eu", legacy_key_region: "jp" });
+    expect(normalizeSonioxConfig({ region: "in", legacy_key_region: "mars" as never }).legacy_key_region).toBe("in");
   });
 
   it("a config saved before the region settings keeps its one region", () => {

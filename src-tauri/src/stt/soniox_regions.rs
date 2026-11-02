@@ -2,7 +2,7 @@
 //
 // A key belongs to one region (its Soniox project's), so each region has its
 // own keychain slot (`soniox_us`…); the old `soniox` slot counts as the key of
-// `SonioxConfig::region`. A session's candidates are the regions it may use
+// `SonioxConfig::legacy_region`. A session's candidates are the regions it may use
 // that have a key: `region` alone (`fixed`), the enabled ones fastest first
 // (`auto`, from the latency test) or in the user's order (`ordered`); a
 // region that was full a moment ago goes last for five minutes. When a
@@ -89,10 +89,10 @@ pub fn key_status(cfg: &SonioxConfig, has_key: impl Fn(&str) -> bool) -> KeyStat
     let regions: BTreeMap<String, bool> =
         SONIOX_REGIONS.iter().map(|r| (r.to_string(), has_key(&soniox_key_slot(r)))).collect();
     let legacy = has_key(crate::stt::plus_config::SONIOX_KEY_SLOT);
-    let legacy_region = cfg.fixed_region();
+    let legacy_region = cfg.legacy_region();
     let has = |region: &str| regions.get(region).copied().unwrap_or(false) || (legacy && region == legacy_region);
     let any_enabled = if cfg.uses_custom_endpoint() {
-        has(legacy_region)
+        has(cfg.fixed_region())
     } else {
         cfg.allowed_regions().iter().any(|r| has(r))
     };
@@ -572,6 +572,11 @@ pub async fn measure_latency(force: bool) -> LatencyReport {
     report(false)
 }
 
+/// The last latency test without measuring (`measured_at_ms` 0: none yet).
+pub fn cached_latency() -> LatencyReport {
+    report(true)
+}
+
 /// For an `auto` session: the cache when fresh; else measure, waiting at most
 /// `budget` (regions that don't answer by then go last; the test finishes in
 /// the background and updates the cache for the next connection).
@@ -826,6 +831,16 @@ mod tests {
         // A key only for a disabled region (or the old slot of a disabled region) doesn't count.
         assert!(!key_status(&auto, has(&["soniox_us", "soniox"])).any_enabled);
         assert_eq!(key_status(&auto, has(&["soniox_us"])).regions["us"], true);
+
+        // The old key keeps its pinned region when the fixed region changes…
+        let moved = cfg(r#"{"region":"jp","legacy_key_region":"us"}"#);
+        let s = key_status(&moved, has(&["soniox"]));
+        assert_eq!(s.legacy_region, "us");
+        assert!(!s.any_enabled, "Japan has no key of its own");
+        // …and a gateway uses `region`'s key.
+        let gw = cfg(r#"{"region":"jp","legacy_key_region":"us","ws_url":"wss://gw.example/rt"}"#);
+        assert!(!key_status(&gw, has(&["soniox"])).any_enabled);
+        assert!(key_status(&gw, has(&["soniox_jp"])).any_enabled);
     }
 
     fn err(code: u16, kind: &str, message: &str) -> SonioxError {
