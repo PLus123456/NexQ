@@ -961,6 +961,8 @@ export interface STTConnectionStatusEvent {
   party: string;
   status: "connecting" | "connected" | "error" | "disconnected" | "reconnecting";
   message?: string;
+  /** Soniox: the region of the connection ("us" | "eu" | "jp" | "in" | "custom"). */
+  region?: string;
 }
 
 // == Translation ==

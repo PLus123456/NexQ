@@ -110,8 +110,20 @@ describe("configStore: STT migrations and NexQ Plus engine settings", () => {
     saved.set("sonioxConfig", { region: "eu" });
     saved.set("whisperUseGpu", false);
     const store = await openWindow();
-    // Saved fields over the defaults.
-    expect(store.getState().sonioxConfig).toEqual({ ...DEFAULT_SONIOX_CONFIG, region: "eu" });
+    // Saved fields over the defaults; a config from before the region settings
+    // keeps its region (fixed), and the old key is pinned to it.
+    expect(store.getState().sonioxConfig).toEqual({
+      ...DEFAULT_SONIOX_CONFIG,
+      region: "eu",
+      region_mode: "fixed",
+      regions: [
+        { id: "eu", enabled: true },
+        { id: "us", enabled: false },
+        { id: "jp", enabled: false },
+        { id: "in", enabled: false },
+      ],
+      legacy_key_region: "eu",
+    });
     const pushed = (cmd: string) => calls(cmd).map((args) => JSON.parse(args.configJson as string));
     await vi.waitFor(() => expect(pushed("update_soniox_config")).toContainEqual(expect.objectContaining({ region: "eu" })));
     await vi.waitFor(() => expect(calls("update_openai_compat_stt_config").length).toBeGreaterThan(0));

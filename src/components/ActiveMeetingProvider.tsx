@@ -14,7 +14,7 @@ import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useAudioConfigSync } from "../hooks/useAudioConfigSync";
 import { useStreamBuffer } from "../hooks/useStreamBuffer";
 import { useCallLogCapture } from "../hooks/useCallLogCapture";
-import { useSTTStatus } from "../hooks/useSTTStatus";
+import { useSTTStatus, useSonioxRegionSwitchToast } from "../hooks/useSTTStatus";
 import { useDevLog } from "../hooks/useDevLog";
 
 export function ActiveMeetingProvider({ isLauncherWindow = true }: { isLauncherWindow?: boolean }) {
@@ -34,6 +34,7 @@ function OverlayMeetingHooks() {
   useTranscript();    // transcript_final/update → local store
   useStreamBuffer();  // AI streaming events → local store
   useSTTStatus();     // STT connection status
+  useSonioxRegionSwitchToast(); // Soniox region switches: this window only, so they show once
   useDevLog();        // debug log entries
   return null;
 }

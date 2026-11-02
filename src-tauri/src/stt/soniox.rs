@@ -41,7 +41,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::audio::AudioChunk;
-use crate::stt::plus_config::{SonioxConfig, SttProbeResult};
+use crate::stt::plus_config::{SonioxConfig, SonioxRegionMode, SttProbeResult};
+use crate::stt::soniox_regions::{
+    self as regions, ConnectFailure, Cooldowns, LatencyTable, RegionAction, RegionKeys, RegionRouter, Step, SwitchReason,
+};
 use crate::stt::provider::{STTProvider, STTProviderType, TranscriptResult};
 use crate::stt::soniox_protocol::{
     self as protocol, Assembler, AssemblerConfig, AssemblerEvent, Backoff, RetryClass, SentenceUpdate,
@@ -69,6 +72,9 @@ const STOP_WAIT: Duration = Duration::from_secs(8);
 /// Retry interval once the backoff attempts are used up (network outages).
 const LONG_RETRY: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(250);
+/// A connection up this long (or that delivered results) held: its later
+/// failures reconnect to the same region first.
+const HELD_AFTER: Duration = Duration::from_secs(3);
 /// A connection up this long hands over to a new one at its next sentence end
 /// (Soniox ends a stream at 300 min with `max_duration_reached`).
 const ROTATE_AFTER: Duration = Duration::from_secs(290 * 60);
@@ -185,6 +191,12 @@ pub struct SonioxSTT {
     /// `ROTATE_AFTER` and `ROTATE_WAIT_MAX`; tests use milliseconds.
     rotate_after: Duration,
     rotate_wait_max: Duration,
+    /// Tests: the keys (else read from the keychain), the regions' WebSocket
+    /// URLs, the latency table and the cooldowns (else the app-wide ones).
+    region_keys: Option<RegionKeys>,
+    region_ws_urls: Option<std::collections::HashMap<String, String>>,
+    latency_override: Option<LatencyTable>,
+    cooldowns: Option<&'static std::sync::Mutex<Cooldowns>>,
     audio_tx: Option<mpsc::Sender<AudioChunk>>,
     session: Option<tokio::task::JoinHandle<()>>,
     dropped_chunks: u64,
@@ -200,6 +212,10 @@ impl SonioxSTT {
             sink: None,
             rotate_after: ROTATE_AFTER,
             rotate_wait_max: ROTATE_WAIT_MAX,
+            region_keys: None,
+            region_ws_urls: None,
+            latency_override: None,
+            cooldowns: None,
             audio_tx: None,
             session: None,
             dropped_chunks: 0,
@@ -208,6 +224,34 @@ impl SonioxSTT {
 
     pub fn set_app_handle(&mut self, handle: AppHandle) {
         self.app_handle = Some(handle);
+    }
+
+    /// The keys of the regions this config may use: their own keychain slots,
+    /// plus the old `soniox` key (given to `new`) for its region (`legacy_region`).
+    fn read_region_keys(&self) -> RegionKeys {
+        if let Some(keys) = &self.region_keys {
+            return keys.clone();
+        }
+        let mut per_region = std::collections::HashMap::new();
+        let credentials = self
+            .app_handle
+            .as_ref()
+            .and_then(|app| app.try_state::<crate::state::AppState>())
+            .and_then(|state| state.credentials.clone());
+        if let Some(credentials) = credentials {
+            if let Ok(cred) = credentials.lock() {
+                for (region, slot) in RegionKeys::slots_needed(&self.config) {
+                    if let Ok(Some(key)) = cred.get_key(&slot) {
+                        per_region.insert(region.to_string(), key);
+                    }
+                }
+            }
+        }
+        RegionKeys {
+            per_region,
+            legacy: self.api_key.clone(),
+            legacy_region: self.config.legacy_region().to_string(),
+        }
     }
 
     /// The start message for this party (also validates the extra parameters).
@@ -257,15 +301,19 @@ impl STTProvider for SonioxSTT {
         if self.session.is_some() {
             return Err("Stream already active".into());
         }
-        let api_key = match self.api_key.as_deref().map(str::trim) {
-            Some(key) if !key.is_empty() => key.to_string(),
-            _ => return Err("Soniox API key not configured — add it in Settings → STT → Soniox".into()),
+        let keys = self.read_region_keys();
+        let usable = if self.config.uses_custom_endpoint() {
+            keys.key_for(self.config.fixed_region()).is_some()
+        } else {
+            self.config.allowed_regions().iter().any(|r| keys.key_for(r).is_some())
         };
+        if !usable {
+            return Err("No Soniox key for the regions this setup may use — add one in Settings → STT → Soniox".into());
+        }
         if self.config.model.trim().is_empty() {
             return Err("No Soniox model selected".into());
         }
         let start_message = self.start_message()?;
-        let url = self.config.ws_endpoint();
         let sink: Arc<dyn SessionSink> = match (&self.sink, &self.app_handle) {
             (Some(sink), _) => sink.clone(),
             (None, Some(app)) => Arc::new(AppSink::new(app.clone(), &self.options.party)),
@@ -274,8 +322,11 @@ impl STTProvider for SonioxSTT {
 
         let (audio_tx, audio_rx) = mpsc::channel::<AudioChunk>(AUDIO_QUEUE);
         let session = Session {
-            url,
-            api_key,
+            config: self.config.clone(),
+            keys,
+            ws_urls: self.region_ws_urls.clone(),
+            latency_override: self.latency_override.clone(),
+            cooldowns: self.cooldowns.unwrap_or_else(regions::cooldowns),
             start_message,
             segment_id_prefix: self.options.segment_id_prefix.clone(),
             diarize: self.options.diarize,
@@ -347,6 +398,10 @@ trait SessionSink: Send + Sync {
     /// A diarized speaker seen for the first time ("speaker_0"), as Deepgram
     /// reports it: in-person meetings add them as speakers.
     fn speaker_detected(&self, speaker_id: &str);
+    /// The region the session connects to now (status events carry it).
+    fn region(&self, region: &str);
+    /// The session left `from` for `to` (`soniox_region_switch`).
+    fn region_switched(&self, from: &str, to: &str, reason: SwitchReason);
 }
 
 /// A `translation_result` payload (same fields as the frontend's TranslationResult).
@@ -366,11 +421,12 @@ struct TranslationEvent {
 struct AppSink {
     app: AppHandle,
     party: String,
+    region: std::sync::Mutex<Option<String>>,
 }
 
 impl AppSink {
     fn new(app: AppHandle, party: &str) -> Self {
-        Self { app, party: party.to_string() }
+        Self { app, party: party.to_string(), region: Default::default() }
     }
 
     /// Save a final translation for the running meeting (none outside a meeting).
@@ -398,9 +454,28 @@ impl AppSink {
 
 impl SessionSink for AppSink {
     fn status(&self, status: &str, message: Option<String>) {
+        let region = self.region.lock().ok().and_then(|r| r.clone());
         let _ = self.app.emit(
             "stt_connection_status",
-            serde_json::json!({ "provider": "soniox", "party": self.party, "status": status, "message": message }),
+            serde_json::json!({
+                "provider": "soniox", "party": self.party, "status": status, "message": message, "region": region,
+            }),
+        );
+    }
+
+    fn region(&self, region: &str) {
+        if let Ok(mut current) = self.region.lock() {
+            *current = Some(region.to_string());
+        }
+    }
+
+    fn region_switched(&self, from: &str, to: &str, reason: SwitchReason) {
+        log::warn!("SonioxSTT[{}]: region {} → {} ({:?})", self.party, from, to, reason);
+        crate::stt::emit_stt_debug(&self.app, "warn", "soniox",
+            &format!("[{}] region {} unusable ({:?}), switching to {}", self.party, from, reason, to));
+        let _ = self.app.emit(
+            "soniox_region_switch",
+            serde_json::json!({ "party": self.party, "from": from, "to": to, "reason": reason }),
         );
     }
 
@@ -438,11 +513,20 @@ impl SessionSink for LogSink {
     fn translation(&self, _translation: &TranslationEvent) {}
 
     fn speaker_detected(&self, _speaker_id: &str) {}
+
+    fn region(&self, region: &str) {
+        log::info!("SonioxSTT[{}]: region {}", self.0, region);
+    }
+
+    fn region_switched(&self, from: &str, to: &str, reason: SwitchReason) {
+        log::warn!("SonioxSTT[{}]: region {} → {} ({:?})", self.0, from, to, reason);
+    }
 }
 
 // ── Audio frames and Soniox's clock ─────────────────────────────────────────
 
 /// ~100 ms of audio, little-endian s16, with the capture time it ends at.
+#[derive(Clone)]
 struct Frame {
     bytes: Vec<u8>,
     samples: u64,
@@ -537,8 +621,11 @@ fn epoch_now_ms() -> u64 {
 // ── The session task ────────────────────────────────────────────────────────
 
 struct Session {
-    url: String,
-    api_key: String,
+    config: SonioxConfig,
+    keys: RegionKeys,
+    ws_urls: Option<std::collections::HashMap<String, String>>,
+    latency_override: Option<LatencyTable>,
+    cooldowns: &'static std::sync::Mutex<Cooldowns>,
     start_message: String,
     segment_id_prefix: String,
     diarize: bool,
@@ -559,11 +646,42 @@ enum Ended {
     Stopped,
     /// Handed over before Soniox's time limit: the next connection goes at once.
     Rotated,
-    /// Lost or refused: reconnect per the class (reason for the user).
-    Lost(RetryClass, String),
+    /// Lost or refused: what it means for the region, why (for the user), and
+    /// whether the connection had held (`HELD_AFTER`, or results came).
+    Lost(RegionAction, String, bool),
+}
+
+/// A transport failure (no error frame) as a region action: reconnect to the
+/// same region, unless the socket closed for a protocol violation.
+fn transport(class: RetryClass) -> RegionAction {
+    match class {
+        RetryClass::Fatal => RegionAction::Stop,
+        class => RegionAction::SameRegion { class },
+    }
 }
 
 impl Session {
+    /// Where to connect, best first: the gateway, `region`, or the enabled
+    /// regions with a key (`auto` waits up to `SESSION_LATENCY_BUDGET` for a
+    /// stale latency test).
+    async fn plan(&self) -> RegionRouter {
+        let auto = self.config.region_mode == SonioxRegionMode::Auto && !self.config.uses_custom_endpoint();
+        let latency = match (&self.latency_override, auto) {
+            (Some(table), _) => table.clone(),
+            (None, true) => regions::latency_for_session(regions::SESSION_LATENCY_BUDGET).await,
+            (None, false) => LatencyTable::default(),
+        };
+        let cooldowns = self.cooldowns.lock().unwrap_or_else(|e| e.into_inner());
+        RegionRouter::new(regions::candidates(
+            &self.config,
+            &self.keys,
+            &latency,
+            &cooldowns,
+            Instant::now(),
+            self.ws_urls.as_ref(),
+        ))
+    }
+
     async fn run(self, mut audio_rx: mpsc::Receiver<AudioChunk>) {
         let mut backoff = Backoff::new();
         let mut framer = Framer::default();
@@ -572,24 +690,41 @@ impl Session {
         let mut connection = 0u32;
         // The last connection handed over: this one is planned, not a reconnect.
         let mut rotated = false;
+        // Frames sent on the current connection before it held (see `remember`).
+        let mut replay: VecDeque<Frame> = VecDeque::new();
+        // `auto`: the latency cache stays fresh while the session runs.
+        let _auto = (self.config.region_mode == SonioxRegionMode::Auto && !self.config.uses_custom_endpoint()
+            && self.latency_override.is_none())
+            .then(regions::auto_session_started);
+        let mut router = self.plan().await;
+        if router.current().is_none() {
+            self.sink.status("error", Some("No Soniox key for the regions this setup may use".to_string()));
+            return;
+        }
+        self.sink.debug("info", &format!("regions: {}", router.regions().join(" → ")));
 
         loop {
             connection += 1;
+            let Some(target) = router.current().cloned() else {
+                self.sink.status("error", Some("No Soniox region left to try".to_string()));
+                return;
+            };
+            self.sink.region(&target.region);
             if !rotated {
                 self.sink.status(if connection == 1 { "connecting" } else { "reconnecting" }, None);
             }
-            let connecting = tokio::time::timeout(CONNECT_TIMEOUT, connect(&self.url, &self.api_key));
+            let connecting = tokio::time::timeout(CONNECT_TIMEOUT, connect(&target.ws_url, &target.key));
             tokio::pin!(connecting);
             let connected = loop {
                 tokio::select! {
                     result = &mut connecting => {
-                        break result.unwrap_or_else(|_| Err((RetryClass::Retry, "connection timed out".to_string())));
+                        break result.unwrap_or_else(|_| Err((ConnectFailure::Network, "connection timed out".to_string())));
                     }
                     _ = drain_until_closed(&mut audio_rx, &mut framer, &mut pending, &mut audio_open), if audio_open => {
                         // A planned hand-over still owes the queued audio a final
                         // connection, including when stop arrives during its handshake.
                         if !rotated || (pending.is_empty() && framer.samples.is_empty()) {
-                            break Err((RetryClass::Fatal, String::new()));
+                            break Err((ConnectFailure::Invalid, String::new()));
                         }
                     }
                 }
@@ -597,27 +732,58 @@ impl Session {
             let ended = match connected {
                 Ok(ws) => {
                     backoff.on_connected(Instant::now());
-                    self.connection(ws, connection, &mut audio_rx, &mut framer, &mut pending, &mut audio_open).await
+                    self.connection(ws, connection, &mut audio_rx, &mut framer, &mut pending, &mut replay, &mut audio_open)
+                        .await
                 }
                 Err((_, reason)) if !audio_open && reason.is_empty() => Ended::Stopped,
-                Err((class, reason)) => Ended::Lost(class, reason),
+                Err((failure, reason)) => Ended::Lost(regions::action_for_connect(&failure), reason, false),
             };
 
-            let (class, reason) = match ended {
+            let (action, reason) = match ended {
                 Ended::Stopped => break,
                 // No backoff and no attempt used: the audio waiting in `pending` goes first.
                 Ended::Rotated => {
                     rotated = true;
                     continue;
                 }
-                Ended::Lost(class, reason) => (class, reason),
+                Ended::Lost(action, reason, held) => {
+                    if held {
+                        router.on_established();
+                        replay.clear();
+                    } else {
+                        restore(&mut pending, &mut replay);
+                    }
+                    (action, reason)
+                }
             };
+            replay.clear();
             rotated = false;
             if !audio_open {
                 // Stopped while the connection was failing: don't reconnect.
                 self.sink.status("error", Some(reason));
                 break;
             }
+            let step = {
+                let mut cooldowns = self.cooldowns.lock().unwrap_or_else(|e| e.into_inner());
+                router.on_failure(action, &mut cooldowns, Instant::now())
+            };
+            let class = match step {
+                Step::GiveUp => {
+                    self.sink.debug("error", &format!("giving up: {}", reason));
+                    self.sink.status("error", Some(reason));
+                    return;
+                }
+                // Another region (or the same one once more) right away: no backoff.
+                Step::Now { switched } => {
+                    if let (Some((from, why)), Some(to)) = (switched, router.current()) {
+                        self.sink.region_switched(&from, &to.region, why);
+                    }
+                    self.sink.debug("warn", &format!("{} — trying {} now", reason,
+                        router.current().map_or("nothing", |t| t.region.as_str())));
+                    continue;
+                }
+                Step::Backoff { class } => class,
+            };
             let delay = match backoff.next_delay(class, Instant::now()) {
                 Some(delay) => delay,
                 None if class == RetryClass::Fatal => {
@@ -659,13 +825,17 @@ impl Session {
         audio_rx: &mut mpsc::Receiver<AudioChunk>,
         framer: &mut Framer,
         pending: &mut VecDeque<Frame>,
+        replay: &mut VecDeque<Frame>,
         audio_open: &mut bool,
     ) -> Ended {
         let (mut write, mut read) = ws.split();
         if let Err(e) = write.send(Message::Text(self.start_message.clone().into())).await {
-            return Ended::Lost(RetryClass::Retry, format!("couldn't send the start message: {}", e));
+            return Ended::Lost(transport(RetryClass::Retry), format!("couldn't send the start message: {}", e), false);
         }
         let connected_at = Instant::now();
+        // Results came: the connection works (failures after it reconnect to the same region).
+        let mut got_results = false;
+        let held = |got_results: bool| got_results || connected_at.elapsed() >= HELD_AFTER;
         self.sink.status("connected", None);
         self.sink.debug("info", &format!("connected (connection {})", connection));
 
@@ -680,8 +850,10 @@ impl Session {
         while let Some(frame) = pending.pop_front() {
             let samples = frame.samples;
             let end_ms = frame.captured_end_ms;
+            remember(replay, &frame);
             if let Err(e) = write.send(Message::Binary(frame.bytes.into())).await {
-                return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry, format!("write failed: {}", e)).await;
+                return self.lost(&mut assembler, connection, &timeline, transport(RetryClass::Retry),
+                    format!("write failed: {}", e), held(got_results)).await;
             }
             timeline.sent(samples, end_ms);
             last_sent = Instant::now();
@@ -702,6 +874,10 @@ impl Session {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
+            // Held: what it was sent is safe, no need to keep copies.
+            if !replay.is_empty() && held(got_results) {
+                replay.clear();
+            }
             tokio::select! {
                 message = read.next() => {
                     let now = Instant::now();
@@ -713,6 +889,7 @@ impl Session {
                             protocol::parse_server_message(text.as_str())
                         } {
                             Ok(ServerMessage::Tokens { tokens, finished, .. }) => {
+                                got_results = true;
                                 let events = assembler.on_tokens(&tokens, now);
                                 self.emit(events, connection, &timeline).await;
                                 if finished {
@@ -720,8 +897,8 @@ impl Session {
                                         self.emit(assembler.flush(now), connection, &timeline).await;
                                         return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                                     }
-                                    return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry,
-                                        "Soniox ended the stream".to_string()).await;
+                                    return self.lost(&mut assembler, connection, &timeline, transport(RetryClass::Retry),
+                                        "Soniox ended the stream".to_string(), held(got_results)).await;
                                 }
                                 // Due for a new connection: right after a sentence ended.
                                 let up = now.duration_since(connected_at);
@@ -732,7 +909,11 @@ impl Session {
                                 }
                             }
                             Ok(ServerMessage::Error(err)) => {
-                                let class = protocol::classify_error(&err);
+                                // Early (right after the handshake): the region's answer decides
+                                // (full, down, key refused…). Later: reconnect there first.
+                                let action = regions::action_for_error(&err);
+                                let held = held(got_results);
+                                let action = if held { regions::mid_session(action) } else { action };
                                 let reason = format!(
                                     "Soniox {}{}: {}",
                                     err.code.map(|c| c.to_string()).unwrap_or_default(),
@@ -744,7 +925,7 @@ impl Session {
                                     self.emit(assembler.flush(now), connection, &timeline).await;
                                     return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                                 }
-                                return self.lost(&mut assembler, connection, &timeline, class, reason).await;
+                                return self.lost(&mut assembler, connection, &timeline, action, reason, held).await;
                             }
                             Err(e) => self.sink.debug("warn", &format!("unreadable message: {}", e)),
                         },
@@ -759,7 +940,8 @@ impl Session {
                                 Some(f) => format!("closed by Soniox ({})", u16::from(f.code)),
                                 None => "closed by Soniox".to_string(),
                             };
-                            return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(code), reason).await;
+                            return self.lost(&mut assembler, connection, &timeline, transport(protocol::classify_close(code)),
+                                reason, held(got_results)).await;
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => {
@@ -767,16 +949,16 @@ impl Session {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
                                 return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                             }
-                            return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
-                                format!("connection error: {}", e)).await;
+                            return self.lost(&mut assembler, connection, &timeline, transport(protocol::classify_close(None)),
+                                format!("connection error: {}", e), held(got_results)).await;
                         }
                         None => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
                                 return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                             }
-                            return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
-                                "connection dropped".to_string()).await;
+                            return self.lost(&mut assembler, connection, &timeline, transport(protocol::classify_close(None)),
+                                "connection dropped".to_string(), held(got_results)).await;
                         }
                     }
                 }
@@ -788,9 +970,12 @@ impl Session {
                             for frame in framer.push(&chunk) {
                                 let samples = frame.samples;
                                 let end_ms = frame.captured_end_ms;
+                                if !held(got_results) {
+                                    remember(replay, &frame);
+                                }
                                 if let Err(e) = write.send(Message::Binary(frame.bytes.into())).await {
-                                    return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry,
-                                        format!("write failed: {}", e)).await;
+                                    return self.lost(&mut assembler, connection, &timeline, transport(RetryClass::Retry),
+                                        format!("write failed: {}", e), held(got_results)).await;
                                 }
                                 timeline.sent(samples, end_ms);
                                 last_sent = Instant::now();
@@ -842,8 +1027,8 @@ impl Session {
                     // Muted (no audio fed) or a quiet source: keep the session alive.
                     if now.duration_since(last_sent) >= KEEPALIVE_AFTER {
                         if let Err(e) = write.send(Message::Text(protocol::KEEPALIVE_MESSAGE.into())).await {
-                            return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry,
-                                format!("keepalive failed: {}", e)).await;
+                            return self.lost(&mut assembler, connection, &timeline, transport(RetryClass::Retry),
+                                format!("keepalive failed: {}", e), held(got_results)).await;
                         }
                         last_sent = now;
                     }
@@ -874,11 +1059,12 @@ impl Session {
         assembler: &mut Assembler,
         connection: u32,
         timeline: &Timeline,
-        class: RetryClass,
+        action: RegionAction,
         reason: String,
+        held: bool,
     ) -> Ended {
         self.emit(assembler.flush(Instant::now()), connection, timeline).await;
-        Ended::Lost(class, reason)
+        Ended::Lost(action, reason, held)
     }
 
     async fn emit(&self, events: Vec<AssemblerEvent>, connection: u32, timeline: &Timeline) {
@@ -955,6 +1141,25 @@ fn finished_as(rotating: bool, has_audio: bool) -> Ended {
 }
 
 /// Keep frames for the next connection (the oldest audio goes past 10 s).
+/// Keep a copy of a frame sent on a connection that hasn't held yet: if it
+/// fails early (region full, key refused…), the next connection gets it again.
+fn remember(replay: &mut VecDeque<Frame>, frame: &Frame) {
+    replay.push_back(frame.clone());
+    if replay.len() > PENDING_MAX_FRAMES {
+        replay.pop_front();
+    }
+}
+
+/// An early failure: the frames the failed connection got go out again first.
+fn restore(pending: &mut VecDeque<Frame>, replay: &mut VecDeque<Frame>) {
+    let mut frames: VecDeque<Frame> = replay.drain(..).collect();
+    frames.extend(pending.drain(..));
+    while frames.len() > PENDING_MAX_FRAMES {
+        frames.pop_front();
+    }
+    *pending = frames;
+}
+
 fn queue_frames(pending: &mut VecDeque<Frame>, frames: Vec<Frame>) {
     for frame in frames {
         pending.push_back(frame);
@@ -996,26 +1201,21 @@ async fn drain_until_closed(
 
 /// Open the WebSocket with the key in the handshake (marked sensitive, so it
 /// never shows up in logs). Handshake refusals are classified by HTTP status.
-async fn connect(url: &str, api_key: &str) -> Result<SonioxSocket, (RetryClass, String)> {
+async fn connect(url: &str, api_key: &str) -> Result<SonioxSocket, (ConnectFailure, String)> {
     let mut request = url
         .into_client_request()
-        .map_err(|e| (RetryClass::Fatal, format!("invalid Soniox WebSocket URL: {}", e)))?;
+        .map_err(|e| (ConnectFailure::Invalid, format!("invalid Soniox WebSocket URL: {}", e)))?;
     let mut auth = HeaderValue::from_str(&format!("Bearer {}", api_key))
-        .map_err(|_| (RetryClass::Fatal, "the Soniox API key contains invalid characters".to_string()))?;
+        .map_err(|_| (ConnectFailure::Invalid, "the Soniox API key contains invalid characters".to_string()))?;
     auth.set_sensitive(true);
     request.headers_mut().insert(AUTHORIZATION, auth);
     match tokio_tungstenite::connect_async(request).await {
         Ok((ws, _response)) => Ok(ws),
         Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
             let status = response.status().as_u16();
-            let class = match status {
-                408 | 500..=599 => RetryClass::Retry,
-                429 => RetryClass::RateLimited,
-                _ => RetryClass::Fatal,
-            };
-            Err((class, format!("Soniox refused the connection (HTTP {})", status)))
+            Err((ConnectFailure::Http(status), format!("Soniox refused the connection (HTTP {})", status)))
         }
-        Err(e) => Err((RetryClass::Retry, format!("couldn't connect to Soniox: {}", e))),
+        Err(e) => Err((ConnectFailure::Network, format!("couldn't connect to Soniox: {}", e))),
     }
 }
 
@@ -1116,6 +1316,8 @@ mod tests {
         debugs: Mutex<Vec<String>>,
         translations: Mutex<Vec<TranslationEvent>>,
         speakers: Mutex<Vec<String>>,
+        regions: Mutex<Vec<String>>,
+        switches: Mutex<Vec<(String, String, SwitchReason)>>,
     }
 
     impl TestSink {
@@ -1136,6 +1338,12 @@ mod tests {
         }
         fn speaker_detected(&self, speaker_id: &str) {
             self.speakers.lock().unwrap().push(speaker_id.to_string());
+        }
+        fn region(&self, region: &str) {
+            self.regions.lock().unwrap().push(region.to_string());
+        }
+        fn region_switched(&self, from: &str, to: &str, reason: SwitchReason) {
+            self.switches.lock().unwrap().push((from.to_string(), to.to_string(), reason));
         }
     }
 
@@ -1321,6 +1529,151 @@ mod tests {
             (auth, start, binary_frames)
         });
         (url, server)
+    }
+
+    /// A region that refuses every connection with `error` right after the
+    /// start message; counts the connections it got.
+    async fn refusing_region(error: &'static str) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { continue };
+                let _ = ws.next().await; // start message
+                let _ = ws.send(Message::Text(error.into())).await;
+                let _ = ws.close(None).await;
+            }
+        });
+        (url, count)
+    }
+
+    /// An ordered two-region session ("us" then "eu") on local servers, with its own cooldowns.
+    fn two_regions(us: &str, eu: &str, sink: Arc<TestSink>) -> (SonioxSTT, &'static Mutex<Cooldowns>) {
+        let config: SonioxConfig = serde_json::from_value(serde_json::json!({
+            "region_mode": "ordered",
+            "regions": [{"id": "us", "enabled": true}, {"id": "eu", "enabled": true}],
+        }))
+        .unwrap();
+        let mut p = SonioxSTT::new(config, None, options(None));
+        p.sink = Some(sink);
+        p.region_keys = Some(RegionKeys {
+            per_region: [("us".to_string(), "key-us".to_string()), ("eu".to_string(), "key-eu".to_string())].into(),
+            legacy: None,
+            legacy_region: "us".into(),
+        });
+        p.region_ws_urls = Some([("us".to_string(), us.to_string()), ("eu".to_string(), eu.to_string())].into());
+        p.latency_override = Some(LatencyTable::default());
+        let cooldowns: &'static Mutex<Cooldowns> = Box::leak(Box::new(Mutex::new(Cooldowns::default())));
+        p.cooldowns = Some(cooldowns);
+        (p, cooldowns)
+    }
+
+    const HELLO: &str = r#"{"tokens":[{"text":"Hello","start_ms":0,"end_ms":300,"is_final":true},{"text":"<end>","is_final":true}]}"#;
+
+    async fn first_final(rx: &mut mpsc::Receiver<TranscriptResult>) -> TranscriptResult {
+        loop {
+            let r = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("a result").expect("open");
+            if r.is_final {
+                return r;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_region_hands_the_session_to_the_next_one() {
+        let (us, us_hits) = refusing_region(
+            r#"{"tokens":[],"error_code":429,"error_type":"max_concurrent_connections_reached","error_message":"Project concurrency limit reached"}"#,
+        )
+        .await;
+        let (eu, eu_server) = fake_soniox(vec![HELLO.to_string()]).await;
+        let sink = Arc::new(TestSink::default());
+        let (mut p, cooldowns) = two_regions(&us, &eu, sink.clone());
+        let (tx, mut rx) = mpsc::channel(32);
+        p.start_stream(tx).await.unwrap();
+        for i in 0..20u64 {
+            p.feed_audio(chunk(100, 160, 70_000 + (i + 1) * 10)).await.unwrap();
+        }
+        let line = first_final(&mut rx).await;
+        assert_eq!(line.text, "Hello");
+        p.stop_stream().await.unwrap();
+
+        assert_eq!(*sink.switches.lock().unwrap(), vec![("us".to_string(), "eu".to_string(), SwitchReason::Concurrency)]);
+        assert_eq!(*sink.regions.lock().unwrap(), vec!["us".to_string(), "eu".to_string()]);
+        assert_eq!(us_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(cooldowns.lock().unwrap().is_cooling("us", Instant::now()));
+        let (auth, _, _) = eu_server.await.unwrap();
+        assert_eq!(auth.as_deref(), Some("Bearer key-eu"));
+    }
+
+    #[tokio::test]
+    async fn an_organization_limit_waits_instead_of_trying_another_region() {
+        let (us, us_hits) = refusing_region(
+            r#"{"tokens":[],"error_code":429,"error_type":"limit_exceeded","error_message":"Organization request limit exceeded"}"#,
+        )
+        .await;
+        let (eu, eu_hits) = refusing_region(r#"{"tokens":[],"error_code":500,"error_type":"internal_error","error_message":""}"#).await;
+        let sink = Arc::new(TestSink::default());
+        let (mut p, cooldowns) = two_regions(&us, &eu, sink.clone());
+        let (tx, _rx) = mpsc::channel(32);
+        p.start_stream(tx).await.unwrap();
+        for i in 0..20u64 {
+            p.feed_audio(chunk(100, 160, 80_000 + (i + 1) * 10)).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Backing off (≥ 20 s): no other region, no switch notice, no cooldown.
+        assert_eq!(eu_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(us_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(sink.switches.lock().unwrap().is_empty());
+        assert!(!cooldowns.lock().unwrap().is_cooling("us", Instant::now()));
+        let reconnecting = sink.statuses.lock().unwrap().iter().any(|(s, m)| {
+            s == "reconnecting" && m.as_deref().is_some_and(|m| m.contains("Organization request limit"))
+        });
+        assert!(reconnecting, "{:?}", sink.statuses.lock().unwrap());
+        // Stopping during the wait ends the session at once.
+        tokio::time::timeout(Duration::from_secs(2), p.stop_stream()).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_key_skips_its_region() {
+        let (us, us_hits) = refusing_region(
+            r#"{"tokens":[],"error_code":401,"error_type":"unauthenticated","error_message":"Invalid API key"}"#,
+        )
+        .await;
+        let (eu, _eu_server) = fake_soniox(vec![HELLO.to_string()]).await;
+        let sink = Arc::new(TestSink::default());
+        let (mut p, cooldowns) = two_regions(&us, &eu, sink.clone());
+        let (tx, mut rx) = mpsc::channel(32);
+        p.start_stream(tx).await.unwrap();
+        for i in 0..20u64 {
+            p.feed_audio(chunk(100, 160, 90_000 + (i + 1) * 10)).await.unwrap();
+        }
+        assert_eq!(first_final(&mut rx).await.text, "Hello");
+        p.stop_stream().await.unwrap();
+        assert_eq!(*sink.switches.lock().unwrap(), vec![("us".to_string(), "eu".to_string(), SwitchReason::KeyRejected)]);
+        assert_eq!(us_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Not a full region: no cooldown for it.
+        assert!(!cooldowns.lock().unwrap().is_cooling("us", Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn no_key_for_the_allowed_regions_fails_to_start() {
+        let config: SonioxConfig = serde_json::from_value(serde_json::json!({
+            "region_mode": "ordered",
+            "regions": [{"id": "jp", "enabled": true}, {"id": "us", "enabled": false}],
+        }))
+        .unwrap();
+        let mut p = SonioxSTT::new(config, None, options(None));
+        p.region_keys = Some(RegionKeys {
+            per_region: [("us".to_string(), "key-us".to_string())].into(),
+            legacy: Some("old".into()),
+            legacy_region: "us".into(),
+        });
+        let (tx, _rx) = mpsc::channel(32);
+        let err = p.start_stream(tx).await.unwrap_err().to_string();
+        assert!(err.contains("No Soniox key"), "{}", err);
     }
 
     #[tokio::test]

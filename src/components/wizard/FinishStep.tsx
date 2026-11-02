@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, FileText, Keyboard, Mic, PartyPopper, RefreshCw, Rocket } from "lucide-react";
 import { UI_LANGUAGE_NAMES, resolveUiLanguage, useT, useUiLanguage } from "../../i18n";
-import { hasApiKey, listLocalSTTEngines } from "../../lib/ipc";
+import { listLocalSTTEngines } from "../../lib/ipc";
 import { ONBOARDING_STEPS, statusOf } from "../../lib/onboarding/progress";
 import {
   canStartMeeting,
@@ -15,7 +15,9 @@ import {
   type SttReadiness,
 } from "../../lib/onboarding/readiness";
 import { currentPlatform } from "../../lib/platform";
+import { hasSttKeySlot } from "../../lib/stt/keys";
 import { STT_LABELS } from "../../lib/stt/providerMeta";
+import { sonioxKeyScope } from "../../settings/stt/sonioxRegions";
 import { useConfigStore } from "../../stores/configStore";
 import { useMeetingStore } from "../../stores/meetingStore";
 import { useOnboardingStore } from "../../stores/onboardingStore";
@@ -54,6 +56,8 @@ const READINESS_TONE: Record<PartyReadiness, string> = {
 /** Checks the speech recognition settings when the step shows and whenever they change. */
 function useSttReadiness() {
   const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
+  // Soniox's key depends on the regions its settings may use.
+  const sonioxKeys = useConfigStore((s) => sonioxKeyScope(s.sonioxConfig));
   const [readiness, setReadiness] = useState<SttReadiness | null>(null);
   const [checking, setChecking] = useState(false);
   const latest = useRef(0);
@@ -65,7 +69,7 @@ function useSttReadiness() {
     let engines: ReturnType<typeof listLocalSTTEngines> | undefined;
     const ctx: ReadinessContext = {
       platform: currentPlatform(),
-      hasKey: hasApiKey,
+      hasKey: hasSttKeySlot,
       downloadedModels: async (engine) => {
         engines ??= listLocalSTTEngines();
         const found = (await engines).find((e) => e.engine === engine);
@@ -85,7 +89,7 @@ function useSttReadiness() {
 
   useEffect(() => {
     void check();
-  }, [check, meetingAudioConfig]);
+  }, [check, meetingAudioConfig, sonioxKeys]);
 
   return { readiness, checking, check, meetingAudioConfig };
 }

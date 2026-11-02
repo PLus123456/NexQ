@@ -12,12 +12,23 @@ import type {
   STTProviderType,
 } from "../lib/types";
 
+// Whether a region the Soniox settings may use has a key (`soniox_key_status`); null = no answer.
+const sonioxKeys = vi.hoisted(() => ({ anyEnabled: null as boolean | null }));
+
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 // A backend without the LLM connection commands (the old provider picker shows),
 // unless a test puts a view into the connections store itself.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (cmd: string) => {
     if (cmd.startsWith("llm_")) throw `command ${cmd} not found`;
+    if (cmd === "soniox_key_status" && sonioxKeys.anyEnabled !== null) {
+      return JSON.stringify({
+        regions: { us: false, eu: false, jp: sonioxKeys.anyEnabled, in: false },
+        legacy: false,
+        legacy_region: "us",
+        any_enabled: sonioxKeys.anyEnabled,
+      });
+    }
     return null;
   },
 }));
@@ -49,6 +60,7 @@ import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useSpeakerStore } from "../stores/speakerStore";
 import { useStreamStore } from "../stores/streamStore";
+import { useSttRegionStore } from "../stores/sttRegionStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { resetLlmConnectionsStoreForTests, useLlmConnectionsStore } from "../stores/llmConnectionsStore";
@@ -110,6 +122,8 @@ beforeEach(() => {
   useUpdaterStore.getState().reset();
   useToastStore.setState({ toasts: [] });
   resetLlmConnectionsStoreForTests();
+  sonioxKeys.anyEnabled = null;
+  useSttRegionStore.getState().clear();
 });
 
 afterEach(async () => {
@@ -185,6 +199,20 @@ describe("ServiceStatusBar text", () => {
     expect(screen.getByText("现场")).toBeInTheDocument();
     expect(screen.getByTitle("现场语音识别：Deepgram")).toBeInTheDocument();
     expect(screen.getByText("检测到 3 位说话人")).toBeInTheDocument();
+  });
+
+  it("names the Soniox region a party is connected to in its chip's tooltip", async () => {
+    useConfigStore.setState({ meetingAudioConfig: audioConfig("web_speech", "soniox") });
+    useSttRegionStore.getState().setRegion("Them", "jp");
+    useSttRegionStore.getState().setRegion("You", "us"); // not Soniox: nothing to name
+    const { unmount } = render(<ServiceStatusBar />);
+    expect(screen.getByTitle("Their STT: Soniox · Japan")).toBeInTheDocument();
+    expect(screen.getByTitle("Your STT: Web Speech")).toBeInTheDocument();
+    unmount();
+
+    await changeUiLanguage("zh-CN");
+    render(<ServiceStatusBar />);
+    expect(screen.getByTitle("对方的语音识别：Soniox · 日本")).toBeInTheDocument();
   });
 
   it("translates the Custom provider, not product names", async () => {
@@ -267,6 +295,28 @@ describe("LLM picker text", () => {
     render(<ServiceStatusBar />);
     await openPicker("AI 模型：unset / —");
     expect(screen.getByText("还没有验证通过的服务商，请先到设置里测试连接")).toBeInTheDocument();
+  });
+});
+
+describe("STT picker keys", () => {
+  beforeEach(() => {
+    useConfigStore.setState({ meetingAudioConfig: audioConfig("web_speech", "deepgram") });
+    useMeetingStore.setState({ isRecording: true });
+  });
+
+  it("offers Soniox once a region its settings may use has a key", async () => {
+    sonioxKeys.anyEnabled = true;
+    render(<ServiceStatusBar />);
+    fireEvent.click(screen.getByTitle("Their STT: Deepgram"));
+    expect(await screen.findByRole("button", { name: "Soniox" })).toBeInTheDocument();
+  });
+
+  it("leaves Soniox out when none of those regions has a key", async () => {
+    sonioxKeys.anyEnabled = false;
+    render(<ServiceStatusBar />);
+    fireEvent.click(screen.getByTitle("Their STT: Deepgram"));
+    expect(await screen.findByRole("button", { name: /^Sherpa-ONNX/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Soniox" })).toBeNull();
   });
 });
 

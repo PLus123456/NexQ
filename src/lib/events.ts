@@ -179,6 +179,8 @@ export interface STTConnectionStatusEvent {
   party: string;
   status: string; // "connecting", "connected", "error", "disconnected", "reconnecting"
   message?: string;
+  /** Soniox: the region of the connection ("us" | "eu" | "jp" | "in" | "custom"); as in lib/types. */
+  region?: string;
 }
 
 export interface STTDebugEvent {

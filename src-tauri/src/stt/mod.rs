@@ -21,6 +21,7 @@ pub mod openai_compat;
 pub mod plus_config;
 pub mod soniox;
 pub mod soniox_protocol;
+pub mod soniox_regions;
 
 use provider::{STTProvider, STTProviderType, TranscriptResult};
 use serde::Serialize;

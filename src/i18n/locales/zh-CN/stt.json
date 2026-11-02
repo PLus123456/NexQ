@@ -545,21 +545,94 @@
     "description": "实时识别，并在同一条流里同步翻译。我和对方各用一个会话。",
     "key": {
       "label": "API Key",
-      "placeholder": "输入 Soniox API Key",
-      "savedPlaceholder": "已保存，输入新 Key 可替换",
-      "saved": "已安全保存在本机，不会再显示。",
-      "notSaved": "还没有保存 Key。"
+      "placeholder": "粘贴 Soniox API Key",
+      "add": "添加 Key",
+      "adding": "正在识别区域…",
+      "hint": "会询问每个区域是否接受这个 Key，并保存到接受它的区域；保存后不会再显示。",
+      "notSaved": "还没有保存 Key。",
+      "savedFor": "已保存 Key 的区域：{{regions}}",
+      "legacyName": "{{region}}（旧版本存的）",
+      "added": {
+        "enabled": "已保存为{{region}}的 Key，并已启用该区域。",
+        "fixed": "已保存为{{region}}的 Key，并已改用该区域。",
+        "saved": "已保存为{{region}}的 Key。"
+      },
+      "unclear": {
+        "title": "无法确定这个 Key 属于哪个区域。各区域的回应：",
+        "answer": "{{region}}：{{answer}}",
+        "pick": "请选择这个 Key 所属的区域来保存："
+      },
+      "answers": {
+        "accepted": "{{status}}，接受这个 Key",
+        "forbidden": "403，接受这个 Key（没有列出模型的权限）",
+        "rejected": "401，不是这个区域",
+        "status": "HTTP {{status}}",
+        "none": "没有回应"
+      }
     },
     "region": {
       "label": "区域",
-      "hint": "请选择 Key 所属 Soniox 项目的区域：Key 只能在自己的区域使用。",
+      "hint": "请选择 Key 所属 Soniox 项目的区域：Key 只能在自己的区域使用。"
+    },
+    "regionNames": {
+      "us": "美国",
+      "eu": "欧盟",
+      "jp": "日本",
+      "in": "印度",
+      "custom": "自定义地址"
+    },
+    "regionInText": {
+      "us": "美国区",
+      "eu": "欧盟区",
+      "jp": "日本区",
+      "in": "印度区",
+      "custom": "自定义地址"
+    },
+    "mode": {
+      "label": "区域选择",
       "options": {
-        "us": "美国",
-        "eu": "欧盟",
-        "jp": "日本",
-        "in": "印度"
+        "fixed": "固定",
+        "auto": "自动",
+        "ordered": "按顺序"
+      },
+      "hints": {
+        "fixed": "只用一个区域：始终是下面选定的那个。",
+        "auto": "在已启用且有 Key 的区域里选最快的（开会时测速）。",
+        "ordered": "按下面你排的顺序使用已启用且有 Key 的区域：先用第一个，失败时再用下一个。"
       }
     },
+    "regions": {
+      "label": "区域",
+      "testLatency": "测速",
+      "enable": "启用{{region}}区",
+      "keyStatus": "Key：{{status}}",
+      "keyStates": {
+        "saved": "已保存",
+        "legacy": "已保存（旧版本存的）",
+        "none": "无",
+        "invalid": "无效"
+      },
+      "latency": "延迟：{{value}}",
+      "latencyMs": "{{ms}} 毫秒",
+      "test": "测试",
+      "testAria": "测试{{region}}区的 Key",
+      "deleteKey": "删除 Key",
+      "deleteAria": "删除{{region}}区的 Key",
+      "moveUp": "把{{region}}区上移",
+      "moveDown": "把{{region}}区下移",
+      "noneUsable": "还没有已启用且有 Key 的区域：请添加 Key，或启用一个已有 Key 的区域。"
+    },
+    "failover": {
+      "label": "失败时切换区域",
+      "hint": "某个区域并发已满、不可用或不接受 Key 时，改连下一个已启用且有 Key 的区域。"
+    },
+    "customEndpoint": "已设置自定义地址（高级）：会话会用{{region}}的 Key 连到这个地址，不再按区域选择。",
+    "access": "Soniox 的 Key 属于某个项目，一个项目只属于一个区域，所以每个区域都需要各自的 Key。美国以外的区域要先在 Soniox 控制台申请（Security & compliance → Request access）；印度区于 2026-08-31 开放，同样需要申请。并发上限分别按组织和按项目计算：另一个区域的项目只能帮你绕开项目的上限。",
+    "errors": {
+      "timeout": "超时",
+      "unreachable": "无法连接"
+    },
+    "listSeparator": "、",
     "model": {
       "label": "模型",
       "hint": "实时识别模型。点击刷新可以列出这个 Key 能用的模型。"
@@ -615,7 +688,17 @@
       }
     },
     "testKey": "测试 Key",
-    "cost": "Soniox 每识别一路约 0.12 美元/小时；开启翻译会按输出 token 另外计费。"
+    "cost": "Soniox 每识别一路约 0.12 美元/小时；开启翻译会按输出 token 另外计费。",
+    "switch": {
+      "concurrency": "{{party}}：{{from}}并发已满，改连{{to}}",
+      "unavailable": "{{party}}：{{from}}暂时不可用，改连{{to}}",
+      "model_not_available": "{{party}}：{{from}}没有这个模型，改连{{to}}",
+      "budget": "{{party}}：{{from}}项目的月度预算已用完，改连{{to}}",
+      "network": "{{party}}：连不上{{from}}，改连{{to}}",
+      "key_rejected": "{{party}}：{{from}}的 Key 被拒绝，改连{{to}}",
+      "internal_error": "{{party}}：{{from}}服务出错，改连{{to}}",
+      "other": "{{party}}：从{{from}}改连{{to}}"
+    }
   },
   "quickSetup": {
     "intro": "选择 {{appName}} 用什么识别你和对方的发言，以及识别语言。之后随时可以在设置里修改。",
@@ -652,7 +735,8 @@
       "modelReady": "{{engine}} 模型已下载。",
       "builtIn": "{{engine}} 为系统内置。",
       "keySaved": "已保存 {{engine}} 的 API Key。",
-      "needsKey": "{{engine}} 还没有保存 API Key，请到“设置 → {{tab}}”里添加。"
+      "needsKey": "{{engine}} 还没有保存 API Key，请到“设置 → {{tab}}”里添加。",
+      "sonioxNoKey": "还没有可用区域的 Soniox Key，请在上方添加。"
     },
     "summary": {
       "each": "对方 {{them}}，我 {{you}}",
