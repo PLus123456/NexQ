@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   RagConfig,
   RagIndexStatus,
+  RagRerankReport,
   RagSearchResult,
   OllamaEmbeddingStatus,
 } from "../lib/types";
@@ -20,9 +21,11 @@ import {
   ragGetIndexInfo,
   ragGetSettings,
   ragRebuildIndex,
+  ragSetRerankSecret,
   ragSetSecret,
   ragSyncIndex,
   ragTestEmbedding,
+  ragTestRerank,
   ragUpdateConfig,
 } from "../lib/rag/ipc";
 import { onRagConfigChanged, onRagIndexProgressFull } from "../lib/rag/events";
@@ -33,6 +36,7 @@ import {
   type IndexProgressEvent,
   type RagConfigPatch,
   type RagSettingsView,
+  type RerankTestResult,
 } from "../lib/rag/types";
 import { t } from "../i18n";
 import { useConfigStore } from "./configStore";
@@ -67,12 +71,16 @@ interface RagState {
   isPullingModel: boolean;
   pullProgress: PullProgress | null;
   testSearchResults: RagSearchResult[];
+  /** What reranking did in the last test search (null: off). */
+  testSearchRerank: RagRerankReport | null;
   isSearching: boolean;
   searchLatencyMs: number | null;
   error: string | null;
   isCheckingConnection: boolean;
   embeddingTest: EmbedTestResult | null;
   isTestingEmbedding: boolean;
+  rerankTest: RerankTestResult | null;
+  isTestingRerank: boolean;
 
   // The index needs a rebuild (model or chunk settings changed).
   indexStale: boolean;
@@ -85,6 +93,8 @@ interface RagState {
   updateConfig: (patch: RagConfigPatch) => Promise<RagSettingsView | null>;
   setSecret: (secret: string | null) => Promise<void>;
   testEmbedding: (draft?: RagConfigPatch) => Promise<EmbedTestResult | null>;
+  setRerankSecret: (secret: string | null) => Promise<void>;
+  testRerank: (draft?: RagConfigPatch) => Promise<RerankTestResult>;
   refreshIndexInfo: () => Promise<void>;
   syncIndex: () => Promise<void>;
   rebuildWithCurrentSettings: () => Promise<void>;
@@ -142,12 +152,15 @@ export const useRagStore = create<RagState>((set, get) => ({
   isPullingModel: false,
   pullProgress: null,
   testSearchResults: [],
+  testSearchRerank: null,
   isSearching: false,
   searchLatencyMs: null,
   error: null,
   isCheckingConnection: false,
   embeddingTest: null,
   isTestingEmbedding: false,
+  rerankTest: null,
+  isTestingRerank: false,
   indexStale: false,
   sourcesChangedSinceBuild: false,
   isAutoIndexing: false,
@@ -214,6 +227,29 @@ export const useRagStore = create<RagState>((set, get) => ({
       set({ embeddingTest: result, isTestingEmbedding: false });
       return result;
     }
+  },
+
+  setRerankSecret: async (secret) => {
+    try {
+      const view = await ragSetRerankSecret(secret);
+      set({ settings: view, ragConfig: view.config, error: null });
+      showToast(t(secret ? "rag:toasts.keySaved" : "rag:toasts.keyCleared"), "success");
+    } catch (e) {
+      set({ error: message(e) });
+      showToast(t("rag:toasts.keyFailed", { detail: message(e) }), "error");
+    }
+  },
+
+  testRerank: async (draft) => {
+    set({ isTestingRerank: true, rerankTest: null });
+    let result: RerankTestResult;
+    try {
+      result = await ragTestRerank(draft);
+    } catch (e) {
+      result = { ok: false, url: "", latency_ms: 0, ranked_correctly: null, error: message(e), error_kind: "config" };
+    }
+    set({ rerankTest: result, isTestingRerank: false });
+    return result;
   },
 
   refreshIndexInfo: async () => {
@@ -375,10 +411,15 @@ export const useRagStore = create<RagState>((set, get) => ({
   testSearch: async (query: string) => {
     try {
       const start = performance.now();
-      set({ isSearching: true, error: null, testSearchResults: [], searchLatencyMs: null });
-      const results = await ipcTestRagSearch(query);
+      set({ isSearching: true, error: null, testSearchResults: [], testSearchRerank: null, searchLatencyMs: null });
+      const outcome = await ipcTestRagSearch(query);
       const latency = Math.round(performance.now() - start);
-      set({ testSearchResults: results, isSearching: false, searchLatencyMs: latency });
+      set({
+        testSearchResults: outcome.chunks,
+        testSearchRerank: outcome.rerank ?? null,
+        isSearching: false,
+        searchLatencyMs: latency,
+      });
     } catch (e) {
       console.error("[ragStore] Failed to test search:", e);
       set({
@@ -402,6 +443,7 @@ export const useRagStore = create<RagState>((set, get) => ({
 
   resetTestSearch: () => set({
     testSearchResults: [],
+    testSearchRerank: null,
     error: null,
     isSearching: false,
     searchLatencyMs: null,

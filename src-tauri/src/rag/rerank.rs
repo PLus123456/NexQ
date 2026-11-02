@@ -179,6 +179,31 @@ impl Breaker {
     }
 }
 
+/// What reranking did in one search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RerankStatus {
+    /// The results are in the reranker's order.
+    Applied,
+    /// The request failed or timed out: the fusion order was kept.
+    Failed,
+    /// Skipped after repeated failures: the fusion order was kept.
+    Paused,
+    /// Turned on without a usable address or model: the fusion order was kept.
+    Unconfigured,
+}
+
+/// Reranking in one search, for the test dialog.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RerankReport {
+    pub status: RerankStatus,
+    /// Candidates sent (0 when nothing was sent).
+    pub candidates: usize,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+    pub error_kind: Option<String>,
+}
+
 /// Result of the settings page's rerank "Test" button.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RerankTestResult {

@@ -217,6 +217,53 @@
       "addV1Action": "补上 /v1"
     }
   },
+  "rerank": {
+    "title": "重排序（rerank）",
+    "description": "可选的第二步：把融合检索排在前面的结果交给重排序模型，按和问题的相关程度重新排序。出错或超时会沿用融合后的顺序，回答照常进行。",
+    "unsaved": "有未保存的修改",
+    "enabled": "对检索结果重排序",
+    "enabledHint": "每次检索最多把 {{count}} 个文本块和问题发送给重排序服务。",
+    "incomplete": "还没填 Base URL（或选择连接）和模型，在此之前检索会沿用融合后的顺序。",
+    "connection": {
+      "label": "连接",
+      "own": "单独填写地址和 Key",
+      "hint": "复用某个 OpenAI 兼容 LLM 连接的地址、Key 和请求头，请求发到它的 Base URL + /rerank。"
+    },
+    "model": {
+      "label": "模型",
+      "placeholder": "例如 BAAI/bge-reranker-v2-m3",
+      "teiHint": "TEI 只加载一个模型，可以不填模型名。"
+    },
+    "format": {
+      "label": "请求格式",
+      "generic": "通用",
+      "tei": "TEI",
+      "hint": "通用格式发送 {model, query, documents, top_n}，适用于 Jina、Cohere、硅基流动、Xinference、vLLM、LocalAI 和大多数在线服务。TEI 格式发送 {query, texts}，适用于 Hugging Face Text Embeddings Inference。"
+    },
+    "candidates": {
+      "label": "候选条数",
+      "hint": "送去重排序的融合结果条数（不少于返回条数）。越多越可能找到更相关的段落，但更慢。"
+    },
+    "timeout": {
+      "label": "超时（毫秒）",
+      "hint": "超过这个时间就沿用融合后的顺序。会议中建议 1000–3000 毫秒。"
+    },
+    "actions": {
+      "revert": "放弃修改"
+    },
+    "confirm": {
+      "privacy": "检索到的文档片段和你的问题会发送到 {{host}} 做重排序。",
+      "privacyAction": "确认并保存"
+    },
+    "test": {
+      "ok": "连接成功 · {{ms}} ms",
+      "failed": "测试失败",
+      "url": "请求地址",
+      "rankedCorrectly": "相关的测试段落排在了第一位。",
+      "rankedWrong": "相关的测试段落没有排在第一位，请检查模型和请求格式。",
+      "slow": "这次用了 {{ms}} ms，超过了 {{timeout}} ms 的超时设置，检索时会沿用融合后的顺序。"
+    }
+  },
   "index": {
     "title": "索引状态",
     "state": {
@@ -399,6 +446,18 @@
         "copyChunk": {
           "title": "复制文本块"
         }
+      },
+      "rerank": {
+        "chip": "重排序：{{model}}",
+        "chipOn": "重排序已开启",
+        "chipTitle": "已开启重排序",
+        "applied_other": "已重排 · {{count}} 条候选 · {{ms}} ms",
+        "failed": "重排序失败，已沿用融合顺序",
+        "paused": "重排序连续失败、暂停中，已沿用融合顺序",
+        "unconfigured": "重排序已开启但无法使用，已沿用融合顺序",
+        "scoreTitle": "重排分数",
+        "was": "原第 {{rank}}",
+        "wasTitle": "融合后、重排前的名次（融合分数 {{score}}）"
       },
       "templateQueries": {
         "background": "这位候选人的教育背景是什么？",

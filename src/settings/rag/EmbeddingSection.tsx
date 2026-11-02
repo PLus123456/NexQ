@@ -9,6 +9,7 @@ import { formatNumber, useT } from "../../i18n";
 import { EndpointFields, type EndpointFieldsValue } from "../../components/EndpointFields";
 import { ModelCombobox, type ModelOption } from "../../components/ModelCombobox";
 import { addVersionPrefix, ENDPOINT_PATHS } from "../../lib/endpoint";
+import { consentedHosts, rememberConsent } from "../../lib/rag/consent";
 import {
   EMBEDDING_PRESETS,
   hostOf,
@@ -73,24 +74,6 @@ function editable(config: EmbeddingConfig): Editable {
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
-// Hosts the user agreed to send document text to (a per-computer convenience).
-const CONSENT_KEY = "nexq.rag.embeddingConsentHosts";
-function consentedHosts(): string[] {
-  try {
-    const raw = localStorage.getItem(CONSENT_KEY);
-    return raw ? (JSON.parse(raw) as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-function rememberConsent(host: string) {
-  try {
-    localStorage.setItem(CONSENT_KEY, JSON.stringify([...new Set([...consentedHosts(), host])]));
-  } catch {
-    // Private mode or blocked storage: ask again next time.
-  }
-}
 
 type Pending = { kind: "privacy"; host: string } | { kind: "rebuild"; chunks: number };
 
@@ -191,7 +174,7 @@ export function EmbeddingSection() {
   const save = async (confirmed: Pending["kind"][] = []) => {
     if (jsonErrors.query || jsonErrors.document || !savedEditable) return;
     const host = hostOf(effectiveBase);
-    if (!confirmed.includes("privacy") && host && !isLocalAddress(effectiveBase) && !consentedHosts().includes(host)) {
+    if (!confirmed.includes("privacy") && host && !isLocalAddress(effectiveBase) && !consentedHosts("embedding").includes(host)) {
       setPending({ kind: "privacy", host });
       return;
     }
@@ -201,7 +184,7 @@ export function EmbeddingSection() {
       setPending({ kind: "rebuild", chunks: indexInfo?.chunks ?? vectors });
       return;
     }
-    if (host && !isLocalAddress(effectiveBase)) rememberConsent(host);
+    if (host && !isLocalAddress(effectiveBase)) rememberConsent("embedding", host);
     setPending(null);
     setSaving(true);
     const view = await updateConfig(patchFromDraft());

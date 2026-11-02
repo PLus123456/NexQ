@@ -5,15 +5,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use super::embedding::test_server::{FakeServer, Reply};
 use super::embedding::RetryPolicy;
-use super::engine::{RagEngine, RagHost, ResourceInfo, SearchParams, VectorState};
+use super::engine::{RagEngine, RagHost, ResourceInfo, SearchOutcome, SearchParams, VectorState};
 use super::indexer::JobKind;
+use super::rerank::RerankStatus;
 use super::search::SearchMode;
+use crate::llm::api::LlmKind;
 use crate::net::endpoint::{ConnectionSummary, ResolvedConnection};
 
 #[derive(Default)]
@@ -23,6 +25,7 @@ struct FakeHost {
     secrets: Mutex<HashMap<String, String>>,
     meeting: AtomicBool,
     secret_reads: AtomicUsize,
+    connections: Mutex<Vec<ResolvedConnection>>,
 }
 
 impl RagHost for FakeHost {
@@ -51,7 +54,13 @@ impl RagHost for FakeHost {
         self.meeting.load(Ordering::SeqCst)
     }
     fn resolve_connection(&self, id: &str) -> Result<ResolvedConnection, String> {
-        Err(format!("no connection {id}"))
+        self.connections
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or_else(|| format!("no connection {id}"))
     }
     fn list_connections(&self) -> Vec<ConnectionSummary> {
         Vec::new()
@@ -525,4 +534,318 @@ async fn clear_empties_everything() {
     assert_eq!((info.documents, info.chunks, info.vectors), (0, 0, 0));
     assert!(info.active_space.is_none());
     assert!(f.search("预算", SearchMode::Hybrid).await.chunks.is_empty());
+}
+
+// ── Reranking ───────────────────────────────────────────────────────────────
+
+/// How relevant the fake reranker finds a text: the roadmap document (c)
+/// first, then the budget one (b), then the vector one (a).
+fn relevance(text: &str) -> f64 {
+    if text.contains("roadmap") {
+        0.9
+    } else if text.contains("预算") {
+        0.6
+    } else if text.contains("向量") {
+        0.3
+    } else {
+        0.1
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RerankCall {
+    path: String,
+    auth: Option<String>,
+    body: Value,
+}
+
+/// A fake `/rerank` service answering with `reply`; records every request.
+struct Reranker {
+    server: FakeServer,
+    calls: Arc<Mutex<Vec<RerankCall>>>,
+}
+
+async fn reranker(reply: impl Fn(&Value) -> Reply + Send + Sync + 'static) -> Reranker {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let seen = calls.clone();
+    let server = FakeServer::start(move |req| {
+        let body = req.json();
+        seen.lock().unwrap().push(RerankCall { path: req.path.clone(), auth: req.header("authorization"), body: body.clone() });
+        reply(&body)
+    })
+    .await;
+    Reranker { server, calls }
+}
+
+/// Jina / Cohere style: `results` best first, cut to `top_n`.
+fn generic_reply(body: &Value) -> Reply {
+    let docs = body["documents"].as_array().cloned().unwrap_or_default();
+    let mut results: Vec<Value> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| json!({"index": i, "relevance_score": relevance(d.as_str().unwrap_or_default())}))
+        .collect();
+    results.sort_by(|a, b| b["relevance_score"].as_f64().partial_cmp(&a["relevance_score"].as_f64()).unwrap());
+    if let Some(n) = body["top_n"].as_u64() {
+        results.truncate(n as usize);
+    }
+    Reply::json(200, json!({ "results": results }))
+}
+
+fn chunk_ids(out: &SearchOutcome) -> Vec<String> {
+    out.chunks.iter().map(|c| c.chunk_id.clone()).collect()
+}
+
+fn files(out: &SearchOutcome) -> Vec<&str> {
+    out.chunks.iter().map(|c| c.source_file.as_str()).collect()
+}
+
+#[tokio::test]
+async fn rerank_reorders_the_fused_results_with_the_key_from_the_keychain() {
+    let svc = service().await;
+    let rr = reranker(generic_reply).await;
+    let f = Fixture::new("rerank", &svc.server.base()).await;
+    f.sync().await;
+    let fused = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(fused.chunks[0].source_file, "b.txt");
+    let chunks = f.engine.index_info().await.chunks;
+
+    let c = f.engine.set_rerank_secret(Some("  rk-secret-1234  ")).unwrap();
+    assert!(c.rerank.key_saved);
+    assert_eq!(c.rerank.key_hint, "1234");
+    assert_eq!(f.host.secrets.lock().unwrap()["rag-rerank"], "rk-secret-1234");
+    assert!(!std::fs::read_to_string(f.engine.config_path()).unwrap().contains("rk-secret"), "the key is not in config.json");
+    f.engine
+        .update_config(&json!({"rerank": {"enabled": true, "base_url": format!("{}/v1", rr.server.base()), "model": "rr-model"}}))
+        .unwrap();
+
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(files(&out), vec!["c.txt", "b.txt", "a.txt"]);
+    let report = out.rerank.as_ref().expect("a rerank report");
+    assert_eq!(report.status, RerankStatus::Applied);
+    assert_eq!(report.candidates, chunks, "every fused chunk is a candidate (30 allowed)");
+    assert!(report.error.is_none());
+    // `score` is the reranker's; the fusion position and score are kept.
+    assert_eq!(out.chunks[0].score, 0.9);
+    assert_eq!(out.chunks[0].normalized_score, 1.0);
+    assert!((out.chunks[1].normalized_score - 0.6 / 0.9).abs() < 1e-9);
+    assert!(out.chunks[0].fused_rank.unwrap() > 1);
+    assert_eq!(out.chunks[1].fused_rank, Some(1), "b.txt was first after fusion");
+    assert_eq!(out.chunks[1].fused_score, Some(fused.chunks[0].score));
+
+    let calls = rr.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].path, "/v1/rerank");
+    assert_eq!(calls[0].auth.as_deref(), Some("Bearer rk-secret-1234"));
+    assert_eq!(calls[0].body["model"], "rr-model");
+    assert_eq!(calls[0].body["query"], "预算会议");
+    assert_eq!(calls[0].body["top_n"], 3, "top_k");
+    let sent = calls[0].body["documents"].as_array().unwrap();
+    assert_eq!(sent.len(), chunks);
+    assert_eq!(sent[0], fused.chunks[0].text.as_str(), "candidates go in fusion order");
+
+    // Only the top-k come back, even when there are more candidates.
+    let out = f.engine.search("预算会议", SearchParams { top_k: 1, mode: SearchMode::Hybrid, semantic_weight: 0.7 }).await.unwrap();
+    assert_eq!(files(&out), vec!["c.txt"]);
+
+    // A removed key is no longer sent.
+    let c = f.engine.set_rerank_secret(None).unwrap();
+    assert!(!c.rerank.key_saved && c.rerank.key_hint.is_empty());
+    assert!(!f.host.secrets.lock().unwrap().contains_key("rag-rerank"));
+    f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(rr.calls.lock().unwrap().last().unwrap().auth, None);
+}
+
+#[tokio::test]
+async fn a_failing_or_slow_reranker_keeps_the_fusion_order() {
+    let svc = service().await;
+    let f = Fixture::new("rerank-fail", &svc.server.base()).await;
+    f.sync().await;
+    let fused = f.search("预算会议", SearchMode::Hybrid).await;
+
+    // Turned on without a model: nothing to send to.
+    f.engine.update_config(&json!({"rerank": {"enabled": true, "base_url": "http://127.0.0.1:9/v1"}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(chunk_ids(&out), chunk_ids(&fused));
+    let report = out.rerank.unwrap();
+    assert_eq!(report.status, RerankStatus::Unconfigured);
+    assert_eq!((report.error_kind.as_deref(), report.candidates), (Some("config"), 0));
+
+    // The service fails.
+    let broken = reranker(|_| Reply::text(500, "reranker crashed")).await;
+    f.engine.update_config(&json!({"rerank": {"base_url": broken.server.base(), "model": "rr"}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(chunk_ids(&out), chunk_ids(&fused));
+    assert_eq!(out.chunks[0].score, fused.chunks[0].score);
+    assert!(out.chunks.iter().all(|c| c.fused_rank.is_none() && c.fused_score.is_none()));
+    let report = out.rerank.unwrap();
+    assert_eq!(report.status, RerankStatus::Failed);
+    assert_eq!(report.error_kind.as_deref(), Some("transient"));
+    assert!(report.error.unwrap().contains("500"));
+
+    // The service answers too late.
+    let slow = reranker(|body| generic_reply(body).delayed(Duration::from_millis(1500))).await;
+    f.engine.update_config(&json!({"rerank": {"base_url": slow.server.base(), "timeout_ms": 200}})).unwrap();
+    let started = Instant::now();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert!(started.elapsed() < Duration::from_millis(1200), "waited {:?}", started.elapsed());
+    assert_eq!(chunk_ids(&out), chunk_ids(&fused));
+    let report = out.rerank.unwrap();
+    assert_eq!(report.status, RerankStatus::Failed);
+    assert_eq!(report.error_kind.as_deref(), Some("transient"));
+    assert!(report.error.unwrap().contains("timed out"));
+    assert_eq!(slow.server.hits(), 1);
+
+    // An answer without results.
+    let empty = reranker(|_| Reply::json(200, json!({"results": []}))).await;
+    f.engine.update_config(&json!({"rerank": {"base_url": empty.server.base(), "timeout_ms": 2500}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(chunk_ids(&out), chunk_ids(&fused));
+    assert_eq!(out.rerank.unwrap().error_kind.as_deref(), Some("bad_response"));
+}
+
+#[tokio::test]
+async fn repeated_rerank_failures_pause_it_until_the_settings_change_or_a_test_passes() {
+    let svc = service().await;
+    let down = Arc::new(AtomicBool::new(true));
+    let flag = down.clone();
+    let flaky = reranker(move |body| if flag.load(Ordering::SeqCst) { Reply::text(502, "bad gateway") } else { generic_reply(body) }).await;
+    let f = Fixture::new("rerank-pause", &svc.server.base()).await;
+    f.sync().await;
+    let fused = f.search("预算会议", SearchMode::Hybrid).await;
+    f.engine.update_config(&json!({"rerank": {"enabled": true, "base_url": flaky.server.base(), "model": "rr"}})).unwrap();
+    for _ in 0..3 {
+        assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Failed);
+    }
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(out.rerank.as_ref().unwrap().status, RerankStatus::Paused);
+    assert_eq!(chunk_ids(&out), chunk_ids(&fused));
+    assert_eq!(flaky.server.hits(), 3, "nothing sent while paused");
+    // Any change to the rerank settings tries again at once.
+    f.engine.update_config(&json!({"rerank": {"timeout_ms": 3000}})).unwrap();
+    assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Failed);
+    assert_eq!(flaky.server.hits(), 4);
+    for _ in 0..2 {
+        f.search("预算会议", SearchMode::Hybrid).await;
+    }
+    assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Paused);
+    // The service is back: a draft test leaves the pause, a test of the saved settings lifts it.
+    down.store(false, Ordering::SeqCst);
+    assert!(f.engine.test_rerank(Some(&json!({"rerank": {"candidates": 10}}))).await.unwrap().ok);
+    assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Paused);
+    assert!(f.engine.test_rerank(None).await.unwrap().ok);
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(out.rerank.as_ref().unwrap().status, RerankStatus::Applied);
+    assert_eq!(files(&out)[0], "c.txt");
+}
+
+#[tokio::test]
+async fn rerank_off_sends_nothing_and_changes_nothing() {
+    let svc = service().await;
+    let rr = reranker(generic_reply).await;
+    let f = Fixture::new("rerank-off", &svc.server.base()).await;
+    f.sync().await;
+    let scored = |out: &SearchOutcome| out.chunks.iter().map(|c| (c.chunk_id.clone(), c.score, c.normalized_score)).collect::<Vec<_>>();
+    let mut before = Vec::new();
+    for mode in [SearchMode::Hybrid, SearchMode::Semantic, SearchMode::Keyword] {
+        before.push(scored(&f.search("预算会议", mode).await));
+    }
+
+    // Fully configured but off (the default).
+    f.engine.set_rerank_secret(Some("rk-secret-1234")).unwrap();
+    f.engine.update_config(&json!({"rerank": {"base_url": rr.server.base(), "model": "rr"}})).unwrap();
+    assert!(!f.engine.config().rerank.enabled);
+    for (i, mode) in [SearchMode::Hybrid, SearchMode::Semantic, SearchMode::Keyword].into_iter().enumerate() {
+        let out = f.search("预算会议", mode).await;
+        assert!(out.rerank.is_none(), "{mode:?}");
+        assert!(out.chunks.iter().all(|c| c.fused_rank.is_none() && c.fused_score.is_none()));
+        assert_eq!(scored(&out), before[i], "{mode:?}: same results as before");
+    }
+    assert_eq!(rr.server.hits(), 0);
+
+    // On, then off again.
+    f.engine.update_config(&json!({"rerank": {"enabled": true}})).unwrap();
+    assert_eq!(f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap().status, RerankStatus::Applied);
+    f.engine.update_config(&json!({"rerank": {"enabled": false}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert!(out.rerank.is_none());
+    assert_eq!(scored(&out), before[0]);
+    assert_eq!(rr.server.hits(), 1);
+}
+
+#[tokio::test]
+async fn tei_logits_keep_their_order_in_the_normalized_scores() {
+    let svc = service().await;
+    let tei = reranker(|body| {
+        assert!(body.get("model").is_none() && body.get("documents").is_none(), "{body}");
+        let texts = body["texts"].as_array().cloned().unwrap_or_default();
+        // Raw logits, all negative: dividing by the best would flip the order.
+        let logits: Vec<Value> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| json!({"index": i, "score": (relevance(t.as_str().unwrap_or_default()) - 1.0) * 10.0}))
+            .collect();
+        Reply::json(200, Value::Array(logits))
+    })
+    .await;
+    let f = Fixture::new("rerank-tei", &svc.server.base()).await;
+    f.sync().await;
+    f.engine.update_config(&json!({"rerank": {"enabled": true, "format": "tei", "base_url": tei.server.base()}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(out.rerank.as_ref().unwrap().status, RerankStatus::Applied);
+    assert_eq!(files(&out), vec!["c.txt", "b.txt", "a.txt"]);
+    assert!((out.chunks[0].score + 1.0).abs() < 1e-9, "the raw logit is kept as the score");
+    assert_eq!(out.chunks[0].normalized_score, 1.0);
+    let normalized: Vec<f64> = out.chunks.iter().map(|c| c.normalized_score).collect();
+    assert!(normalized.windows(2).all(|w| w[0] > w[1] && w[1] > 0.0), "{normalized:?}");
+    assert_eq!(tei.calls.lock().unwrap()[0].path, "/rerank");
+}
+
+#[tokio::test]
+async fn rerank_can_reuse_an_llm_connection() {
+    let svc = service().await;
+    let rr = reranker(generic_reply).await;
+    let f = Fixture::new("rerank-connection", &svc.server.base()).await;
+    f.sync().await;
+    f.host.connections.lock().unwrap().push(ResolvedConnection {
+        id: "llm-1".into(),
+        kind: LlmKind::OpenAiCompat,
+        base_url: format!("{}/v1", rr.server.base()),
+        headers: vec![("Authorization".into(), "Bearer llm-key".into())],
+        timeout: None,
+    });
+    // The rerank section's own key is not used with a connection.
+    f.engine.set_rerank_secret(Some("rk-own-key-5678")).unwrap();
+    f.engine.update_config(&json!({"rerank": {"enabled": true, "connection_id": "llm-1", "model": "rr"}})).unwrap();
+    let out = f.search("预算会议", SearchMode::Hybrid).await;
+    assert_eq!(out.rerank.as_ref().unwrap().status, RerankStatus::Applied);
+    assert_eq!(files(&out)[0], "c.txt");
+    let call = rr.calls.lock().unwrap()[0].clone();
+    assert_eq!(call.path, "/v1/rerank");
+    assert_eq!(call.auth.as_deref(), Some("Bearer llm-key"));
+
+    // A connection that is gone: fusion order, with the reason.
+    f.engine.update_config(&json!({"rerank": {"connection_id": "llm-2"}})).unwrap();
+    let report = f.search("预算会议", SearchMode::Hybrid).await.rerank.unwrap();
+    assert_eq!(report.status, RerankStatus::Unconfigured);
+    assert!(report.error.unwrap().contains("llm-2"));
+}
+
+#[tokio::test]
+async fn test_rerank_uses_a_draft_without_saving_it() {
+    let svc = service().await;
+    let rr = reranker(generic_reply).await;
+    let f = Fixture::new("rerank-draft", &svc.server.base()).await;
+    let r = f
+        .engine
+        .test_rerank(Some(&json!({"rerank": {"base_url": rr.server.base(), "model": "rr"}})))
+        .await
+        .unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(r.ranked_correctly, Some(true));
+    assert!(r.url.ends_with("/rerank"), "{}", r.url);
+    assert_eq!(f.engine.config().rerank.base_url, "", "draft not saved");
+    // Nothing configured: an error instead of a request.
+    assert!(f.engine.test_rerank(None).await.unwrap_err().contains("model"));
+    assert_eq!(rr.server.hits(), 1);
 }

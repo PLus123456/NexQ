@@ -620,6 +620,8 @@ pub fn run() {
             commands::rag_engine_commands::rag_sync_index,
             commands::rag_engine_commands::rag_rebuild_index,
             commands::rag_engine_commands::rag_cancel_indexing,
+            commands::rag_engine_commands::rag_set_rerank_secret,
+            commands::rag_engine_commands::rag_test_rerank,
             // == COMMANDS: recording ==
             recording_commands::get_recording_info,
             recording_commands::get_recording_file_url,

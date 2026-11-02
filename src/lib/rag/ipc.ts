@@ -3,7 +3,7 @@
 // commands stay in ../ipc.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { EmbedTestResult, IndexInfo, RagConfigPatch, RagSettingsView } from "./types";
+import type { EmbedTestResult, IndexInfo, RagConfigPatch, RagSettingsView, RerankTestResult } from "./types";
 
 export function ragGetSettings(): Promise<RagSettingsView> {
   return invoke<RagSettingsView>("rag_get_settings");
@@ -22,6 +22,16 @@ export function ragSetSecret(secret: string | null): Promise<RagSettingsView> {
 /** Tests the saved embedding settings with `draft` (unsaved fields) on top. */
 export function ragTestEmbedding(draft?: RagConfigPatch): Promise<EmbedTestResult> {
   return invoke<EmbedTestResult>("rag_test_embedding", { draft: draft ?? null });
+}
+
+/** Stores the rerank API key in the keychain (null deletes it). */
+export function ragSetRerankSecret(secret: string | null): Promise<RagSettingsView> {
+  return invoke<RagSettingsView>("rag_set_rerank_secret", { secret });
+}
+
+/** Tests the saved rerank settings with `draft` (unsaved fields) on top. */
+export function ragTestRerank(draft?: RagConfigPatch): Promise<RerankTestResult> {
+  return invoke<RerankTestResult>("rag_test_rerank", { draft: draft ?? null });
 }
 
 export function ragGetIndexInfo(): Promise<IndexInfo> {

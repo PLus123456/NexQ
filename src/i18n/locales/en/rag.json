@@ -220,6 +220,53 @@
       "addV1Action": "Add /v1"
     }
   },
+  "rerank": {
+    "title": "Reranking",
+    "description": "An optional second pass: the best fused results go to a rerank model, which orders them by how well they answer the question. If it fails or takes too long, the fusion order is kept and answers go on as usual.",
+    "unsaved": "Unsaved changes",
+    "enabled": "Rerank search results",
+    "enabledHint": "Each search sends up to {{count}} retrieved chunks and the question to the rerank service.",
+    "incomplete": "Set a Base URL (or pick a connection) and a model: until then searches keep the fusion order.",
+    "connection": {
+      "label": "Connection",
+      "own": "Own address and key",
+      "hint": "Reuse an OpenAI-compatible LLM connection's address, key and headers. Requests go to its Base URL + /rerank."
+    },
+    "model": {
+      "label": "Model",
+      "placeholder": "e.g. BAAI/bge-reranker-v2-m3",
+      "teiHint": "TEI serves a single model: the name can stay empty."
+    },
+    "format": {
+      "label": "Request format",
+      "generic": "Generic",
+      "tei": "TEI",
+      "hint": "Generic sends {model, query, documents, top_n}: Jina, Cohere, SiliconFlow, Xinference, vLLM, LocalAI and most hosted services. TEI sends {query, texts}: Hugging Face Text Embeddings Inference."
+    },
+    "candidates": {
+      "label": "Candidates",
+      "hint": "Fused results sent to the reranker (never fewer than the results returned). More can surface better passages but take longer."
+    },
+    "timeout": {
+      "label": "Timeout (ms)",
+      "hint": "Past this the fusion order is used. 1000–3000 ms suits meetings."
+    },
+    "actions": {
+      "revert": "Discard changes"
+    },
+    "confirm": {
+      "privacy": "Retrieved document chunks and your questions will be sent to {{host}} for reranking.",
+      "privacyAction": "Send and save"
+    },
+    "test": {
+      "ok": "Connected · {{ms}} ms",
+      "failed": "Test failed",
+      "url": "Request URL",
+      "rankedCorrectly": "The relevant test passage came out on top.",
+      "rankedWrong": "The relevant test passage did not come out on top: check the model and the request format.",
+      "slow": "This took {{ms}} ms, longer than the {{timeout}} ms timeout: searches would keep the fusion order."
+    }
+  },
   "index": {
     "title": "Index Status",
     "state": {
@@ -409,6 +456,19 @@
         "copyChunk": {
           "title": "Copy chunk"
         }
+      },
+      "rerank": {
+        "chip": "rerank: {{model}}",
+        "chipOn": "rerank on",
+        "chipTitle": "Reranking is on",
+        "applied_one": "Reranked · {{count}} candidate · {{ms}} ms",
+        "applied_other": "Reranked · {{count}} candidates · {{ms}} ms",
+        "failed": "Rerank failed: fusion order kept",
+        "paused": "Rerank paused after repeated failures: fusion order kept",
+        "unconfigured": "Rerank is on but can't be used: fusion order kept",
+        "scoreTitle": "Rerank score",
+        "was": "was #{{rank}}",
+        "wasTitle": "Position after fusion, before reranking (fusion score {{score}})"
       },
       "templateQueries": {
         "background": "What is the candidate's educational background?",
