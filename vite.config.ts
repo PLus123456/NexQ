@@ -15,8 +15,8 @@ export default defineConfig(async () => ({
     environment: "jsdom",
     setupFiles: ["src/test/setup.ts"],
     globals: true,
-    // Agent worktrees hold full copies of the repo.
-    exclude: ["**/node_modules/**", "**/dist/**", ".claude/**"],
+    // Agent worktrees (Claude's and Codex's) hold full copies of the repo.
+    exclude: ["**/node_modules/**", "**/dist/**", ".claude/**", ".worktrees/**"],
   },
   clearScreen: false,
   server: {

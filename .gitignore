@@ -50,6 +50,9 @@ recordings/
 # Claude Code
 CLAUDE.md
 .claude/
+
+# Codex worktrees
+.worktrees/
 docs/development
 docs/superpowers
 
