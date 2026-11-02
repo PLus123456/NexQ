@@ -290,8 +290,25 @@
       "native": "识别引擎直接翻译",
       "service": "翻译服务"
     },
-    "nativeUnavailable": "{{engine}} 不能自己翻译。在语音识别设置里给这一路换成能翻译的引擎（Soniox）后可选。",
+    "nativeUnavailable": "{{engine}} 不能自己翻译。用左边的 Soniox 卡片一键换成 Soniox，或者在语音识别设置里给这一路换成能翻译的引擎。",
     "hint": "识别引擎直接翻译：由引擎（Soniox）在识别时一起翻译成上面的目标语言，这一路不再调用翻译服务。"
+  },
+  "soniox": {
+    "title": "Soniox 边识别边翻译",
+    "description": "用 Soniox 识别的那一路，可以让 Soniox 在识别的同时直接给出译文：延迟更低，也不用再为它配翻译服务。译成右边设置的目标语言。",
+    "state": {
+      "native": "由 Soniox 直接翻译"
+    },
+    "actions": {
+      "switch": "改用 Soniox 识别并翻译",
+      "turnOn": "开启 Soniox 翻译",
+      "useService": "改用翻译服务",
+      "addKey": "去填写"
+    },
+    "noKey": "还没有填 Soniox API Key，开会前先到 语音识别 设置里填好。",
+    "noAudio": "还没有会议音频配置，先在 会议音频 里选好两路的设备和识别引擎。",
+    "allNative": "两路都由 Soniox 翻译。下面的翻译服务只用于划词翻译和会议详情里的手动翻译。",
+    "twoWayHint": "同一个房间里两种语言混着说时，可以在 会议音频 里把 Soniox 改成双向翻译。"
   },
   "quickSetup": {
     "title": "翻译",

@@ -29,6 +29,7 @@ import { OpusMtModelManager } from "./OpusMtModelManager";
 import { LlmTranslationPanel } from "./translation/LlmTranslationPanel";
 import { PartyTranslationPicker } from "./translation/PartyTranslationPicker";
 import { ProviderEndpointField } from "./translation/ProviderEndpointField";
+import { SonioxTranslationCard } from "./translation/SonioxTranslationCard";
 import {
   ALL_PROVIDERS,
   AZURE_REGIONS,
@@ -369,6 +370,9 @@ export function TranslationSettings() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* ═══ LEFT COLUMN: Provider-specific ═══ */}
         <div className="space-y-5">
+          {/* ── Soniox: translation by the STT engine, next to the services ── */}
+          <SonioxTranslationCard />
+
           {/* ── Provider Selection Grid ── */}
           <div className="rounded-xl border border-border/30 bg-card/50 overflow-hidden">
             {/* Local & Offline */}

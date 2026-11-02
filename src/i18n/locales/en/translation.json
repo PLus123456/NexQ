@@ -293,8 +293,25 @@
       "native": "Speech engine",
       "service": "Translation service"
     },
-    "nativeUnavailable": "{{engine}} can't translate by itself. Choose an engine that can (Soniox) for this party in the speech recognition settings.",
+    "nativeUnavailable": "{{engine}} can't translate by itself. Switch this party to Soniox with the Soniox card on the left, or pick an engine that can translate in the speech recognition settings.",
     "hint": "Speech engine: the engine translates while it recognizes (Soniox), into the target language above, and the translation service isn't used for that party."
+  },
+  "soniox": {
+    "title": "Soniox: translate while transcribing",
+    "description": "A party transcribed by Soniox can be translated by Soniox in the same stream: lower latency, and no translation service to set up for it. It translates into the target language on the right.",
+    "state": {
+      "native": "Translated by Soniox"
+    },
+    "actions": {
+      "switch": "Switch to Soniox and translate",
+      "turnOn": "Turn on Soniox translation",
+      "useService": "Use the translation service",
+      "addKey": "Add key"
+    },
+    "noKey": "No Soniox API key yet. Add one in Speech recognition before the meeting.",
+    "noAudio": "No meeting audio setup yet. Pick both parties' devices and engines in Meeting audio first.",
+    "allNative": "Soniox translates both parties. The translation service below is only used for selection translation and manual translation in meeting details.",
+    "twoWayHint": "When two languages are mixed in one room, set Soniox to two-way translation in Meeting audio."
   },
   "quickSetup": {
     "title": "Translation",
