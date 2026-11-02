@@ -342,11 +342,21 @@ pub struct RegionRouter {
     retried_internal: bool,
     /// Failures in a row (across regions) since a connection last held.
     failures_in_a_row: usize,
+    /// A region of this round was full: the backoff after the round waits ≥ 20 s
+    /// (closed streams can hold their slot that long).
+    round_had_full: bool,
 }
 
 impl RegionRouter {
     pub fn new(targets: Vec<Target>) -> Self {
-        Self { targets, index: 0, rejected: HashSet::new(), retried_internal: false, failures_in_a_row: 0 }
+        Self {
+            targets,
+            index: 0,
+            rejected: HashSet::new(),
+            retried_internal: false,
+            failures_in_a_row: 0,
+            round_had_full: false,
+        }
     }
 
     pub fn current(&self) -> Option<&Target> {
@@ -361,6 +371,7 @@ impl RegionRouter {
     pub fn on_established(&mut self) {
         self.failures_in_a_row = 0;
         self.retried_internal = false;
+        self.round_had_full = false;
     }
 
     pub fn on_failure(&mut self, action: RegionAction, cooldowns: &mut Cooldowns, now: Instant) -> Step {
@@ -395,6 +406,7 @@ impl RegionRouter {
                 self.switch(SwitchReason::KeyRejected, false)
             }
             RegionAction::Switch { reason, cooldown } => {
+                self.round_had_full |= reason == SwitchReason::Concurrency;
                 if cooldown {
                     if let Some(target) = self.targets.get(self.index) {
                         cooldowns.mark_full(&target.region, now);
@@ -419,7 +431,8 @@ impl RegionRouter {
         let to = self.targets[next].region.clone();
         if self.failures_in_a_row >= usable {
             self.failures_in_a_row = 0;
-            return Step::Backoff { class: RetryClass::Retry };
+            let class = if std::mem::take(&mut self.round_had_full) { RetryClass::RateLimited } else { RetryClass::Retry };
+            return Step::Backoff { class };
         }
         match from {
             Some(from) if from != to => Step::Now { switched: Some((from, reason)) },
@@ -839,8 +852,9 @@ mod tests {
         assert!(cool.is_cooling("jp", now));
         let down = RegionAction::Switch { reason: SwitchReason::Unavailable, cooldown: false };
         assert_eq!(r.on_failure(down, &mut cool, now), Step::Now { switched: Some(("in".into(), SwitchReason::Unavailable)) });
-        // The third failure in a row: every region failed once — back off, then go on round.
-        assert_eq!(r.on_failure(down, &mut cool, now), Step::Backoff { class: RetryClass::Retry });
+        // The third failure in a row: every region failed once — back off (≥ 20 s: one
+        // was full), then go on round.
+        assert_eq!(r.on_failure(down, &mut cool, now), Step::Backoff { class: RetryClass::RateLimited });
         assert_eq!(r.current().unwrap().region, "jp");
         // A connection that holds resets the count.
         r.on_established();
