@@ -37,6 +37,8 @@ export function QuestionDetectionCard({ view: llmView }: { view: LlmConfigView }
   };
 
   const route = effectiveRoute(llmView, "question_detect");
+  const predictionRoute = effectiveRoute(llmView, "question_predict");
+  const assistRoute = effectiveRoute(llmView, "assist:Assist");
   const missing = !ownTarget(llmView, "question_detect");
   const fallback = missing ? "route_missing" : route.error ? "connection_unavailable" : view?.fallback_reason;
   const fallbackKey = fallback === "route_missing" || fallback === "route_not_configured"
@@ -109,6 +111,28 @@ export function QuestionDetectionCard({ view: llmView }: { view: LlmConfigView }
               </div>
               <p id={`${id}-log-hint`} className={HINT}>{t("questionDetection.logHint")}</p>
             </div>
+          </div>
+          <div className="mt-4 border-t border-border/30 pt-4">
+            <h4 className={SECTION_TITLE}>{t("questionPrediction.title")}</h4>
+            <p className={HINT}>{t("questionPrediction.hint")}</p>
+            <div className="mt-3 flex items-center gap-2">
+              <Toggle label={t("questionPrediction.enabled")} checked={view.settings.prediction_enabled ?? false}
+                disabled={saving} onChange={(prediction_enabled) => { void save({ prediction_enabled }); }} />
+              <span className="text-xs font-medium">{t("questionPrediction.enabled")}</span>
+            </div>
+            {view.settings.prediction_enabled && predictionRoute.error && (
+              <p role="status" className="mt-2 text-xs text-warning">{t("questionPrediction.routeMissing")}</p>
+            )}
+            <div className="mt-3 flex items-center gap-2">
+              <Toggle label={t("questionPrediction.prepare")} checked={view.settings.prediction_prepare_answers ?? true}
+                disabled={saving || !view.settings.prediction_enabled}
+                onChange={(prediction_prepare_answers) => { void save({ prediction_prepare_answers }); }} />
+              <span className="text-xs font-medium">{t("questionPrediction.prepare")}</span>
+            </div>
+            <p className={HINT}>{t("questionPrediction.prepareHint")}</p>
+            {view.settings.prediction_enabled && view.settings.prediction_prepare_answers && assistRoute.error && (
+              <p role="status" className="mt-2 text-xs text-warning">{t("questionPrediction.assistUnavailable")}</p>
+            )}
           </div>
           {error && <p role="alert" className="mt-3 text-xs text-warning">{t("questionDetection.loadFailed", { detail: error })}</p>}
         </>

@@ -95,8 +95,12 @@ export function getSpeakerLabel(speaker: Speaker): string {
 }
 
 // Get intelligence mode label
-export function getModeLabel(mode: IntelligenceMode | "question_detect"): string {
+export function getModeLabel(mode: IntelligenceMode | "question_detect" | "question_predict" | "question_prepare"): string {
   switch (mode) {
+    case "question_predict":
+      return t("llm:tasks.question_predict.label");
+    case "question_prepare":
+      return t("llm:questionPrediction.preparationLog");
     case "question_detect":
       return t("llm:tasks.question_detect.label");
     case "Assist":

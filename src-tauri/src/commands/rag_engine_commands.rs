@@ -53,6 +53,7 @@ fn view(engine: &RagEngine, config: RagConfig) -> RagSettingsView {
 
 /// Mirrors the new config into `AppState.rag` and tells both windows.
 fn publish(app: &AppHandle, state: &AppState, engine: &RagEngine, config: RagConfig) -> RagSettingsView {
+    crate::intelligence::question_prediction::invalidate(app);
     mirror_config(state, &config);
     let view = view(engine, config);
     let _ = app.emit("rag_config_changed", &view);

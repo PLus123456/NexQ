@@ -155,6 +155,8 @@ pub struct CompleteOptions {
     pub max_tokens: Option<u64>,
     /// Request native JSON output when the connection declares support.
     pub json_mode: bool,
+    /// Preserve an Assist action's provider-native web search in silent calls.
+    pub enable_web_search: bool,
     /// Whole-call limit; `None` = no limit.
     pub timeout: Option<Duration>,
     pub cancel: Option<Arc<CancelToken>>,
@@ -311,6 +313,17 @@ pub async fn complete_text(
     opts: CompleteOptions,
 ) -> Result<String, LlmCallError> {
     let resolved = resolve_for_task(app, task).await?;
+    complete_resolved_text(app, resolved, messages, opts).await
+}
+
+/// A silent completion pinned to a resolved route, so cached answers can retain
+/// the actual model/provider and cannot switch routes during prompt assembly.
+pub async fn complete_resolved_text(
+    app: &AppHandle,
+    resolved: ResolvedLlm,
+    messages: Vec<LLMMessage>,
+    opts: CompleteOptions,
+) -> Result<String, LlmCallError> {
     let gate = registry_of(app).ok().map(|registry| {
         let config = registry.config();
         match config.connection(&resolved.connection_id) {
@@ -484,6 +497,7 @@ where
         temperature: opts.temperature,
         max_tokens: opts.max_tokens,
         json_mode: opts.json_mode,
+        enable_web_search: opts.enable_web_search,
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         silent: true,
         cancel: Some(cancel.clone()),
@@ -583,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn complete_text_collects_a_silent_stream_from_a_fake_provider() {
         let fake = FakeProvider::answering(&["你好", "，", "world"]);
-        let opts = CompleteOptions { temperature: Some(0.2), max_tokens: Some(64), json_mode: true, ..Default::default() };
+        let opts = CompleteOptions { temperature: Some(0.2), max_tokens: Some(64), json_mode: true, enable_web_search: true, ..Default::default() };
 
         let (result, params) = complete_with(&fake, opts).await;
 
@@ -594,6 +608,7 @@ mod tests {
         assert_eq!(params.temperature, Some(0.2));
         assert_eq!(params.max_tokens, Some(64));
         assert!(params.json_mode);
+        assert!(params.enable_web_search);
         assert!(params.cancel.is_some());
     }
 

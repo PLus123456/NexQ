@@ -13,6 +13,17 @@ import { useStreamStore } from "../stores/streamStore";
 const T0 = 1_700_000_000_000;
 
 describe("runUserAction", () => {
+  it("marks replay-only requests and clears Sending when the preparation expired", async () => {
+    useStreamStore.getState().startStream("Assist", "mock", "mock");
+    useStreamStore.getState().appendToken("Previous answer");
+    useStreamStore.getState().endStream(10);
+    generateAssist.mockRejectedValueOnce(new Error("Prepared answer no longer available"));
+    await expect(runUserAction("Assist", "When can we ship?", true)).rejects.toThrow("no longer available");
+    expect(generateAssist.mock.calls[0][2]).toMatchObject({ preparedOnly: true, scope: null });
+    expect(useStreamStore.getState().phase).toBe("idle");
+    expect(useStreamStore.getState().currentContent).toBe("Previous answer");
+    expect(generateAssist).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     generateAssist.mockReset();
     generateAssist.mockResolvedValue(undefined);

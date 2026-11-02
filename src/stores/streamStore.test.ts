@@ -30,6 +30,7 @@ describe("streamStore", () => {
       scopeLabel: "Last 5 min",
       newLines: 3,
       sessionKey: "live:m:fast",
+      prepared: false,
     });
     expect(s().phase).toBe("waiting");
     expect(s().requestStartedAt).toBe(T0); // the click, not the start event
@@ -39,6 +40,7 @@ describe("streamStore", () => {
       scopeLabel: "Last 5 min",
       newLines: 3,
       sessionKey: "live:m:fast",
+      prepared: false,
     });
 
     s().setPhase("thinking");

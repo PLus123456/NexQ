@@ -14,6 +14,8 @@ import { errorMessage } from "../stores/translationStore";
 import { useT } from "../i18n";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { QuestionDetector } from "./QuestionDetector";
+import { QuestionPredictions } from "./QuestionPredictions";
+import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { AIResponsePanel } from "./AIResponsePanel";
 import { ModeButtons } from "./ModeButtons";
 import { AskInput } from "./AskInput";
@@ -85,6 +87,9 @@ export function OverlayView() {
   const toggleLog = useCallLogStore((s) => s.toggleOpen);
   const logOpen = useCallLogStore((s) => s.isOpen);
   const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
+  const predictionEnabled = useQuestionDetectionStore((s) => s.view?.settings.prediction_enabled ?? false);
+  const loadQuestionSettings = useQuestionDetectionStore((s) => s.load);
+  useEffect(() => { void loadQuestionSettings(); }, [loadQuestionSettings]);
 
   const mutedYou = useConfigStore((s) => s.mutedYou);
   const mutedThem = useConfigStore((s) => s.mutedThem);
@@ -398,10 +403,11 @@ export function OverlayView() {
         {/* ── RIGHT ── */}
         {layoutMode !== "transcript" ? (
         <div className="flex min-w-[180px] min-h-0 flex-1 basis-[220px] flex-col gap-2.5 overflow-hidden">
-          {/* Question detector — only shown when auto-trigger is on */}
-          {autoTrigger && (
+          {/* M2 previews and cache hits also work with auto-generation off. */}
+          {(autoTrigger || predictionEnabled) && (
             <div className="shrink-0 rounded-xl border border-info/10 bg-info/5 px-4 py-3">
               <QuestionDetector />
+              <QuestionPredictions />
             </div>
           )}
 

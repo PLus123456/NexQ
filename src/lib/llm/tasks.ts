@@ -9,6 +9,7 @@ export type LlmTaskKey =
   | "default"
   | "assist"
   | "question_detect"
+  | "question_predict"
   | "meeting_summary"
   | "action_items"
   | "bookmark_suggestions"
@@ -35,6 +36,7 @@ export const LLM_TASKS: readonly LlmTaskDef[] = [
   { key: "default", parent: null },
   { key: "assist", parent: "default", defaultTemperature: 0.6 },
   { key: "question_detect", parent: null, highFrequency: true, defaultTemperature: 0 },
+  { key: "question_predict", parent: null, defaultTemperature: 0 },
   { key: "meeting_summary", parent: "default", defaultTemperature: 0.4 },
   { key: "action_items", parent: "default" },
   { key: "bookmark_suggestions", parent: "default" },
@@ -59,7 +61,7 @@ type RoutingSource = Pick<LlmConfigView, "connections" | "routing"> & { known_ta
 
 /** The parent of a task: the view's `known_tasks`, else the built-in table; `assist:<action>` → assist. */
 function parentOf(view: RoutingSource, key: string): string | null {
-  if (key === "default" || key === "question_detect") return null;
+  if (key === "default" || key === "question_detect" || key === "question_predict") return null;
   const known = view.known_tasks?.find((task) => task.key === key) ?? KNOWN_TASKS.find((task) => task.key === key);
   if (known) return known.parent;
   if (key.startsWith("assist:")) return "assist";
@@ -99,7 +101,7 @@ export function resolveRoute(view: RoutingSource, key: string): EffectiveRoute {
     source = parentOf(view, source);
   }
   if (!target || !source) {
-    if (key === "question_detect") {
+    if (key === "question_detect" || key === "question_predict") {
       return fail(view.routing.tasks[key]?.target ? "connection_missing" : "not_configured");
     }
     // The default route points at a deleted connection.
@@ -114,7 +116,7 @@ export function resolveRoute(view: RoutingSource, key: string): EffectiveRoute {
   });
   if (key === "claude_fallback" && source === "default" && connection.kind === "claude_cli") return fail("no_fallback");
   if (!connection.enabled) return fail("connection_disabled");
-  if (key === "question_detect" && connection.kind === "claude_cli") return fail("not_configured");
+  if ((key === "question_detect" || key === "question_predict") && connection.kind === "claude_cli") return fail("not_configured");
   if (connection.kind === "claude_cli") return result;
   if (!connection.base_url.trim() && !connection.chat_url_override?.trim()) return fail("base_url_missing");
   const model = target.model?.trim() || connection.default_model?.trim() || null;
@@ -132,9 +134,9 @@ export function computeEffective(view: RoutingSource): Record<string, EffectiveR
 
 /** What answers `key`, as Rust resolved it (computed here when the view lacks it). */
 export function effectiveRoute(view: LlmConfigView, key: string): EffectiveRoute {
-  // Sentence-by-sentence detection is opt-in: an older backend's inherited
-  // default must never look like an explicitly configured detector route.
-  if (key === "question_detect") {
+  // Background question tasks are opt-in: an older backend's inherited
+  // default must never look like an explicitly configured route.
+  if (key === "question_detect" || key === "question_predict") {
     const local = resolveRoute(view, key);
     if (local.error) return local;
   }

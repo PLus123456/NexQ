@@ -24,6 +24,8 @@ import { runUserAction } from "../lib/userAction";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useStreamStore } from "../stores/streamStore";
+import { useConfigStore } from "../stores/configStore";
 
 const segment = (text: string, is_final = true): TranscriptSegment =>
   ({ id: "them_1", text, speaker: "Them", timestamp_ms: 1, is_final, confidence: 1 }) as TranscriptSegment;
@@ -39,6 +41,8 @@ function setAutoTrigger(on: boolean) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  useStreamStore.getState().resetForMeeting();
+  useConfigStore.setState({ contextScope: { kind: "default", minutes: 5 } });
   setAutoTrigger(true);
   useTranscriptStore.setState({ segments: [segment("那它呢？")] });
   useMeetingStore.setState({ activeMeeting: { id: "meeting-1" } as Meeting });
@@ -50,6 +54,52 @@ afterEach(() => {
 });
 
 describe("authoritative question detection", () => {
+  const hit = () => callbacks.result({
+    revision: 1, timestamp_ms: 1, source: "Them", original_text: "When can we ship this project?", prepared: true,
+    question: { text: "When can we ship this project?", confidence: 0.9, timestamp_ms: 1, source: "Them" },
+  });
+
+  it("replays a prepared hit immediately and once, without requesting a fresh generation", () => {
+    setAutoTrigger(false);
+    render(<QuestionDetector />);
+    act(hit);
+    act(() => vi.advanceTimersByTime(0));
+    expect(runUserAction).toHaveBeenCalledWith("Assist", "When can we ship this project?", true);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(runUserAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not interrupt a foreground stream and discards a pending hit on settings changes", () => {
+    useStreamStore.setState({ isStreaming: true });
+    render(<QuestionDetector />);
+    act(hit);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(runUserAction).not.toHaveBeenCalled();
+    act(() => callbacks.pending({ revision: 2, timestamp_ms: 0, source: "Settings" }));
+    act(() => useStreamStore.setState({ isStreaming: false }));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(runUserAction).not.toHaveBeenCalled();
+  });
+
+  it("a stale prepared hit does not fall back to a provider call when auto-answering is off", async () => {
+    setAutoTrigger(false);
+    vi.mocked(runUserAction).mockRejectedValueOnce(new Error("Prepared answer no longer available"));
+    render(<QuestionDetector />);
+    act(hit);
+    await act(async () => vi.advanceTimersByTime(0));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(runUserAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Get AI assistance for this question" })).toBeInTheDocument();
+  });
+
+  it("does not auto-replay a hit with a different user-selected transcript scope", () => {
+    setAutoTrigger(false);
+    useConfigStore.setState({ contextScope: { kind: "minutes", minutes: 10 } });
+    render(<QuestionDetector />);
+    act(hit);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(runUserAction).not.toHaveBeenCalled();
+  });
   it("waits for backend confirmation and sends the resolved question to Assist", () => {
     render(<QuestionDetector />);
     act(() => pending(1));

@@ -87,6 +87,7 @@ export function useStreamBuffer() {
           event.provider,
           {
             requestId: event.request_id,
+            prepared: event.prepared ?? false,
             scopeLabel: event.scope_label ?? null,
             newLines: event.transcript_segments_count ?? null,
             sessionKey: event.session_key ?? null,

@@ -86,6 +86,27 @@ describe("useCallLogCapture", () => {
     expect(handlers.end).toBeDefined();
   }
 
+  it("persists a replayed Assist answer but never the prediction or unused preparation diagnostics", async () => {
+    await mount();
+    act(() => {
+      start("prediction", { mode: "question_predict" });
+      handlers.token({ token: "Speculative question", request_id: "prediction" });
+      handlers.end({ total_tokens: 3, latency_ms: 10, request_id: "prediction", cancelled: false });
+      start("preparation", { mode: "question_prepare" });
+      handlers.token({ token: "Unused answer", request_id: "preparation" });
+      handlers.end({ total_tokens: 3, latency_ms: 10, request_id: "preparation", cancelled: false });
+    });
+    expect(ipc.saveMeetingAiInteractions).not.toHaveBeenCalled();
+    act(() => {
+      start("replayed", { prepared: true });
+      handlers.token({ token: "Prepared answer now used", request_id: "replayed" });
+      handlers.end({ total_tokens: 0, latency_ms: 0, request_id: "replayed", cancelled: false });
+    });
+    const saved = JSON.parse(ipc.saveMeetingAiInteractions.mock.calls[0][1]);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ mode: "Assist", response: "Prepared answer now used" });
+  });
+
   it("keeps concurrent meeting tasks in the log without saving them into the live meeting", async () => {
     await mount();
     act(() => {

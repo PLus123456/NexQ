@@ -287,6 +287,7 @@ pub async fn ask_meeting(
             request_id: Some(request_id.clone()),
             session_key: None,
             scope_label: None,
+            prepared: false,
         },
     );
 

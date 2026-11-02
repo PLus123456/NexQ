@@ -228,6 +228,7 @@ export interface StreamSource {
 }
 
 export interface AIResponse {
+  prepared?: boolean;
   id: string;
   content: string;
   mode: IntelligenceMode;
@@ -662,6 +663,7 @@ export interface StreamTokenEvent {
 }
 
 export interface StreamStartEvent {
+  prepared?: boolean;
   mode: IntelligenceMode;
   model: string;
   provider: string;
@@ -740,6 +742,8 @@ export interface AssistTranscriptSegment {
 }
 
 export interface GenerateAssistOptions {
+  /** Replay an M2 hit only; a stale hit must never start a new provider call. */
+  preparedOnly?: boolean;
   /** Identifies the stream; defaults to crypto.randomUUID(). */
   requestId?: string;
   /** Segments to use instead of the live transcript store. */
@@ -788,12 +792,12 @@ export type LogEntryStatus =
   | "error"
   | "cancelled";
 
-export type LogFilterKind = IntelligenceMode | "question_detect" | "all" | "errors";
+export type LogFilterKind = IntelligenceMode | "question_detect" | "question_predict" | "question_prepare" | "all" | "errors";
 
 export interface LogEntry {
   id: string;
   timestamp: number;
-  mode: IntelligenceMode | "question_detect";
+  mode: IntelligenceMode | "question_detect" | "question_predict" | "question_prepare";
   provider: string;
   model: string;
   status: LogEntryStatus;

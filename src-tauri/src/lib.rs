@@ -261,6 +261,7 @@ pub fn run() {
             app.manage(intelligence::llm_question::QuestionDetectionService::new(
                 app_data_dir.join("question-detection.json"),
             ));
+            app.manage(intelligence::question_prediction::QuestionPredictionService::default());
 
             // -- Initialize IntelligenceEngine --
             let intel_engine = intelligence::IntelligenceEngine::new();
@@ -522,6 +523,7 @@ pub fn run() {
             intelligence_commands::set_auto_trigger,
             commands::question_detection_commands::get_question_detection_settings,
             commands::question_detection_commands::set_question_detection_settings,
+            commands::question_detection_commands::get_question_predictions,
             intelligence_commands::set_context_window_seconds,
             intelligence_commands::push_transcript,
             intelligence_commands::update_action_configs,

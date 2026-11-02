@@ -182,7 +182,7 @@ pub fn resolve_task(cfg: &LlmConfigFile, key: &str, claude: &ClaudeContext) -> R
     // Frequent, deadline-bound detection needs cancellation-safe HTTP requests.
     // Claude Utility sessions initialize outside cancellation and may outlive a
     // 2.5-second detector deadline. Use local rules instead of a CLI/fallback.
-    if key == "question_detect" && primary.connection.kind == LlmKind::ClaudeCli {
+    if matches!(key, "question_detect" | "question_predict") && primary.connection.kind == LlmKind::ClaudeCli {
         return Err((RouteError::NotConfigured, Some(primary.connection)));
     }
     if primary.connection.kind != LlmKind::ClaudeCli || claude.available {
@@ -247,8 +247,8 @@ fn fallback(cfg: &LlmConfigFile, claude: &ClaudeContext) -> Option<Resolved> {
 pub fn route_error_message(key: &str, error: RouteError, conn: Option<&LlmConnection>) -> String {
     let name = conn.map(|c| c.display_name()).unwrap_or_default();
     match error {
-        RouteError::NotConfigured if key == "question_detect" =>
-            "Question detection needs its own available connection and model in Settings → AI Models → Task routing".to_string(),
+        RouteError::NotConfigured if matches!(key, "question_detect" | "question_predict") =>
+            format!("{key} needs its own available HTTP connection and model in Settings → AI Models → Task routing"),
         RouteError::NotConfigured => format!(
             "No AI model is set up for \"{key}\": pick a default connection and model in Settings → AI Models"
         ),
@@ -1286,6 +1286,7 @@ pub fn init(app: &AppHandle, app_state: &mut AppState, app_data_dir: &Path) {
 /// After every change: the old router, the `config.json` mirror and the
 /// `llm_config_changed` event.
 pub fn after_change(app: &AppHandle) {
+    crate::intelligence::question_prediction::invalidate(app);
     let Some(registry) = app.try_state::<LlmRegistry>() else {
         return;
     };

@@ -37,6 +37,7 @@ pub struct PendingRecording {
 
 /// Active scenario prompts pushed from the frontend when a meeting starts.
 /// The intelligence pipeline reads these instead of hardcoded prompt_templates.
+#[derive(Clone)]
 pub struct ActiveScenario {
     pub system_prompt: String,
     pub summary_prompt: String,

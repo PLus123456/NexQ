@@ -922,6 +922,7 @@ pub const KNOWN_TASKS: &[(&str, Option<&str>)] = &[
     ("assist", Some("default")),
     // Frequent background detection is opt-in and never inherits a paid default.
     ("question_detect", None),
+    ("question_predict", None),
     ("meeting_summary", Some("default")),
     ("action_items", Some("default")),
     ("bookmark_suggestions", Some("default")),

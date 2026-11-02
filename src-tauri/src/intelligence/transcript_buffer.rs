@@ -87,8 +87,9 @@ impl TranscriptBuffer {
         for seg in &self.segments {
             if seg.timestamp_ms >= cutoff_ms && seg.is_final {
                 let speaker_label = match seg.speaker.as_str() {
-                    "User" => "You",
-                    "Interviewer" => "Interviewer",
+                    "User" | "You" | "user" | "you" | "me" => "You",
+                    "Them" | "them" => "Them",
+                    "Interviewer" | "interviewer" => "Interviewer",
                     _ => "Unknown",
                 };
                 parts.push(format!("[{}]: {}", speaker_label, seg.text));
@@ -104,8 +105,9 @@ impl TranscriptBuffer {
         for seg in &self.segments {
             if seg.is_final {
                 let speaker_label = match seg.speaker.as_str() {
-                    "User" => "You",
-                    "Interviewer" => "Interviewer",
+                    "User" | "You" | "user" | "you" | "me" => "You",
+                    "Them" | "them" => "Them",
+                    "Interviewer" | "interviewer" => "Interviewer",
                     _ => "Unknown",
                 };
                 parts.push(format!("[{}]: {}", speaker_label, seg.text));
@@ -157,13 +159,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn background_assist_preserves_both_speakers_and_only_final_original_text() {
+        let mut buf = TranscriptBuffer::new();
+        buf.push_segment("月底上线。".into(), "You".into(), 1_000, true);
+        buf.push_segment("还有预算要讨论。".into(), "Them".into(), 2_000, true);
+        buf.push_segment("未说完".into(), "Them".into(), 3_000, false);
+        assert_eq!(buf.get_recent_text(90), "[You]: 月底上线。\n[Them]: 还有预算要讨论。");
+        assert_eq!(buf.get_all_text(), buf.get_recent_text(90));
+    }
+
+    #[test]
     fn a_grown_paragraph_replaces_its_earlier_copy() {
         let mut buf = TranscriptBuffer::new();
         buf.push_segment("We ship".into(), "Them".into(), 1_000, true);
         buf.push_segment("Sure".into(), "User".into(), 2_000, true);
         buf.push_segment("We ship on Friday".into(), "Them".into(), 1_000, true);
         assert_eq!(buf.len(), 2);
-        assert_eq!(buf.get_all_text(), "[Unknown]: We ship on Friday\n[You]: Sure");
+        assert_eq!(buf.get_all_text(), "[Them]: We ship on Friday\n[You]: Sure");
         // Another speaker's line at the same time is its own segment.
         buf.push_segment("Hm".into(), "User".into(), 1_000, true);
         assert_eq!(buf.len(), 3);

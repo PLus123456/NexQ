@@ -283,3 +283,16 @@ Ollama、LM Studio、OpenAI、Anthropic、Groq、Google Gemini、OpenRouter，�
 | `llm:legacy.models.noChat` | No chat models found (embedding-only models filtered) | 未找到对话模型（已过滤仅用于向量化的模型） | 说明列表已排除仅用于向量化的模型，不是服务商没有任何模型。 |
 | `llm:legacy.models.empty` | No models found | 未找到模型 |  |
 | `llm:legacy.models.loadFailed` | Failed to load models | 加载模型失败 |  |
+
+## M2 新增用词（2026-11-02，待人工确认）
+
+| key | 英文 | 中文 | 说明 |
+|---|---|---|---|
+| `llm:tasks.question_predict.label` | Question prediction | 问题预测 | 与“提问检测”区分：尚未实际问出的问题 |
+| `llm:questionPrediction.title` | Next-question prediction (M2) | 预测接下来的问题（M2） | 设置卡片标题 |
+| `llm:questionPrediction.prepare` | Prepare answers in advance | 提前生成答案 | 独立开关 |
+| `llm:questionPrediction.preparationLog` | Answer preparation | 答案预生成 | AI 调用日志中的后台请求类型 |
+| `overlay:prediction.title` | They may ask | 对方可能会问 | 悬浮窗可折叠列表，沿用任务描述 |
+| `overlay:prediction.prepared` | Prepared in advance | 提前准备的答案 | 预览及实际复用答案的标记 |
+| `overlay:prediction.preview` | Prepared answer preview | 预备答案预览 | 无障碍区域名称 |
+| `overlay:prediction.status.*` | Prediction only / Preparing answer… / Answer ready / No prepared answer | 仅预测 / 正在准备答案… / 答案已准备好 / 暂无预备答案 | 失败静默降级，只显示准备状态 |

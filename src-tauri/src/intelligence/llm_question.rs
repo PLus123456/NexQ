@@ -42,6 +42,8 @@ pub struct QuestionDetectionSettings {
     pub mode: DetectionMode,
     pub confidence_threshold: f64,
     pub log_requests: bool,
+    pub prediction_enabled: bool,
+    pub prediction_prepare_answers: bool,
 }
 
 impl Default for QuestionDetectionSettings {
@@ -50,6 +52,8 @@ impl Default for QuestionDetectionSettings {
             mode: DetectionMode::Hybrid,
             confidence_threshold: 0.7,
             log_requests: false,
+            prediction_enabled: false,
+            prediction_prepare_answers: true,
         }
     }
 }
@@ -374,16 +378,17 @@ struct Outcome {
 }
 
 #[derive(Clone, Serialize)]
-struct DetectionLog {
-    id: String,
-    timestamp_ms: u64,
-    latency_ms: u64,
-    model: String,
-    provider: String,
-    system_prompt: String,
-    user_prompt: String,
-    response: String,
-    error: Option<String>,
+pub(super) struct DetectionLog {
+    pub task: &'static str,
+    pub id: String,
+    pub timestamp_ms: u64,
+    pub latency_ms: u64,
+    pub model: String,
+    pub provider: String,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub response: String,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -393,6 +398,7 @@ struct DetectionResult {
     source: String,
     original_text: String,
     question: Option<DetectedQuestion>,
+    prepared: bool,
 }
 
 /// Independently managed Tauri state. Clone only shares the worker and settings.
@@ -404,6 +410,9 @@ pub struct QuestionDetectionService {
 }
 
 impl QuestionDetectionService {
+    pub fn settings(&self) -> QuestionDetectionSettings {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).settings.clone()
+    }
     pub fn new(path: PathBuf) -> Self {
         let settings = std::fs::read(&path)
             .ok()
@@ -451,6 +460,7 @@ impl QuestionDetectionService {
             inner.revision
         };
         self.wake.notify_one();
+        super::question_prediction::invalidate(app);
         clear_engine_question(app);
         let _ = app.emit(
             "question_detection_pending",
@@ -546,6 +556,8 @@ impl QuestionDetectionService {
                     let view = settings_view(inner, route_revision, route.err());
                     let _ = app.emit(SETTINGS_EVENT, &view);
                     let question = question_for_current_route(job, outcome, route_revision);
+                    let prepared = app.state::<super::question_prediction::QuestionPredictionService>()
+                        .on_detection(&app, question.as_ref().map(|q| q.text.as_str()));
                     if let Some(state) = app.try_state::<AppState>() {
                         if let Some(engine) = &state.intelligence {
                             if let Ok(mut engine) = engine.lock() {
@@ -561,6 +573,7 @@ impl QuestionDetectionService {
                             source: job.pending.source.clone(),
                             original_text: job.pending.original_text.clone(),
                             question,
+                            prepared,
                         },
                     );
                     if let Some(log) = &outcome.log {
@@ -762,6 +775,7 @@ async fn execute_job(app: &AppHandle, job: Job) -> Outcome {
     let response = result.as_ref().cloned().unwrap_or_default();
     let (question, failure) = decision_from_response(&job, result);
     let log = job.settings.log_requests.then(|| DetectionLog {
+        task: TASK,
         id: uuid::Uuid::new_v4().to_string(),
         timestamp_ms: registry::now_ms().max(0) as u64,
         latency_ms: start.elapsed().as_millis() as u64,
@@ -1305,7 +1319,7 @@ mod tests {
 
 /// Includes route/provider resolution, semaphore acquisition and streaming in
 /// the same budget, and stops the provider when a session/settings reset wins.
-async fn run_bounded<F>(
+pub(super) async fn run_bounded<F>(
     cancel: Arc<CancelToken>,
     timeout: Duration,
     future: F,
