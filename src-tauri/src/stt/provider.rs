@@ -228,6 +228,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "pl-PL".to_string(),
                 "cs-CZ".to_string(),
                 "sv-SE".to_string(),
+                "vi-VN".to_string(),
             ],
         },
         STTProviderInfo {
@@ -251,6 +252,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "hi".to_string(),
                 "cs".to_string(),
                 "ru".to_string(),
+                "vi".to_string(),
             ],
         },
         STTProviderInfo {
@@ -276,6 +278,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "pl".to_string(),
                 "cs".to_string(),
                 "sv".to_string(),
+                "vi".to_string(),
             ],
         },
         STTProviderInfo {
@@ -302,6 +305,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "pl-PL".to_string(),
                 "cs-CZ".to_string(),
                 "sv-SE".to_string(),
+                "vi-VN".to_string(),
             ],
         },
         STTProviderInfo {
@@ -327,6 +331,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "pl".to_string(),
                 "cs".to_string(),
                 "sv".to_string(),
+                "vi".to_string(),
             ],
         },
         STTProviderInfo {

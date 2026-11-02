@@ -19,9 +19,9 @@ describe("catalog", () => {
   });
 
   it("keeps today's lists and order", () => {
-    expect(STT_COMMON).toHaveLength(18);
+    expect(STT_COMMON).toHaveLength(19);
     expect(STT_COMMON.slice(0, 3)).toEqual(["en-US", "en-GB", "es-ES"]);
-    expect(STT_COMMON[STT_COMMON.length - 1]).toBe("sv-SE");
+    expect(STT_COMMON[STT_COMMON.length - 1]).toBe("vi-VN");
     expect(TRANSLATION_COMMON).toHaveLength(38);
     expect(TRANSLATION_COMMON.slice(0, 6)).toEqual(["af", "ar", "bn", "bg", "zh", "zh-TW"]);
     expect(TRANSLATION_COMMON[TRANSLATION_COMMON.length - 1]).toBe("vi");

@@ -107,6 +107,8 @@
       "ignored": "{{engine}} 忽略语言设置，由模型决定。",
       "whisperCppAuto": "Whisper.cpp 对每个短片段单独检测语言，可能来回切换。知道语言时最好明确选择。",
       "deepgramAuto": "自动检测需要 Nova 2 或 Nova 3 模型，{{model}} 会按英语识别。",
+      "parakeetVietnameseUnsupported": "内置的 Parakeet 模型不支持越南语。请选择多语言 Whisper 模型、Deepgram Nova-3 或 Azure Speech。",
+      "deepgramVietnamese": "请选择支持越南语的 Deepgram 模型，例如 Nova-3。",
       "parakeetCtcEnglishOnly": "Parakeet CTC 110M 只支持英语。俄语等其他语言请使用 Parakeet TDT 0.6B v3。"
     }
   },

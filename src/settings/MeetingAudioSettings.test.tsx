@@ -24,7 +24,10 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
 }));
 
 import { MeetingAudioSettings, sonioxPairProblem } from "./MeetingAudioSettings";
+import { STTSettings } from "./STTSettings";
+import { PartyLanguageField } from "./stt/PartyLanguageField";
 import { AudioSetupStep } from "../components/wizard/AudioSetupStep";
+import { changeUiLanguage } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import { DEFAULT_OPENAI_COMPAT_STT_CONFIG } from "../lib/stt/types";
 
@@ -35,8 +38,55 @@ const initialConfig: MeetingAudioConfig = {
   preset_name: null,
 };
 
-beforeEach(() => useConfigStore.setState({ meetingAudioConfig: initialConfig }));
-afterEach(cleanup);
+beforeEach(() => useConfigStore.setState({ meetingAudioConfig: initialConfig, sttLanguage: "en-US" }));
+afterEach(async () => {
+  cleanup();
+  await act(() => changeUiLanguage("en"));
+});
+
+describe.each([
+  { surface: "Audio & Devices", Component: MeetingAudioSettings },
+  { surface: "STT Settings", Component: STTSettings },
+])("Vietnamese recognition in $surface", ({ Component }) => {
+  it.each([
+    { party: "you" as const, label: "You", other: "them" as const },
+    { party: "them" as const, label: "Them", other: "you" as const },
+  ])("selects Vietnamese for $label without changing the other party", async ({ party, label, other }) => {
+    const user = userEvent.setup();
+    render(<Component />);
+    const input = screen.getByRole("combobox", { name: `Recognition language for ${label}` });
+    await user.click(input);
+    const common = screen.getByRole("group", { name: "Common languages" });
+    await user.click(within(common).getByRole("option", { name: /Vietnamese/ }));
+    const config = useConfigStore.getState();
+    expect(config.meetingAudioConfig?.[party].language).toBe("vi-VN");
+    expect(config.meetingAudioConfig?.[other].language).toBeUndefined();
+    expect(config.sttLanguage).toBe("en-US");
+    expect(input).toHaveValue("Vietnamese");
+    expect(screen.getByText("Select a Deepgram model that supports Vietnamese, such as Nova-3.")).toBeInTheDocument();
+  });
+});
+
+describe.each(["vi", "vi-VN"])("Vietnamese model guidance for %s", (language) => {
+  it("warns about Parakeet in English and Chinese without recommending another Parakeet model", async () => {
+    useConfigStore.setState({ activeModelPerEngine: { parakeet_tdt: "parakeet-ctc-110m" } });
+    render(<PartyLanguageField party={{ ...initialConfig.you, stt_provider: "parakeet_tdt", language }} onChange={() => {}} />);
+    expect(screen.getByText(/The included Parakeet models do not support Vietnamese/)).toBeInTheDocument();
+    expect(screen.queryByText(/Use Parakeet TDT 0.6B v3 for Russian/)).toBeNull();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByRole("combobox")).toHaveValue("越南语");
+    expect(screen.getByText(/内置的 Parakeet 模型不支持越南语/)).toBeInTheDocument();
+    expect(screen.queryByText(/The included Parakeet models/)).toBeNull();
+  });
+
+  it("localizes the Deepgram model guidance", async () => {
+    render(<PartyLanguageField party={{ ...initialConfig.you, language }} onChange={() => {}} />);
+    expect(screen.getByText("Select a Deepgram model that supports Vietnamese, such as Nova-3.")).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("请选择支持越南语的 Deepgram 模型，例如 Nova-3。")).toBeInTheDocument();
+    expect(screen.queryByText(/Select a Deepgram model that supports Vietnamese/)).toBeNull();
+  });
+});
 
 describe.each([
   { surface: "settings", Component: MeetingAudioSettings },

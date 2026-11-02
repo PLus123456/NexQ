@@ -5,7 +5,7 @@
 import { AlertTriangle, Info } from "lucide-react";
 import { useT } from "../../i18n";
 import { LanguageCombobox } from "../../components/LanguageCombobox";
-import { AUTO_LANGUAGE } from "../../lib/languages";
+import { AUTO_LANGUAGE, baseLanguage } from "../../lib/languages";
 import { sttProviderMeta } from "../../lib/stt/providerMeta";
 import type { PartyAudioConfig } from "../../lib/types";
 import { useConfigStore } from "../../stores/configStore";
@@ -34,6 +34,7 @@ export function PartyLanguageField({ party, onChange, id, "aria-label": ariaLabe
 
   const value = partyLanguage(party, sttLanguage);
   const isAuto = value === AUTO_LANGUAGE;
+  const isVietnamese = baseLanguage(value) === "vi";
   const meta = sttProviderMeta(party.stt_provider);
   const engine = sttEngineLabel(party.stt_provider);
 
@@ -61,9 +62,16 @@ export function PartyLanguageField({ party, onChange, id, "aria-label": ariaLabe
   if (isAuto && meta?.id === "deepgram" && !/^nova-[23]\b/.test(deepgramModel)) {
     hints.push({ tone: "warning", text: t("stt:language.hints.deepgramAuto", { model: deepgramModel }) });
   }
+  if (isVietnamese && meta?.id === "parakeet_tdt") {
+    hints.push({ tone: "warning", text: t("stt:language.hints.parakeetVietnameseUnsupported") });
+  }
+  if (isVietnamese && meta?.id === "deepgram") {
+    hints.push({ tone: "info", text: t("stt:language.hints.deepgramVietnamese") });
+  }
   if (
     meta?.id === "parakeet_tdt" &&
     parakeetModel.includes("ctc-110m") &&
+    !isVietnamese &&
     !value.toLowerCase().startsWith("en")
   ) {
     hints.push({ tone: "warning", text: t("stt:language.hints.parakeetCtcEnglishOnly") });

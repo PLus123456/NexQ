@@ -93,11 +93,12 @@ export const LANGUAGES: readonly LanguageInfo[] = Object.freeze([
   entry("uk", "Ukrainian", "乌克兰语", "Українська"),
   entry("ur", "Urdu", "乌尔都语", "اردو"),
   entry("vi", "Vietnamese", "越南语", "Tiếng Việt"),
+  entry("vi-VN", "Vietnamese", "越南语", "Tiếng Việt"),
 ]);
 
 const BY_CODE: ReadonlyMap<string, LanguageInfo> = new Map(LANGUAGES.map((l) => [l.code, l]));
 
-/** The 18 recognition languages, in today's STT list order. */
+/** The 19 recognition languages, in today's STT list order. */
 export const STT_COMMON: readonly string[] = Object.freeze([
   "en-US",
   "en-GB",
@@ -117,6 +118,7 @@ export const STT_COMMON: readonly string[] = Object.freeze([
   "pl-PL",
   "cs-CZ",
   "sv-SE",
+  "vi-VN",
 ]);
 
 /** The 38 translation targets, in today's order. */

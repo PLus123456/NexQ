@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "NexQ Plus",
   "mainBinaryName": "nexq-plus",
-  "version": "2.29.1",
+  "version": "2.30.0",
   "identifier": "com.plus.nexq",
   "build": {
     "beforeDevCommand": "node scripts/fetch-onnxruntime.mjs && npm run dev",

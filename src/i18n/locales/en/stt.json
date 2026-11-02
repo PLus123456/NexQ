@@ -107,6 +107,8 @@
       "ignored": "{{engine}} ignores the language setting: the model decides.",
       "whisperCppAuto": "Whisper.cpp detects the language in each short chunk and can switch back and forth. Choose a language if you know it.",
       "deepgramAuto": "Auto-detect needs a Nova 2 or Nova 3 model; {{model}} transcribes English.",
+      "parakeetVietnameseUnsupported": "The included Parakeet models do not support Vietnamese. Choose a multilingual Whisper model, Deepgram Nova-3, or Azure Speech.",
+      "deepgramVietnamese": "Select a Deepgram model that supports Vietnamese, such as Nova-3.",
       "parakeetCtcEnglishOnly": "Parakeet CTC 110M is English-only. Use Parakeet TDT 0.6B v3 for Russian and other supported languages."
     }
   },

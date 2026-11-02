@@ -32,6 +32,7 @@ describe("generateAssist", () => {
     expect(first.requestId).not.toBe(second.requestId);
     expect(JSON.parse(first.transcriptSegments)).toEqual([
       { id: "a", text: "hello", speaker: "Them", timestamp_ms: 1 },
+      { id: "b", text: "partial", speaker: "Them (interim)", timestamp_ms: 2 },
     ]);
   });
 
@@ -40,6 +41,16 @@ describe("generateAssist", () => {
     expect(invoke).toHaveBeenLastCalledWith("cancel_generation", { requestId: "summary-1" });
     await cancelGeneration();
     expect(invoke).toHaveBeenLastCalledWith("cancel_generation", undefined);
+  });
+
+  it("sends the latest interim extension without changing stored finals", async () => {
+    const segment = { id: "a", text: "hello", pending_text: "hello world", speaker: "User", timestamp_ms: 1, is_final: true };
+    useTranscriptStore.setState({ segments: [segment] } as never);
+    await generateAssist("Assist");
+    expect(JSON.parse(invoke.mock.calls[0][1].transcriptSegments)).toEqual([
+      { id: "a", text: "hello world", speaker: "You (interim)", timestamp_ms: 1 },
+    ]);
+    expect(useTranscriptStore.getState().segments[0]).toEqual(segment);
   });
 
   it("labels diarized remote lines with their person's name for the AI", async () => {
