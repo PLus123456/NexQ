@@ -1,7 +1,7 @@
 use tauri::{command, AppHandle, State};
 use crate::intelligence::IntelligenceEngine;
 use crate::llm::api::{self, LlmTask};
-use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder, engine::RagEngine, indexer::JobKind};
+use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder, engine::{RagEngine, SearchParams}, indexer::JobKind};
 use crate::state::AppState;
 use std::sync::Arc;
 
@@ -104,24 +104,17 @@ pub async fn get_rag_status(
         .map_err(|e| format!("Failed to serialize RAG status: {}", e))
 }
 
+/// Searches with the stored settings and reports how: the chunks plus
+/// whether vectors were used and what reranking did (`SearchOutcome`).
 #[command]
 pub async fn test_rag_search(
     query: String,
-    state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let rag_arc = state.rag.as_ref()
-        .ok_or_else(|| "RAG manager not initialized".to_string())?;
-    let db_arc = state.database.as_ref()
-        .ok_or_else(|| "Database not initialized".to_string())?;
+    let engine = engine()?;
+    let params = SearchParams::from_config(&engine.config());
+    let outcome = engine.search(&query, params).await?;
 
-    let (config, embedder_url, model) = {
-        let mgr = rag_arc.lock().map_err(|e| e.to_string())?;
-        (mgr.config().clone(), mgr.embedder_url(), mgr.embedding_model())
-    };
-
-    let results = RagManager::search_async(db_arc, &query, &config, &embedder_url, &model).await?;
-
-    serde_json::to_string(&results)
+    serde_json::to_string(&outcome)
         .map_err(|e| format!("Failed to serialize search results: {}", e))
 }
 

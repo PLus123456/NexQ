@@ -875,11 +875,42 @@ export interface RagIndexStatus {
 export interface RagSearchResult {
   chunk_id: string;
   text: string;
+  /** The reranker's relevance when the results were reranked, else the search score. */
   score: number;
+  /** `score` relative to the first result (1.0). */
   normalized_score: number;
   source_file: string;
   chunk_index: number;
   source_type: string;
+  /** Set when a reranker ordered the results: position (from 1) and score after fusion. */
+  fused_rank?: number | null;
+  fused_score?: number | null;
+}
+
+/**
+ * What reranking did in one search: "applied" is the reranker's order; the
+ * others kept the fusion order (request failed or timed out, paused after
+ * repeated failures, or turned on without a usable address or model).
+ */
+export type RagRerankStatus = "applied" | "failed" | "paused" | "unconfigured";
+
+export interface RagRerankReport {
+  status: RagRerankStatus;
+  /** Candidates sent (0 when nothing was sent). */
+  candidates: number;
+  latency_ms: number;
+  error: string | null;
+  error_kind: string | null;
+}
+
+/** `test_rag_search`: the results and how they were found. */
+export interface RagSearchOutcome {
+  chunks: RagSearchResult[];
+  vector_used: boolean;
+  /** Why vectors were not used, e.g. "vectors_stale". */
+  degraded: string | null;
+  /** null: reranking is off, or there were fewer than two results. */
+  rerank: RagRerankReport | null;
 }
 
 export interface RagChunkInfo {

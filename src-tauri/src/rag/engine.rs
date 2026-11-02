@@ -16,13 +16,14 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use super::config::{self, RagConfig, EMBEDDING_SECRET_SLOT};
+use super::config::{self, RagConfig, RerankConfig, EMBEDDING_SECRET_SLOT, RERANK_SECRET_SLOT};
 use super::embedding::{self, CancelSignal, EmbedError, EmbedTestResult, Embedder, EmbedderSettings, RetryPolicy};
 use super::flat_index::{self, FlatIndex};
 use super::indexer::{IndexProgress, Job, JobKind, JobSummary};
+use super::rerank::{self, Breaker, RerankReport, RerankSettings, RerankStatus, RerankTestResult};
 use super::search::{self, ScoredChunk, SearchMode};
-use super::store::{SpaceRow, Store, StoreStats};
-use crate::net::endpoint::{ConnectionSummary, ResolvedConnection};
+use super::store::{ChunkDetail, SpaceRow, Store, StoreStats};
+use crate::net::endpoint::{AuthMode, ConnectionSummary, ResolvedConnection};
 
 /// A document the host wants indexed (a context resource).
 #[derive(Debug, Clone, PartialEq)]
@@ -145,11 +146,13 @@ pub struct IndexInfo {
 }
 
 /// One search, with why vectors were not used if they weren't.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SearchOutcome {
     pub chunks: Vec<ScoredChunk>,
     pub vector_used: bool,
     pub degraded: Option<String>,
+    /// What reranking did (None: off, or fewer than two results).
+    pub rerank: Option<RerankReport>,
 }
 
 /// Parameters a caller may override per search.
@@ -158,6 +161,27 @@ pub struct SearchParams {
     pub top_k: usize,
     pub mode: SearchMode,
     pub semantic_weight: f32,
+}
+
+impl SearchParams {
+    /// `top_k`, `search_mode` and `semantic_weight` of `config`.
+    pub fn from_config(config: &RagConfig) -> Self {
+        Self {
+            top_k: config.top_k.max(1),
+            mode: SearchMode::parse(&config.search_mode),
+            semantic_weight: config.semantic_weight,
+        }
+    }
+}
+
+/// A search result before it becomes a `ScoredChunk`.
+struct Hit {
+    id: i64,
+    detail: ChunkDetail,
+    /// Position (from 1) and score after fusion.
+    fused_rank: usize,
+    fused_score: f64,
+    rerank_score: Option<f64>,
 }
 
 pub struct RagEngine {
@@ -174,6 +198,11 @@ pub struct RagEngine {
     /// The embedding key read from the keychain (outer None: not read yet).
     pub(super) secret: Mutex<Option<Option<String>>>,
     pub(super) embedder: Mutex<Option<Arc<Embedder>>>,
+    /// The rerank key read from the keychain (outer None: not read yet).
+    pub(super) rerank_secret: Mutex<Option<Option<String>>>,
+    /// Rerank request settings and the rerank config they were built from.
+    pub(super) reranker: Mutex<Option<(RerankConfig, Arc<RerankSettings>)>>,
+    pub(super) rerank_breaker: Breaker,
     pub(super) status: Mutex<EngineStatus>,
     pub(super) retry: RetryPolicy,
 }
@@ -250,6 +279,9 @@ impl RagEngine {
             current_cancel: Mutex::new(None),
             secret: Mutex::new(None),
             embedder: Mutex::new(None),
+            rerank_secret: Mutex::new(None),
+            reranker: Mutex::new(None),
+            rerank_breaker: Breaker::default(),
             status: Mutex::new(EngineStatus::default()),
             retry,
         });
@@ -306,6 +338,9 @@ impl RagEngine {
         if prev.embedding != next.embedding {
             self.drop_embedder();
         }
+        if prev.rerank != next.rerank {
+            self.drop_reranker();
+        }
         self.after_config_change(&prev, &next);
         Ok(next)
     }
@@ -345,15 +380,22 @@ impl RagEngine {
 
     /// The embedding key, read from the keychain once (and only when one was saved).
     fn secret(&self, config: &RagConfig) -> Option<String> {
-        if !config.embedding.key_saved || config.embedding.auth.mode == crate::net::endpoint::AuthMode::None {
+        let e = &config.embedding;
+        self.keychain_secret(EMBEDDING_SECRET_SLOT, &self.secret, e.key_saved && e.auth.mode != AuthMode::None)
+    }
+
+    /// The key in keychain `slot`, read once into `cache`. The keychain is
+    /// not asked unless `needed` (a key was saved and the auth sends one).
+    fn keychain_secret(&self, slot: &str, cache: &Mutex<Option<Option<String>>>, needed: bool) -> Option<String> {
+        if !needed {
             return None;
         }
-        let mut cache = self.secret.lock().unwrap_or_else(|p| p.into_inner());
+        let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(value) = cache.as_ref() {
             return value.clone();
         }
-        let value = self.host.read_secret(EMBEDDING_SECRET_SLOT).unwrap_or_else(|e| {
-            log::warn!("Cannot read the embedding key: {e}");
+        let value = self.host.read_secret(slot).unwrap_or_else(|e| {
+            log::warn!("Cannot read the {slot} key: {e}");
             None
         });
         *cache = Some(value.clone());
@@ -366,16 +408,39 @@ impl RagEngine {
         let connection = if config.embedding.connection_id.is_empty() {
             None
         } else {
-            Some(self.host.resolve_connection(&config.embedding.connection_id).map_err(EmbedError::Config)?)
+            Some(self.reused_connection(&config.embedding.connection_id, "embeddings")?)
         };
         let secret = if connection.is_some() { None } else { self.secret(config) };
         EmbedderSettings::from_config(config, secret.as_deref(), connection.as_ref())
     }
 
+    /// Whether settings built from LLM connection `id` at `base_url` still
+    /// match it: false once it was deleted or got another address (cached
+    /// settings are rebuilt then). Own addresses (`id` empty) always match.
+    fn connection_current(&self, id: &str, base_url: &str) -> bool {
+        id.is_empty() || self.host.list_connections().iter().any(|c| c.id == id && c.base_url == base_url)
+    }
+
+    /// The LLM connection reused for `used_for`. One that was deleted or
+    /// turned off is a settings error saying so: the own address and key
+    /// are used only once the settings say so.
+    fn reused_connection(&self, id: &str, used_for: &str) -> Result<ResolvedConnection, EmbedError> {
+        self.host.resolve_connection(id).map_err(|e| {
+            EmbedError::Config(format!(
+                "The LLM connection reused for {used_for} can't be used ({e}). Choose another connection, or your own address and key, and save."
+            ))
+        })
+    }
+
     /// The cached embedding client for the current config.
     pub(super) fn embedder(&self, config: &RagConfig) -> Result<Arc<Embedder>, EmbedError> {
-        if let Some(e) = self.embedder.lock().unwrap_or_else(|p| p.into_inner()).clone() {
-            return Ok(e);
+        // A statement of its own: the lock must be released before `drop_embedder`.
+        let cached = self.embedder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(e) = cached {
+            if self.connection_current(&config.embedding.connection_id, &e.settings().base_url) {
+                return Ok(e);
+            }
+            self.drop_embedder();
         }
         let settings = self.embedder_settings(config)?;
         let e = Arc::new(Embedder::new(settings, self.http.clone()).with_retry(self.retry));
@@ -392,6 +457,76 @@ impl RagEngine {
         };
         let settings = self.embedder_settings(&config).map_err(String::from)?;
         Ok(embedding::test_connection(&settings, &self.http).await)
+    }
+
+    // ── Rerank settings ─────────────────────────────────────────────────────
+
+    /// Forgets the cached rerank settings and lifts a failure pause (the
+    /// settings or the key changed).
+    fn drop_reranker(&self) {
+        *self.reranker.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.rerank_breaker.reset();
+    }
+
+    /// Stores (or with `None` deletes) the rerank API key in the keychain
+    /// and records whether one is saved plus its last four characters.
+    pub fn set_rerank_secret(&self, secret: Option<&str>) -> Result<RagConfig, String> {
+        let secret = secret.map(str::trim).filter(|s| !s.is_empty());
+        self.host.write_secret(RERANK_SECRET_SLOT, secret)?;
+        *self.rerank_secret.lock().unwrap_or_else(|p| p.into_inner()) = Some(secret.map(str::to_string));
+        self.drop_reranker();
+        let mut cfg = self.write_config();
+        cfg.rerank.key_saved = secret.is_some();
+        cfg.rerank.key_hint = secret.map(secret_hint).unwrap_or_default();
+        config::save(&self.config_path(), &cfg)?;
+        Ok(cfg.clone())
+    }
+
+    /// Request settings for reranking (the reused LLM connection, or the
+    /// rerank section's own address and key).
+    pub(super) fn rerank_settings(&self, config: &RagConfig) -> Result<RerankSettings, EmbedError> {
+        let r = &config.rerank;
+        let connection = if r.connection_id.is_empty() {
+            None
+        } else {
+            Some(self.reused_connection(&r.connection_id, "reranking")?)
+        };
+        let secret = match connection {
+            Some(_) => None,
+            None => self.keychain_secret(RERANK_SECRET_SLOT, &self.rerank_secret, r.key_saved && r.auth.mode != AuthMode::None),
+        };
+        RerankSettings::from_config(config, secret.as_deref(), connection.as_ref())
+    }
+
+    /// The cached rerank settings, rebuilt when `config.rerank` differs from
+    /// the config they were built from or their LLM connection changed.
+    fn reranker(&self, config: &RagConfig) -> Result<Arc<RerankSettings>, EmbedError> {
+        let cached = self.reranker.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some((built_from, settings)) = cached {
+            if built_from == config.rerank && self.connection_current(&config.rerank.connection_id, &settings.base_url) {
+                return Ok(settings);
+            }
+            *self.reranker.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+        let settings = Arc::new(self.rerank_settings(config)?);
+        *self.reranker.lock().unwrap_or_else(|p| p.into_inner()) = Some((config.rerank.clone(), settings.clone()));
+        Ok(settings)
+    }
+
+    /// Tests the rerank settings: the stored config with `draft` (a patch)
+    /// on top, without saving anything. A successful test of the stored
+    /// settings lifts a failure pause.
+    pub async fn test_rerank(&self, draft: Option<&Value>) -> Result<RerankTestResult, String> {
+        let config = match draft {
+            Some(patch) => self.config().apply_patch(patch)?,
+            None => self.config(),
+        };
+        let settings = self.rerank_settings(&config).map_err(String::from)?;
+        let result = rerank::test_connection(&self.http, &settings).await;
+        if result.ok && draft.is_none() {
+            self.rerank_breaker.reset();
+        }
+        Ok(result)
     }
 
     // ── Jobs ────────────────────────────────────────────────────────────────
@@ -622,7 +757,9 @@ impl RagEngine {
     /// Hybrid search: keywords (bigram FTS) and vectors in parallel, fused
     /// by weighted RRF. Vectors are skipped when unusable (not configured,
     /// stale, loading) or when the query can't be embedded in time; the
-    /// keyword results are returned then.
+    /// keyword results are returned then. With reranking on, the best
+    /// `rerank.candidates` fused results go to the reranker and its best
+    /// `top_k` are returned; when it fails the fusion order stays.
     pub async fn search(&self, query: &str, params: SearchParams) -> Result<SearchOutcome, String> {
         let query = query.trim();
         if query.is_empty() {
@@ -691,8 +828,17 @@ impl RagEngine {
             (None, None) => Vec::new(),
         };
 
-        let chunks = self.materialize(store, fused, params.top_k).await?;
-        Ok(SearchOutcome { chunks, vector_used: vector_hits.is_some(), degraded })
+        let rerank_on = config.rerank.enabled;
+        let want = if rerank_on { config.rerank.candidates.max(params.top_k) } else { params.top_k };
+        let mut hits = self.distinct_hits(store, fused, want).await?;
+        let mut rerank = None;
+        if rerank_on && hits.len() >= 2 {
+            let (ordered, report) = self.rerank_hits(query, hits, params.top_k, &config).await;
+            hits = ordered;
+            rerank = Some(report);
+        }
+        hits.truncate(params.top_k);
+        Ok(SearchOutcome { chunks: to_chunks(hits), vector_used: vector_hits.is_some(), degraded, rerank })
     }
 
     async fn vector_search(
@@ -738,41 +884,89 @@ impl RagEngine {
         result
     }
 
-    /// Turns ranked ids into `ScoredChunk`s: details fetched in one query,
-    /// identical texts (same hash) kept once, `top_k` returned,
-    /// `normalized_score` relative to the best.
-    async fn materialize(&self, store: Arc<Store>, ranked: Vec<(i64, f64)>, top_k: usize) -> Result<Vec<ScoredChunk>, String> {
+    /// The first `want` results of `ranked` with their details (fetched in
+    /// one query), identical texts (same hash) kept once.
+    async fn distinct_hits(&self, store: Arc<Store>, ranked: Vec<(i64, f64)>, want: usize) -> Result<Vec<Hit>, String> {
         if ranked.is_empty() {
             return Ok(Vec::new());
         }
-        let window: Vec<(i64, f64)> = ranked.into_iter().take(top_k * 3 + 10).collect();
+        let window: Vec<(i64, f64)> = ranked.into_iter().take(want * 3 + 10).collect();
         let ids: Vec<i64> = window.iter().map(|(id, _)| *id).collect();
-        let details = blocking(move || store.chunk_details(&ids)).await?;
+        let mut details = blocking(move || store.chunk_details(&ids)).await?;
         let mut seen: HashSet<Vec<u8>> = HashSet::new();
-        let mut out: Vec<ScoredChunk> = Vec::with_capacity(top_k);
+        let mut out: Vec<Hit> = Vec::with_capacity(want);
         for (id, score) in window {
-            let Some(d) = details.get(&id) else { continue };
-            if !seen.insert(d.hash.clone()) {
+            let Some(detail) = details.remove(&id) else { continue };
+            if !seen.insert(detail.hash.clone()) {
                 continue;
             }
-            out.push(ScoredChunk {
-                chunk_id: id.to_string(),
-                text: d.text.clone(),
-                score,
-                normalized_score: 0.0,
-                source_file: d.doc_name.clone(),
-                chunk_index: d.ord,
-                source_type: "file".to_string(),
-            });
-            if out.len() >= top_k {
+            out.push(Hit { id, detail, fused_rank: out.len() + 1, fused_score: score, rerank_score: None });
+            if out.len() >= want {
                 break;
             }
         }
-        let max = out.iter().map(|c| c.score).fold(f64::NEG_INFINITY, f64::max);
-        for c in &mut out {
-            c.normalized_score = if max > 0.0 { c.score / max } else { 0.0 };
-        }
         Ok(out)
+    }
+
+    /// Puts `hits` (fusion order) in the reranker's order, best `top_k`
+    /// first. Any problem keeps the fusion order and is logged: a search
+    /// never fails because of the reranker. Three failures in a row pause
+    /// reranking for a minute.
+    async fn rerank_hits(&self, query: &str, hits: Vec<Hit>, top_k: usize, config: &RagConfig) -> (Vec<Hit>, RerankReport) {
+        let mut report =
+            RerankReport { status: RerankStatus::Applied, candidates: 0, latency_ms: 0, error: None, error_kind: None };
+        if self.rerank_breaker.is_open() {
+            log::debug!("RAG rerank paused after repeated failures, fusion order kept");
+            report.status = RerankStatus::Paused;
+            return (hits, report);
+        }
+        let settings = match self.reranker(config) {
+            Ok(settings) => settings,
+            Err(e) => {
+                log::warn!("RAG rerank is on but can't be used, fusion order kept: {e}");
+                report.status = RerankStatus::Unconfigured;
+                report.error_kind = Some(e.kind().to_string());
+                report.error = Some(e.to_string());
+                return (hits, report);
+            }
+        };
+        let documents: Vec<String> = hits.iter().map(|h| h.detail.text.clone()).collect();
+        report.candidates = documents.len();
+        let timeout = Duration::from_millis(config.rerank.timeout_ms);
+        let started = Instant::now();
+        let result = match rerank::rerank(&self.http, &settings, query, &documents, top_k, timeout).await {
+            Ok(ranked) if ranked.is_empty() => Err(EmbedError::BadResponse("the reranker returned no results".to_string())),
+            other => other,
+        };
+        report.latency_ms = started.elapsed().as_millis() as u64;
+        match result {
+            Ok(ranked) => {
+                self.rerank_breaker.success();
+                let mut slots: Vec<Option<Hit>> = hits.into_iter().map(Some).collect();
+                let ordered: Vec<Hit> = ranked
+                    .into_iter()
+                    .filter_map(|(i, score)| {
+                        let mut hit = slots[i].take()?;
+                        hit.rerank_score = Some(score);
+                        Some(hit)
+                    })
+                    .take(top_k)
+                    .collect();
+                log::debug!("RAG rerank: {} candidates in {} ms", report.candidates, report.latency_ms);
+                (ordered, report)
+            }
+            Err(e) => {
+                self.rerank_breaker.failure();
+                log::warn!("RAG rerank failed after {} ms, fusion order kept: {e}", report.latency_ms);
+                if self.rerank_breaker.is_open() {
+                    log::warn!("RAG rerank paused for a minute after repeated failures");
+                }
+                report.status = RerankStatus::Failed;
+                report.error_kind = Some(e.kind().to_string());
+                report.error = Some(e.to_string());
+                (hits, report)
+            }
+        }
     }
 
     // ── In-memory index maintenance (worker) ────────────────────────────────
@@ -812,6 +1006,33 @@ impl RagEngine {
             .filter(|c| matches!(c.kind, LlmKind::OpenAiCompat | LlmKind::Ollama | LlmKind::Gemini))
             .collect()
     }
+}
+
+/// The returned `ScoredChunk`s. `normalized_score` is relative to the
+/// first; reranker scores outside 0..=1 (raw logits) go through a sigmoid
+/// first, so negative ones keep their order.
+fn to_chunks(hits: Vec<Hit>) -> Vec<ScoredChunk> {
+    let scores: Vec<f64> = hits.iter().map(|h| h.rerank_score.unwrap_or(h.fused_score)).collect();
+    let logits = hits.iter().any(|h| h.rerank_score.is_some_and(|s| !(0.0..=1.0).contains(&s)));
+    let scale: Vec<f64> = if logits { scores.iter().map(|s| 1.0 / (1.0 + (-s).exp())).collect() } else { scores.clone() };
+    let max = scale.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    hits.into_iter()
+        .zip(scores.into_iter().zip(scale))
+        .map(|(h, (score, scaled))| {
+            let reranked = h.rerank_score.is_some();
+            ScoredChunk {
+                chunk_id: h.id.to_string(),
+                text: h.detail.text,
+                score,
+                normalized_score: if max > 0.0 { scaled / max } else { 0.0 },
+                source_file: h.detail.doc_name,
+                chunk_index: h.detail.ord,
+                source_type: "file".to_string(),
+                fused_rank: reranked.then_some(h.fused_rank),
+                fused_score: reranked.then_some(h.fused_score),
+            }
+        })
+        .collect()
 }
 
 /// Last four characters of a secret long enough to show them.

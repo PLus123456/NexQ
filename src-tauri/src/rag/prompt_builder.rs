@@ -65,6 +65,8 @@ mod tests {
             source_file: source_file.to_string(),
             chunk_index,
             source_type: source_type.to_string(),
+            fused_rank: None,
+            fused_score: None,
         }
     }
 

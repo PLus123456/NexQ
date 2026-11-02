@@ -23,6 +23,9 @@ import {
   MessageSquare,
   Zap,
   AlertCircle,
+  ArrowDownUp,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { useT } from "../i18n";
 
@@ -55,6 +58,10 @@ const SEARCH_MODE_KEYS = new Map<string, RagKey>([
 export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const { t } = useT(["rag", "common"]);
   const testSearchResults = useRagStore((s) => s.testSearchResults);
+  const rerankReport = useRagStore((s) => s.testSearchRerank);
+  const rerankConfig = useRagStore((s) => s.settings?.config.rerank);
+  const settingsLoaded = useRagStore((s) => s.settings !== null);
+  const loadSettings = useRagStore((s) => s.loadSettings);
   const isSearching = useRagStore((s) => s.isSearching);
   const searchLatencyMs = useRagStore((s) => s.searchLatencyMs);
   const testSearch = useRagStore((s) => s.testSearch);
@@ -101,6 +108,11 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen, resetTestSearch]);
+
+  // The rerank chip needs the knowledge base settings (the launcher doesn't load them).
+  useEffect(() => {
+    if (isOpen && !settingsLoaded) void loadSettings();
+  }, [isOpen, settingsLoaded, loadSettings]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -282,6 +294,14 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             <BarChart3 className="h-3 w-3" />
             {searchModeLabel}
           </span>
+          {rerankConfig?.enabled && (
+            <span className="flex items-center gap-1" title={t("context.testSearch.rerank.chipTitle")}>
+              <ArrowDownUp className="h-3 w-3" />
+              {rerankConfig.model
+                ? t("context.testSearch.rerank.chip", { model: rerankConfig.model })
+                : t("context.testSearch.rerank.chipOn")}
+            </span>
+          )}
           <span className="flex items-center gap-1" title={t("context.testSearch.config.llmModel.title")}>
             <Bot className="h-3 w-3" />
             {llmModel || t("context.testSearch.config.llmModel.none")}
@@ -449,15 +469,36 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                   </span>
                 )}
                 <span>{t("context.testSearch.results.tokens", { count: Math.round(totalResultTokens) })}</span>
+                {rerankReport && (
+                  <span
+                    className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ${
+                      rerankReport.status === "applied" ? "bg-primary/10 text-primary" : "bg-amber-500/10 text-amber-500"
+                    }`}
+                  >
+                    <ArrowDownUp className="h-3 w-3" />
+                    {rerankReport.status === "applied"
+                      ? t("context.testSearch.rerank.applied", { count: rerankReport.candidates, ms: rerankReport.latency_ms })
+                      : t(`context.testSearch.rerank.${rerankReport.status}`)}
+                  </span>
+                )}
                 <span className="ml-auto">
                   {searchModeLabel}
                 </span>
               </div>
+              {rerankReport && rerankReport.status !== "applied" && rerankReport.error && (
+                <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-meta text-amber-600 dark:text-amber-400">
+                  <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span className="select-text break-words">{rerankReport.error}</span>
+                </p>
+              )}
 
               {/* Chunk cards */}
               {testSearchResults.map((result, idx) => {
                 const isExpanded = expandedChunk === result.chunk_id;
                 const estimatedTokens = Math.ceil(result.text.split(/\s+/).length * 1.3);
+                // Places gained (> 0) or lost (< 0) by reranking.
+                const fusedRank = result.fused_rank ?? null;
+                const moved = fusedRank === null ? 0 : fusedRank - (idx + 1);
 
                 return (
                   <div
@@ -480,13 +521,26 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                       <span className="text-meta text-muted-foreground/60">
                         {t("context.testSearch.results.chunkTokens", { count: estimatedTokens })}
                       </span>
-                      <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${
+                      {fusedRank !== null && (
+                        <span
+                          className={`flex items-center gap-0.5 text-meta ${moved > 0 ? "text-emerald-500" : "text-muted-foreground/60"}`}
+                          title={t("context.testSearch.rerank.wasTitle", { score: result.fused_score?.toFixed(4) ?? "" })}
+                        >
+                          {moved > 0 && <ArrowUp className="h-3 w-3" />}
+                          {moved < 0 && <ArrowDown className="h-3 w-3" />}
+                          {t("context.testSearch.rerank.was", { rank: fusedRank })}
+                        </span>
+                      )}
+                      <span
+                        title={fusedRank !== null ? t("context.testSearch.rerank.scoreTitle") : undefined}
+                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium ${
                         result.score >= 0.7
                           ? "bg-emerald-500/10 text-emerald-500"
                           : result.score >= 0.4
                             ? "bg-amber-500/10 text-amber-500"
                             : "bg-red-500/10 text-red-400"
                       }`}>
+                        {fusedRank !== null && <ArrowDownUp className="h-3 w-3" />}
                         {result.score.toFixed(3)}
                       </span>
                       <button

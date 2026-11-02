@@ -11,6 +11,7 @@ use crate::rag::config::RagConfig;
 use crate::rag::embedding::EmbedTestResult;
 use crate::rag::engine::{self, IndexInfo, RagEngine};
 use crate::rag::indexer::JobKind;
+use crate::rag::rerank::RerankTestResult;
 use crate::state::AppState;
 
 fn engine() -> Result<std::sync::Arc<RagEngine>, String> {
@@ -26,8 +27,9 @@ pub struct EffectiveSettings {
     pub concurrency: usize,
 }
 
-/// Everything the knowledge base settings page needs. The API key itself is
-/// never sent: only `config.embedding.key_saved` / `key_hint`.
+/// Everything the knowledge base settings page needs. The API keys are
+/// never sent: only `key_saved` / `key_hint` of `config.embedding` and
+/// `config.rerank`.
 #[derive(Debug, Clone, Serialize)]
 pub struct RagSettingsView {
     pub config: RagConfig,
@@ -99,6 +101,26 @@ pub async fn rag_set_secret(
 #[command]
 pub async fn rag_test_embedding(draft: Option<Value>) -> Result<EmbedTestResult, String> {
     engine()?.test_embedding(draft.as_ref()).await
+}
+
+/// Stores the rerank API key in the keychain (`None` / empty deletes it).
+#[command]
+pub async fn rag_set_rerank_secret(
+    secret: Option<String>,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RagSettingsView, String> {
+    let engine = engine()?;
+    let config = engine.set_rerank_secret(secret.as_deref())?;
+    Ok(publish(&app_handle, &state, &engine, config))
+}
+
+/// Sends a small rerank request with the saved settings plus `draft` (a
+/// patch of not yet saved fields) and reports address, latency and whether
+/// the relevant test document came first.
+#[command]
+pub async fn rag_test_rerank(draft: Option<Value>) -> Result<RerankTestResult, String> {
+    engine()?.test_rerank(draft.as_ref()).await
 }
 
 #[command]

@@ -14,6 +14,7 @@ import { showToast } from "../stores/toastStore";
 import { formatDate, formatNumber, Trans, useT } from "../i18n";
 import { EmbeddingSection } from "./rag/EmbeddingSection";
 import { IndexSection } from "./rag/IndexSection";
+import { RerankSection } from "./rag/RerankSection";
 import {
   Database,
   Cloud,
@@ -227,6 +228,9 @@ export function ContextStrategySettings() {
 
           {/* ── Embedding service ── */}
           <EmbeddingSection />
+
+          {/* ── Reranking ── */}
+          <RerankSection />
 
           {/* ── Search Settings ── */}
           <div className="rounded-xl border border-border/30 bg-card/50 p-5">

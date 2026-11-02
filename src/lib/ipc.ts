@@ -26,7 +26,7 @@ import type {
   PartyAudioConfig,
   RagConfig,
   RagIndexStatus,
-  RagSearchResult,
+  RagSearchOutcome,
   RecordingInfo,
   TokenBudget,
   TranslationResult,
@@ -563,7 +563,8 @@ export async function getRagStatus(): Promise<RagIndexStatus> {
   return JSON.parse(result);
 }
 
-export async function testRagSearch(query: string): Promise<RagSearchResult[]> {
+/** Searches with the stored settings: the chunks, plus whether vectors were used and what reranking did. */
+export async function testRagSearch(query: string): Promise<RagSearchOutcome> {
   const result = await invoke<string>("test_rag_search", { query });
   return JSON.parse(result);
 }

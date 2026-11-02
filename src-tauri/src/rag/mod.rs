@@ -22,7 +22,7 @@ use std::time::Duration;
 use config::RagConfig;
 use engine::{RagEngine, SearchParams};
 use indexer::JobKind;
-use search::{ScoredChunk, SearchMode};
+use search::ScoredChunk;
 use transcript_indexer::TranscriptIndexer;
 use crate::db::rag as rag_db;
 use crate::db::DatabaseManager;
@@ -169,10 +169,10 @@ impl RagManager {
     }
 
     /// Search the index. `config` supplies `top_k`, `search_mode` and
-    /// `semantic_weight`; the embedding settings are the engine's. Vectors
-    /// are used only when they belong to the current embedding setup, so a
-    /// changed model never mixes old and new vectors (keywords answer
-    /// meanwhile).
+    /// `semantic_weight`; the embedding and rerank settings are the
+    /// engine's. Vectors are used only when they belong to the current
+    /// embedding setup, so a changed model never mixes old and new vectors
+    /// (keywords answer meanwhile).
     pub async fn search_async(
         _db: &Arc<Mutex<DatabaseManager>>,
         query: &str,
@@ -183,12 +183,7 @@ impl RagManager {
         let Some(engine) = engine::global() else {
             return Ok(Vec::new());
         };
-        let params = SearchParams {
-            top_k: config.top_k.max(1),
-            mode: SearchMode::parse(&config.search_mode),
-            semantic_weight: config.semantic_weight,
-        };
-        Ok(engine.search(query, params).await?.chunks)
+        Ok(engine.search(query, SearchParams::from_config(config)).await?.chunks)
     }
 
     /// Index counters, from memory (no database query).

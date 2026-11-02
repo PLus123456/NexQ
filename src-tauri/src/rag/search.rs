@@ -6,11 +6,18 @@ use std::collections::HashMap;
 pub struct ScoredChunk {
     pub chunk_id: String,
     pub text: String,
+    /// The score the results are ordered by: the reranker's relevance when
+    /// they were reranked, else the search score (fusion, cosine or keyword).
     pub score: f64,
+    /// `score` relative to the first result (1.0).
     pub normalized_score: f64,
     pub source_file: String,
     pub chunk_index: usize,
     pub source_type: String,
+    /// Set when a reranker ordered the results: the position (from 1) and
+    /// score this chunk had after fusion.
+    pub fused_rank: Option<usize>,
+    pub fused_score: Option<f64>,
 }
 
 /// How a query is matched.

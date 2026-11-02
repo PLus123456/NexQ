@@ -30,6 +30,8 @@ pub enum RerankFormat {
 /// Everything needed to send rerank requests.
 #[derive(Clone)]
 pub struct RerankSettings {
+    /// The base URL as configured (the reused connection's when one is).
+    pub base_url: String,
     pub endpoint: Url,
     /// Auth header and custom headers; the secret is inside: never log.
     pub headers: Vec<(String, String)>,
@@ -71,7 +73,7 @@ impl RerankSettings {
         }
         let endpoint = endpoint::join_endpoint(&base_url, endpoint::RERANK_PATH)
             .map_err(|e| EmbedError::Config(e.to_string()))?;
-        Ok(Self { endpoint, headers, model: r.model.clone(), format })
+        Ok(Self { base_url, endpoint, headers, model: r.model.clone(), format })
     }
 }
 
@@ -177,6 +179,31 @@ impl Breaker {
         self.failures.store(0, Ordering::SeqCst);
         *self.open_until.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
+}
+
+/// What reranking did in one search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RerankStatus {
+    /// The results are in the reranker's order.
+    Applied,
+    /// The request failed or timed out: the fusion order was kept.
+    Failed,
+    /// Skipped after repeated failures: the fusion order was kept.
+    Paused,
+    /// Turned on without a usable address or model: the fusion order was kept.
+    Unconfigured,
+}
+
+/// Reranking in one search, for the test dialog.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RerankReport {
+    pub status: RerankStatus,
+    /// Candidates sent (0 when nothing was sent).
+    pub candidates: usize,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+    pub error_kind: Option<String>,
 }
 
 /// Result of the settings page's rerank "Test" button.

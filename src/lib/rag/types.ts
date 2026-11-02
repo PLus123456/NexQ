@@ -50,17 +50,24 @@ export interface IndexingConfig {
   meeting_mode: "pause_local" | "slow" | "normal";
 }
 
+/** "generic": `{model, query, documents, top_n}` (Jina, Cohere, SiliconFlow, vLLM…); "tei": `{query, texts}`. */
+export type RerankFormat = "generic" | "tei";
+
 export interface RerankConfig {
   enabled: boolean;
+  /** Reuse this LLM connection's address, key and headers ("" = own fields). */
   connection_id: string;
   base_url: string;
   auth: AuthConfig;
   headers: CustomHeader[];
+  /** Read-only: set by rag_set_rerank_secret. */
   key_saved: boolean;
   key_hint: string;
   model: string;
-  format: "generic" | "tei";
+  format: RerankFormat;
+  /** Fused results sent for reranking (2–200; at least top-K are sent). */
   candidates: number;
+  /** Past this the fusion order is kept (200–60000). */
   timeout_ms: number;
 }
 
@@ -82,7 +89,7 @@ export type RagConfigPatch = {
     : RagFullConfig[K] | null;
 };
 
-/** An LLM connection embeddings can reuse (no secrets). */
+/** An LLM connection embeddings and rerank can reuse (no secrets). */
 export interface RagConnectionSummary {
   id: string;
   name: string;
@@ -187,6 +194,16 @@ export interface EmbedTestResult {
   error_kind: string | null;
   /** "add_v1": the same address with /v1 answered. */
   hint: string | null;
+}
+
+export interface RerankTestResult {
+  ok: boolean;
+  url: string;
+  latency_ms: number;
+  /** Whether the relevant test document came out on top. */
+  ranked_correctly: boolean | null;
+  error: string | null;
+  error_kind: string | null;
 }
 
 /** Statuses after which nothing is running. */
