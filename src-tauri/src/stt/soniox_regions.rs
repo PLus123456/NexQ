@@ -607,6 +607,42 @@ pub async fn latency_for_session(budget: Duration) -> LatencyTable {
     latency_table()
 }
 
+/// `auto` sessions running now; while there are any, the latency test is
+/// redone every `LATENCY_TTL` in the background (one refresher for the app).
+static AUTO_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static REFRESHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Held by an `auto` session while it runs.
+pub struct AutoSession(());
+
+impl Drop for AutoSession {
+    fn drop(&mut self) {
+        AUTO_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// An `auto` session started: keep the latency cache fresh while it runs.
+pub fn auto_session_started() -> AutoSession {
+    use std::sync::atomic::Ordering;
+    AUTO_SESSIONS.fetch_add(1, Ordering::SeqCst);
+    if !REFRESHER.swap(true, Ordering::SeqCst) {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(LATENCY_TTL).await;
+                if AUTO_SESSIONS.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                measure_into(default_rest_bases(), record).await;
+                if let Ok(mut cache) = latency_cache().lock() {
+                    cache.measured_at_ms = epoch_ms();
+                }
+            }
+            REFRESHER.store(false, Ordering::SeqCst);
+        });
+    }
+    AutoSession(())
+}
+
 // ── Which region a key belongs to ───────────────────────────────────────────
 
 /// One region's answer to `/v1/models` with the key.

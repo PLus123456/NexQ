@@ -692,6 +692,10 @@ impl Session {
         let mut rotated = false;
         // Frames sent on the current connection before it held (see `remember`).
         let mut replay: VecDeque<Frame> = VecDeque::new();
+        // `auto`: the latency cache stays fresh while the session runs.
+        let _auto = (self.config.region_mode == SonioxRegionMode::Auto && !self.config.uses_custom_endpoint()
+            && self.latency_override.is_none())
+            .then(regions::auto_session_started);
         let mut router = self.plan().await;
         if router.current().is_none() {
             self.sink.status("error", Some("No Soniox key for the regions this setup may use".to_string()));
