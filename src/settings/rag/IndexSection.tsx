@@ -215,11 +215,13 @@ function ProgressView({ progress, onCancel }: { progress: IndexProgressEvent | n
   const label =
     status === "extracting" && progress?.file_name
       ? t("index.progress.extracting", { name: progress.file_name })
-      : status === "embedding"
-        ? t("index.progress.embedding")
-        : status === "paused"
-          ? t("index.progress.paused")
-          : t("index.progress.scanning");
+      : status === "summarizing" && progress?.file_name
+        ? t("index.progress.summarizing", { name: progress.file_name, chapter: progress.message ?? "" })
+        : status === "embedding"
+          ? t("index.progress.embedding")
+          : status === "paused"
+            ? t("index.progress.paused")
+            : t("index.progress.scanning");
   return (
     <div className="mt-3 space-y-1.5">
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">

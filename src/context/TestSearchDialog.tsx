@@ -59,6 +59,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const { t } = useT(["rag", "common"]);
   const testSearchResults = useRagStore((s) => s.testSearchResults);
   const rerankReport = useRagStore((s) => s.testSearchRerank);
+  const rewrite = useRagStore((s) => s.testSearchRewrite);
   const rerankConfig = useRagStore((s) => s.settings?.config.rerank);
   const settingsLoaded = useRagStore((s) => s.settings !== null);
   const loadSettings = useRagStore((s) => s.loadSettings);
@@ -485,6 +486,20 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                   {searchModeLabel}
                 </span>
               </div>
+              {rewrite && (
+                <p
+                  className={`select-text break-words rounded-lg px-3 py-2 text-meta ${
+                    rewrite.report.status === "applied"
+                      ? "bg-accent/20 text-muted-foreground"
+                      : "border border-amber-500/20 bg-amber-500/5 text-amber-600 dark:text-amber-400"
+                  }`}
+                  title={rewrite.report.error ?? undefined}
+                >
+                  {rewrite.report.status === "applied"
+                    ? t("context.testSearch.rewrite.queries", { queries: rewrite.queries.join(" · ") })
+                    : t(`context.testSearch.rewrite.${rewrite.report.status}`)}
+                </p>
+              )}
               {rerankReport && rerankReport.status !== "applied" && rerankReport.error && (
                 <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-meta text-amber-600 dark:text-amber-400">
                   <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -512,12 +527,25 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                       <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                         {idx + 1}
                       </span>
-                      <span className="text-xs font-medium text-foreground truncate flex-1">
-                        {result.source_file}
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="text-xs font-medium text-foreground truncate">
+                          {result.source_file}
+                        </span>
+                        {result.heading && (
+                          <span className="text-meta text-muted-foreground/70 truncate" title={result.heading}>
+                            {result.heading}
+                          </span>
+                        )}
                       </span>
-                      <span className="text-meta text-muted-foreground/60">
-                        #{result.chunk_index}
-                      </span>
+                      {result.source_type === "summary" ? (
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-meta text-primary">
+                          {t("context.testSearch.results.summary")}
+                        </span>
+                      ) : (
+                        <span className="text-meta text-muted-foreground/60">
+                          {result.chunk_range ? `#${result.chunk_range[0]}–${result.chunk_range[1]}` : `#${result.chunk_index}`}
+                        </span>
+                      )}
                       <span className="text-meta text-muted-foreground/60">
                         {t("context.testSearch.results.chunkTokens", { count: estimatedTokens })}
                       </span>

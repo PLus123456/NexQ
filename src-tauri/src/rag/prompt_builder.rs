@@ -38,13 +38,23 @@ pub fn build_rag_context(chunks: &[ScoredChunk], custom_instructions: &str) -> S
 /// Build a human-readable source label for a chunk.
 ///
 /// - For transcript chunks: "Live Transcript, segment N"
-/// - For file chunks: "filename, chunk N"
+/// - For file chunks: "filename › heading path, chunk N" (or "chunks N–M"
+///   for an expanded passage, "chapter summary" for a summary)
 fn build_source_label(chunk: &ScoredChunk) -> String {
     if chunk.source_type == "transcript" {
-        format!("Live Transcript, segment {}", chunk.chunk_index)
-    } else {
-        format!("{}, chunk {}", chunk.source_file, chunk.chunk_index)
+        return format!("Live Transcript, segment {}", chunk.chunk_index);
     }
+    let mut label = chunk.source_file.clone();
+    if let Some(heading) = chunk.heading.as_deref().filter(|h| !h.is_empty()) {
+        label.push_str(" › ");
+        label.push_str(heading);
+    }
+    match (chunk.source_type.as_str(), chunk.chunk_range) {
+        ("summary", _) => label.push_str(", chapter summary"),
+        (_, Some((first, last))) => label.push_str(&format!(", chunks {first}–{last}")),
+        _ => label.push_str(&format!(", chunk {}", chunk.chunk_index)),
+    }
+    label
 }
 
 #[cfg(test)]
@@ -67,6 +77,8 @@ mod tests {
             source_type: source_type.to_string(),
             fused_rank: None,
             fused_score: None,
+            heading: None,
+            chunk_range: None,
         }
     }
 
@@ -89,6 +101,18 @@ mod tests {
         let result = build_rag_context(&chunks, "");
         assert!(result.contains("[Source 1: resume.pdf, chunk 0]"));
         assert!(result.contains("Experience section"));
+    }
+
+    #[test]
+    fn headings_ranges_and_summaries_are_named_in_the_label() {
+        let mut passage = make_chunk("file", "thesis.pdf", 12, "Expanded text");
+        passage.heading = Some("第三章 研究方法 › 3.2 数据来源".into());
+        passage.chunk_range = Some((11, 14));
+        let mut summary = make_chunk("summary", "thesis.pdf", 2, "Chapter summary text");
+        summary.heading = Some("第三章 研究方法".into());
+        let result = build_rag_context(&[passage, summary], "");
+        assert!(result.contains("[Source 1: thesis.pdf › 第三章 研究方法 › 3.2 数据来源, chunks 11–14]"), "{result}");
+        assert!(result.contains("[Source 2: thesis.pdf › 第三章 研究方法, chapter summary]"), "{result}");
     }
 
     #[test]

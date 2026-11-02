@@ -7,22 +7,25 @@
 //! when the active space matches the current config; otherwise they fall
 //! back to keywords until the user confirms a rebuild.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use super::config::{self, RagConfig, RerankConfig, EMBEDDING_SECRET_SLOT, RERANK_SECRET_SLOT};
 use super::embedding::{self, CancelSignal, EmbedError, EmbedTestResult, Embedder, EmbedderSettings, RetryPolicy};
+use super::expand::{self, HitPos, Limits, OutlineChunk};
 use super::flat_index::{self, FlatIndex};
 use super::indexer::{IndexProgress, Job, JobKind, JobSummary};
 use super::rerank::{self, Breaker, RerankReport, RerankSettings, RerankStatus, RerankTestResult};
+use super::rewrite::{self, RewriteReport};
 use super::search::{self, ScoredChunk, SearchMode};
-use super::store::{ChunkDetail, SpaceRow, Store, StoreStats};
+use super::store::{embed_text, ChunkDetail, ChunkKind, SpaceRow, Store, StoreStats};
 use crate::net::endpoint::{AuthMode, ConnectionSummary, ResolvedConnection};
 
 /// A document the host wants indexed (a context resource).
@@ -32,6 +35,21 @@ pub struct ResourceInfo {
     pub name: String,
     pub file_type: String,
     pub path: String,
+}
+
+/// A silent LLM call the engine asks the host for, routed by `task` (the
+/// LLM settings' task routing picks the connection and model).
+#[derive(Debug, Clone)]
+pub struct LlmRequest {
+    /// Routing key: `rag_query_rewrite`, `rag_summary`.
+    pub task: &'static str,
+    pub system: String,
+    pub user: String,
+    pub max_tokens: u64,
+    pub temperature: f64,
+    /// Ask for JSON output where the connection supports it.
+    pub json: bool,
+    pub timeout: Duration,
 }
 
 /// What the engine needs from the app; a test double in tests.
@@ -47,6 +65,11 @@ pub trait RagHost: Send + Sync + 'static {
     fn meeting_active(&self) -> bool;
     fn resolve_connection(&self, id: &str) -> Result<ResolvedConnection, String>;
     fn list_connections(&self) -> Vec<ConnectionSummary>;
+    /// Runs `request` and returns the model's whole answer.
+    fn complete(&self, request: LlmRequest) -> BoxFuture<'static, Result<String, String>> {
+        let _ = request;
+        Box::pin(async { Err("no LLM is available to the knowledge base".to_string()) })
+    }
 }
 
 /// Whether searches can use vectors right now.
@@ -153,6 +176,17 @@ pub struct SearchOutcome {
     pub degraded: Option<String>,
     /// What reranking did (None: off, or fewer than two results).
     pub rerank: Option<RerankReport>,
+    /// Every query searched: the caller's, then the rewritten ones.
+    pub queries: Vec<String>,
+    /// What query rewriting did (None: off).
+    pub rewrite: Option<RewriteReport>,
+}
+
+/// One query's fused results.
+struct Ranked {
+    fused: Vec<(i64, f64)>,
+    vector_used: bool,
+    degraded: Option<String>,
 }
 
 /// Parameters a caller may override per search.
@@ -754,21 +788,110 @@ impl RagEngine {
 
     // ── Search ──────────────────────────────────────────────────────────────
 
+    /// Searches `query`, see [`RagEngine::search_queries`].
+    pub async fn search(&self, query: &str, params: SearchParams) -> Result<SearchOutcome, String> {
+        self.search_queries(&[query.to_string()], params).await
+    }
+
     /// Hybrid search: keywords (bigram FTS) and vectors in parallel, fused
     /// by weighted RRF. Vectors are skipped when unusable (not configured,
     /// stale, loading) or when the query can't be embedded in time; the
-    /// keyword results are returned then. With reranking on, the best
-    /// `rerank.candidates` fused results go to the reranker and its best
-    /// `top_k` are returned; when it fails the fusion order stays.
-    pub async fn search(&self, query: &str, params: SearchParams) -> Result<SearchOutcome, String> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Ok(SearchOutcome::default());
+    /// keyword results are returned then.
+    ///
+    /// Every query in `queries` (the first is the question), plus the
+    /// rewrites of the first when query rewriting is on, is searched that
+    /// way and the lists are fused by RRF. With reranking on, the best
+    /// `rerank.candidates` fused results go to the reranker with the first
+    /// query and its best `top_k` are returned; when it fails the fusion
+    /// order stays. With context expansion on, each result then brings its
+    /// neighbours or its section, and results that meet are merged.
+    pub async fn search_queries(&self, queries: &[String], params: SearchParams) -> Result<SearchOutcome, String> {
+        let mut weighted: Vec<(String, f64)> = Vec::new();
+        for query in queries {
+            let query = query.trim();
+            if !query.is_empty() && !weighted.iter().any(|(q, _)| q == query) {
+                weighted.push((query.to_string(), 1.0));
+            }
         }
+        let Some(primary) = weighted.first().map(|(q, _)| q.clone()) else {
+            return Ok(SearchOutcome::default());
+        };
         let store = self.store()?;
         let config = self.config();
         let depth = config.retrieval.depth.max(params.top_k * 2);
-        let state = self.vector_state(&config);
+
+        let rewrite = if config.rewrite.enabled {
+            let (variants, report) = self.rewrite_query(&primary, &config).await;
+            for variant in variants {
+                if !weighted.iter().any(|(q, _)| *q == variant) {
+                    weighted.push((variant, rewrite::VARIANT_WEIGHT));
+                }
+            }
+            Some(report)
+        } else {
+            None
+        };
+
+        let results = futures::future::join_all(
+            weighted.iter().map(|(query, _)| self.ranked(query, depth, params, &config, store.clone())),
+        )
+        .await;
+        let mut results = results.into_iter();
+        let first = results.next().expect("the first query")?;
+        let mut more: Vec<(Vec<i64>, f64)> = Vec::new();
+        for ((query, weight), result) in weighted.iter().skip(1).zip(results) {
+            match result {
+                Ok(ranked) => more.push((ranked.fused.iter().map(|(id, _)| *id).collect(), *weight)),
+                Err(e) => log::warn!("RAG search for {query:?} failed: {e}"),
+            }
+        }
+        let fused = if more.is_empty() {
+            first.fused
+        } else {
+            let ids: Vec<i64> = first.fused.iter().map(|(id, _)| *id).collect();
+            let mut lists: Vec<(&[i64], f64)> = vec![(&ids, 1.0)];
+            lists.extend(more.iter().map(|(ids, weight)| (ids.as_slice(), *weight)));
+            search::rrf_fuse(&lists, config.retrieval.rrf_k)
+        };
+
+        let rerank_on = config.rerank.enabled;
+        let want = if rerank_on { config.rerank.candidates.max(params.top_k) } else { params.top_k };
+        let mut hits = self.distinct_hits(store.clone(), fused, want).await?;
+        let mut rerank = None;
+        if rerank_on && hits.len() >= 2 {
+            let (ordered, report) = self.rerank_hits(&primary, hits, params.top_k, &config).await;
+            hits = ordered;
+            rerank = Some(report);
+        }
+        hits.truncate(params.top_k);
+        let places: Vec<(i64, ChunkKind, usize)> = hits.iter().map(|h| (h.detail.doc_id, h.detail.kind, h.detail.ord)).collect();
+        let mut chunks = to_chunks(hits);
+        if config.expansion.enabled && !chunks.is_empty() {
+            match self.expand(&store, &places, &chunks, &config).await {
+                Ok(expanded) => chunks = expanded,
+                Err(e) => log::warn!("RAG context expansion skipped: {e}"),
+            }
+        }
+        Ok(SearchOutcome {
+            chunks,
+            vector_used: first.vector_used,
+            degraded: first.degraded,
+            rerank,
+            queries: weighted.into_iter().map(|(q, _)| q).collect(),
+            rewrite,
+        })
+    }
+
+    /// One query's vector and keyword results, fused.
+    async fn ranked(
+        &self,
+        query: &str,
+        depth: usize,
+        params: SearchParams,
+        config: &RagConfig,
+        store: Arc<Store>,
+    ) -> Result<Ranked, String> {
+        let state = self.vector_state(config);
         let use_vector = params.mode != SearchMode::Keyword && state == VectorState::Ready;
         let mut degraded = match (params.mode, state) {
             (SearchMode::Keyword, _) | (_, VectorState::Ready) => None,
@@ -796,7 +919,7 @@ impl RagEngine {
         };
         let vector_task = async {
             if use_vector {
-                Some(self.vector_search(query, depth, &config, store.clone()).await)
+                Some(self.vector_search(query, depth, config, store.clone()).await)
             } else {
                 None
             }
@@ -827,18 +950,39 @@ impl RagEngine {
             (None, Some(k)) => k.clone(),
             (None, None) => Vec::new(),
         };
+        Ok(Ranked { fused, vector_used: vector_hits.is_some(), degraded })
+    }
 
-        let rerank_on = config.rerank.enabled;
-        let want = if rerank_on { config.rerank.candidates.max(params.top_k) } else { params.top_k };
-        let mut hits = self.distinct_hits(store, fused, want).await?;
-        let mut rerank = None;
-        if rerank_on && hits.len() >= 2 {
-            let (ordered, report) = self.rerank_hits(query, hits, params.top_k, &config).await;
-            hits = ordered;
-            rerank = Some(report);
+    /// Other phrasings of `question` from the `rag_query_rewrite` task,
+    /// within `rewrite.timeout_ms`; none when that fails.
+    async fn rewrite_query(&self, question: &str, config: &RagConfig) -> (Vec<String>, RewriteReport) {
+        let timeout = Duration::from_millis(config.rewrite.timeout_ms);
+        let request = LlmRequest {
+            task: rewrite::TASK,
+            system: rewrite::system_prompt(config.rewrite.variants),
+            user: rewrite::user_prompt(question),
+            max_tokens: 400,
+            temperature: 0.3,
+            json: true,
+            timeout,
+        };
+        let started = Instant::now();
+        let answer = tokio::time::timeout(timeout, self.host.complete(request)).await;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let (queries, status, error) = match answer {
+            Err(_) => (Vec::new(), "timeout", Some(format!("no answer within {} ms", timeout.as_millis()))),
+            Ok(Err(e)) => (Vec::new(), "failed", Some(e)),
+            Ok(Ok(text)) => {
+                let queries = rewrite::parse_queries(&text, question, config.rewrite.variants);
+                let status = if queries.is_empty() { "empty" } else { "applied" };
+                (queries, status, None)
+            }
+        };
+        match &error {
+            Some(e) => log::warn!("RAG query rewrite {status} after {latency_ms} ms, searching the question alone: {e}"),
+            None => log::debug!("RAG query rewrite: {} queries in {latency_ms} ms", queries.len()),
         }
-        hits.truncate(params.top_k);
-        Ok(SearchOutcome { chunks: to_chunks(hits), vector_used: vector_hits.is_some(), degraded, rerank })
+        (queries, RewriteReport { status, latency_ms, error })
     }
 
     async fn vector_search(
@@ -930,7 +1074,7 @@ impl RagEngine {
                 return (hits, report);
             }
         };
-        let documents: Vec<String> = hits.iter().map(|h| h.detail.text.clone()).collect();
+        let documents: Vec<String> = hits.iter().map(|h| embed_text(&h.detail.heading, &h.detail.text)).collect();
         report.candidates = documents.len();
         let timeout = Duration::from_millis(config.rerank.timeout_ms);
         let started = Instant::now();
@@ -967,6 +1111,81 @@ impl RagEngine {
                 (hits, report)
             }
         }
+    }
+
+    /// Context expansion of `chunks` (search order; `places`: document, kind
+    /// and position of each): text chunks bring their neighbours or their
+    /// section and merge where they meet; summaries stay as they are.
+    async fn expand(
+        &self,
+        store: &Arc<Store>,
+        places: &[(i64, ChunkKind, usize)],
+        chunks: &[ScoredChunk],
+        config: &RagConfig,
+    ) -> Result<Vec<ScoredChunk>, String> {
+        let mut docs: Vec<i64> = places.iter().filter(|(_, kind, _)| *kind == ChunkKind::Text).map(|(doc, ..)| *doc).collect();
+        docs.sort_unstable();
+        docs.dedup();
+        let outlines: HashMap<i64, Vec<OutlineChunk>> = {
+            let store = store.clone();
+            blocking(move || docs.into_iter().map(|doc| Ok((doc, store.document_outline(doc)?))).collect()).await?
+        };
+        let mut positions: Vec<HitPos> = Vec::new();
+        let mut chunk_of_hit: Vec<usize> = Vec::new();
+        for (i, (doc, kind, ord)) in places.iter().enumerate() {
+            if *kind != ChunkKind::Text {
+                continue;
+            }
+            let Some(pos) = outlines.get(doc).and_then(|o| o.binary_search_by_key(ord, |c| c.ord).ok()) else { continue };
+            positions.push(HitPos { doc: *doc, pos });
+            chunk_of_hit.push(i);
+        }
+        let summary_tokens: usize = places
+            .iter()
+            .zip(chunks)
+            .filter(|((_, kind, _), _)| *kind == ChunkKind::Summary)
+            .map(|(_, c)| super::cjk::estimate_tokens(&c.text))
+            .sum();
+        let limits = Limits {
+            neighbors: config.expansion.neighbors,
+            section_max_tokens: config.expansion.section_max_tokens,
+            max_total_tokens: config.expansion.max_total_tokens.saturating_sub(summary_tokens),
+        };
+        let passages = expand::plan(&positions, &outlines, limits);
+        let ids: Vec<i64> = passages.iter().flat_map(|p| outlines[&p.doc][p.lo..=p.hi].iter().map(|c| c.id)).collect();
+        let texts = {
+            let store = store.clone();
+            blocking(move || store.chunk_texts(&ids)).await?
+        };
+        let mut passage_of: HashMap<usize, usize> = HashMap::new();
+        for (n, passage) in passages.iter().enumerate() {
+            for hit in &passage.hits {
+                passage_of.insert(chunk_of_hit[*hit], n);
+            }
+        }
+        let mut out: Vec<ScoredChunk> = Vec::with_capacity(chunks.len());
+        for (i, chunk) in chunks.iter().enumerate() {
+            let Some(passage) = passage_of.get(&i).map(|n| &passages[*n]) else {
+                out.push(chunk.clone());
+                continue;
+            };
+            if chunk_of_hit[passage.hits[0]] != i {
+                continue; // part of a better result's passage
+            }
+            let outline = &outlines[&passage.doc];
+            let text = expand::join_text(outline, passage.lo, passage.hi, &texts);
+            let mut chunk = chunk.clone();
+            if !text.trim().is_empty() {
+                chunk.text = text;
+                chunk.heading = expand::passage_heading(outline, passage.lo);
+                chunk.chunk_range = (passage.lo != passage.hi).then(|| (outline[passage.lo].ord, outline[passage.hi].ord));
+            }
+            // The same passage from a copy of the document is shown once.
+            if !out.iter().any(|c| c.text == chunk.text) {
+                out.push(chunk);
+            }
+        }
+        Ok(out)
     }
 
     // ── In-memory index maintenance (worker) ────────────────────────────────
@@ -1027,9 +1246,15 @@ fn to_chunks(hits: Vec<Hit>) -> Vec<ScoredChunk> {
                 normalized_score: if max > 0.0 { scaled / max } else { 0.0 },
                 source_file: h.detail.doc_name,
                 chunk_index: h.detail.ord,
-                source_type: "file".to_string(),
+                source_type: match h.detail.kind {
+                    ChunkKind::Text => "file",
+                    ChunkKind::Summary => "summary",
+                }
+                .to_string(),
                 fused_rank: reranked.then_some(h.fused_rank),
                 fused_score: reranked.then_some(h.fused_score),
+                heading: (!h.detail.heading.is_empty()).then_some(h.detail.heading),
+                chunk_range: None,
             }
         })
         .collect()

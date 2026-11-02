@@ -1,6 +1,9 @@
 pub mod cjk;
 pub mod config;
 pub mod chunker;
+pub mod headings;
+pub mod expand;
+pub mod rewrite;
 pub mod store;
 pub mod flat_index;
 pub mod embedding;
@@ -184,6 +187,17 @@ impl RagManager {
             return Ok(Vec::new());
         };
         Ok(engine.search(query, SearchParams::from_config(config)).await?.chunks)
+    }
+
+    /// Searches several queries at once (the first is the question; query
+    /// rewriting, when on, rewrites that one) and fuses their results, so
+    /// passages found by more than one come back once. `config` supplies
+    /// `top_k`, `search_mode` and `semantic_weight`.
+    pub async fn search_queries_async(queries: &[String], config: &RagConfig) -> Result<Vec<ScoredChunk>, String> {
+        let Some(engine) = engine::global() else {
+            return Ok(Vec::new());
+        };
+        Ok(engine.search_queries(queries, SearchParams::from_config(config)).await?.chunks)
     }
 
     /// Index counters, from memory (no database query).

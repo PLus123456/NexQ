@@ -6,8 +6,9 @@ use sha2::{Digest, Sha256};
 
 use crate::net::endpoint::{AuthConfig, CustomHeader};
 
-/// Version of the `rag/config.json` layout (1 was the in-memory upstream config).
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+/// Version of the `rag/config.json` layout (1 was the in-memory upstream
+/// config; 3 split at headings by default, see [`load`]).
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// RAG pipeline configuration, stored by Rust in `<app data>/rag/config.json`.
 ///
@@ -30,7 +31,7 @@ pub struct RagConfig {
     pub chunk_size: usize,
     /// Overlap between consecutive chunks in tokens.
     pub chunk_overlap: usize,
-    /// Text splitting strategy ("recursive", etc.).
+    /// Text splitting: "headings" (sections first, see `headings.rs`) or "recursive".
     pub splitting_strategy: String,
     /// Number of top results to return from search.
     pub top_k: usize,
@@ -50,6 +51,9 @@ pub struct RagConfig {
     pub retrieval: RetrievalConfig,
     pub indexing: IndexingConfig,
     pub rerank: RerankConfig,
+    pub rewrite: QueryRewriteConfig,
+    pub expansion: ExpansionConfig,
+    pub summaries: SummaryConfig,
 }
 
 /// Request protocol of the embedding service.
@@ -229,6 +233,64 @@ impl Default for RerankConfig {
     }
 }
 
+/// Other phrasings of the question searched along with it (one LLM call per
+/// search, task `rag_query_rewrite`), their result lists fused by RRF.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct QueryRewriteConfig {
+    pub enabled: bool,
+    /// Phrasings asked for (1–5).
+    pub variants: usize,
+    /// Past this the search goes on with the question alone.
+    pub timeout_ms: u64,
+}
+
+impl Default for QueryRewriteConfig {
+    fn default() -> Self {
+        Self { enabled: false, variants: 3, timeout_ms: 5000 }
+    }
+}
+
+/// What a search result brings along: its neighbouring chunks, or its whole
+/// section when that is short enough. Results from the same document that
+/// meet are merged into one passage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ExpansionConfig {
+    pub enabled: bool,
+    /// Chunks taken on each side of a hit (0–5).
+    pub neighbors: usize,
+    /// The hit's section, or the largest enclosing one, is returned whole
+    /// (instead of the neighbours) up to this many tokens (0: never).
+    pub section_max_tokens: usize,
+    /// All passages of one search together; past it hits stay unexpanded.
+    pub max_total_tokens: usize,
+}
+
+impl Default for ExpansionConfig {
+    fn default() -> Self {
+        Self { enabled: true, neighbors: 1, section_max_tokens: 2000, max_total_tokens: 16000 }
+    }
+}
+
+/// One LLM summary per chapter, written at index time (task `rag_summary`),
+/// stored and searched like a chunk of its chapter. Needs heading splitting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SummaryConfig {
+    pub enabled: bool,
+    /// Longest chapter text sent (tokens); the rest of a longer chapter is left out.
+    pub max_input_tokens: usize,
+    /// One summary request gives up after this long.
+    pub timeout_secs: u64,
+}
+
+impl Default for SummaryConfig {
+    fn default() -> Self {
+        Self { enabled: false, max_input_tokens: 32000, timeout_secs: 180 }
+    }
+}
+
 /// Keychain slot of the embedding API key.
 pub const EMBEDDING_SECRET_SLOT: &str = "rag-embedding";
 /// Keychain slot of the rerank API key.
@@ -244,7 +306,7 @@ impl Default for RagConfig {
             batch_size: embedding.batch_size,
             chunk_size: 512,
             chunk_overlap: 64,
-            splitting_strategy: "recursive".to_string(),
+            splitting_strategy: super::chunker::STRATEGY_HEADINGS.to_string(),
             top_k: 5,
             search_mode: "hybrid".to_string(),
             similarity_threshold: 0.3,
@@ -256,6 +318,9 @@ impl Default for RagConfig {
             retrieval: RetrievalConfig::default(),
             indexing: IndexingConfig::default(),
             rerank: RerankConfig::default(),
+            rewrite: QueryRewriteConfig::default(),
+            expansion: ExpansionConfig::default(),
+            summaries: SummaryConfig::default(),
         };
         config.normalize();
         config
@@ -273,6 +338,12 @@ impl RagConfig {
         self.top_k = self.top_k.clamp(1, 100);
         if !matches!(self.search_mode.as_str(), "hybrid" | "semantic" | "keyword") {
             self.search_mode = "hybrid".to_string();
+        }
+        if !matches!(
+            self.splitting_strategy.as_str(),
+            super::chunker::STRATEGY_HEADINGS | super::chunker::STRATEGY_RECURSIVE
+        ) {
+            self.splitting_strategy = super::chunker::STRATEGY_HEADINGS.to_string();
         }
         if !self.semantic_weight.is_finite() {
             self.semantic_weight = 0.7;
@@ -325,6 +396,19 @@ impl RagConfig {
         if !matches!(rr.format.as_str(), "generic" | "tei") {
             rr.format = "generic".to_string();
         }
+
+        let rw = &mut self.rewrite;
+        rw.variants = rw.variants.clamp(1, 5);
+        rw.timeout_ms = rw.timeout_ms.clamp(500, 60_000);
+
+        let ex = &mut self.expansion;
+        ex.neighbors = ex.neighbors.min(5);
+        ex.section_max_tokens = ex.section_max_tokens.min(32_000);
+        ex.max_total_tokens = ex.max_total_tokens.clamp(1000, 200_000);
+
+        let su = &mut self.summaries;
+        su.max_input_tokens = su.max_input_tokens.clamp(2000, 200_000);
+        su.timeout_secs = su.timeout_secs.clamp(10, 1800);
 
         self.embedding_model = self.embedding.model.clone();
         self.batch_size = self.embedding.batch_size;
@@ -451,14 +535,33 @@ impl RagConfig {
     }
 
     /// Chunking identity of a document: re-chunked when this changes.
+    /// Chapter summaries are part of it, so turning them on or off asks for
+    /// a rebuild (and a document whose summaries failed stays due for one).
     pub fn chunk_params(&self) -> String {
-        format!(
+        let mut params = format!(
             "v{}:{}:{}:{}",
             super::chunker::CHUNKER_VERSION,
             self.chunk_size,
             self.chunk_overlap,
             self.splitting_strategy
-        )
+        );
+        if self.summaries_active() {
+            params.push_str(":summaries");
+        }
+        params
+    }
+
+    /// Chapter summaries are written: on, and chapters are known (heading splitting).
+    pub fn summaries_active(&self) -> bool {
+        self.summaries.enabled && self.splitting_strategy == super::chunker::STRATEGY_HEADINGS
+    }
+
+    /// Changes a config stored by an older version: version 3 made heading
+    /// splitting the default, and the only older strategy was "recursive".
+    fn migrate(&mut self) {
+        if self.schema_version < 3 && self.splitting_strategy == super::chunker::STRATEGY_RECURSIVE {
+            self.splitting_strategy = super::chunker::STRATEGY_HEADINGS.to_string();
+        }
     }
 }
 
@@ -565,6 +668,7 @@ pub fn load(path: &Path) -> RagConfig {
     };
     match serde_json::from_str::<RagConfig>(&text) {
         Ok(mut config) => {
+            config.migrate();
             config.normalize();
             config
         }
@@ -610,7 +714,9 @@ mod tests {
         assert!(!c.include_transcript);
         assert!(!c.embedding_configured());
         assert_eq!(c.effective_concurrency(), 4);
-        assert_eq!(c.chunk_params(), format!("v{}:512:64:recursive", super::super::chunker::CHUNKER_VERSION));
+        assert_eq!(c.chunk_params(), format!("v{}:512:64:headings", super::super::chunker::CHUNKER_VERSION));
+        assert!(!c.rewrite.enabled && !c.summaries.enabled, "LLM calls are opt-in");
+        assert!(c.expansion.enabled);
     }
 
     #[test]
@@ -755,6 +861,43 @@ mod tests {
         assert_eq!(load(&path), RagConfig::default());
         assert!(path.with_extension("json.bad").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_stored_config_switches_to_heading_splitting_once() {
+        let dir = temp_dir("migrate");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"schema_version": 2, "splitting_strategy": "recursive", "chunk_size": 600}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.splitting_strategy, "headings");
+        assert_eq!(c.schema_version, CONFIG_SCHEMA_VERSION);
+        // A choice made with this version stays.
+        let c = c.apply_patch(&json!({"splitting_strategy": "recursive"})).unwrap();
+        save(&path, &c).unwrap();
+        assert_eq!(load(&path).splitting_strategy, "recursive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieval_extras_are_clamped_and_summaries_need_headings() {
+        let c = RagConfig::default()
+            .apply_patch(&json!({
+                "splitting_strategy": "magic",
+                "rewrite": {"enabled": true, "variants": 9, "timeout_ms": 1},
+                "expansion": {"neighbors": 50, "max_total_tokens": 10},
+                "summaries": {"enabled": true, "max_input_tokens": 1}
+            }))
+            .unwrap();
+        assert_eq!(c.splitting_strategy, "headings");
+        assert_eq!((c.rewrite.variants, c.rewrite.timeout_ms), (5, 500));
+        assert_eq!((c.expansion.neighbors, c.expansion.max_total_tokens), (5, 1000));
+        assert_eq!(c.expansion.section_max_tokens, 2000, "untouched field kept");
+        assert_eq!(c.summaries.max_input_tokens, 2000);
+        assert!(c.summaries_active());
+        assert!(c.chunk_params().ends_with(":headings:summaries"));
+        let plain = c.apply_patch(&json!({"splitting_strategy": "recursive"})).unwrap();
+        assert!(!plain.summaries_active());
+        assert!(plain.chunk_params().ends_with(":recursive"));
     }
 
     #[test]

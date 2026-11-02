@@ -266,6 +266,39 @@
       "slow": "这次用了 {{ms}} ms，超过了 {{timeout}} ms 的超时设置，检索时会沿用融合后的顺序。"
     }
   },
+  "completeness": {
+    "title": "回答完整度",
+    "subtitle": "返回完整段落而不是零散片段，也能找到换了说法的内容。",
+    "tokens_other": "{{formatted}} token",
+    "expansion": {
+      "label": "扩展结果上下文",
+      "hint": "每个结果会带上相邻的片段；所在小节足够短时直接返回整个小节。同一文档里相连的结果合并成一段。不额外调用 LLM，但回答时的提示词会更长。",
+      "neighbors": "相邻片段",
+      "neighborsNone": "不带",
+      "neighborsOption_other": "前后各 {{count}} 块",
+      "section": "整节返回上限",
+      "sectionOff": "不整节返回",
+      "total": "每次检索的上下文上限",
+      "limitsHint": "超过上下文上限后，排在后面的结果不再扩展。"
+    },
+    "headings": {
+      "label": "按标题切分",
+      "hint": "分块不跨小节，并带上标题路径（如“第三章 研究方法 › 3.2 数据来源”），检索时能匹配，模型也能看到。支持 Markdown 标题、Word 标题样式、PDF 书签，以及“第一章”“3.2”这类编号标题。修改后需要重建索引。"
+    },
+    "rewrite": {
+      "label": "查询改写（多路查询）",
+      "hint": "每次检索前，由 LLM 把问题改写成几种不同说法，分别检索后融合结果，换了说法的内容也能找到。每次检索调用一次 LLM，模型在 LLM 设置 → 任务路由的“知识库查询改写”里选；失败或超时就只用原问题检索。",
+      "variants": "改写数量",
+      "variantsOption_other": "{{count}} 种说法",
+      "timeout": "超时",
+      "seconds_other": "{{count}} 秒"
+    },
+    "summaries": {
+      "label": "章节摘要",
+      "hint": "建立索引时由 LLM 为每一章写一段摘要，和正文一起参与检索，适合问整章内容的问题。每章调用一次 LLM（任务路由里的“知识库章节摘要”）；章节没变就沿用原摘要。打开或关闭后需要重建索引。",
+      "needsHeadings": "需要先打开“按标题切分”。"
+    }
+  },
   "index": {
     "title": "索引状态",
     "state": {
@@ -296,13 +329,14 @@
       "title": "需要重建索引",
       "modelChanged": "向量化模型已更换。重建索引之前检索只用关键词，新旧向量不会混用。",
       "dimensionsChanged": "向量化服务返回的向量维度变了。",
-      "chunkingChanged_other": "{{count}} 个文件的分块设置已变。",
+      "chunkingChanged_other": "{{count}} 个文件的分块、标题或摘要设置已变，或缺少章节摘要。",
       "cost_other": "重建会重新向量化 {{count}} 块（远程服务会按量计费）。"
     },
     "progress": {
       "scanning": "正在检查文件…",
       "extracting": "正在读取 {{name}}…",
       "embedding": "正在向量化",
+      "summarizing": "正在为 {{name}} 写章节摘要：{{chapter}}",
       "paused": "会议进行中，已暂停（本机模型）",
       "files": "{{done}}/{{total}} 个文件",
       "chunks": "{{done}}/{{total}} 块",
@@ -447,7 +481,8 @@
         "chunkTokens": "约 {{count}} token",
         "copyChunk": {
           "title": "复制文本块"
-        }
+        },
+        "summary": "章节摘要"
       },
       "rerank": {
         "chip": "重排序：{{model}}",
@@ -467,6 +502,12 @@
         "skills": "他们的核心技术技能有哪些？",
         "strengths": "他们的主要优势是什么？",
         "summary": "简要总结一下上传的文档"
+      },
+      "rewrite": {
+        "queries": "同时检索：{{queries}}",
+        "failed": "查询改写失败，只用原问题检索",
+        "timeout": "查询改写超时，只用原问题检索",
+        "empty": "查询改写没有返回可用的说法"
       }
     },
     "tokenBudget": {

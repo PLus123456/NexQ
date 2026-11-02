@@ -3,6 +3,7 @@ import type {
   RagConfig,
   RagIndexStatus,
   RagRerankReport,
+  RagRewriteReport,
   RagSearchResult,
   OllamaEmbeddingStatus,
 } from "../lib/types";
@@ -73,6 +74,8 @@ interface RagState {
   testSearchResults: RagSearchResult[];
   /** What reranking did in the last test search (null: off). */
   testSearchRerank: RagRerankReport | null;
+  /** What query rewriting did in the last test search, and the queries it added (null: off). */
+  testSearchRewrite: { report: RagRewriteReport; queries: string[] } | null;
   isSearching: boolean;
   searchLatencyMs: number | null;
   error: string | null;
@@ -153,6 +156,7 @@ export const useRagStore = create<RagState>((set, get) => ({
   pullProgress: null,
   testSearchResults: [],
   testSearchRerank: null,
+  testSearchRewrite: null,
   isSearching: false,
   searchLatencyMs: null,
   error: null,
@@ -411,12 +415,13 @@ export const useRagStore = create<RagState>((set, get) => ({
   testSearch: async (query: string) => {
     try {
       const start = performance.now();
-      set({ isSearching: true, error: null, testSearchResults: [], testSearchRerank: null, searchLatencyMs: null });
+      set({ isSearching: true, error: null, testSearchResults: [], testSearchRerank: null, testSearchRewrite: null, searchLatencyMs: null });
       const outcome = await ipcTestRagSearch(query);
       const latency = Math.round(performance.now() - start);
       set({
         testSearchResults: outcome.chunks,
         testSearchRerank: outcome.rerank ?? null,
+        testSearchRewrite: outcome.rewrite ? { report: outcome.rewrite, queries: (outcome.queries ?? []).slice(1) } : null,
         isSearching: false,
         searchLatencyMs: latency,
       });
@@ -444,6 +449,7 @@ export const useRagStore = create<RagState>((set, get) => ({
   resetTestSearch: () => set({
     testSearchResults: [],
     testSearchRerank: null,
+    testSearchRewrite: null,
     error: null,
     isSearching: false,
     searchLatencyMs: null,

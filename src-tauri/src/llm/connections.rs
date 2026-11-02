@@ -930,6 +930,9 @@ pub const KNOWN_TASKS: &[(&str, Option<&str>)] = &[
     ("translation", Some("default")),
     ("translation_batch", Some("translation")),
     ("rag_answer", Some("default")),
+    // Knowledge base: both are switched on in its settings (off by default).
+    ("rag_query_rewrite", Some("default")),
+    ("rag_summary", Some("default")),
     ("claude_fallback", Some("default")),
 ];
 
@@ -1334,6 +1337,13 @@ mod tests {
         cfg.connections[1].enabled = true;
         cfg.connections[1].default_model = None;
         assert_eq!(resolve_route(&cfg, "translation").unwrap_err().0, RouteError::NoModel);
+    }
+
+    #[test]
+    fn knowledge_base_tasks_follow_the_default() {
+        assert_eq!(task_parent("rag_query_rewrite"), Some("default"));
+        assert_eq!(task_parent("rag_summary"), Some("default"));
+        assert!(is_valid_task_key("rag_query_rewrite"));
     }
 
     #[test]

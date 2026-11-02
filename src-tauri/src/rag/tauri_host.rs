@@ -6,7 +6,9 @@ use std::sync::atomic::Ordering;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::engine::{RagHost, ResourceInfo};
+use futures::future::BoxFuture;
+
+use super::engine::{LlmRequest, RagHost, ResourceInfo};
 use crate::credentials::CredentialManager;
 use crate::net::endpoint::{ConnectionSummary, ResolvedConnection};
 use crate::state::AppState;
@@ -70,5 +72,27 @@ impl RagHost for TauriHost {
 
     fn list_connections(&self) -> Vec<ConnectionSummary> {
         crate::llm::api::list_connections(&self.app)
+    }
+
+    fn complete(&self, request: LlmRequest) -> BoxFuture<'static, Result<String, String>> {
+        use crate::llm::api::{self, CompleteOptions, LlmTask};
+        use crate::llm::provider::LLMMessage;
+        let app = self.app.clone();
+        Box::pin(async move {
+            let messages = vec![
+                LLMMessage { role: "system".into(), content: request.system },
+                LLMMessage { role: "user".into(), content: request.user },
+            ];
+            let options = CompleteOptions {
+                temperature: Some(request.temperature),
+                max_tokens: Some(request.max_tokens),
+                json_mode: request.json,
+                timeout: Some(request.timeout),
+                ..Default::default()
+            };
+            api::complete_text(&app, &LlmTask::Other(request.task), messages, options)
+                .await
+                .map_err(|e| e.to_string())
+        })
     }
 }

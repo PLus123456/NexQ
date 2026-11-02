@@ -269,6 +269,43 @@
       "slow": "This took {{ms}} ms, longer than the {{timeout}} ms timeout: searches would keep the fusion order."
     }
   },
+  "completeness": {
+    "title": "Answer completeness",
+    "subtitle": "Return whole paragraphs instead of fragments, and find passages that put things in other words.",
+    "tokens_one": "{{formatted}} token",
+    "tokens_other": "{{formatted}} tokens",
+    "expansion": {
+      "label": "Expand results to their context",
+      "hint": "Each result brings its neighbouring chunks, or its whole section when that is short enough. Results that meet in a document are merged into one passage. No extra LLM calls; the answer prompt gets longer.",
+      "neighbors": "Neighbouring chunks",
+      "neighborsNone": "None",
+      "neighborsOption_one": "±{{count}} chunk",
+      "neighborsOption_other": "±{{count}} chunks",
+      "section": "Whole sections up to",
+      "sectionOff": "Never",
+      "total": "Context per search",
+      "limitsHint": "Past the context limit, later results come back unexpanded."
+    },
+    "headings": {
+      "label": "Split at headings",
+      "hint": "Chunks stay inside one section and carry its heading path (“Chapter 3 › 3.2 Data sources”), which search matches and the model sees. Reads Markdown headings, Word heading styles, PDF bookmarks and numbered headings such as “第一章” or “3.2”. Changing it needs an index rebuild."
+    },
+    "rewrite": {
+      "label": "Query rewriting (multi-query)",
+      "hint": "Before each search an LLM writes a few other phrasings of the question; all are searched and the results fused, so passages worded differently are found too. One LLM call per search, routed in LLM settings → Task routing (“Knowledge base query rewriting”). When it fails or runs out of time, the question is searched alone.",
+      "variants": "Phrasings",
+      "variantsOption_one": "{{count}} phrasing",
+      "variantsOption_other": "{{count}} phrasings",
+      "timeout": "Time limit",
+      "seconds_one": "{{count}} second",
+      "seconds_other": "{{count}} seconds"
+    },
+    "summaries": {
+      "label": "Chapter summaries",
+      "hint": "While indexing, an LLM writes one summary per chapter, searched along with the text: this helps with questions about a whole chapter. One LLM call per chapter (“Knowledge base chapter summaries” in Task routing); unchanged chapters keep their summary. Turning it on or off needs an index rebuild.",
+      "needsHeadings": "Needs “Split at headings”."
+    }
+  },
   "index": {
     "title": "Index Status",
     "state": {
@@ -301,8 +338,8 @@
       "title": "Index rebuild needed",
       "modelChanged": "The embedding model changed. Until the index is rebuilt, searches use keywords only; old and new vectors are never mixed.",
       "dimensionsChanged": "The embedding service now returns vectors of a different size.",
-      "chunkingChanged_one": "The chunk settings changed for {{count}} file.",
-      "chunkingChanged_other": "The chunk settings changed for {{count}} files.",
+      "chunkingChanged_one": "The chunk, heading or summary settings changed for {{count}} file, or a chapter summary is missing.",
+      "chunkingChanged_other": "The chunk, heading or summary settings changed for {{count}} files, or chapter summaries are missing.",
       "cost_one": "Rebuilding embeds {{count}} chunk again (remote services charge for this).",
       "cost_other": "Rebuilding embeds {{count}} chunks again (remote services charge for this)."
     },
@@ -310,6 +347,7 @@
       "scanning": "Checking files…",
       "extracting": "Reading {{name}}…",
       "embedding": "Embedding chunks",
+      "summarizing": "Summarizing {{name}}: {{chapter}}",
       "paused": "Paused during the meeting (model on this computer)",
       "files": "{{done}}/{{total}} files",
       "chunks": "{{done}}/{{total}} chunks",
@@ -457,7 +495,8 @@
         "chunkTokens": "~{{count}}t",
         "copyChunk": {
           "title": "Copy chunk"
-        }
+        },
+        "summary": "Chapter summary"
       },
       "rerank": {
         "chip": "rerank: {{model}}",
@@ -478,6 +517,12 @@
         "skills": "What are their key technical skills?",
         "strengths": "What are their main strengths?",
         "summary": "Give a brief summary of the uploaded documents"
+      },
+      "rewrite": {
+        "queries": "Also searched: {{queries}}",
+        "failed": "Query rewriting failed: searched the question alone",
+        "timeout": "Query rewriting timed out: searched the question alone",
+        "empty": "Query rewriting returned nothing usable"
       }
     },
     "tokenBudget": {
