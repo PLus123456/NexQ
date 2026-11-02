@@ -2,7 +2,7 @@
 #
 # build-mac.sh — one-command macOS build + install for NexQ Plus.
 #
-#   ./build-mac.sh                 Build (app + dmg) and install to /Applications
+#   ./build-mac.sh                 Build (app + dmg) and move the app to /Applications
 #   ./build-mac.sh --no-install    Build only, don't touch /Applications
 #   ./build-mac.sh --debug         Debug build (target/debug) instead of release
 #   ./build-mac.sh --run           Launch the app after installing
@@ -35,7 +35,7 @@ usage() {
   cat <<'EOF'
 Usage: ./build-mac.sh [options] [-- extra tauri build args]
 
-  (no options)     Build (app + dmg) and install to /Applications
+  (no options)     Build (app + dmg) and move the app to /Applications
   --no-install     Build only, don't touch /Applications
   --debug          Debug build (target/debug) instead of release
   --run            Launch the app after installing
@@ -156,6 +156,11 @@ $SUDO ditto "$APP_SRC" "$DEST_APP"
 # NOTE: macOS `xattr` has no `-r` option (that's Linux); the quarantine flag
 # lives on the bundle root, so a plain `-c` on the .app is enough.
 $SUDO xattr -c "$DEST_APP" >/dev/null 2>&1 || true
+
+# Leave one NexQ Plus on the Mac: the bundle left in target/ would otherwise
+# show up in Spotlight and Launchpad next to the installed copy.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP_SRC" >/dev/null 2>&1 || true
+rm -rf "$APP_SRC"
 
 echo "✔ Installed: $DEST_APP"
 
