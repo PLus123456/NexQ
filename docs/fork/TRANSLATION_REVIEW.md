@@ -223,3 +223,63 @@
 - `settings:stealth.shortcut.hint` 里的“托盘菜单”想改“菜单栏图标”：P0 在 `settings:general.language.hint` 里已用“托盘菜单”，应用也跨平台（Windows 叫托盘），先保持一致。
 - `misc:colorPicker.colors.warm`（暖灰）想改“暖白”：色值是 `#d6d3d1`，是偏暖的浅灰，保留“暖灰”。
 - `settings:confidence.threshold.always / never`（0%（始终）/ 100%（从不））想按实际行为对调：这是上游英文原文，是否写反要看代码（功能可能根本没接上，见 handoff），译文照原文。
+
+## 旧版 AI 模型兜底页（任务 B，2026-11-02）
+
+用于新版 AI 模型设置不可用时显示的旧页面。除扫描报告中的文字外，一并补齐了状态徽标、当前服务商横幅、动态按钮、占位提示和错误提示的翻译。下面列出全部新增中文用词。
+
+Ollama、LM Studio、OpenAI、Anthropic、Groq、Google Gemini、OpenRouter，以及 Claude Sonnet、Opus、Haiku、Gemini Pro、Flash 均保留原名；关于页的 Tauri 2、React + Rust 也保留原文。品牌字面量使用同一行的 `i18n-ignore` 标记。
+
+复用现有译文：Claude（订阅）、连接、接口地址（Base URL）、API Key、显示 / 隐藏 API Key、无。认证方式的协议值、模型 ID、端口和请求字段不翻译。
+
+| key | 原文 | 现译文 | 备选 / 理由 |
+|---|---|---|---|
+| `llm:legacy.providers.title` | API & local providers | API 与本地服务商 | Provider 沿用术语表的“服务商”。 |
+| `llm:legacy.providers.ollama.description` | Local models via Ollama | 通过 Ollama 使用本地模型 |  |
+| `llm:legacy.providers.ollama.hint` | Requires Ollama running on localhost:11434 | 需要 Ollama 在 localhost:11434 运行 |  |
+| `llm:legacy.providers.lmStudio.description` | Local models via LM Studio | 通过 LM Studio 使用本地模型 |  |
+| `llm:legacy.providers.lmStudio.hint` | Requires LM Studio running on localhost:1234 | 需要 LM Studio 在 localhost:1234 运行 |  |
+| `llm:legacy.providers.openai.description` | GPT-4o, GPT-4, etc. | GPT-4o、GPT-4 等 | 只翻译 etc. 并调整标点，模型名保留原文。 |
+| `llm:legacy.providers.groq.description` | Ultra-fast inference | 超高速推理 | 备选：极速推理。这里指模型推理服务的速度。 |
+| `llm:legacy.providers.openrouter.description` | Multi-provider gateway | 多服务商网关 | 同一个网关接入多个服务商；备选：多服务商接入网关。 |
+| `llm:legacy.providers.custom.label` | Custom | 自定义 |  |
+| `llm:legacy.providers.custom.description` | Your own endpoint | 你自己的端点 | Endpoint 沿用术语表的“端点”；备选：你自己的服务地址。 |
+| `llm:legacy.providers.claudeCli.description` | Your own Claude login (beta) | 使用你自己的 Claude 登录（测试版） | Beta 沿用“测试版”；Claude 保留原文。 |
+| `llm:legacy.badges.ready` | Ready | 就绪 |  |
+| `llm:legacy.badges.hasKey` | Has Key | 已存 Key | 与语音识别卡片的“已存 Key”统一。 |
+| `llm:legacy.badges.noKey` | No Key | 无 Key | 与语音识别卡片的“无 Key”统一。 |
+| `llm:legacy.badges.local` | Local | 本地 |  |
+| `llm:legacy.badges.notConfigured` | Configure | 待配置 | 状态徽标，按“尚未配置”理解；不是操作按钮。 |
+| `llm:legacy.active.title` | Active: {{provider}} | 正在使用：{{provider}} |  |
+| `llm:legacy.active.noModel` | — no model selected | （未选择模型） |  |
+| `llm:legacy.active.claudeTiers` | Fast: {{fast}} — Deep: {{deep}} | 快速：{{fast}}；深度：{{deep}} |  |
+| `llm:legacy.active.hint` | This provider and model will be used for AI responses | AI 回答将使用这个服务商和模型 |  |
+| `llm:legacy.active.setupHint` | Select a provider, test connection, and load models below | 请在下方选择服务商、测试连接并加载模型 |  |
+| `llm:legacy.active.badge` | Active — {{status}} | 使用中：{{status}} |  |
+| `llm:legacy.active.activate` | Set {{provider}} as Active Provider | 将 {{provider}} 设为当前服务商 | 设置为正在使用的服务商；备选：使用 {{provider}}。 |
+| `llm:legacy.active.failed` | Couldn't switch the AI provider: {{detail}} | 切换 AI 服务商失败：{{detail}} |  |
+| `llm:legacy.apiKey.placeholder` | Enter {{provider}} API key | 输入 {{provider}} 的 API Key |  |
+| `llm:legacy.apiKey.hide` | Hide | 隐藏 |  |
+| `llm:legacy.apiKey.show` | Show | 显示 |  |
+| `llm:legacy.apiKey.storageHint` | Stored securely in your system keychain | 安全存储在系统钥匙串中 |  |
+| `llm:legacy.apiKey.saveFailed` | Failed to save API key | 保存 API Key 失败 |  |
+| `llm:legacy.custom.title` | Custom Provider | 自定义服务商 |  |
+| `llm:legacy.custom.auth.label` | Auth Type | 认证方式 |  |
+| `llm:legacy.custom.auth.bearer` | Bearer Token | Bearer 令牌 | Bearer 是认证方案名；Token 在此表示认证令牌，区别于模型的 token 用量。 |
+| `llm:legacy.custom.auth.apiKey` | API Key Header | API Key 请求头 | Header 沿用“请求头”；API Key 保留原文。 |
+| `llm:legacy.custom.token.label` | Token | 令牌 |  |
+| `llm:legacy.custom.token.placeholder` | Bearer token... | 输入 Bearer 令牌… |  |
+| `llm:legacy.custom.apiKey.placeholder` | API key... | 输入 API Key… |  |
+| `llm:legacy.connection.test` | Test Connection | 测试连接 |  |
+| `llm:legacy.connection.success` | Connected successfully | 连接成功 |  |
+| `llm:legacy.connection.failed` | Connection failed | 连接失败 |  |
+| `llm:legacy.models.title` | Model | 模型 |  |
+| `llm:legacy.models.load` | Load Models | 加载模型 |  |
+| `llm:legacy.models.placeholder` | Select a model... | 选择模型… |  |
+| `llm:legacy.models.context` | ({{size}}K ctx) | （{{size}}K 上下文） | K 保留数量级，ctx 展开成“上下文”；数字和模型 ID 不改。 |
+| `llm:legacy.models.loading` | Loading models... | 正在加载模型… |  |
+| `llm:legacy.models.hint` | Click "Load Models" to fetch available models | 点击“加载模型”获取可用模型 |  |
+| `llm:legacy.models.noText` | No text models found | 未找到文本模型 |  |
+| `llm:legacy.models.noChat` | No chat models found (embedding-only models filtered) | 未找到对话模型（已过滤仅用于向量化的模型） | 说明列表已排除仅用于向量化的模型，不是服务商没有任何模型。 |
+| `llm:legacy.models.empty` | No models found | 未找到模型 |  |
+| `llm:legacy.models.loadFailed` | Failed to load models | 加载模型失败 |  |

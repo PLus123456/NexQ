@@ -323,10 +323,10 @@ export function AboutSettings() {
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center rounded-full bg-secondary/50 px-3 py-1 text-meta font-medium text-muted-foreground">
-                Tauri 2
+                Tauri 2 {/* i18n-ignore: product name */}
               </span>
               <span className="inline-flex items-center rounded-full bg-secondary/50 px-3 py-1 text-meta font-medium text-muted-foreground">
-                React + Rust
+                React + Rust {/* i18n-ignore: product names */}
               </span>
               {platformName && (
                 <span className="inline-flex items-center rounded-full bg-secondary/50 px-3 py-1 text-meta font-medium text-muted-foreground">
