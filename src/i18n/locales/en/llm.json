@@ -886,6 +886,91 @@
     "resetFilters": "Reset filters",
     "showMore": "Show more ({{remaining}} remaining)"
   },
+  "legacy": {
+    "providers": {
+      "title": "API & local providers",
+      "ollama": {
+        "description": "Local models via Ollama",
+        "hint": "Requires Ollama running on localhost:11434"
+      },
+      "lmStudio": {
+        "description": "Local models via LM Studio",
+        "hint": "Requires LM Studio running on localhost:1234"
+      },
+      "openai": {
+        "description": "GPT-4o, GPT-4, etc."
+      },
+      "groq": {
+        "description": "Ultra-fast inference"
+      },
+      "openrouter": {
+        "description": "Multi-provider gateway"
+      },
+      "custom": {
+        "label": "Custom",
+        "description": "Your own endpoint"
+      },
+      "claudeCli": {
+        "description": "Your own Claude login (beta)"
+      }
+    },
+    "badges": {
+      "ready": "Ready",
+      "hasKey": "Has Key",
+      "noKey": "No Key",
+      "local": "Local",
+      "notConfigured": "Configure"
+    },
+    "active": {
+      "title": "Active: {{provider}}",
+      "noModel": " — no model selected",
+      "claudeTiers": "Fast: {{fast}} — Deep: {{deep}}",
+      "hint": "This provider and model will be used for AI responses",
+      "setupHint": "Select a provider, test connection, and load models below",
+      "badge": "Active — {{status}}",
+      "activate": "Set {{provider}} as Active Provider",
+      "failed": "Couldn't switch the AI provider: {{detail}}"
+    },
+    "apiKey": {
+      "placeholder": "Enter {{provider}} API key",
+      "hide": "Hide",
+      "show": "Show",
+      "storageHint": "Stored securely in your system keychain",
+      "saveFailed": "Failed to save API key"
+    },
+    "custom": {
+      "title": "Custom Provider",
+      "auth": {
+        "label": "Auth Type",
+        "bearer": "Bearer Token",
+        "apiKey": "API Key Header"
+      },
+      "token": {
+        "label": "Token",
+        "placeholder": "Bearer token..."
+      },
+      "apiKey": {
+        "placeholder": "API key..."
+      }
+    },
+    "connection": {
+      "test": "Test Connection",
+      "success": "Connected successfully",
+      "failed": "Connection failed"
+    },
+    "models": {
+      "title": "Model",
+      "load": "Load Models",
+      "placeholder": "Select a model...",
+      "context": " ({{size}}K ctx)",
+      "loading": "Loading models...",
+      "hint": "Click \"Load Models\" to fetch available models",
+      "noText": "No text models found",
+      "noChat": "No chat models found (embedding-only models filtered)",
+      "empty": "No models found",
+      "loadFailed": "Failed to load models"
+    }
+  },
   "questionDetection": {
     "title": "Detect questions with an AI model",
     "hint": "Checks the latest sentence against the last 90 seconds of conversation. Confirmed questions can trigger Assist with references filled in from context.",

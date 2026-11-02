@@ -875,6 +875,91 @@
     "resetFilters": "重置筛选",
     "showMore": "显示更多（还有 {{remaining}} 个）"
   },
+  "legacy": {
+    "providers": {
+      "title": "API 与本地服务商",
+      "ollama": {
+        "description": "通过 Ollama 使用本地模型",
+        "hint": "需要 Ollama 在 localhost:11434 运行"
+      },
+      "lmStudio": {
+        "description": "通过 LM Studio 使用本地模型",
+        "hint": "需要 LM Studio 在 localhost:1234 运行"
+      },
+      "openai": {
+        "description": "GPT-4o、GPT-4 等"
+      },
+      "groq": {
+        "description": "超高速推理"
+      },
+      "openrouter": {
+        "description": "多服务商网关"
+      },
+      "custom": {
+        "label": "自定义",
+        "description": "你自己的端点"
+      },
+      "claudeCli": {
+        "description": "使用你自己的 Claude 登录（测试版）"
+      }
+    },
+    "badges": {
+      "ready": "就绪",
+      "hasKey": "已存 Key",
+      "noKey": "无 Key",
+      "local": "本地",
+      "notConfigured": "待配置"
+    },
+    "active": {
+      "title": "正在使用：{{provider}}",
+      "noModel": "（未选择模型）",
+      "claudeTiers": "快速：{{fast}}；深度：{{deep}}",
+      "hint": "AI 回答将使用这个服务商和模型",
+      "setupHint": "请在下方选择服务商、测试连接并加载模型",
+      "badge": "使用中：{{status}}",
+      "activate": "将 {{provider}} 设为当前服务商",
+      "failed": "切换 AI 服务商失败：{{detail}}"
+    },
+    "apiKey": {
+      "placeholder": "输入 {{provider}} 的 API Key",
+      "hide": "隐藏",
+      "show": "显示",
+      "storageHint": "安全存储在系统钥匙串中",
+      "saveFailed": "保存 API Key 失败"
+    },
+    "custom": {
+      "title": "自定义服务商",
+      "auth": {
+        "label": "认证方式",
+        "bearer": "Bearer 令牌",
+        "apiKey": "API Key 请求头"
+      },
+      "token": {
+        "label": "令牌",
+        "placeholder": "输入 Bearer 令牌…"
+      },
+      "apiKey": {
+        "placeholder": "输入 API Key…"
+      }
+    },
+    "connection": {
+      "test": "测试连接",
+      "success": "连接成功",
+      "failed": "连接失败"
+    },
+    "models": {
+      "title": "模型",
+      "load": "加载模型",
+      "placeholder": "选择模型…",
+      "context": "（{{size}}K 上下文）",
+      "loading": "正在加载模型…",
+      "hint": "点击“加载模型”获取可用模型",
+      "noText": "未找到文本模型",
+      "noChat": "未找到对话模型（已过滤仅用于向量化的模型）",
+      "empty": "未找到模型",
+      "loadFailed": "加载模型失败"
+    }
+  },
   "questionDetection": {
     "title": "用模型判断对方是否在提问",
     "hint": "结合最近 90 秒的对话判断最新一句。确认后可自动触发「回答问题」，并用上下文补全问题中的指代。",

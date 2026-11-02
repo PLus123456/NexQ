@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { ParseKeys } from "i18next";
+import { useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import {
@@ -31,21 +33,27 @@ import {
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
 
-const PROVIDER_DISPLAY: Record<
-  LLMProviderType,
-  { label: string; description: string; requiresKey: boolean; isLocal: boolean }
-> = {
-  ollama: { label: "Ollama", description: "Local models via Ollama", requiresKey: false, isLocal: true },
-  lm_studio: { label: "LM Studio", description: "Local models via LM Studio", requiresKey: false, isLocal: true },
-  openai: { label: "OpenAI", description: "GPT-4o, GPT-4, etc.", requiresKey: true, isLocal: false },
-  anthropic: { label: "Anthropic", description: "Claude Sonnet, Opus, Haiku", requiresKey: true, isLocal: false },
-  groq: { label: "Groq", description: "Ultra-fast inference", requiresKey: true, isLocal: false },
-  gemini: { label: "Google Gemini", description: "Gemini Pro, Flash", requiresKey: true, isLocal: false },
-  openrouter: { label: "OpenRouter", description: "Multi-provider gateway", requiresKey: true, isLocal: false },
-  custom: { label: "Custom", description: "Your own endpoint", requiresKey: false, isLocal: false },
+type ProviderDisplay = (
+  | { label: string }
+  | { labelKey: ParseKeys<"llm"> }
+) & (
+  | { description: string }
+  | { descriptionKey: ParseKeys<"llm"> }
+) & { requiresKey: boolean; isLocal: boolean };
+
+// Brand/model names stay literal; descriptive text is translated at render time.
+const PROVIDER_DISPLAY: Record<LLMProviderType, ProviderDisplay> = {
+  ollama: { label: "Ollama", descriptionKey: "legacy.providers.ollama.description", requiresKey: false, isLocal: true }, // i18n-ignore: brand name
+  lm_studio: { label: "LM Studio", descriptionKey: "legacy.providers.lmStudio.description", requiresKey: false, isLocal: true }, // i18n-ignore: brand name
+  openai: { label: "OpenAI", descriptionKey: "legacy.providers.openai.description", requiresKey: true, isLocal: false }, // i18n-ignore: brand name
+  anthropic: { label: "Anthropic", description: "Claude Sonnet, Opus, Haiku", requiresKey: true, isLocal: false }, // i18n-ignore: brand/model names
+  groq: { label: "Groq", descriptionKey: "legacy.providers.groq.description", requiresKey: true, isLocal: false }, // i18n-ignore: brand name
+  gemini: { label: "Google Gemini", description: "Gemini Pro, Flash", requiresKey: true, isLocal: false }, // i18n-ignore: brand/model names
+  openrouter: { label: "OpenRouter", descriptionKey: "legacy.providers.openrouter.description", requiresKey: true, isLocal: false }, // i18n-ignore: brand name
+  custom: { labelKey: "legacy.providers.custom.label", descriptionKey: "legacy.providers.custom.description", requiresKey: false, isLocal: false },
   // Not in ALL_PROVIDERS: it gets its own "Subscription (local CLI)" group.
   // isLocal is false here because that flag drives the local-server hints below.
-  claude_cli: { label: "Claude (subscription)", description: "Your own Claude login (beta)", requiresKey: false, isLocal: false },
+  claude_cli: { labelKey: "templates.items.claude_cli.name", descriptionKey: "legacy.providers.claudeCli.description", requiresKey: false, isLocal: false },
 };
 
 const ALL_PROVIDERS: LLMProviderType[] = [
@@ -68,7 +76,7 @@ function filterChatModels(models: ModelInfo[]): ModelInfo[] {
 // Uses verifiedCloudProviders (persisted after successful test) for accurate readiness.
 type BadgeVariant = "ready" | "has-key" | "no-key" | "local" | "not-configured";
 interface BadgeState {
-  text: string;
+  textKey: `legacy.badges.${"ready" | "hasKey" | "noKey" | "local" | "notConfigured"}`;
   variant: BadgeVariant;
 }
 
@@ -81,24 +89,24 @@ function getBadgeState(
 
   // Verified providers (test passed) → Ready
   if (verifiedProviders.includes(providerType)) {
-    return { text: "Ready", variant: "ready" };
+    return { textKey: "legacy.badges.ready", variant: "ready" };
   }
 
   // Local providers — not verified yet
   if (info.isLocal) {
-    return { text: "Local", variant: "local" };
+    return { textKey: "legacy.badges.local", variant: "local" };
   }
 
   // Cloud providers
   if (info.requiresKey) {
     if (keyExists) {
-      return { text: "Has Key", variant: "has-key" };
+      return { textKey: "legacy.badges.hasKey", variant: "has-key" };
     }
-    return { text: "No Key", variant: "no-key" };
+    return { textKey: "legacy.badges.noKey", variant: "no-key" };
   }
 
   // Custom — not configured
-  return { text: "Configure", variant: "not-configured" };
+  return { textKey: "legacy.badges.notConfigured", variant: "not-configured" };
 }
 
 const BADGE_STYLES: Record<BadgeVariant, string> = {
@@ -120,6 +128,12 @@ const DOT_STYLES: Record<BadgeVariant, string> = {
 // ══════════════════════════════════════════════════════════════
 
 export function LLMSettings() {
+  const { t } = useT(["llm", "common"]);
+  const providerLabel = (provider: LLMProviderType) => {
+    const display = PROVIDER_DISPLAY[provider];
+    if (!display) return provider;
+    return "labelKey" in display ? t(display.labelKey) : display.label;
+  };
   const llmProvider = useConfigStore((s) => s.llmProvider);
   const llmModel = useConfigStore((s) => s.llmModel);
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
@@ -242,7 +256,7 @@ export function LLMSettings() {
       await storeApiKey(selectedProvider, apiKey);
       setKeyStatusMap((prev) => ({ ...prev, [selectedProvider]: true }));
     } catch {
-      showToast("Failed to save API key", "error");
+      showToast(t("legacy.apiKey.saveFailed"), "error");
     }
   };
 
@@ -256,7 +270,7 @@ export function LLMSettings() {
       const success = await testLLMConnection(configJson);
       if (success) {
         setConnectionStatus("success");
-        setConnectionMessage("Connected successfully");
+        setConnectionMessage(t("legacy.connection.success"));
         // Mark as verified
         if (!verifiedCloudProviders.includes(selectedProvider)) {
           setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
@@ -264,11 +278,11 @@ export function LLMSettings() {
         setKeyStatusMap((prev) => ({ ...prev, [selectedProvider]: true }));
       } else {
         setConnectionStatus("error");
-        setConnectionMessage("Connection failed");
+        setConnectionMessage(t("legacy.connection.failed"));
       }
     } catch (err) {
       setConnectionStatus("error");
-      setConnectionMessage(err instanceof Error ? err.message : "Connection failed");
+      setConnectionMessage(err instanceof Error ? err.message : t("legacy.connection.failed"));
     }
   };
 
@@ -286,7 +300,7 @@ export function LLMSettings() {
         const orModels = await listOpenRouterModels(true);
         setOpenRouterModels(orModels);
         if (orModels.length === 0) {
-          setModelsError("No text models found");
+          setModelsError(t("legacy.models.noText"));
         }
       } else {
         // Use generic model listing for other providers
@@ -297,13 +311,13 @@ export function LLMSettings() {
         if (chatModels.length === 0) {
           setModelsError(
             modelList.length > 0
-              ? "No chat models found (embedding-only models filtered)"
-              : "No models found"
+              ? t("legacy.models.noChat")
+              : t("legacy.models.empty")
           );
         }
       }
     } catch (err) {
-      setModelsError(err instanceof Error ? err.message : "Failed to load models");
+      setModelsError(err instanceof Error ? err.message : t("legacy.models.loadFailed"));
     } finally {
       setModelsLoading(false);
     }
@@ -335,15 +349,18 @@ export function LLMSettings() {
         <Zap className="h-4 w-4 text-primary shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground">
-            Active: {PROVIDER_DISPLAY[llmProvider]?.label || llmProvider}
-            {llmProvider === "claude_cli" ? "" : llmModel ? ` / ${llmModel}` : " — no model selected"}
+            {t("legacy.active.title", { provider: providerLabel(llmProvider) })}
+            {llmProvider === "claude_cli" ? "" : llmModel ? ` / ${llmModel}` : t("legacy.active.noModel")}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {llmProvider === "claude_cli"
-              ? `Fast: ${claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels)} — Deep: ${claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels)}`
+              ? t("legacy.active.claudeTiers", {
+                  fast: claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels),
+                  deep: claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels),
+                })
               : llmModel
-                ? "This provider and model will be used for AI responses"
-                : "Select a provider, test connection, and load models below"}
+                ? t("legacy.active.hint")
+                : t("legacy.active.setupHint")}
           </p>
         </div>
       </div>
@@ -357,13 +374,14 @@ export function LLMSettings() {
 
       {/* Provider Selection */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <h3 className="mb-3 text-sm font-semibold text-primary/80">API & local providers</h3>
+        <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("legacy.providers.title")}</h3>
         <div className="grid grid-cols-4 gap-2.5">
           {ALL_PROVIDERS.map((pType) => {
             const display = PROVIDER_DISPLAY[pType];
             const isSelected = selectedProvider === pType;
             const isActive = llmProvider === pType;
             const badge = getBadgeState(pType, verifiedCloudProviders, keyStatusMap[pType] ?? false);
+            const badgeText = t(badge.textKey);
             return (
               <button
                 key={pType}
@@ -381,7 +399,7 @@ export function LLMSettings() {
                     className={`h-2.5 w-2.5 rounded-full ring-2 ring-card ${
                       isActive && badge.variant === "ready" ? DOT_STYLES["ready"] : DOT_STYLES[badge.variant]
                     }`}
-                    title={isActive ? `Active — ${badge.text}` : badge.text}
+                    title={isActive ? t("legacy.active.badge", { status: badgeText }) : badgeText}
                     aria-hidden="true"
                   />
                 </div>
@@ -393,14 +411,14 @@ export function LLMSettings() {
                   ) : (
                     <Cloud className="h-3.5 w-3.5 text-muted-foreground" />
                   )}
-                  <span className="text-xs font-medium truncate">{display.label}</span>
+                  <span className="text-xs font-medium truncate">{providerLabel(pType)}</span>
                 </div>
                 <span className="mt-0.5 text-meta text-muted-foreground line-clamp-1">
-                  {display.description}
+                  {"descriptionKey" in display ? t(display.descriptionKey) : display.description}
                 </span>
                 {/* Badge label */}
                 <span className={`mt-1.5 inline-flex items-center rounded-full border px-1.5 py-0.5 text-meta font-medium ${BADGE_STYLES[badge.variant]}`}>
-                  {badge.text}
+                  {badgeText}
                 </span>
               </button>
             );
@@ -411,7 +429,7 @@ export function LLMSettings() {
       {/* API Key Input (for cloud providers) */}
       {requiresApiKey && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-3 text-sm font-semibold text-primary/80">API Key</h3>
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("common:components.endpointFields.secret.label")}</h3>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input
@@ -419,15 +437,15 @@ export function LLMSettings() {
                 value={apiKey}
                 onChange={(e) => setApiKeyValue(e.target.value)}
                 onBlur={handleSaveApiKey}
-                placeholder={`Enter ${PROVIDER_DISPLAY[selectedProvider]?.label || selectedProvider} API key`}
+                placeholder={t("legacy.apiKey.placeholder", { provider: providerLabel(selectedProvider) })}
                 maxLength={256}
                 className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 pr-10 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
               />
               <button
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground cursor-pointer"
-                title={showApiKey ? "Hide" : "Show"}
-                aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                title={showApiKey ? t("legacy.apiKey.hide") : t("legacy.apiKey.show")}
+                aria-label={showApiKey ? t("common:components.endpointFields.secret.hide") : t("common:components.endpointFields.secret.show")}
                 aria-pressed={showApiKey}
               >
                 {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -435,7 +453,7 @@ export function LLMSettings() {
             </div>
           </div>
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Stored securely in your system keychain
+            {t("legacy.apiKey.storageHint")}
           </p>
         </div>
       )}
@@ -443,9 +461,9 @@ export function LLMSettings() {
       {/* Custom Provider Config */}
       {isCustom && (
         <div className="space-y-4 rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="text-sm font-semibold text-primary/80">Custom Provider</h3>
+          <h3 className="text-sm font-semibold text-primary/80">{t("legacy.custom.title")}</h3>
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-foreground">Base URL</label>
+            <label className="mb-1.5 block text-xs font-medium text-foreground">{t("common:components.endpointFields.baseUrl.label")}</label>
             <input
               type="text"
               value={customBaseUrl}
@@ -457,28 +475,28 @@ export function LLMSettings() {
           </div>
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="mb-1.5 block text-xs font-medium text-foreground">Auth Type</label>
+              <label className="mb-1.5 block text-xs font-medium text-foreground">{t("legacy.custom.auth.label")}</label>
               <select
                 value={customAuthType}
                 onChange={(e) => setCustomAuthType(e.target.value as "none" | "bearer" | "api_key")}
                 className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
               >
-                <option value="none">None</option>
-                <option value="bearer">Bearer Token</option>
-                <option value="api_key">API Key Header</option>
+                <option value="none">{t("common:components.endpointFields.auth.modes.none")}</option>
+                <option value="bearer">{t("legacy.custom.auth.bearer")}</option>
+                <option value="api_key">{t("legacy.custom.auth.apiKey")}</option>
               </select>
             </div>
             {customAuthType !== "none" && (
               <div className="flex-1">
                 <label className="mb-1.5 block text-xs font-medium text-foreground">
-                  {customAuthType === "bearer" ? "Token" : "API Key"}
+                  {customAuthType === "bearer" ? t("legacy.custom.token.label") : t("common:components.endpointFields.secret.label")}
                 </label>
                 <input
                   type="password"
                   value={customAuthValue}
                   onChange={(e) => setCustomAuthValue(e.target.value)}
                   onBlur={() => { storeApiKey("custom", customAuthValue).catch(() => {}); }}
-                  placeholder={customAuthType === "bearer" ? "Bearer token..." : "API key..."}
+                  placeholder={customAuthType === "bearer" ? t("legacy.custom.token.placeholder") : t("legacy.custom.apiKey.placeholder")}
                   maxLength={256}
                   className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
                 />
@@ -494,8 +512,8 @@ export function LLMSettings() {
           <Server className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="text-xs text-muted-foreground">
             {selectedProvider === "ollama"
-              ? "Requires Ollama running on localhost:11434"
-              : "Requires LM Studio running on localhost:1234"}
+              ? t("legacy.providers.ollama.hint")
+              : t("legacy.providers.lmStudio.hint")}
           </span>
         </div>
       )}
@@ -503,7 +521,7 @@ export function LLMSettings() {
       {/* Connection Test & Model Loading (Claude has its own above) */}
       {!isClaudeCli && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-3 text-sm font-semibold text-primary/80">Connection</h3>
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("routing.connection.label")}</h3>
           <div className="flex items-center gap-2">
             <button
               onClick={handleTestConnection}
@@ -511,7 +529,7 @@ export function LLMSettings() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
             >
               {connectionStatus === "testing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-              Test Connection
+              {t("legacy.connection.test")}
             </button>
             <button
               onClick={handleLoadModels}
@@ -519,7 +537,7 @@ export function LLMSettings() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
             >
               {modelsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              Load Models
+              {t("legacy.models.load")}
             </button>
             {connectionStatus === "success" && (
               <div className="flex items-center gap-1 text-success">
@@ -540,7 +558,7 @@ export function LLMSettings() {
       {/* Model Selection (Claude uses its Fast / Deep settings instead) */}
       {!isClaudeCli && (
         <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-          <h3 className="mb-3 text-sm font-semibold text-primary/80">Model</h3>
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">{t("legacy.models.title")}</h3>
           {selectedProvider === "openrouter" && openRouterModels.length > 0 ? (
             <OpenRouterModelCatalog models={openRouterModels} />
           ) : models.length > 0 ? (
@@ -549,17 +567,17 @@ export function LLMSettings() {
               onChange={(e) => handleModelSelect(e.target.value)}
               className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
             >
-              <option value="">Select a model...</option>
+              <option value="">{t("legacy.models.placeholder")}</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name}{m.context_window ? ` (${Math.round(m.context_window / 1000)}K ctx)` : ""}
+                  {m.name}{m.context_window ? t("legacy.models.context", { size: Math.round(m.context_window / 1000) }) : ""}
                 </option>
               ))}
             </select>
           ) : (
             <div className="rounded-lg border border-border/30 bg-accent/20 px-4 py-3">
               <p className="text-xs text-muted-foreground">
-                {modelsError || (modelsLoading ? "Loading models..." : 'Click "Load Models" to fetch available models')}
+                {modelsError || (modelsLoading ? t("legacy.models.loading") : t("legacy.models.hint"))}
               </p>
             </div>
           )}
@@ -585,12 +603,12 @@ export function LLMSettings() {
                 providerConfig: buildProviderConfig(),
               });
             } catch (e) {
-              showToast(`Couldn't switch the AI provider: ${e instanceof Error ? e.message : String(e)}`, "error");
+              showToast(t("legacy.active.failed", { detail: e instanceof Error ? e.message : String(e) }), "error");
             }
           }}
           className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100"
         >
-          Set {PROVIDER_DISPLAY[selectedProvider]?.label || selectedProvider} as Active Provider
+          {t("legacy.active.activate", { provider: providerLabel(selectedProvider) })}
         </button>
       )}
     </div>
