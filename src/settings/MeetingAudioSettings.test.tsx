@@ -214,3 +214,24 @@ describe("sonioxPairProblem", () => {
     expect(sonioxPairProblem("zh-CN", "en-US")).toBeNull();
   });
 });
+
+describe("meeting audio preset prerequisites", () => {
+  it("shows missing keys, models and addresses before selection and does not report incomplete setup as success", async () => {
+    const user = userEvent.setup();
+    useConfigStore.setState({ openaiCompatSttConfig: { ...DEFAULT_OPENAI_COMPAT_STT_CONFIG, base_url: "" } });
+    const { useToastStore } = await import("../stores/toastStore");
+    useToastStore.setState({ toasts: [] });
+    render(<MeetingAudioSettings />);
+    const soniox = screen.getByRole("button", { name: "Soniox for Them" });
+    await waitFor(() => expect(soniox).toHaveTextContent("Needs Soniox API key"));
+    expect(soniox).toHaveTextContent("Download a Whisper.cpp model");
+    const remote = screen.getByRole("button", { name: "Self-hosted Whisper" });
+    expect(remote).toHaveTextContent("Set the Remote Whisper server URL");
+    await user.click(remote);
+    expect(useConfigStore.getState().meetingAudioConfig?.you.stt_provider).toBe("openai_compat");
+    expect(useToastStore.getState().toasts.slice(-1)[0]).toMatchObject({
+      type: "warning",
+      message: expect.stringContaining("setup still needed: Set the Remote Whisper server URL"),
+    });
+  });
+});

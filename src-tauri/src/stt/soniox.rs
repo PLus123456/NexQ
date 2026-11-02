@@ -578,13 +578,20 @@ impl Session {
             if !rotated {
                 self.sink.status(if connection == 1 { "connecting" } else { "reconnecting" }, None);
             }
-            let connected = tokio::select! {
-                result = tokio::time::timeout(CONNECT_TIMEOUT, connect(&self.url, &self.api_key)) => {
-                    result.unwrap_or_else(|_| Err((RetryClass::Retry, "connection timed out".to_string())))
-                }
-                // The meeting ended while connecting: nothing more to say.
-                _ = drain_until_closed(&mut audio_rx, &mut framer, &mut pending, &mut audio_open), if audio_open => {
-                    Err((RetryClass::Fatal, String::new()))
+            let connecting = tokio::time::timeout(CONNECT_TIMEOUT, connect(&self.url, &self.api_key));
+            tokio::pin!(connecting);
+            let connected = loop {
+                tokio::select! {
+                    result = &mut connecting => {
+                        break result.unwrap_or_else(|_| Err((RetryClass::Retry, "connection timed out".to_string())));
+                    }
+                    _ = drain_until_closed(&mut audio_rx, &mut framer, &mut pending, &mut audio_open), if audio_open => {
+                        // A planned hand-over still owes the queued audio a final
+                        // connection, including when stop arrives during its handshake.
+                        if !rotated || (pending.is_empty() && framer.samples.is_empty()) {
+                            break Err((RetryClass::Fatal, String::new()));
+                        }
+                    }
                 }
             };
             let ended = match connected {
@@ -682,7 +689,11 @@ impl Session {
         if !*audio_open {
             finishing_since = Some(Instant::now());
             if let Some(frame) = framer.take() {
-                let _ = write.send(Message::Binary(frame.bytes.into())).await;
+                let samples = frame.samples;
+                let end_ms = frame.captured_end_ms;
+                if write.send(Message::Binary(frame.bytes.into())).await.is_ok() {
+                    timeline.sent(samples, end_ms);
+                }
             }
             let _ = write.send(Message::Text("".into())).await;
         }
@@ -707,7 +718,7 @@ impl Session {
                                 if finished {
                                     if finishing_since.is_some() {
                                         self.emit(assembler.flush(now), connection, &timeline).await;
-                                        return finished_as(rotating, *audio_open);
+                                        return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                                     }
                                     return self.lost(&mut assembler, connection, &timeline, RetryClass::Retry,
                                         "Soniox ended the stream".to_string()).await;
@@ -731,7 +742,7 @@ impl Session {
                                 self.sink.debug("error", &reason);
                                 if finishing_since.is_some() {
                                     self.emit(assembler.flush(now), connection, &timeline).await;
-                                    return finished_as(rotating, *audio_open);
+                                    return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                                 }
                                 return self.lost(&mut assembler, connection, &timeline, class, reason).await;
                             }
@@ -740,7 +751,7 @@ impl Session {
                         Some(Ok(Message::Close(frame))) => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return finished_as(rotating, *audio_open);
+                                return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                             }
                             let code = frame.as_ref().map(|f| u16::from(f.code));
                             let reason = match frame {
@@ -754,7 +765,7 @@ impl Session {
                         Some(Err(e)) => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return finished_as(rotating, *audio_open);
+                                return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                             }
                             return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
                                 format!("connection error: {}", e)).await;
@@ -762,7 +773,7 @@ impl Session {
                         None => {
                             if finishing_since.is_some() {
                                 self.emit(assembler.flush(now), connection, &timeline).await;
-                                return finished_as(rotating, *audio_open);
+                                return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                             }
                             return self.lost(&mut assembler, connection, &timeline, protocol::classify_close(None),
                                 "connection dropped".to_string()).await;
@@ -811,7 +822,7 @@ impl Session {
                             self.sink.debug("warn", "no `finished` from Soniox within 5 s; last results may be missing");
                             self.emit(assembler.flush(now), connection, &timeline).await;
                             let _ = write.send(Message::Close(None)).await;
-                            return finished_as(rotating, *audio_open);
+                            return finished_as(rotating, *audio_open || !pending.is_empty() || !framer.samples.is_empty());
                         }
                         continue;
                     }
@@ -933,11 +944,10 @@ fn sentence_id(connection: u32, seq: u64) -> String {
 }
 
 /// How a connection that was finishing ends: handed over (the next one goes
-/// at once), else stopped. A stop during a hand-over ends the session once the
-/// old connection finished; the audio that waited meanwhile is dropped, as it
-/// is when the meeting ends while reconnecting.
-fn finished_as(rotating: bool, audio_open: bool) -> Ended {
-    if rotating && audio_open {
+/// at once), else stopped. A stopped hand-over still opens one final connection
+/// if it has buffered audio to drain; the provider's STOP_WAIT bounds it all.
+fn finished_as(rotating: bool, has_audio: bool) -> Ended {
+    if rotating && has_audio {
         Ended::Rotated
     } else {
         Ended::Stopped
@@ -1545,6 +1555,68 @@ mod tests {
         // Planned: no "reconnecting" for the user, no backoff.
         assert_eq!(sink.status_names(), ["connecting", "connected", "connected", "disconnected"]);
         assert!(sink.debugs.lock().unwrap().iter().any(|m| m.contains("moving to a new one at a sentence end")));
+    }
+
+    #[tokio::test]
+    async fn stop_during_handover_drains_full_and_partial_frames_on_a_last_connection() {
+        use tokio::sync::oneshot;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (handover_tx, handover_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = first.next().await.unwrap().unwrap(); // start config
+            let mut bytes = 0;
+            while let Some(Ok(msg)) = first.next().await {
+                match msg {
+                    Message::Binary(audio) => {
+                        bytes += audio.len();
+                        first.send(Message::Text(r#"{"tokens":[{"text":"Hi","is_final":true},{"text":"<end>","is_final":true}]}"#.into())).await.unwrap();
+                    }
+                    Message::Text(t) if t.is_empty() => break,
+                    _ => {}
+                }
+            }
+            handover_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            first.send(Message::Text(r#"{"tokens":[],"finished":true}"#.into())).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut last = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = last.next().await.unwrap().unwrap();
+            while let Some(Ok(msg)) = last.next().await {
+                match msg {
+                    Message::Binary(audio) => bytes += audio.len(),
+                    Message::Text(t) if t.is_empty() => {
+                        last.send(Message::Text(r#"{"tokens":[{"text":"Tail","is_final":true,"start_ms":0,"end_ms":150}],"finished":true}"#.into())).await.unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            bytes
+        });
+        let mut p = provider(&url, None, Arc::new(TestSink::default()));
+        p.rotate_after = Duration::ZERO;
+        let (tx, mut rx) = mpsc::channel(32);
+        p.start_stream(tx).await.unwrap();
+        p.feed_audio(chunk(7, 1600, 10_100)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handover_rx).await.unwrap().unwrap();
+        // 150 ms while the old stream is finishing: a full and a partial frame.
+        p.feed_audio(chunk(9, 2400, 10_250)).await.unwrap();
+        // Exercise the actual stop path while the first stream has not finished yet.
+        let stopping = tokio::spawn(async move { p.stop_stream().await.unwrap(); });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), stopping).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap(), 8000);
+        let mut tail = None;
+        while let Ok(result) = rx.try_recv() {
+            if result.is_final && result.text == "Tail" { tail = Some(result); }
+        }
+        let tail = tail.expect("the final hand-over connection transcribes its queued audio");
+        assert_eq!(tail.timestamp_ms, 10_100);
     }
 
     #[tokio::test]

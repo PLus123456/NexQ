@@ -106,16 +106,22 @@ export function useActionItemsExtraction(
   const requestIdRef = useRef<string | null>(null);
   const unlistenersRef = useRef<(() => void)[]>([]);
 
-  // Cleanup listeners on unmount
+  // Cancel this view's request when leaving or switching meetings.
   useEffect(() => {
+    setIsExtracting(false);
+    setError(null);
+    contentRef.current = "";
     return () => {
+      const requestId = requestIdRef.current;
+      requestIdRef.current = null;
+      if (requestId) invoke("cancel_generation", { requestId }).catch(() => {});
       unlistenersRef.current.forEach((fn) => fn());
       unlistenersRef.current = [];
     };
-  }, []);
+  }, [meeting?.id]);
 
   const extract = useCallback(async () => {
-    if (!meeting || isExtracting) return;
+    if (!meeting || requestIdRef.current || isExtracting) return;
 
     setIsExtracting(true);
     setError(null);
@@ -137,13 +143,15 @@ export function useActionItemsExtraction(
 
       const unEnd = await onStreamEnd(async (event) => {
         if (!isOurs(event.request_id)) return;
-        requestIdRef.current = null;
+        const content = contentRef.current;
+        cleanups.forEach((fn) => fn());
+        unlistenersRef.current = unlistenersRef.current.filter((fn) => !cleanups.includes(fn));
 
         // Parse accumulated response into ActionItem[]
         // A stopped stream is a normal stop: its partial output is not parsed or saved.
-        if (!event.cancelled && meeting && contentRef.current) {
+        if (!event.cancelled && meeting && content) {
           try {
-            const items = parseActionItemsJSON(contentRef.current);
+            const items = parseActionItemsJSON(content);
 
             if (items.length === 0) {
               showToast(t("llm:actionItems.toast.noneFound"), "info");
@@ -158,6 +166,7 @@ export function useActionItemsExtraction(
                 JSON.stringify(itemsWithMeetingId)
               );
 
+              if (!isOurs(requestId)) return;
               onItemsExtracted(items);
               showToast(t("llm:actionItems.toast.found", { count: items.length }), "success");
 
@@ -169,16 +178,13 @@ export function useActionItemsExtraction(
               "[actionItemsExtraction] Parse/save failed:",
               err
             );
-            setError(t("llm:actionItems.errors.parseFailed"));
+            if (isOurs(requestId)) setError(t("llm:actionItems.errors.parseFailed"));
           }
         }
 
+        if (!isOurs(requestId)) return;
+        requestIdRef.current = null;
         setIsExtracting(false);
-        // Cleanup listeners
-        cleanups.forEach((fn) => fn());
-        unlistenersRef.current = unlistenersRef.current.filter(
-          (fn) => !cleanups.includes(fn)
-        );
       });
       cleanups.push(unEnd);
 
@@ -194,6 +200,10 @@ export function useActionItemsExtraction(
       });
       cleanups.push(unError);
 
+      if (requestIdRef.current !== requestId) {
+        cleanups.forEach((fn) => fn());
+        return;
+      }
       unlistenersRef.current.push(...cleanups);
 
       // ----- Build speaker context for the custom question ----- //
@@ -219,21 +229,28 @@ export function useActionItemsExtraction(
         pastMeetingId: pastMeetingIdFor(meeting),
       });
     } catch (err) {
+      cleanups.forEach((fn) => fn());
+      unlistenersRef.current = unlistenersRef.current.filter((fn) => !cleanups.includes(fn));
+      if (requestIdRef.current !== requestId) return;
+      requestIdRef.current = null;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       setIsExtracting(false);
-      cleanups.forEach((fn) => fn());
     }
   }, [meeting, isExtracting, onItemsExtracted]);
 
   const cancel = useCallback(async () => {
+    const requestId = requestIdRef.current;
+    requestIdRef.current = null;
+    unlistenersRef.current.forEach((fn) => fn());
+    unlistenersRef.current = [];
+    setIsExtracting(false);
+    if (!requestId) return;
     try {
-      await invoke("cancel_generation");
+      await invoke("cancel_generation", { requestId });
     } catch {
       // Non-critical
     }
-    requestIdRef.current = null;
-    setIsExtracting(false);
   }, []);
 
   return {

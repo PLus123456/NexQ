@@ -62,6 +62,7 @@ import {
   partyLabel,
   presetDescription,
   presetName,
+  presetRequirements,
   sttEngineLabel,
   unavailableReason,
   useSttReadiness,
@@ -240,7 +241,13 @@ export function MeetingAudioSettings() {
     // Keeps each party's language and translation target.
     const resolved = applyPreset(preset, allDevices, config);
     setMeetingAudioConfig(resolved);
-    showToast(t("stt:meetingAudio.presets.applied", { name: presetName(preset) }), "success");
+    const missing = presetRequirements(preset, readiness, hasBaseUrl);
+    showToast(
+      missing.length
+        ? t("stt:meetingAudio.presets.appliedIncomplete", { name: presetName(preset), requirements: missing.join(" · ") })
+        : t("stt:meetingAudio.presets.applied", { name: presetName(preset) }),
+      missing.length ? "warning" : "success",
+    );
   }
 
   const allDevices: DeviceOption[] = [
@@ -260,20 +267,30 @@ export function MeetingAudioSettings() {
         <span className="mr-1 shrink-0 text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">
           {t("stt:meetingAudio.presets.label")}
         </span>
-        {BUILT_IN_PRESETS.map((preset) => (
-          <button
-            key={preset.id}
-            onClick={() => handlePresetSelect(preset)}
-            title={presetDescription(preset)}
-            className={`cursor-pointer rounded-lg border px-3 py-1 text-xs font-medium transition-all duration-150 active:scale-95 ${
-              config.preset_name === preset.name
-                ? "border-primary/50 bg-primary/10 text-primary shadow-sm shadow-primary/10"
-                : "border-border/30 text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
-            }`}
-          >
-            {presetName(preset)}
-          </button>
-        ))}
+        {BUILT_IN_PRESETS.map((preset) => {
+          const missing = presetRequirements(preset, readiness, hasBaseUrl);
+          return (
+            <button
+              key={preset.id}
+              onClick={() => handlePresetSelect(preset)}
+              aria-label={presetName(preset)}
+              aria-describedby={missing.length ? `preset-${preset.id}-requirements` : undefined}
+              title={[presetDescription(preset), ...missing].join("\n")}
+              className={`cursor-pointer rounded-lg border px-3 py-1 text-xs font-medium transition-all duration-150 active:scale-95 ${
+                config.preset_name === preset.name
+                  ? "border-primary/50 bg-primary/10 text-primary shadow-sm shadow-primary/10"
+                  : "border-border/30 text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
+              }`}
+            >
+              {presetName(preset)}
+              {missing.length > 0 && (
+                <span id={`preset-${preset.id}-requirements`} className="mt-0.5 block max-w-56 text-meta font-normal text-warning">
+                  {missing.join(" · ")}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* ── Main two-panel: YOU | THEM ── */}

@@ -124,7 +124,13 @@
   "meetingAudio": {
     "presets": {
       "label": "Presets",
-      "applied": "Preset \"{{name}}\" applied"
+      "applied": "Preset \"{{name}}\" applied",
+      "appliedIncomplete": "Preset \"{{name}}\" applied; setup still needed: {{requirements}}",
+      "needsKey": "Needs {{engine}} API key",
+      "needsModel": "Download a {{engine}} model",
+      "needsBaseUrl": "Set the Remote Whisper server URL",
+      "checkingKey": "Checking API key…",
+      "checkingModel": "Checking downloaded models…"
     },
     "party": {
       "you": {

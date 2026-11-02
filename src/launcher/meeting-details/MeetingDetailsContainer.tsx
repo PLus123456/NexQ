@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { Meeting, MeetingBookmark, RecordingInfo, TranslationResult } from "../../lib/types";
-import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession, cancelGeneration, renameSpeaker } from "../../lib/ipc";
+import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession, renameSpeaker } from "../../lib/ipc";
 import { withSpeakerName } from "../../lib/speakerLabels";
 import { showToast } from "../../stores/toastStore";
 import { onTranscriptFinal, onRecordingReady, onTranslationResult, onTranslationError } from "../../lib/events";
@@ -136,16 +136,12 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   // summary while the view is open; closed on leaving. The running meeting
   // uses its live session instead.
   const llmProvider = useConfigStore((s) => s.llmProvider);
-  // True while this view's summary / action items / bookmark generation runs.
-  const aiBusyRef = useRef(false);
   useEffect(() => {
     if (isDemoActive || isActiveMeeting || llmProvider !== "claude_cli") return;
     startPastMeetingSession(meetingId).catch((err) =>
       console.warn("[MeetingDetails] Claude session did not start:", err)
     );
     return () => {
-      // Stop this view's answer first: closing the session would cut it off.
-      if (aiBusyRef.current) cancelGeneration().catch(() => {});
       closePastMeetingSession(meetingId).catch(() => {});
     };
   }, [meetingId, isActiveMeeting, isDemoActive, llmProvider]);
@@ -251,14 +247,14 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   const stats = useMeetingStats(meeting);
   const search = useTranscriptSearch(meeting?.transcript ?? []);
   const summaryGeneration = useSummaryGeneration(meeting, (summary) => {
-    setMeeting((prev) => (prev ? { ...prev, summary } : prev));
+    setMeeting((prev) => (prev && prev.id === meeting?.id ? { ...prev, summary } : prev));
   });
   const actionExtraction = useActionItemsExtraction(meeting, (items) => {
-    setMeeting((prev) => (prev ? { ...prev, action_items: items } : prev));
+    setMeeting((prev) => (prev && prev.id === meeting?.id ? { ...prev, action_items: items } : prev));
   });
   const bookmarkSuggestions = useBookmarkSuggestions(meeting, (newBookmark) => {
     setMeeting((prev) =>
-      prev
+      prev && prev.id === meeting?.id
         ? { ...prev, bookmarks: [...(prev.bookmarks ?? []), newBookmark] }
         : prev,
     );
@@ -270,12 +266,6 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     trackSession: showAsk && llmProvider === "claude_cli",
   });
   const chatExchanges = useMemo(() => answeredExchanges(meetingChat.items), [meetingChat.items]);
-  const otherAiBusy =
-    summaryGeneration.isGenerating || actionExtraction.isExtracting || bookmarkSuggestions.isSuggesting;
-  const aiBusy = otherAiBusy || meetingChat.isAsking;
-  useEffect(() => {
-    aiBusyRef.current = aiBusy;
-  }, [aiBusy]);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard shortcuts
@@ -490,7 +480,6 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         {activeTab === "ask" && showAsk && (
           <AskMeetingTab
             chat={meetingChat}
-            otherTaskRunning={otherAiBusy}
             unavailableReason={
               meeting.transcript.length === 0 && !meeting.summary
                 ? t("container.ask.noTranscript")

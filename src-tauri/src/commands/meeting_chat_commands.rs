@@ -19,6 +19,7 @@ use crate::llm::api;
 use crate::llm::cli_agent::routing::{earlier_exchange, Route, PRELOAD_MESSAGE_CHARS, REPLAY_TAIL_CHARS};
 use crate::llm::provider::{GenerationParams, LLMError, LLMMessage, StreamStartPayload, TokenSink};
 use crate::state::AppState;
+use crate::intelligence::GenerationLane;
 
 /// Intelligence mode of an "Ask this meeting" request (stream events, AI Log).
 pub const MEETING_ASK_MODE: &str = "MeetingAsk";
@@ -176,6 +177,7 @@ pub async fn ask_meeting(
         return Err("Type a question first".to_string());
     }
     let asked_at = now_ms();
+    let scope = SessionScope::Past(meeting_id.clone());
 
     let (generation_guard, cancel, presets, composed, temperature) = {
         let intel = state
@@ -187,7 +189,7 @@ pub async fn ask_meeting(
             .map_err(|e| format!("Failed to lock intelligence engine: {}", e))?;
         // Released on every exit path, once the stream has fully stopped.
         let guard = engine
-            .begin_generation(&request_id)
+            .begin_generation(&request_id, GenerationLane::for_mode(MEETING_ASK_MODE, &scope))
             .ok_or_else(|| "Generation already in progress".to_string())?;
         let configs = engine.get_action_configs();
         let presets = compose_instructions(&configs.instruction_presets, "");
@@ -201,7 +203,6 @@ pub async fn ask_meeting(
         ..GenerationParams::default()
     };
 
-    let scope = SessionScope::Past(meeting_id.clone());
     let epoch = state.meeting_sessions.epoch(&scope);
     let mut route = request_route(&app_handle, &state, MEETING_ASK_MODE, &scope);
 

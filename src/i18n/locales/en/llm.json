@@ -584,12 +584,13 @@
       "label": "Extra request body (JSON)",
       "placeholder": "{\"reasoning_effort\": \"low\"}",
       "hint": "Merged into every request (model, messages and stream can't be overridden).",
-      "disableThinking": "Insert “thinking off/low”",
       "errors": {
         "invalid": "Not valid JSON.",
         "notObject": "Must be a JSON object, e.g. {\"key\": \"value\"}.",
         "reserved": "“{{key}}” can't be set here."
-      }
+      },
+      "thinkingExample": "View thinking parameter example",
+      "thinkingExampleHint": "Example syntax only; nothing is added to your request. Support depends on the selected model, not just the provider. Models with mandatory reasoning may reject off/low values. Check that model's documentation before editing the JSON; leave it empty to use server defaults."
     },
     "errors": {
       "range": "Enter a number from {{min}} to {{max}}.",
@@ -640,15 +641,15 @@
       },
       "deepseek": {
         "name": "DeepSeek",
-        "note": "DeepSeek models think first by default. For live translation, use “Insert thinking off/low” in the task's parameters. The address works without /v1."
+        "note": "DeepSeek models think first by default. For live translation, check the thinking parameter example against the selected model's documentation. The address works without /v1."
       },
       "kimi": {
         "name": "Kimi (Moonshot)",
-        "note": "Kimi fixes the temperature, so it isn't sent. K3 models always reason; “Insert thinking off/low” sets the lowest effort. Keys from platform.kimi.com (China) and platform.kimi.ai (international) are separate."
+        "note": "Kimi fixes the temperature, so it isn't sent. K3 models always reason; check the model documentation before changing reasoning effort. Keys from platform.kimi.com (China) and platform.kimi.ai (international) are separate."
       },
       "zhipu": {
         "name": "Zhipu GLM",
-        "note": "The path is /api/paas/v4, not /v1, and there's no model list: type the model. GLM thinks by default; glm-5.3 can't turn it off, glm-5.2 can (“Insert thinking off/low” in the task's parameters)."
+        "note": "The path is /api/paas/v4, not /v1, and there's no model list: type the model. GLM thinks by default; glm-5.3 can't turn it off, glm-5.2 can (check the model documentation before editing the task parameters)."
       },
       "qwen": {
         "name": "Qwen (DashScope, OpenAI-compatible)",

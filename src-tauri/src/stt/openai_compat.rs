@@ -84,8 +84,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A host that doesn't accept the connection within this is unreachable.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How much longer than the request timeout `stop_stream` waits for the
-/// worker, and at most for the last line to be handed on.
+/// Drain budget at meeting end, independent of the server request timeout.
+const STOP_DRAIN: Duration = Duration::from_secs(5);
+/// At most this long for the last line to be handed on.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// Server text kept in a Dev Log error line and in a status message.
@@ -1496,7 +1497,7 @@ impl STTProvider for OpenAICompatSTT {
     }
 
     /// Sends the rest of the buffer, waits for the queued segments (at most
-    /// the request timeout + 2 s), then finalizes the last line.
+    /// 5 s regardless of the request timeout), then finalizes the last line.
     async fn stop_stream(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(mut stream) = self.stream.take() else {
             return Ok(());
@@ -1507,23 +1508,23 @@ impl STTProvider for OpenAICompatSTT {
         }
         stream.queue.close();
 
-        let wait = limits.timeout + STOP_GRACE;
+        let wait = STOP_DRAIN;
         if tokio::time::timeout(wait, &mut stream.worker).await.is_err() {
             stream.worker.abort();
             let _ = (&mut stream.worker).await;
-            stream.notifier.debug(
-                "warn",
-                &format!(
-                    "Stopped waiting for the server after {} s: the segments still in flight or queued ({} queued) were not transcribed",
-                    wait.as_secs(),
-                    stream.queue.waiting(),
-                ),
+            let message = format!(
+                "Stopped waiting for the server after {} s: the segments still in flight or queued ({} queued) were not transcribed",
+                wait.as_secs(), stream.queue.waiting(),
             );
+            stream.notifier.debug("warn", &message);
+            stream.notifier.status("error", Some(message));
         }
 
         stream.acc_tx = None;
         if tokio::time::timeout(STOP_GRACE, &mut stream.accumulator).await.is_err() {
             stream.notifier.debug("warn", "The last line was not handed on in time");
+            stream.accumulator.abort();
+            let _ = (&mut stream.accumulator).await;
         }
         let mut summary =
             format!("Stream stopped: {} chunks, {} segments", stream.chunks_fed, stream.segmenter.cuts);
@@ -2824,7 +2825,7 @@ mod tests {
         let server_gate = gate.clone();
         let server = FakeServer::start(move |_| Reply::json(r#"{"text":"late"}"#).gated(&server_gate)).await;
         let mut cfg = config(&server.url("/v1"));
-        cfg.request_timeout_secs = 5;
+        cfg.request_timeout_secs = 120;
         let mut run = start(cfg, None, "en-US").await;
         for amplitude in [1000, 2000, 3000] {
             run.phrase(amplitude).await;
@@ -2833,16 +2834,16 @@ mod tests {
         let started = Instant::now();
         let (results, notices) = run.stop().await;
         let elapsed = started.elapsed();
-        // The request timeout (5 s) + 2 s, though two segments were still pending.
-        assert!(elapsed >= Duration::from_secs(6), "{elapsed:?}");
-        assert!(elapsed < Duration::from_secs(9), "{elapsed:?}");
+        // Meeting end has its own five-second budget, even for a 120 s request.
+        assert!(elapsed >= Duration::from_secs(5), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(7), "{elapsed:?}");
         assert!(results.is_empty());
         let statuses = statuses(&notices);
         assert_eq!(statuses.len(), 1, "{statuses:?}");
-        assert!(statuses[0].1.as_deref().unwrap().contains("No answer from"), "{statuses:?}");
+        assert!(statuses[0].1.as_deref().unwrap().contains("Stopped waiting for the server"), "{statuses:?}");
         let warnings = debug_lines(&notices, "warn");
         assert!(
-            warnings.iter().any(|w| w.contains("Stopped waiting for the server after 7 s")),
+            warnings.iter().any(|w| w.contains("Stopped waiting for the server after 5 s")),
             "{warnings:?}"
         );
     }

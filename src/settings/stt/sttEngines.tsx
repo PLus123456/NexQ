@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type React from "react";
+import type { MeetingPreset } from "../presets";
 import { listen } from "@tauri-apps/api/event";
 import { Cloud, Cpu, Globe, HardDrive, Monitor, Zap } from "lucide-react";
 import { t } from "../../i18n";
@@ -310,4 +311,26 @@ export function presetName(preset: { id: string; name: string }): string {
 /** A preset's description in the UI language. */
 export function presetDescription(preset: { id: string; description: string }): string {
   return isPresetId(preset.id) ? t(`stt:presets.${preset.id}.description`) : preset.description;
+}
+
+/** Missing requirements are shown before applying a preset; unknown checks stay explicit. */
+export function presetRequirements(
+  preset: MeetingPreset,
+  readiness: Pick<SttReadiness, "localEngines" | "keys" | "keysLoaded">,
+  hasBaseUrl: boolean,
+): string[] {
+  const issues: string[] = [];
+  if (preset.requiresKey) {
+    if (!readiness.keysLoaded) issues.push(t("stt:meetingAudio.presets.checkingKey"));
+    else if (!readiness.keys[preset.requiresKey]) {
+      issues.push(t("stt:meetingAudio.presets.needsKey", { engine: sttEngineLabel(preset.requiresKey) }));
+    }
+  }
+  if (preset.requiresDownload) {
+    const ready = isModelReady(readiness.localEngines, preset.requiresDownload);
+    if (ready === undefined) issues.push(t("stt:meetingAudio.presets.checkingModel"));
+    else if (!ready) issues.push(t("stt:meetingAudio.presets.needsModel", { engine: sttEngineLabel(preset.requiresDownload) }));
+  }
+  if (preset.requiresBaseUrl && !hasBaseUrl) issues.push(t("stt:meetingAudio.presets.needsBaseUrl"));
+  return issues;
 }

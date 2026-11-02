@@ -2,26 +2,27 @@
 // and restarts the Rust audio capture pipeline with the new config.
 // This enables "hot-swap" of STT provider and audio source mid-meeting.
 //
-// Key design: debounce (300ms) + sequential restart. Two separate refs:
-// - appliedConfigRef: what Rust currently has running (only set after successful restart)
-// - pendingConfigRef: set immediately to prevent duplicate debounce scheduling
+// Debounce (300 ms), one restart at a time, and recheck settings after every
+// restart so edits during an in-flight IPC call are never lost.
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useDevLogStore } from "../stores/devLogStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useTranslationStore } from "../stores/translationStore";
-import { stopCapture, startCapturePerParty } from "../lib/ipc";
+import { stopCapture, startCapturePerParty, setTranslationLanguages } from "../lib/ipc";
 import { sttProviderMeta } from "../lib/stt/providerMeta";
 import type { MeetingAudioConfig } from "../lib/types";
+import type { SonioxConfig } from "../lib/stt/types";
+import { updateSonioxConfig } from "../lib/stt/ipc";
 
 /**
  * What the running capture depends on: the audio config, plus the translation
  * target when a party's engine translates into it (Soniox with no target of
  * its own reads the translation settings' target when its session starts).
  */
-export function captureKey(config: MeetingAudioConfig, translationTarget: string): string {
+export function captureKey(config: MeetingAudioConfig, translationTarget: string, sonioxConfig?: SonioxConfig): string {
   const followsTarget = (["you", "them"] as const).some((role) => {
     const party = config[role];
     const native = party.native_translation;
@@ -31,134 +32,98 @@ export function captureKey(config: MeetingAudioConfig, translationTarget: string
       !native.target_language?.trim()
     );
   });
-  return JSON.stringify(followsTarget ? { config, translationTarget } : config);
+  const usesSoniox = config.you.stt_provider === "soniox" || config.them.stt_provider === "soniox";
+  return JSON.stringify(usesSoniox && sonioxConfig
+    ? { config, sonioxConfig, ...(followsTarget ? { translationTarget } : {}) }
+    : followsTarget ? { config, translationTarget } : config);
 }
 
 export function useAudioConfigSync() {
   const isRecording = useMeetingStore((s) => s.isRecording);
-  const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
-  const translationTarget = useTranslationStore((s) => s.targetLang);
-
-  // What Rust currently has running — only updated after successful restart
-  const appliedConfigRef = useRef<string | null>(null);
-  // What we've already scheduled a restart for — prevents duplicate debounces
-  const pendingConfigRef = useRef<string | null>(null);
-  // Guard against concurrent restart attempts
-  const restartingRef = useRef(false);
-  // Debounce timer to batch rapid config changes
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isEndingMeeting = useMeetingStore((s) => s.isEndingMeeting);
+  const meetingId = useMeetingStore((s) => s.activeMeeting?.id);
 
   useEffect(() => {
-    if (!isRecording || !meetingAudioConfig) return;
+    if (!isRecording || isEndingMeeting) return;
 
-    const configKey = captureKey(meetingAudioConfig, translationTarget);
-
-    // On first run (meeting just started), record the applied config
-    if (appliedConfigRef.current === null) {
-      appliedConfigRef.current = configKey;
-      pendingConfigRef.current = configKey;
-      return;
-    }
-
-    // Already applied — nothing to do
-    if (appliedConfigRef.current === configKey) return;
-
-    // Already scheduled a restart for this exact config
-    if (pendingConfigRef.current === configKey) return;
-
-    // Mark this config as pending (prevents duplicate debounce scheduling)
-    pendingConfigRef.current = configKey;
-
+    const snapshot = () => {
+      const { meetingAudioConfig: config, sonioxConfig } = useConfigStore.getState();
+      const { targetLang, sourceLang } = useTranslationStore.getState();
+      return config ? { config, sonioxConfig, targetLang, sourceLang,
+        key: captureKey(config, targetLang, sonioxConfig) } : null;
+    };
+    let appliedKey = snapshot()?.key ?? null;
+    let desiredKey = appliedKey;
+    let cancelled = false;
+    let restarting = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const active = () => {
+      const state = useMeetingStore.getState();
+      return !cancelled && state.isRecording && !state.isEndingMeeting && state.activeMeeting?.id === meetingId;
+    };
     const log = useDevLogStore.getState().addEntry;
-    const desc = `you=${meetingAudioConfig.you.stt_provider}` +
-      (meetingAudioConfig.you.local_model_id ? `(${meetingAudioConfig.you.local_model_id})` : "") +
-      `, them=${meetingAudioConfig.them.stt_provider}` +
-      (meetingAudioConfig.them.local_model_id ? `(${meetingAudioConfig.them.local_model_id})` : "");
-    log("info", "config", `STT config changed → ${desc}`);
 
-    // Cancel any existing debounce — the new config supersedes it
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-    }
-
-    debounceRef.current = setTimeout(async () => {
-      debounceRef.current = null;
-
-      // If already restarting, clear pending so next effect re-schedules
-      if (restartingRef.current) {
-        log("warn", "config", "Hot-swap already in progress — queued for retry");
-        pendingConfigRef.current = null;
-        return;
-      }
-
-      restartingRef.current = true;
-
-      // Read the latest config (may have changed during debounce wait)
-      const latestConfig = useConfigStore.getState().meetingAudioConfig;
-      if (!latestConfig) {
-        restartingRef.current = false;
-        return;
-      }
-
-      const latestKey = captureKey(latestConfig, useTranslationStore.getState().targetLang);
-
-      // If the latest config matches what's already running, skip
-      if (appliedConfigRef.current === latestKey) {
-        pendingConfigRef.current = latestKey;
-        restartingRef.current = false;
-        return;
-      }
-
-      log("info", "config", "Hot-swap: stopping current capture...");
-
+    const restart = async () => {
+      timer = null;
+      // The in-progress restart reads the latest settings again when it finishes.
+      if (restarting || !active()) return;
+      restarting = true;
       try {
-        // Finalize any interim (non-final) transcript segments before restarting,
-        // so they don't stay stuck as gray italic after the new provider takes over.
-        useTranscriptStore.getState().finalizeAllInterim();
-
-        // Stop current capture and wait for full cleanup. The recording stays
-        // open: the new capture keeps writing the meeting's audio to it.
-        await stopCapture(true);
-        log("info", "config", "Hot-swap: capture stopped, waiting for resource release...");
-
-        // Let Rust fully release WASAPI/audio resources
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Re-read config in case it changed during the stop
-        const freshConfig = useConfigStore.getState().meetingAudioConfig;
-        if (!freshConfig) {
-          log("warn", "config", "Hot-swap: no config available after stop");
-          return;
+        while (active()) {
+          const next = snapshot();
+          if (!next || next.key === appliedKey) break;
+          useTranscriptStore.getState().finalizeAllInterim();
+          log("info", "config", "Hot-swap: stopping current capture...");
+          await stopCapture(true, meetingId);
+          if (!active()) break;
+          // Give the native audio devices time to release before reopening them.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          if (!active()) break;
+          const fresh = snapshot();
+          if (!fresh) break;
+          // Await the settings IPC too: a slow save must not start a new session
+          // using the previous Soniox config or translation target.
+          if ([fresh.config.you, fresh.config.them].some((party) => party.stt_provider === "soniox")) {
+            await updateSonioxConfig(fresh.sonioxConfig);
+            await setTranslationLanguages(fresh.targetLang, fresh.sourceLang === "auto" ? undefined : fresh.sourceLang);
+          }
+          if (!active()) break;
+          await startCapturePerParty(fresh.config.you, fresh.config.them, meetingId);
+          if (!active()) {
+            // End/unmount can happen while the start IPC is in flight.
+            await stopCapture(false, meetingId);
+            break;
+          }
+          appliedKey = fresh.key;
+          log("info", "config", "Hot-swap complete — new STT pipeline active");
+          // An edit during stop/start is consumed here, without needing another render.
         }
-
-        log("info", "config", "Hot-swap: starting new capture pipeline...");
-        await startCapturePerParty(freshConfig.you, freshConfig.them);
-        const freshKey = captureKey(freshConfig, useTranslationStore.getState().targetLang);
-        appliedConfigRef.current = freshKey;
-        pendingConfigRef.current = freshKey;
-        log("info", "config", "Hot-swap complete — new STT pipeline active");
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log("error", "config", `Hot-swap FAILED: ${msg}`);
-        // Reset both refs so next config change retries
-        appliedConfigRef.current = null;
-        pendingConfigRef.current = null;
+        log("error", "config", `Hot-swap FAILED: ${err instanceof Error ? err.message : String(err)}`);
+        // Keep the failed config unapplied so a later edit can retry.
+        appliedKey = null;
       } finally {
-        restartingRef.current = false;
+        restarting = false;
       }
-    }, 300);
-  }, [isRecording, meetingAudioConfig, translationTarget]);
-
-  // Reset when meeting ends
-  useEffect(() => {
-    if (!isRecording) {
-      appliedConfigRef.current = null;
-      pendingConfigRef.current = null;
-      restartingRef.current = false;
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
-    }
-  }, [isRecording]);
+    };
+    const schedule = () => {
+      const nextKey = snapshot()?.key ?? null;
+      // Translation results and unrelated settings updates must not postpone
+      // a pending restart indefinitely while speech keeps arriving.
+      if (nextKey === desiredKey) return;
+      desiredKey = nextKey;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (!active() || snapshot()?.key === appliedKey || restarting) return;
+      timer = setTimeout(() => { void restart(); }, 300);
+    };
+    const unsubscribeConfig = useConfigStore.subscribe(schedule);
+    const unsubscribeTranslation = useTranslationStore.subscribe(schedule);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribeConfig();
+      unsubscribeTranslation();
+    };
+  }, [isRecording, isEndingMeeting, meetingId]);
 }

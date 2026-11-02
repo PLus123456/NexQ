@@ -1,13 +1,15 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MeetingChatMessage } from "../../lib/types";
 
 // ── Tauri event bus stub ────────────────────────────────────────────────────
 type Handler = (e: { payload: unknown }) => void;
 const listeners = vi.hoisted(() => new Map<string, Set<(e: { payload: unknown }) => void>>());
+const registration = vi.hoisted(() => ({ gate: null as Promise<void> | null }));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, cb: Handler) => {
+    if (registration.gate) await registration.gate;
     if (!listeners.has(name)) listeners.set(name, new Set());
     listeners.get(name)!.add(cb);
     return () => listeners.get(name)!.delete(cb);
@@ -30,7 +32,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/ipc")>()),
   listMeetingChat: (...args: unknown[]) => ipc.listMeetingChat(...args),
   askMeeting: (...args: unknown[]) => ipc.askMeeting(...args),
-  cancelGeneration: () => ipc.cancelGeneration(),
+  cancelGeneration: (...args: unknown[]) => ipc.cancelGeneration(...args),
   getAgentSessions: () => ipc.getAgentSessions(),
 }));
 
@@ -68,6 +70,7 @@ const saved: MeetingChatMessage[] = [
 describe("AskMeetingTab", () => {
   beforeEach(() => {
     listeners.clear();
+    registration.gate = null;
     ipc.listMeetingChat.mockReset().mockResolvedValue(saved);
     ipc.askMeeting.mockReset();
     ipc.cancelGeneration.mockReset().mockResolvedValue(undefined);
@@ -135,6 +138,62 @@ describe("AskMeetingTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /send question/i }));
     fireEvent.click(await screen.findByRole("button", { name: /stop/i }));
     expect(ipc.cancelGeneration).toHaveBeenCalledTimes(1);
+    expect(ipc.cancelGeneration).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it("does not start an answer when stopped while listeners are registering", async () => {
+    render(<Harness />);
+    await screen.findByText("When do we ship?");
+    fireEvent.change(screen.getByRole("textbox", { name: /ask about this meeting/i }), {
+      target: { value: "Cancel immediately" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send question/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+    await act(async () => {});
+    expect(ipc.askMeeting).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /send question/i })).toBeInTheDocument();
+  });
+
+  it("ignores an old request's rejection while a new meeting is answering", async () => {
+    let rejectOld: (error: Error) => void = () => {};
+    ipc.askMeeting.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectOld = reject; }));
+    ipc.askMeeting.mockImplementation(() => new Promise<void>(() => {}));
+    const { result, rerender } = renderHook(({ id }) => useMeetingChat(id), { initialProps: { id: "m1" } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => { void result.current.ask("Old question"); });
+    await waitFor(() => expect(ipc.askMeeting).toHaveBeenCalledTimes(1));
+    const oldId = ipc.askMeeting.mock.calls[0][2];
+    rerender({ id: "m2" });
+    expect(result.current.isAsking).toBe(false);
+    expect(ipc.cancelGeneration).toHaveBeenCalledWith(oldId);
+    act(() => { void result.current.ask("New question"); });
+    await waitFor(() => expect(ipc.askMeeting).toHaveBeenCalledTimes(2));
+    const newId = ipc.askMeeting.mock.calls[1][2];
+    await act(async () => rejectOld(new Error("old transport closed")));
+    expect(result.current.isAsking).toBe(true);
+    act(() => emit("llm_stream_token", { token: "New answer", request_id: newId }));
+    expect(result.current.items.find((item) => item.id === `local-a-${newId}`)?.content).toBe("New answer");
+    expect(result.current.items.some((item) => item.error === "old transport closed")).toBe(false);
+  });
+
+  it("cleans late registrations without removing the new meeting's listeners", async () => {
+    let release: () => void = () => {};
+    const { result, rerender } = renderHook(({ id }) => useMeetingChat(id), { initialProps: { id: "m1" } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    registration.gate = new Promise<void>((resolve) => { release = resolve; });
+    act(() => { void result.current.ask("Old question"); });
+    rerender({ id: "m2" });
+    registration.gate = null;
+    act(() => { void result.current.ask("New question"); });
+    await waitFor(() => expect(ipc.askMeeting).toHaveBeenCalledTimes(1));
+    const requestId = ipc.askMeeting.mock.calls[0][2];
+    await act(async () => release());
+    expect(ipc.askMeeting).toHaveBeenCalledTimes(1);
+    expect(listeners.get("llm_stream_start")?.size).toBe(1);
+    expect(listeners.get("llm_stream_token")?.size).toBe(1);
+    act(() => emit("llm_stream_token", { token: "Still connected", request_id: requestId }));
+    expect(result.current.items.find((item) => item.id === `local-a-${requestId}`)?.content).toBe("Still connected");
+    expect(result.current.isAsking).toBe(true);
   });
 
   it("shows this meeting's Claude session status", async () => {

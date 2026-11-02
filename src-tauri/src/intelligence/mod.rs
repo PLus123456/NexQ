@@ -5,6 +5,7 @@ pub mod prompt_templates;
 pub mod question_detector;
 pub mod transcript_buffer;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +18,7 @@ use question_detector::{DetectedQuestion, QuestionDetector};
 use transcript_buffer::TranscriptBuffer;
 
 use crate::llm::provider::{CancelToken, GenerationParams};
+use crate::llm::cli_agent::manager::SessionScope;
 
 /// Event payload for question detection events emitted to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,20 +26,34 @@ pub struct QuestionDetectedPayload {
     pub question: DetectedQuestion,
 }
 
-/// The generation currently in flight: its request id and cancel token.
-type InFlight = Option<(String, Arc<CancelToken>)>;
+/// Independent result views can generate concurrently. The live answer panel
+/// still owns a single lane, while each meeting task owns its own lane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GenerationLane {
+    LiveAnswer,
+    MeetingTask(SessionScope, String),
+}
 
-/// RAII hold on the engine's "generating" state. Dropping it (on any exit path of
-/// `generate_assist`, including early `?` returns) marks the engine idle again and
-/// forgets the in-flight generation. Owns the fresh `CancelToken` of this generation.
+impl GenerationLane {
+    pub fn for_mode(mode: &str, scope: &SessionScope) -> Self {
+        match mode {
+            "MeetingSummary" | "ActionItemsExtraction" | "BookmarkSuggestions" | "MeetingAsk" =>
+                Self::MeetingTask(scope.clone(), mode.to_string()),
+            _ => Self::LiveAnswer,
+        }
+    }
+}
+
+type InFlight = HashMap<String, (GenerationLane, Arc<CancelToken>)>;
+
+/// Releases only this request on every exit path, including early errors.
 pub struct GenerationGuard {
-    is_generating: Arc<AtomicBool>,
     in_flight: Arc<Mutex<InFlight>>,
+    request_id: String,
     cancel_token: Arc<CancelToken>,
 }
 
 impl GenerationGuard {
-    /// Token that `cancel_generation` fires to stop this generation.
     pub fn cancel_token(&self) -> Arc<CancelToken> {
         self.cancel_token.clone()
     }
@@ -45,10 +61,9 @@ impl GenerationGuard {
 
 impl Drop for GenerationGuard {
     fn drop(&mut self) {
-        if let Ok(mut slot) = self.in_flight.lock() {
-            *slot = None;
+        if let Ok(mut requests) = self.in_flight.lock() {
+            requests.remove(&self.request_id);
         }
-        self.is_generating.store(false, Ordering::SeqCst);
     }
 }
 
@@ -57,8 +72,7 @@ pub struct IntelligenceEngine {
     pub transcript_buffer: TranscriptBuffer,
     question_detector: QuestionDetector,
     auto_trigger: AtomicBool,
-    is_generating: Arc<AtomicBool>,
-    /// Request id + cancel token of the generation in flight (for the cancelled end event).
+    /// Request-specific lanes and cancellation; held until the provider exits.
     in_flight: Arc<Mutex<InFlight>>,
     last_detected_question: Option<DetectedQuestion>,
     action_configs: AllActionConfigs,
@@ -70,8 +84,7 @@ impl IntelligenceEngine {
             transcript_buffer: TranscriptBuffer::new(),
             question_detector: QuestionDetector::new(),
             auto_trigger: AtomicBool::new(true),
-            is_generating: Arc::new(AtomicBool::new(false)),
-            in_flight: Arc::new(Mutex::new(None)),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
             last_detected_question: None,
             action_configs: AllActionConfigs::default(),
         }
@@ -228,35 +241,41 @@ impl IntelligenceEngine {
         }
     }
 
-    /// Claim the engine for a new generation. Returns `None` if one is already running.
-    /// Creates a fresh cancel token and records it with `request_id` so `cancel_generation`
-    /// can stop it and address its cancelled end event. The guard releases the engine on drop.
-    pub fn begin_generation(&self, request_id: &str) -> Option<GenerationGuard> {
-        self.is_generating
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()?;
-        let cancel_token = Arc::new(CancelToken::new());
-        if let Ok(mut slot) = self.in_flight.lock() {
-            *slot = Some((request_id.to_string(), cancel_token.clone()));
+    /// Claim one output view, without blocking unrelated meeting tasks.
+    /// Cancelled requests retain their lane until the provider has stopped.
+    pub fn begin_generation(&self, request_id: &str, lane: GenerationLane) -> Option<GenerationGuard> {
+        let mut requests = self.in_flight.lock().ok()?;
+        if requests.contains_key(request_id) || requests.values().any(|(active, _)| *active == lane) {
+            return None;
         }
+        let cancel_token = Arc::new(CancelToken::new());
+        requests.insert(request_id.to_string(), (lane, cancel_token.clone()));
         Some(GenerationGuard {
-            is_generating: self.is_generating.clone(),
             in_flight: self.in_flight.clone(),
+            request_id: request_id.to_string(),
             cancel_token,
         })
     }
 
-    /// Ask the in-flight generation to stop. Returns its request id when one is running
-    /// (consuming it, so the cancelled end event is emitted once).
-    pub fn cancel(&self) -> Option<String> {
-        let (request_id, token) = self.in_flight.lock().ok()?.take()?;
+    /// Stop a specific request. Legacy callers without an id stop only the
+    /// live answer panel; they never cancel a summary or another meeting's task.
+    /// Return the id once, for its immediate cancelled-end event.
+    pub fn cancel(&self, request_id: Option<&str>) -> Option<String> {
+        let requests = self.in_flight.lock().ok()?;
+        let (id, (_, token)) = match request_id {
+            Some(id) => requests.get_key_value(id)?,
+            None => requests.iter().find(|(_, (lane, _))| *lane == GenerationLane::LiveAnswer)?,
+        };
+        if token.is_cancelled() {
+            return None;
+        }
         token.cancel();
-        Some(request_id)
+        Some(id.clone())
     }
 
-    /// Check if currently generating.
+    #[cfg(test)]
     pub fn is_generating(&self) -> bool {
-        self.is_generating.load(Ordering::SeqCst)
+        self.in_flight.lock().map(|r| !r.is_empty()).unwrap_or(false)
     }
 
     /// Toggle auto-detection of questions.
@@ -321,46 +340,88 @@ mod tests {
     #[test]
     fn guard_blocks_second_generation_until_dropped() {
         let engine = IntelligenceEngine::new();
-        let guard = engine.begin_generation("req-1").expect("first claim succeeds");
+        let guard = engine.begin_generation("req-1", GenerationLane::LiveAnswer).expect("first claim succeeds");
         assert!(engine.is_generating());
-        assert!(engine.begin_generation("req-2").is_none());
+        assert!(engine.begin_generation("req-2", GenerationLane::LiveAnswer).is_none());
         drop(guard);
         assert!(!engine.is_generating());
-        assert!(engine.begin_generation("req-3").is_some());
+        assert!(engine.begin_generation("req-3", GenerationLane::LiveAnswer).is_some());
     }
 
     #[test]
     fn guard_releases_on_early_error_return() {
         fn failing(engine: &IntelligenceEngine) -> Result<(), String> {
-            let _guard = engine.begin_generation("req-1").ok_or("busy")?;
+            let _guard = engine.begin_generation("req-1", GenerationLane::LiveAnswer).ok_or("busy")?;
             Err("no active provider".to_string())
         }
         let engine = IntelligenceEngine::new();
         assert!(failing(&engine).is_err());
         assert!(!engine.is_generating());
-        assert!(engine.begin_generation("req-2").is_some());
+        assert!(engine.begin_generation("req-2", GenerationLane::LiveAnswer).is_some());
     }
 
     #[test]
     fn cancel_returns_request_id_once_and_fires_token() {
         let engine = IntelligenceEngine::new();
-        assert_eq!(engine.cancel(), None); // nothing running
-        let guard = engine.begin_generation("req-1").unwrap();
+        assert_eq!(engine.cancel(None), None); // nothing running
+        let guard = engine.begin_generation("req-1", GenerationLane::LiveAnswer).unwrap();
         let token = guard.cancel_token();
         assert!(!token.is_cancelled());
-        assert_eq!(engine.cancel(), Some("req-1".to_string()));
+        assert_eq!(engine.cancel(None), Some("req-1".to_string()));
         assert!(token.is_cancelled());
-        assert_eq!(engine.cancel(), None);
+        assert_eq!(engine.cancel(None), None);
     }
 
     #[test]
     fn each_generation_gets_a_fresh_cancel_token() {
         let engine = IntelligenceEngine::new();
-        let first = engine.begin_generation("req-1").unwrap();
-        engine.cancel();
+        let first = engine.begin_generation("req-1", GenerationLane::LiveAnswer).unwrap();
+        engine.cancel(None);
         assert!(first.cancel_token().is_cancelled());
         drop(first);
-        let second = engine.begin_generation("req-2").unwrap();
+        let second = engine.begin_generation("req-2", GenerationLane::LiveAnswer).unwrap();
         assert!(!second.cancel_token().is_cancelled());
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn independent_views_run_and_cancel_without_affecting_each_other() {
+        let engine = IntelligenceEngine::new();
+        let scope = SessionScope::Past("m1".into());
+        let live = engine.begin_generation("live", GenerationLane::LiveAnswer).unwrap();
+        let summary = engine.begin_generation("summary", GenerationLane::for_mode("MeetingSummary", &scope)).unwrap();
+        let chat = engine.begin_generation("chat", GenerationLane::for_mode("MeetingAsk", &scope)).unwrap();
+        assert!(engine.begin_generation("duplicate", GenerationLane::for_mode("MeetingSummary", &scope)).is_none());
+        assert!(engine.begin_generation("summary", GenerationLane::for_mode("BookmarkSuggestions", &scope)).is_none());
+        assert_eq!(engine.cancel(Some("summary")), Some("summary".into()));
+        assert!(summary.cancel_token().is_cancelled());
+        assert!(!chat.cancel_token().is_cancelled());
+        assert!(!live.cancel_token().is_cancelled());
+        assert_eq!(engine.cancel(Some("summary")), None);
+        assert!(engine.begin_generation("still-stopping", GenerationLane::for_mode("MeetingSummary", &scope)).is_none());
+        drop(summary);
+        assert!(engine.is_generating());
+        assert!(engine.begin_generation("retry", GenerationLane::for_mode("MeetingSummary", &scope)).is_some());
+        assert_eq!(engine.cancel(None), Some("live".into()));
+        assert!(!chat.cancel_token().is_cancelled());
+        drop(live);
+        assert_eq!(engine.cancel(None), None);
+        assert_eq!(engine.cancel(Some("missing")), None);
+    }
+
+    #[test]
+    fn same_task_in_different_meetings_has_independent_lane() {
+        let engine = IntelligenceEngine::new();
+        let a = engine.begin_generation("a", GenerationLane::for_mode("MeetingSummary", &SessionScope::Past("a".into()))).unwrap();
+        let b = engine.begin_generation("b", GenerationLane::for_mode("MeetingSummary", &SessionScope::Past("b".into()))).unwrap();
+        drop(a);
+        assert!(engine.is_generating());
+        assert!(!b.cancel_token().is_cancelled());
+        drop(b);
+        assert!(!engine.is_generating());
     }
 }

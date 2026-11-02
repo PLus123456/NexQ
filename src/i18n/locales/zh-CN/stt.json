@@ -124,7 +124,13 @@
   "meetingAudio": {
     "presets": {
       "label": "预设",
-      "applied": "已应用预设“{{name}}”"
+      "applied": "已应用预设“{{name}}”",
+      "appliedIncomplete": "已应用“{{name}}”预设；还需配置：{{requirements}}",
+      "needsKey": "缺少 {{engine}} API Key",
+      "needsModel": "需下载 {{engine}} 模型",
+      "needsBaseUrl": "需填写远程 Whisper 服务器地址",
+      "checkingKey": "正在检查 API Key…",
+      "checkingModel": "正在检查已下载模型…"
     },
     "party": {
       "you": {

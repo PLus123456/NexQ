@@ -8,7 +8,7 @@ export async function updateOpenAICompatSttConfig(config: OpenAICompatSttConfig)
   return invoke("update_openai_compat_stt_config", { configJson: JSON.stringify(config) });
 }
 
-/** Push the Soniox settings; they apply when a session (re)connects. */
+/** Push the Soniox settings; the active capture hook restarts the session to apply them. */
 export async function updateSonioxConfig(config: SonioxConfig): Promise<void> {
   return invoke("update_soniox_config", { configJson: JSON.stringify(config) });
 }

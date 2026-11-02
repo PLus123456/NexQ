@@ -1,3 +1,4 @@
+import { countWords } from "../../lib/wordCount";
 import { useMemo, useState, useRef, useCallback } from "react";
 import type { TranscriptSegment, SpeakerIdentity } from "../../lib/types";
 import { formatTimestamp } from "../../lib/utils";
@@ -63,7 +64,7 @@ export function SpeakerTimeline({
 
       const leftPct =
         ((seg.timestamp_ms - meetingStartMs) / meetingDurationMs) * 100;
-      const wordCount = seg.text.split(/\s+/).filter(Boolean).length;
+      const wordCount = countWords(seg.text);
       const estimatedMs = wordCount * 200;
       const widthPct = Math.max(
         0.5,

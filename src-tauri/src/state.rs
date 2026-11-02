@@ -64,6 +64,9 @@ impl Default for ActiveScenario {
 pub struct AppState {
     pub database: Option<Arc<Mutex<DatabaseManager>>>,
     pub audio: Arc<Mutex<Option<AudioCaptureManager>>>,
+    /// Serializes capture start/stop and owns processing + transcript forwarding
+    /// tasks. Stop drains them before the frontend saves the meeting.
+    pub audio_tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub stt: Option<Arc<Mutex<STTRouter>>>,
     pub llm: Option<Arc<Mutex<LLMRouter>>>,
     pub intelligence: Option<Arc<Mutex<IntelligenceEngine>>>,
@@ -150,6 +153,7 @@ impl AppState {
         Self {
             database: None,
             audio: Arc::new(Mutex::new(Some(AudioCaptureManager::new()))),
+            audio_tasks: tokio::sync::Mutex::new(Vec::new()),
             stt: None,
             llm: None,
             intelligence: None,

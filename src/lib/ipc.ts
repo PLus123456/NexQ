@@ -60,8 +60,8 @@ export async function startCapture(
 }
 
 /** `keepRecording`: a device change mid-meeting; the recording continues after the restart. */
-export async function stopCapture(keepRecording = false): Promise<void> {
-  return invoke("stop_capture", { keepRecording });
+export async function stopCapture(keepRecording = false, expectedMeetingId?: string): Promise<void> {
+  return invoke("stop_capture", { keepRecording, ...(expectedMeetingId ? { expectedMeetingId } : {}) });
 }
 
 export async function getAudioLevel(): Promise<string> {
@@ -124,11 +124,13 @@ export async function getAudioSessions(): Promise<AudioSessionInfo[]> {
 
 export async function startCapturePerParty(
   youConfig: PartyAudioConfig,
-  themConfig: PartyAudioConfig
+  themConfig: PartyAudioConfig,
+  expectedMeetingId?: string
 ): Promise<void> {
   return invoke("start_capture_per_party", {
     youConfig: JSON.stringify(youConfig),
     themConfig: JSON.stringify(themConfig),
+    ...(expectedMeetingId ? { expectedMeetingId } : {}),
   });
 }
 
@@ -238,8 +240,8 @@ export async function generateAssist(
   });
 }
 
-export async function cancelGeneration(): Promise<void> {
-  return invoke("cancel_generation");
+export async function cancelGeneration(requestId?: string): Promise<void> {
+  return invoke("cancel_generation", requestId ? { requestId } : undefined);
 }
 
 export async function setAutoTrigger(enabled: boolean): Promise<void> {

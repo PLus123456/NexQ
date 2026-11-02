@@ -27,6 +27,7 @@ interface MeetingState {
   // Active meeting
   activeMeeting: Meeting | null;
   isRecording: boolean;
+  isEndingMeeting: boolean;
   meetingStartTime: number | null;
   elapsedMs: number;
 
@@ -85,6 +86,9 @@ interface MeetingState {
   stopTimer: () => void;
 }
 
+// Local reentry guard is separate from the cross-window stop intent.
+let endMeetingRunning = false;
+
 export const useMeetingStore = create<MeetingState>((set, get) => ({
   currentView: "launcher",
   previousView: null,
@@ -92,6 +96,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   settingsTab: null,
   activeMeeting: null,
   isRecording: false,
+  isEndingMeeting: false,
   meetingStartTime: null,
   elapsedMs: 0,
   recentMeetings: [],
@@ -235,6 +240,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       set({
         activeMeeting: meeting,
         isRecording: true,
+        isEndingMeeting: false,
         meetingStartTime: now,
         elapsedMs: 0,
         lastPersistedIndex: 0,
@@ -266,17 +272,26 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
   endMeetingFlow: async () => {
     const state = get();
+    if (endMeetingRunning) return;
+    endMeetingRunning = true;
+    set({ isEndingMeeting: true });
+    try {
     const meeting = state.activeMeeting;
 
     // 1. Stop timer
     state.stopTimer();
 
-    // 2. Stop audio capture
-    try {
-      await stopCapture();
-    } catch (err) {
-      console.warn("[meetingStore] Audio capture failed to stop:", err);
+    // 2. Drain native and browser speech before reading the final transcript.
+    // The overlay asks the launcher (which owns Web Speech) to stop and ACK.
+    const { stopMeetingWebSpeech } = await import("../lib/webSpeechLifecycle");
+    const [nativeStop, browserStop] = await Promise.allSettled([
+      stopCapture(),
+      meeting ? stopMeetingWebSpeech(meeting.id) : Promise.resolve(),
+    ]);
+    if (nativeStop.status === "rejected") {
+      console.warn("[meetingStore] Audio capture failed to stop:", nativeStop.reason);
     }
+    if (browserStop.status === "rejected") throw browserStop.reason;
 
     // 2b. Reset mute state — unmute both sources for next meeting
     const configStore = (await import("./configStore")).useConfigStore;
@@ -310,7 +325,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         const entries = useCallLogStore.getState().entries;
         if (entries.length > 0) {
           const interactions = entries
-            .filter((e) => e.status === "complete")
+            .filter((e) => e.status === "complete" && !["MeetingSummary", "ActionItemsExtraction", "BookmarkSuggestions", "MeetingAsk"].includes(e.mode))
             .map((e) => ({
               id: e.id,
               meeting_id: meeting.id,
@@ -472,6 +487,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     set({
       activeMeeting: null,
       isRecording: false,
+      isEndingMeeting: false,
       meetingStartTime: null,
       elapsedMs: 0,
       lastPersistedIndex: 0,
@@ -492,6 +508,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       const payload: WindowMeetingEndedEvent = { window: windowLabel };
       emit("nexq:meeting_ended", payload).catch(() => {});
     }).catch(() => {});
+    } finally {
+      endMeetingRunning = false;
+      set({ isEndingMeeting: false });
+    }
   },
 
   loadRecentMeetings: async () => {

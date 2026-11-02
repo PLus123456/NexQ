@@ -577,12 +577,13 @@
       "label": "额外请求体（JSON）",
       "placeholder": "{\"reasoning_effort\": \"low\"}",
       "hint": "合并进每个请求（model、messages、stream 不能覆盖）。",
-      "disableThinking": "填入“关闭/降低思考”",
       "errors": {
         "invalid": "不是有效的 JSON。",
         "notObject": "必须是 JSON 对象，例如 {\"key\": \"value\"}。",
         "reserved": "这里不能设置“{{key}}”。"
-      }
+      },
+      "thinkingExample": "查看思考参数示例",
+      "thinkingExampleHint": "这只是语法示例，不会写入请求。是否支持取决于具体模型，不能只看厂商；必须推理的模型可能拒绝关闭或低强度参数。核对当前模型文档后再手动填写 JSON，留空则使用服务端默认值。"
     },
     "errors": {
       "range": "请输入 {{min}} 到 {{max}} 之间的数。",
@@ -633,15 +634,15 @@
       },
       "deepseek": {
         "name": "DeepSeek（深度求索）",
-        "note": "DeepSeek 的模型默认会先思考。实时翻译建议在任务参数里点“填入关闭/降低思考”。这个地址不需要 /v1。"
+        "note": "DeepSeek 的模型默认会先思考。实时翻译可参考任务参数里的思考语法示例，按具体模型文档核对后填写。这个地址不需要 /v1。"
       },
       "kimi": {
         "name": "Kimi（月之暗面）",
-        "note": "Kimi 的温度是固定的，所以不发送。K3 系列总会推理，“填入关闭/降低思考”会设成最低强度。国内站（platform.kimi.com）和国际站（platform.kimi.ai）的 Key 不通用。"
+        "note": "Kimi 的温度是固定的，所以不发送。K3 系列总会推理，调整推理强度前请核对模型文档。国内站（platform.kimi.com）和国际站（platform.kimi.ai）的 Key 不通用。"
       },
       "zhipu": {
         "name": "智谱 GLM",
-        "note": "路径是 /api/paas/v4，不是 /v1，也没有模型列表，请手动填写模型。GLM 默认会思考：glm-5.3 无法关闭，glm-5.2 可以（在任务参数里点“填入关闭/降低思考”）。"
+        "note": "路径是 /api/paas/v4，不是 /v1，也没有模型列表，请手动填写模型。GLM 默认会思考：glm-5.3 无法关闭，glm-5.2 可以（按模型文档核对后手动填写任务参数）。"
       },
       "qwen": {
         "name": "通义千问（百炼，兼容模式）",

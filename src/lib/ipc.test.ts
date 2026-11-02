@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
-import { generateAssist } from "./ipc";
+import { cancelGeneration, generateAssist } from "./ipc";
 import { useTranscriptStore } from "../stores/transcriptStore";
 
 describe("generateAssist", () => {
@@ -33,6 +33,13 @@ describe("generateAssist", () => {
     expect(JSON.parse(first.transcriptSegments)).toEqual([
       { id: "a", text: "hello", speaker: "Them", timestamp_ms: 1 },
     ]);
+  });
+
+  it("targets cancellation by request and keeps legacy live-panel cancellation", async () => {
+    await cancelGeneration("summary-1");
+    expect(invoke).toHaveBeenLastCalledWith("cancel_generation", { requestId: "summary-1" });
+    await cancelGeneration();
+    expect(invoke).toHaveBeenLastCalledWith("cancel_generation", undefined);
   });
 
   it("labels diarized remote lines with their person's name for the AI", async () => {

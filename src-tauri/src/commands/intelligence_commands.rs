@@ -4,7 +4,7 @@ use tauri::{command, AppHandle, Emitter, Manager, State};
 
 use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
 use crate::intelligence::context_scope::{self, ResolvedScope, TranscriptWindow};
-use crate::intelligence::IntelligenceEngine;
+use crate::intelligence::{GenerationLane, IntelligenceEngine};
 use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
 use crate::llm::cli_agent::protocol::{AgentErrorKind, TurnResult};
@@ -651,6 +651,8 @@ pub async fn generate_assist(
     // Every stream carries a request id so listeners can tell streams apart.
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    let (scope, epoch) = request_scope(&state, past_meeting_id.as_deref());
+
     // Extract what we need from the intelligence engine under its lock
     let (generation_guard, last_question, cancel_token, action_config_snapshot, composed_instructions, presets) = {
         let intel = state
@@ -665,7 +667,7 @@ pub async fn generate_assist(
         // and only once this function, and so `stream_completion`, has finished.
         // It covers the Claude session path and the fallback alike.
         let guard = engine
-            .begin_generation(&request_id)
+            .begin_generation(&request_id, GenerationLane::for_mode(&mode, &scope))
             .ok_or_else(|| "Generation already in progress".to_string())?;
 
         // Look up per-action config
@@ -734,7 +736,6 @@ pub async fn generate_assist(
         .unwrap_or(global_defaults.temperature);
 
     // ── Route: warm Claude session, fallback provider, or stateless ──
-    let (scope, epoch) = request_scope(&state, past_meeting_id.as_deref());
     let mut route = request_route(&app_handle, &state, &mode, &scope);
 
     if let Route::ClaudeSession(key) = &route {
@@ -966,6 +967,7 @@ pub async fn generate_assist(
 
 #[command]
 pub async fn cancel_generation(
+    request_id: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -981,7 +983,7 @@ pub async fn cancel_generation(
     // Only sets the flag: providers stop at the next chunk and the generation guard is
     // released when `generate_assist` returns. The cancelled end event is emitted here so
     // the UI settles immediately, tagged with the in-flight request id.
-    let in_flight = engine.cancel();
+    let in_flight = engine.cancel(request_id.as_deref());
     drop(engine);
 
     if let Some(request_id) = in_flight {

@@ -89,10 +89,13 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
   const [isAsking, setIsAsking] = useState(false);
   const [session, setSession] = useState<AgentSessionStatus | null>(null);
   const askingRef = useRef(false);
+  const requestIdRef = useRef<string | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
+  const viewEpochRef = useRef(0);
   const listenersRef = useRef<UnlistenFn[]>([]);
 
   const dropListeners = useCallback(() => {
-    listenersRef.current.forEach((unlisten) => unlisten());
+    listenersRef.current.splice(0).forEach((unlisten) => unlisten());
     listenersRef.current = [];
   }, []);
 
@@ -130,7 +133,7 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
     let alive = true;
     const ours = (s: AgentSessionStatus) => s.scope === "past" && s.meeting_id === meetingId;
     const unlisten = onAgentSessionStatus((status) => {
-      if (ours(status)) setSession(status);
+      if (alive && ours(status)) setSession(status);
     });
     getAgentSessions()
       .then((all) => {
@@ -141,12 +144,23 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
       .catch(() => {});
     return () => {
       alive = false;
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(() => {});
     };
   }, [meetingId, enabled, trackSession]);
 
-  // Leaving the view drops the listeners (the container stops the request).
-  useEffect(() => dropListeners, [dropListeners]);
+  // Stop only this view's request when leaving or switching meetings.
+  useEffect(() => {
+    setIsAsking(false);
+    return () => {
+      const requestId = requestIdRef.current;
+      requestIdRef.current = null;
+      stopRef.current = null;
+      askingRef.current = false;
+      viewEpochRef.current++;
+      if (requestId) cancelGeneration(requestId).catch(() => {});
+      dropListeners();
+    };
+  }, [meetingId, enabled, dropListeners]);
 
   const ask = useCallback(
     async (raw: string) => {
@@ -156,6 +170,8 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
       setIsAsking(true);
 
       const requestId = crypto.randomUUID();
+      const viewEpoch = viewEpochRef.current;
+      requestIdRef.current = requestId;
       const questionId = `local-q-${requestId}`;
       const answerId = `local-a-${requestId}`;
       const now = Date.now();
@@ -167,45 +183,71 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
 
       let answer = "";
       let finished = false;
+      let completed = false;
+      const cleanups: UnlistenFn[] = [];
+      const cleanup = () => {
+        cleanups.splice(0).forEach((unlisten) => unlisten());
+        if (listenersRef.current === cleanups) listenersRef.current = [];
+      };
+      const ours = (id: string | null) => id === requestId && requestIdRef.current === requestId;
       const update = (id: string, patch: Partial<ChatItem>) =>
         setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
       const finish = (status: ChatItemStatus, error?: string) => {
-        if (finished) return;
+        if (finished || !ours(requestId)) return;
         finished = true;
-        dropListeners();
+        completed = status === "done";
+        cleanup();
         update(questionId, { status: "done" });
         update(answerId, { status, content: answer, ...(error ? { error } : {}) });
+        requestIdRef.current = null;
+        stopRef.current = null;
         askingRef.current = false;
         setIsAsking(false);
       };
-      const ours = (id: string | null) => id === requestId;
+      stopRef.current = () => {
+        finish("stopped");
+        cancelGeneration(requestId).catch(() => {});
+      };
+      const subscribe = async (registration: Promise<UnlistenFn>) => {
+        const unlisten = await registration;
+        if (!ours(requestId)) {
+          unlisten();
+          return false;
+        }
+        cleanups.push(unlisten);
+        return true;
+      };
 
       try {
         // Subscribe before the request starts so no token is missed.
         dropListeners();
-        listenersRef.current.push(
-          await onStreamStart((event) => {
+        listenersRef.current = cleanups;
+        if (!await subscribe(onStreamStart((event) => {
             if (ours(event.request_id)) update(answerId, { model: event.model });
-          }),
-          await onStreamToken((event) => {
+          }))) return;
+        if (!await subscribe(onStreamToken((event) => {
             if (!ours(event.request_id)) return;
             answer += event.token;
             update(answerId, { content: answer });
-          }),
-          await onStreamEnd((event) => {
+          }))) return;
+        if (!await subscribe(onStreamEnd((event) => {
             if (ours(event.request_id)) finish(event.cancelled ? "stopped" : "done");
-          }),
-          await onStreamError((event) => {
+          }))) return;
+        if (!await subscribe(onStreamError((event) => {
             if (ours(event.request_id)) finish("error", event.message);
-          }),
-        );
+          }))) return;
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
         await askMeeting(meetingId, question, requestId);
       } catch (err) {
+        cleanup();
+        if (viewEpochRef.current !== viewEpoch) return;
         const message = err instanceof Error ? err.message : String(err);
-        if (finished) {
+        if (completed) {
           // Answered, but the backend could not save it.
           update(answerId, { error: message });
-        } else {
+        } else if (!finished && ours(requestId)) {
           finish("error", message);
         }
       }
@@ -214,7 +256,7 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
   );
 
   const stop = useCallback(() => {
-    if (askingRef.current) cancelGeneration().catch(() => {});
+    stopRef.current?.();
   }, []);
 
   return { items, loading, loadError, isAsking, session, ask, stop };

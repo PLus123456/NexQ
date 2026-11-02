@@ -3,10 +3,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Meeting } from "../lib/types";
 
 const shortcuts = vi.hoisted(() => new Map<string, (event: { state: string }) => void>());
+const registrationControl = vi.hoisted(() => ({ failKey: "", pendingKey: "", release: null as (() => void) | null }));
 const captureFailure = vi.hoisted(() => ({ message: "" }));
 const emitted = vi.hoisted(() => [] as Array<[string, unknown]>);
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
-  register: async (key: string, handler: (event: { state: string }) => void) => { shortcuts.set(key, handler); },
+  register: async (key: string, handler: (event: { state: string }) => void) => {
+    if (key === registrationControl.failKey) throw new Error("shortcut is occupied");
+    if (key === registrationControl.pendingKey) await new Promise<void>((resolve) => { registrationControl.release = resolve; });
+    shortcuts.set(key, handler);
+  },
   unregister: async (key: string) => { shortcuts.delete(key); },
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -53,6 +58,9 @@ async function mountWindow(label: "launcher" | "overlay") {
 beforeEach(() => {
   shortcuts.clear();
   captureFailure.message = "";
+  registrationControl.failKey = "";
+  registrationControl.pendingKey = "";
+  registrationControl.release = null;
 });
 afterEach(() => {
   cleanup();
@@ -103,4 +111,33 @@ it("leaves the Assist shortcut to the overlay", async () => {
   act(() => launcher.setState({ activeMeeting: { id: "m1" } as Meeting }));
   await new Promise((r) => setTimeout(r, 20));
   expect(shortcuts.has(DEFAULT_ASSIST_SHORTCUT)).toBe(false);
+});
+
+
+it("shows an actionable warning when a shortcut is occupied", async () => {
+  await mountWindow("launcher");
+  const { useConfigStore } = await import("../stores/configStore");
+  const { useToastStore } = await import("../stores/toastStore");
+  useToastStore.setState({ toasts: [] });
+  registrationControl.failKey = "CmdOrCtrl+Shift+H";
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  act(() => useConfigStore.setState({ stealthShortcut: registrationControl.failKey }));
+  await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: "warning", message: expect.stringContaining("Settings → Shortcuts") }),
+  ])));
+  expect(shortcuts.has(registrationControl.failKey)).toBe(false);
+  expect(shortcuts.has("CmdOrCtrl+M")).toBe(true);
+});
+
+it("unregisters a pending stealth binding that finishes after the key changes", async () => {
+  await mountWindow("launcher");
+  const { useConfigStore } = await import("../stores/configStore");
+  registrationControl.pendingKey = "CmdOrCtrl+Shift+H";
+  act(() => useConfigStore.setState({ stealthShortcut: registrationControl.pendingKey }));
+  await waitFor(() => expect(registrationControl.release).not.toBeNull());
+  act(() => useConfigStore.setState({ stealthShortcut: "CmdOrCtrl+Shift+J" }));
+  await waitFor(() => expect(shortcuts.has("CmdOrCtrl+Shift+J")).toBe(true));
+  await act(async () => { registrationControl.release!(); });
+  expect(shortcuts.has("CmdOrCtrl+Shift+H")).toBe(false);
+  expect(shortcuts.has("CmdOrCtrl+Shift+J")).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { countWords } from "../lib/wordCount";
 // Sub-PRD 4: Subscribe to transcript_update + transcript_final events
 // Connects the Tauri IPC event stream to the Zustand transcript store.
 // Also processes speaker_id through speakerStore for enrichment and stats.
@@ -29,7 +30,16 @@ function devLog(msg: string) {
  * - Return enriched segment with speaker_id set, or null to discard
  */
 /** Words already counted in speaker stats, per final segment id. */
-const countedWords = new Map<string, number>();
+const countedWords = new Map<string, { words: number; speakerId: string }>();
+
+// Initializing/clearing the speaker store starts a new meeting. Reused segment
+// IDs must not inherit the previous meeting's counts, or retain them forever.
+useSpeakerStore.subscribe((state, previous) => {
+  if (state.speakers !== previous.speakers &&
+      Object.values(state.speakers).every((speaker) => speaker.stats.segment_count === 0)) {
+    countedWords.clear();
+  }
+});
 
 function currentIsInPerson(): boolean {
   try {
@@ -92,15 +102,36 @@ export function processSpeaker(
     }
     if (segment.is_final) {
       // A line that grows is re-sent as a final under the same id: count
-      // only its new words, and the line once.
-      const wordCount = segment.text.split(/\s+/).filter(Boolean).length;
+      // its current words (including downward corrections), and the line once.
+      const wordCount = countWords(segment.text);
       const counted = countedWords.get(segment.id);
-      countedWords.set(segment.id, wordCount);
       if (counted === undefined) {
         speakerStore.updateStats(speakerId, wordCount, 0);
-      } else if (wordCount > counted) {
-        speakerStore.updateStats(speakerId, wordCount - counted, 0, false);
+      } else if (counted.speakerId !== speakerId) {
+        // Diarization can correct the owner of an already-final line. Move
+        // this line's contribution rather than subtracting from its new owner.
+        useSpeakerStore.setState((state) => {
+          const previous = state.speakers[counted.speakerId];
+          if (!previous) return state;
+          return {
+            speakers: {
+              ...state.speakers,
+              [counted.speakerId]: {
+                ...previous,
+                stats: {
+                  ...previous.stats,
+                  word_count: Math.max(0, previous.stats.word_count - counted.words),
+                  segment_count: Math.max(0, previous.stats.segment_count - 1),
+                },
+              },
+            },
+          };
+        });
+        speakerStore.updateStats(speakerId, wordCount, 0);
+      } else if (wordCount !== counted.words) {
+        speakerStore.updateStats(speakerId, wordCount - counted.words, 0, false);
       }
+      countedWords.set(segment.id, { words: wordCount, speakerId });
     }
   }
 

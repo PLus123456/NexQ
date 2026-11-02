@@ -1,3 +1,4 @@
+import { countWords } from "../../lib/wordCount";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { Meeting, SpeakerIdentity } from "../../lib/types";
 import { Users, Mic, Volume2, Check, X, Pencil } from "lucide-react";
@@ -196,7 +197,7 @@ function syntheticSpeakersFromTranscript(
     const key = resolveSpeakerId(seg);
     if (!counts[key]) counts[key] = { segments: 0, words: 0, talkMs: 0, speaker: seg.speaker };
     counts[key].segments++;
-    const wordCount = seg.text.split(/\s+/).filter(Boolean).length;
+    const wordCount = countWords(seg.text);
     counts[key].words += wordCount;
     counts[key].talkMs += wordCount * 200;
   }

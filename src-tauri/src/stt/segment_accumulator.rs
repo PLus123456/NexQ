@@ -21,9 +21,23 @@ pub const MAX_PARAGRAPH_MS: u64 = 60_000;
 /// relative to the STT stream's start.
 const EPOCH_MS_FLOOR: u64 = 1_000_000_000_000;
 
-/// Rough speaking time of `text` (~150 words per minute).
+/// Rough speaking time: ~150 space-delimited words or ~300 Han characters
+/// per minute. Chinese punctuation must not turn a whole utterance into one word.
 fn estimated_speech_ms(text: &str) -> u64 {
-    text.split_whitespace().count() as u64 * 400
+    let mut ms = 0;
+    let mut in_word = false;
+    for ch in text.chars() {
+        if matches!(ch, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{323af}') {
+            ms += 200;
+            in_word = false;
+        } else if ch.is_alphanumeric() {
+            if !in_word { ms += 400; }
+            in_word = true;
+        } else if ch != '\'' && ch != '’' {
+            in_word = false;
+        }
+    }
+    ms
 }
 
 /// Wall-clock time in epoch milliseconds (injectable for tests).
@@ -203,6 +217,18 @@ mod tests {
     use std::sync::Arc;
 
     const T0: u64 = 1_700_000_000_000;
+
+    #[test]
+    fn chinese_speech_without_duration_does_not_create_false_paragraph_breaks() {
+        assert_eq!(estimated_speech_ms("Hello world"), 800);
+        assert_eq!(estimated_speech_ms("今天讨论 API 设计。"), 1600);
+        let mut acc = acc();
+        acc.feed_result(fin("我们今天讨论新的项目计划", 0, None, None));
+        let next = acc.feed_result(fin("请大家继续发言", 5000, None, None));
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].id, "acc_1");
+    }
+
 
     fn fin(text: &str, start: u64, duration: Option<u64>, tag: Option<&str>) -> TranscriptResult {
         TranscriptResult {

@@ -35,6 +35,36 @@ describe("processSpeaker", () => {
     expect(useSpeakerStore.getState().speakers.them.stats).toMatchObject({ segment_count: 1, word_count: 4 });
   });
 
+  it("counts Chinese and mixed-language final transcripts", () => {
+    processSpeaker(them("chinese", "你好，世界！"), false);
+    processSpeaker(them("mixed", "你好 world"), false);
+    expect(useSpeakerStore.getState().speakers.them.stats).toMatchObject({ segment_count: 2, word_count: 4 });
+  });
+
+  it("corrects the count when a final transcript becomes shorter", () => {
+    processSpeaker(them("corrected", "one two three four"), false);
+    processSpeaker(them("corrected", "one two"), false);
+    processSpeaker(them("corrected", "one two three"), false);
+    expect(useSpeakerStore.getState().speakers.them.stats).toMatchObject({ segment_count: 1, word_count: 3 });
+  });
+
+  it("counts reused IDs afresh after starting another meeting", () => {
+    processSpeaker(them("reused", "one two"), false);
+    useSpeakerStore.getState().initForOnline();
+    processSpeaker(them("reused", "one two"), false);
+    expect(useSpeakerStore.getState().speakers.them.stats).toMatchObject({ segment_count: 1, word_count: 2 });
+  });
+
+  it("moves an edited final line's statistics when diarization corrects its speaker", () => {
+    useSpeakerStore.getState().initForInPerson(true);
+    processSpeaker(them("changed-owner", "one two three", { speaker_id: "speaker_0" }), true);
+    processSpeaker(them("changed-owner", "one two", { speaker_id: "speaker_1" }), true);
+    processSpeaker(them("changed-owner", "one two", { speaker_id: "speaker_1" }), true);
+    const { speakers } = useSpeakerStore.getState();
+    expect(speakers.speaker_0.stats).toMatchObject({ segment_count: 0, word_count: 0 });
+    expect(speakers.speaker_1.stats).toMatchObject({ segment_count: 1, word_count: 2 });
+  });
+
   it("in person: keeps the diarized speaker id", () => {
     useSpeakerStore.getState().initForInPerson(true);
     const out = processSpeaker(them("a", "Hi", { speaker_tag: "S1", speaker_id: "speaker_0" }), true);

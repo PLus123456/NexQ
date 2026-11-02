@@ -172,13 +172,19 @@ export function useBookmarkSuggestions(
     contentRef.current = "";
   }, [meeting?.id]);
 
-  // Cleanup listeners on unmount
+  // Cancel this view's request when leaving or switching meetings.
   useEffect(() => {
+    setIsSuggesting(false);
+    setError(null);
+    contentRef.current = "";
     return () => {
+      const requestId = requestIdRef.current;
+      requestIdRef.current = null;
+      if (requestId) invoke("cancel_generation", { requestId }).catch(() => {});
       unlistenersRef.current.forEach((fn) => fn());
       unlistenersRef.current = [];
     };
-  }, []);
+  }, [meeting?.id]);
 
   const acceptSuggestion = useCallback(
     async (index: number) => {
@@ -258,7 +264,7 @@ export function useBookmarkSuggestions(
   }, [meeting, suggestions, onBookmarkAccepted]);
 
   const suggest = useCallback(async () => {
-    if (!meeting || isSuggesting) return;
+    if (!meeting || requestIdRef.current || isSuggesting) return;
 
     setIsSuggesting(true);
     setError(null);
@@ -334,6 +340,10 @@ export function useBookmarkSuggestions(
       });
       cleanups.push(unError);
 
+      if (requestIdRef.current !== requestId) {
+        cleanups.forEach((fn) => fn());
+        return;
+      }
       unlistenersRef.current.push(...cleanups);
 
       const customQuestion =
@@ -346,21 +356,28 @@ export function useBookmarkSuggestions(
         pastMeetingId: pastMeetingIdFor(meeting),
       });
     } catch (err) {
+      cleanups.forEach((fn) => fn());
+      unlistenersRef.current = unlistenersRef.current.filter((fn) => !cleanups.includes(fn));
+      if (requestIdRef.current !== requestId) return;
+      requestIdRef.current = null;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       setIsSuggesting(false);
-      cleanups.forEach((fn) => fn());
     }
   }, [meeting, isSuggesting]);
 
   const cancel = useCallback(async () => {
+    const requestId = requestIdRef.current;
+    requestIdRef.current = null;
+    unlistenersRef.current.forEach((fn) => fn());
+    unlistenersRef.current = [];
+    setIsSuggesting(false);
+    if (!requestId) return;
     try {
-      await invoke("cancel_generation");
+      await invoke("cancel_generation", { requestId });
     } catch {
       // Non-critical
     }
-    requestIdRef.current = null;
-    setIsSuggesting(false);
   }, []);
 
   return {

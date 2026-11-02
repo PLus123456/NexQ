@@ -1,3 +1,4 @@
+import { countWords } from "../lib/wordCount";
 import { useMemo } from "react";
 import type { TFunction } from "i18next";
 import type { Meeting } from "../lib/types";
@@ -58,7 +59,7 @@ export function useMeetingStats(meeting: Meeting | null): MeetingStats {
     const speakerWords: Record<string, number> = {};
     let totalWords = 0;
     for (const seg of meeting.transcript) {
-      const words = seg.text.split(/\s+/).filter(Boolean).length;
+      const words = countWords(seg.text);
       totalWords += words;
       speakerWords[seg.speaker] = (speakerWords[seg.speaker] || 0) + words;
     }

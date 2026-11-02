@@ -86,6 +86,23 @@ describe("useCallLogCapture", () => {
     expect(handlers.end).toBeDefined();
   }
 
+  it("keeps concurrent meeting tasks in the log without saving them into the live meeting", async () => {
+    await mount();
+    act(() => {
+      start("live");
+      start("summary", { mode: "MeetingSummary", session_key: "past:old:deep" });
+      handlers.token({ token: "Old summary", request_id: "summary" });
+      handlers.token({ token: "Live answer", request_id: "live" });
+      handlers.end({ total_tokens: 3, latency_ms: 10, request_id: "summary", cancelled: false });
+    });
+    expect(ipc.saveMeetingAiInteractions).not.toHaveBeenCalled();
+    act(() => handlers.end({ total_tokens: 3, latency_ms: 10, request_id: "live", cancelled: false }));
+    const saved = JSON.parse(ipc.saveMeetingAiInteractions.mock.calls[0][1]);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].response).toBe("Live answer");
+    expect(useCallLogStore.getState().entries).toHaveLength(2);
+  });
+
   it("does not fail a slow answer: tokens after 30 s still complete and persist it", async () => {
     await mount();
     act(() => start("r1"));

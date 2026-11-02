@@ -112,7 +112,7 @@ echo "✔ Built: $APP_SRC"
 # The bundle must carry this fork's identity, or installing would replace
 # (and quitting would kill) the official app.
 bundle_id_of() {
-  defaults read "$1/Contents/Info" CFBundleIdentifier 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist" 2>/dev/null || true
 }
 BUILT_ID="$(bundle_id_of "$APP_SRC")"
 if [[ "$BUILT_ID" != "$BUNDLE_ID" ]]; then

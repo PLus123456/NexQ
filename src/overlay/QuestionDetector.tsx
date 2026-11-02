@@ -17,8 +17,14 @@ export const AUTO_TRIGGER_DELAY_MS = 1500;
 const isOtherParty = (speaker: string) => speaker === "Them" || speaker === "Interviewer";
 
 export function looksLikeQuestion(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.endsWith("?")) return true;
+  const trimmed = text.trim().replace(/["'”’」』]+$/u, "");
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) return false;
+  if (/[?？]$/u.test(trimmed)) return true;
+  const body = trimmed.replace(/[.!。！…]+$/u, "");
+  // Keep the local/Web Speech fallback aligned with the Rust detector.
+  if (/[吗嗎呢]$/u.test(body) ||
+      /什么|什麼|为何|為何|为什么|為什麼|怎么|怎麼|怎样|怎樣|如何|何时|何時|哪里|哪裡|哪儿|哪兒|哪个|哪個|哪些|谁|誰|多少|几时|幾時|几点|幾點|多久|能不能|可不可以|会不会|會不會|是不是|有没有|有沒有|要不要|是否|能否/u.test(body) ||
+      /请介绍|請介紹|请描述|請描述|请解释|請解釋|请举例|請舉例|介绍一下|介紹一下|描述一下|解释一下|解釋一下|说说|說說|谈谈|談談|举个例子|舉個例子/u.test(body)) return true;
   const lower = trimmed.toLowerCase();
   const qWords = [
     "what ", "how ", "why ", "when ", "where ", "who ", "which ",
@@ -33,7 +39,8 @@ export function looksLikeQuestion(text: string): boolean {
  * question is usually the last sentence, not the whole line.
  */
 export function lastSentence(text: string): string {
-  const sentences = text.trim().match(/[^.?!]+[.?!]*/g) ?? [];
+  const sentences = (text.trim().match(/[^.?!。？！\n]+[.?!。？！]*[”’」』]*/gu) ?? [])
+    .filter((sentence) => /[\p{L}\p{N}]/u.test(sentence));
   return (sentences[sentences.length - 1] ?? "").trim();
 }
 

@@ -60,9 +60,9 @@ export interface ProviderTemplate {
   defaultModel?: string;
   compat?: Partial<LlmCompat>;
   /**
-   * Extra request body that turns thinking off (or to its lowest level where
-   * it can't be off) on this vendor's API, offered for fast tasks such as
-   * live translation. Not every model of a vendor accepts it.
+   * Syntax example for turning thinking off or down on this vendor's API.
+   * Displayed read-only: not every model accepts it, so it must never be
+   * inserted automatically based solely on the provider template.
    */
   disableThinking?: Record<string, unknown>;
   /** The vendor documents its base URL without a version prefix (no "/v1" hint). */

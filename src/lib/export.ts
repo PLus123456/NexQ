@@ -86,7 +86,21 @@ function segmentTime(seg: TranscriptSegment, startMs: number): string {
 }
 
 function safeFilename(title: string): string {
-  return title.replace(/[^a-zA-Z0-9 _-]/g, "").trim() || "meeting";
+  // Retain Unicode letters (including Chinese) while excluding path separators
+  // and other filename punctuation. Bound UTF-8 bytes, not JS code units, so
+  // long Chinese titles fit the filesystem limit with room for an extension.
+  const clean = title.normalize("NFC").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "").trim();
+  let name = "";
+  let bytes = 0;
+  const encoder = new TextEncoder();
+  for (const char of clean) {
+    bytes += encoder.encode(char).length;
+    if (bytes > 200) break;
+    name += char;
+  }
+  name = name.trim() || "meeting";
+  // Windows device names are reserved even when a file extension is added.
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name) ? `_${name}` : name;
 }
 
 // ── Export: Markdown ──────────────────────────────────────────────────────────

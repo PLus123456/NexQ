@@ -1,3 +1,4 @@
+import { countWords } from "../../lib/wordCount";
 import type { DemoScenario } from './types';
 import type { TranscriptSegment, Speaker, LogEntry } from '../../lib/types';
 import { useMeetingStore } from '../../stores/meetingStore';
@@ -180,7 +181,7 @@ function populate(): void {
   useSpeakerStore.getState().renameSpeaker('them', 'Prof. Chen');
   // Update stats: 7 segments from Prof. Chen
   for (const seg of SEGMENTS) {
-    const wordCount = seg.text.split(/\s+/).length;
+    const wordCount = countWords(seg.text);
     useSpeakerStore.getState().updateStats('them', wordCount, 5000);
   }
 

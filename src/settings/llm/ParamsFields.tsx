@@ -34,19 +34,6 @@ export function parseExtraBody(text: string): JsonCheck {
 const pretty = (value: Record<string, unknown> | null | undefined) =>
   value && Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : "";
 
-/** Merges `patch` into a JSON object one level deep (objects inside are merged too). */
-function mergeObjects(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> { // i18n-ignore: a type, not text
-  const out: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(patch)) {
-    const current = out[key];
-    out[key] =
-      value && typeof value === "object" && !Array.isArray(value) && current && typeof current === "object" && !Array.isArray(current)
-        ? mergeObjects(current as Record<string, unknown>, value as Record<string, unknown>) // i18n-ignore: a type, not text
-        : value;
-  }
-  return out;
-}
-
 export function JsonObjectField({
   id,
   value,
@@ -61,11 +48,12 @@ export function JsonObjectField({
   /** Reported whenever the text becomes valid or invalid (Save stays off while invalid). */
   onValidityChange?: (valid: boolean) => void;
   disabled?: boolean;
-  /** The vendor's "turn thinking off" body, offered as a one-click merge. */
+  /** Vendor syntax example only; model support must be checked before use. */
   disableThinking?: Record<string, unknown>;
 }) {
   const { t } = useT("llm");
   const [text, setText] = useState(() => pretty(value));
+  const [showThinkingExample, setShowThinkingExample] = useState(false);
   const check = parseExtraBody(text);
   const errorId = `${id}-error`;
 
@@ -88,26 +76,31 @@ export function JsonObjectField({
     if (parsed.ok) onChange(parsed.value);
   };
 
-  const thinkingAlreadyOff =
-    !!disableThinking && check.ok && JSON.stringify(mergeObjects(check.value ?? {}, disableThinking)) === JSON.stringify(check.value ?? {});
-
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <label htmlFor={id} className="text-xs font-medium text-foreground">
           {t("params.extraBody.label")}
         </label>
-        {disableThinking && !thinkingAlreadyOff && (
+        {disableThinking && (
           <button
             type="button"
-            disabled={disabled || !check.ok}
-            onClick={() => edit(pretty(mergeObjects(check.ok ? check.value ?? {} : {}, disableThinking)))}
+            disabled={disabled}
+            aria-expanded={showThinkingExample}
+            aria-controls={`${id}-thinking-example`}
+            onClick={() => setShowThinkingExample((open) => !open)}
             className={LINK_BUTTON}
           >
-            {t("params.extraBody.disableThinking")}
+            {t("params.extraBody.thinkingExample")}
           </button>
         )}
       </div>
+      {disableThinking && showThinkingExample && (
+        <div id={`${id}-thinking-example`} className="mb-2 rounded-lg border border-warning/30 p-2 text-xs">
+          <p className="text-warning">{t("params.extraBody.thinkingExampleHint")}</p>
+          <pre className="mt-2 overflow-auto font-mono text-muted-foreground">{pretty(disableThinking)}</pre>
+        </div>
+      )}
       <textarea
         id={id}
         {...PLAIN_TEXT}

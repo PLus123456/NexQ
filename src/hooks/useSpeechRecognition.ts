@@ -16,6 +16,7 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useConfigStore } from "../stores/configStore";
 import { pushTranscript, ensureIpolicyOverride } from "../lib/ipc";
+import { registerWebSpeechStop } from "../lib/webSpeechLifecycle";
 
 // Web Speech API types (not in all TS libs)
 interface SpeechRecognitionEvent extends Event {
@@ -94,6 +95,7 @@ export function webSpeechLanguage(
  */
 export function useSpeechRecognition() {
   const isRecording = useMeetingStore((s) => s.isRecording);
+  const isEndingMeeting = useMeetingStore((s) => s.isEndingMeeting);
   // The Web Speech party's language: a change restarts recognition.
   const sttLanguage = useConfigStore((s) => webSpeechLanguage(s.meetingAudioConfig, s.sttLanguage));
 
@@ -131,14 +133,7 @@ export function useSpeechRecognition() {
   const restartFailCountRef = useRef(0);
 
   useEffect(() => {
-    // Always clean up any existing recognition first
-    if (recognitionRef.current) {
-      shouldRestartRef.current = false;
-      try { recognitionRef.current.stop(); } catch {}
-      recognitionRef.current = null;
-    }
-
-    if (!isRecording || !usesWebSpeech) return;
+    if (!isRecording || isEndingMeeting || !usesWebSpeech) return;
 
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -172,8 +167,53 @@ export function useSpeechRecognition() {
     sessionPrefixRef.current = Date.now().toString(36).slice(-4);
     restartFailCountRef.current = 0;
     const myInstanceId = ++instanceIdRef.current;
+    const meetingId = useMeetingStore.getState().activeMeeting?.id;
+    const pendingWrites = new Set<Promise<unknown>>();
+    let acceptingResults = true;
+    let stopping: Promise<void> | null = null;
+    let resolveStop: (() => void) | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    let stoppingRecognition: SpeechRecognitionInstance | null = null;
+    const trackWrite = (write: Promise<unknown>) => {
+      const settled = write.catch(() => {});
+      pendingWrites.add(settled);
+      void settled.finally(() => pendingWrites.delete(settled));
+    };
+    const finishStop = () => {
+      acceptingResults = false;
+      if (stopTimer) clearTimeout(stopTimer);
+      if (recognitionRef.current === stoppingRecognition) recognitionRef.current = null;
+      resolveStop?.();
+    };
+    const stopped = () => {
+      acceptingResults = false;
+      // onend follows the last onresult; the cross-window events and backend
+      // transcript writes from that result must also settle before saving.
+      void Promise.allSettled([...pendingWrites]).then(finishStop);
+    };
+    const stop = (): Promise<void> => {
+      if (stopping) return stopping;
+      shouldRestartRef.current = false;
+      stoppingRecognition = recognitionRef.current;
+      stopping = new Promise<void>((resolve) => { resolveStop = resolve; });
+      stopTimer = setTimeout(() => {
+        acceptingResults = false;
+        // stop() is graceful; only an engine that fails to finish is aborted.
+        try { stoppingRecognition?.abort(); } catch {}
+        finishStop();
+      }, 2000);
+      try { stoppingRecognition?.stop(); } catch { stopped(); }
+      if (!stoppingRecognition) stopped();
+      return stopping;
+    };
+    const unregisterStop = registerWebSpeechStop(stop);
+    const unsubscribeMeeting = useMeetingStore.subscribe((state) => {
+      if (state.isEndingMeeting) void stop();
+    });
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (!acceptingResults || instanceIdRef.current !== myInstanceId ||
+          useMeetingStore.getState().activeMeeting?.id !== meetingId) return;
       // Reset fail count on successful result — recognition is healthy
       restartFailCountRef.current = 0;
 
@@ -200,8 +240,8 @@ export function useSpeechRecognition() {
           };
           updateInterimRef.current(finalSeg);
           // Broadcast to overlay window — it has its own Zustand store and needs events
-          emit("transcript_final", { segment: finalSeg }).catch(() => {});
-          pushTranscript(transcript, speakerLabel, now, true).catch(() => {});
+          trackWrite(emit("transcript_final", { segment: finalSeg }));
+          trackWrite(pushTranscript(transcript, speakerLabel, now, true));
         } else {
           const speakerId = speakerLabel === "User" ? "you" : "them";
           const interimSeg = {
@@ -215,7 +255,7 @@ export function useSpeechRecognition() {
           };
           updateInterimRef.current(interimSeg);
           // Broadcast to overlay window
-          emit("transcript_update", { segment: interimSeg }).catch(() => {});
+          trackWrite(emit("transcript_update", { segment: interimSeg }));
         }
       }
     };
@@ -229,6 +269,7 @@ export function useSpeechRecognition() {
     };
 
     recognition.onend = () => {
+      if (stopping) { stopped(); return; }
       // Only restart if this is still the current instance
       if (instanceIdRef.current !== myInstanceId) return;
       if (!shouldRestartRef.current || !recognitionRef.current) return;
@@ -241,7 +282,7 @@ export function useSpeechRecognition() {
 
       setTimeout(async () => {
         if (instanceIdRef.current !== myInstanceId) return;
-        if (!shouldRestartRef.current || !recognitionRef.current) return;
+        if (!shouldRestartRef.current || !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
 
         // Check fresh config
         const freshCfg = useConfigStore.getState().meetingAudioConfig;
@@ -264,7 +305,7 @@ export function useSpeechRecognition() {
 
         // Guard again after async — state may have changed during IPolicy check
         if (instanceIdRef.current !== myInstanceId) return;
-        if (!shouldRestartRef.current || !recognitionRef.current) return;
+        if (!shouldRestartRef.current || !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
 
         try {
           recognitionRef.current!.start();
@@ -282,6 +323,8 @@ export function useSpeechRecognition() {
               } catch {
                 // proceed anyway
               }
+              if (instanceIdRef.current !== myInstanceId || !shouldRestartRef.current ||
+                  !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
               const fresh = new SpeechRecognition();
               fresh.continuous = true;
               fresh.interimResults = true;
@@ -311,11 +354,10 @@ export function useSpeechRecognition() {
     }
 
     return () => {
-      shouldRestartRef.current = false;
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch {}
-        recognitionRef.current = null;
-      }
+      unsubscribeMeeting();
+      // Keep the stop handler registered until its final result has drained,
+      // including when ending triggered this effect's cleanup.
+      void stop().finally(unregisterStop);
     };
-  }, [isRecording, usesWebSpeech, sttLanguage]);
+  }, [isRecording, isEndingMeeting, usesWebSpeech, sttLanguage]);
 }

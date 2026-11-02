@@ -33,6 +33,7 @@ import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
 import { logToFile } from "./lib/logger";
+import { onWebSpeechStopRequest } from "./lib/webSpeechLifecycle";
 import { emitOverlayMeetingReady, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 
 function App() {
@@ -139,6 +140,23 @@ function App() {
     return () => unlisteners.forEach((fn) => fn());
   }, [windowLabel]);
 
+  // Keep the stop service alive after meeting hooks unmount: the overlay may
+  // still need the acknowledgement while finishing its own save.
+  useEffect(() => {
+    if (windowLabel !== "launcher") return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onWebSpeechStopRequest((meetingId) => {
+      if (useMeetingStore.getState().activeMeeting?.id !== meetingId) return false;
+      useMeetingStore.setState({ isEndingMeeting: true });
+      return true;
+    }).then((remove) => {
+      if (disposed) remove();
+      else unlisten = remove;
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, [windowLabel]);
+
   // LAUNCHER window: listen for nexq:meeting_ended from overlay, show self + reset state
   useEffect(() => {
     if (windowLabel !== "launcher") return;
@@ -148,6 +166,7 @@ function App() {
         currentView: "launcher",
         activeMeeting: null,
         isRecording: false,
+        isEndingMeeting: false,
         meetingStartTime: null,
         elapsedMs: 0,
       });
@@ -215,6 +234,7 @@ function App() {
           audioMode,
           aiScenario,
           isRecording: true,
+          isEndingMeeting: false,
           meetingStartTime: startedAt,
           elapsedMs: 0,
           lastPersistedIndex: 0,

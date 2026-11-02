@@ -141,7 +141,7 @@ fn spawn_party_emitter(
     provider: &str,
     session_prefix: &str,
     mut rx: mpsc::Receiver<crate::stt::provider::TranscriptResult>,
-) {
+) -> tokio::task::JoinHandle<()> {
     use std::sync::atomic::Ordering;
 
     let app = app.clone();
@@ -207,7 +207,7 @@ fn spawn_party_emitter(
                 }
             }
         }
-    });
+    })
 }
 
 /// List all available audio input and output devices.
@@ -225,6 +225,7 @@ pub async fn start_capture(
     system_device_id: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
+    let mut tasks = state.audio_tasks.lock().await;
 
     // Check if already capturing
     {
@@ -358,7 +359,7 @@ pub async fn start_capture(
         let stt_app = app.clone();
         let intel_arc = app.state::<AppState>().intelligence.clone();
         let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             let threshold = pause_threshold.load(Ordering::Relaxed);
             let mut accumulator =
@@ -397,7 +398,7 @@ pub async fn start_capture(
                     }
                 }
             }
-        });
+        }));
     }
 
     // Grab the recorder handle for WAV recording (with mic/system mixing)
@@ -409,7 +410,7 @@ pub async fn start_capture(
     // Audio processing task: levels + recording + system STT feed
     // (Mic STT is handled by Web Speech API in the frontend)
     let app_handle = app.clone();
-    tokio::spawn(async move {
+    tasks.push(tokio::spawn(async move {
         let mut vad = VoiceActivityDetector::new();
         let mut mic_emit_counter: u32 = 0;
         let mut system_emit_counter: u32 = 0;
@@ -500,22 +501,47 @@ pub async fn start_capture(
             let _ = provider.stop_stream().await;
         }
         log::info!("Audio processing task exiting");
-    });
+    }));
 
     log::info!("Audio capture started via command");
     Ok(())
 }
 
+/// Wait for producers and transcript forwarders together under one deadline.
+/// The native audio mutex is never held here. Aborting and joining on timeout
+/// prevents late events from an old meeting leaking into the next one.
+async fn finish_capture_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>, budget: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut complete = true;
+    while let Some(mut task) = tasks.pop() {
+        if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
+            complete = false;
+            task.abort();
+            let _ = task.await;
+        }
+    }
+    complete
+}
+
+fn capture_meeting_matches(state: &AppState, expected: Option<&str>) -> Result<bool, String> {
+    let Some(expected) = expected else { return Ok(true) };
+    let meeting = state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned".to_string())?;
+    Ok(meeting.as_ref().is_some_and(|meeting| meeting.id == expected))
+}
+
 /// Stop all audio capture. `keep_recording` (a device change mid-meeting)
 /// keeps the meeting's recording open for the capture that follows.
 #[command]
-pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>) -> Result<(), String> {
+pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>, expected_meeting_id: Option<String>) -> Result<(), String> {
     let state = app.state::<AppState>();
+    let mut tasks = state.audio_tasks.lock().await;
+    // An old hot-swap must never stop a newer meeting's capture.
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? { return Ok(()); }
 
     // Restore original default capture device if IPolicyConfig override was active
     restore_default_device_if_overridden(&state, &app);
 
-    let recording_info = {
+    {
         let mut guard = state
             .audio
             .lock()
@@ -523,13 +549,19 @@ pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>) -> Resul
 
         match guard.as_mut() {
             Some(mgr) => {
-                let info = mgr.stop_capture(keep_recording.unwrap_or(false));
-                log::info!("Audio capture stopped via command");
-                info
+                mgr.stop_capture(true);
+                log::info!("Audio capture stopped via command; draining final results");
             }
             None => return Err("No audio manager initialized".to_string()),
         }
     };
+
+    if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
+        crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining audio/STT; unfinished tasks were stopped");
+    }
+    let recording_info = state.audio.lock()
+        .map_err(|_| "Audio state lock poisoned".to_string())?
+        .as_mut().and_then(|mgr| mgr.stop_capture(keep_recording.unwrap_or(false)));
 
     // Store recording info for end_meeting to pick up.
     // The frontend calls stopCapture() then endMeeting() in sequence, so
@@ -981,6 +1013,7 @@ pub async fn start_capture_per_party(
     app: AppHandle,
     you_config: String,
     them_config: String,
+    expected_meeting_id: Option<String>,
 ) -> Result<(), String> {
     use crate::audio::PartyAudioConfig;
 
@@ -990,6 +1023,10 @@ pub async fn start_capture_per_party(
         serde_json::from_str(&them_config).map_err(|e| format!("Invalid them_config: {}", e))?;
 
     let state = app.state::<AppState>();
+    let mut tasks = state.audio_tasks.lock().await;
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        return Err("The meeting ended before capture could restart".to_string());
+    }
 
     // If already capturing, stop first (allows mid-meeting hot-swap)
     {
@@ -1008,6 +1045,10 @@ pub async fn start_capture_per_party(
                 mgr.stop_capture(true);
             }
         }
+    }
+
+    if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
+        crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining the previous audio/STT session");
     }
 
     log::info!(
@@ -1129,6 +1170,9 @@ pub async fn start_capture_per_party(
         }));
     }
 
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        return Err("The meeting ended before capture could restart".to_string());
+    }
     {
         let mut guard = state
             .audio
@@ -1155,11 +1199,31 @@ pub async fn start_capture_per_party(
         .unwrap_or_default()
         .as_millis() % 0xFFFF);
 
-    // ── Create STT provider for "You" party (if not web_speech) ──
-    let you_stt = create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?;
+    // Provider setup can fail after the native devices opened (missing key,
+    // unavailable model, invalid config). No processing task owns them yet.
+    let providers = async {
+        let you_stt = create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?;
+        let them_stt = create_stt_provider_for_party(&them, &you, &state, &app, Party::Them, &session_prefix).await?;
+        Ok::<_, String>((you_stt, them_stt))
+    }.await;
+    let (you_stt, them_stt) = match providers {
+        Ok(providers) => providers,
+        Err(error) => {
+            // Keep the meeting recorder available for a corrected config or End.
+            if let Ok(mut audio) = state.audio.lock() {
+                if let Some(manager) = audio.as_mut() { manager.stop_capture(true); }
+            }
+            restore_default_device_if_overridden(&state, &app);
+            return Err(error);
+        }
+    };
 
-    // ── Create STT provider for "Them" party (if not web_speech) ──
-    let them_stt = create_stt_provider_for_party(&them, &you, &state, &app, Party::Them, &session_prefix).await?;
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        if let Ok(mut audio) = state.audio.lock() {
+            if let Some(manager) = audio.as_mut() { manager.stop_capture(true); }
+        }
+        return Err("The meeting ended while speech recognition was starting".to_string());
+    }
 
     // Start STT streams
     let (you_stt_tx, you_stt_rx) =
@@ -1220,10 +1284,10 @@ pub async fn start_capture_per_party(
 
     // Transcript events: "You" lines are spoken by "User", "Them" lines by "Them".
     if you_stt_provider.is_some() {
-        spawn_party_emitter(&app, Party::You, &you.stt_provider, &session_prefix, you_stt_rx);
+        tasks.push(spawn_party_emitter(&app, Party::You, &you.stt_provider, &session_prefix, you_stt_rx));
     }
     if them_stt_provider.is_some() {
-        spawn_party_emitter(&app, Party::Them, &them.stt_provider, &session_prefix, them_stt_rx);
+        tasks.push(spawn_party_emitter(&app, Party::Them, &them.stt_provider, &session_prefix, them_stt_rx));
     }
 
     // Grab the recorder handle for WAV recording (with mic/system mixing)
@@ -1238,7 +1302,7 @@ pub async fn start_capture_per_party(
 
     // Audio processing task: levels + recording + STT feed per party
     let app_handle = app.clone();
-    tokio::spawn(async move {
+    tasks.push(tokio::spawn(async move {
         // Separate VAD instances per audio source — sharing one VAD across
         // interleaved mic + system chunks corrupts smoothed_energy state.
         let mut mic_vad = VoiceActivityDetector::new();
@@ -1444,7 +1508,7 @@ pub async fn start_capture_per_party(
         }
 
         log::info!("Per-party audio processing task exiting");
-    });
+    }));
 
     log::info!("Per-party audio capture started");
     Ok(())
@@ -2121,6 +2185,46 @@ mod tests {
             language: language.map(str::to_string),
             native_translation: None,
         }
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_the_provider_tail_and_transcript_forwarder() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let forwarded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let output = forwarded.clone();
+        let forwarder = tokio::spawn(async move {
+            while let Some(text) = rx.recv().await { output.lock().unwrap().push(text); }
+            output.lock().unwrap().push("flushed");
+        });
+        let producer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tx.send("last sentence").await.unwrap();
+        });
+        let mut tasks = vec![forwarder, producer];
+        assert!(finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(1)).await);
+        assert!(tasks.is_empty());
+        assert_eq!(*forwarded.lock().unwrap(), ["last sentence", "flushed"]);
+    }
+
+    #[tokio::test]
+    async fn stop_aborts_all_stalled_tasks_with_one_shared_deadline() {
+        let mut tasks: Vec<_> = (0..3).map(|_| tokio::spawn(std::future::pending::<()>())).collect();
+        let aborts: Vec<_> = tasks.iter().map(|task| task.abort_handle()).collect();
+        let started = tokio::time::Instant::now();
+        assert!(!finish_capture_tasks(&mut tasks, std::time::Duration::from_millis(30)).await);
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert!(aborts.iter().all(|task| task.is_finished()));
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn old_capture_requests_cannot_touch_a_new_meeting() {
+        let state = AppState::new();
+        assert!(!capture_meeting_matches(&state, Some("old")).unwrap());
+        *state.live_meeting.lock().unwrap() = Some(crate::state::LiveMeeting { id: "new".into(), start_ms: 0 });
+        assert!(!capture_meeting_matches(&state, Some("old")).unwrap());
+        assert!(capture_meeting_matches(&state, Some("new")).unwrap());
+        assert!(capture_meeting_matches(&state, None).unwrap());
     }
 
     /// AppState with a router at `global` and translation target `target`.

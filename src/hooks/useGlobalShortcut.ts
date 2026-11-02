@@ -12,7 +12,7 @@ import { isOverlayVisible, meetingShortcutAction, showLauncherWindow, showMeetin
 import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
 import { useConfigStore } from "../stores/configStore";
-import { normalizeAccelerator, reservedShortcutAction } from "../lib/shortcutLabel";
+import { formatShortcut, normalizeAccelerator, reservedShortcutAction } from "../lib/shortcutLabel";
 import { t } from "../i18n";
 
 /** Ctrl+M: end the running meeting (in every window that holds it) or start one. */
@@ -43,6 +43,10 @@ export async function toggleStealthMode(): Promise<void> {
   } catch (e) {
     showToast(t("misc:shortcuts.stealth.failed", { detail: e instanceof Error ? e.message : String(e) }), "error");
   }
+}
+
+function reportShortcutFailure(key: string) {
+  showToast(t("misc:shortcuts.registrationFailed", { shortcut: formatShortcut(key) }), "warning");
 }
 
 export function useGlobalShortcut() {
@@ -76,6 +80,7 @@ export function useGlobalShortcut() {
         if (cancelled) unregister(key).catch(() => {});
       } catch (err) {
         console.warn(`Failed to register Assist shortcut ${key}:`, err);
+        if (!cancelled) reportShortcutFailure(key);
       }
     })();
     return () => {
@@ -94,18 +99,23 @@ export function useGlobalShortcut() {
       return;
     }
     let registered = false;
+    let cancelled = false;
     (async () => {
       try {
         await unregister(key).catch(() => {});
+        if (cancelled) return;
         await register(key, (event) => {
           if (event.state === "Pressed") toggleStealthMode().catch(() => {});
         });
         registered = true;
+        if (cancelled) unregister(key).catch(() => {});
       } catch (err) {
         console.warn(`Failed to register stealth shortcut ${key}:`, err);
+        if (!cancelled) reportShortcutFailure(key);
       }
     })();
     return () => {
+      cancelled = true;
       if (registered) unregister(key).catch(() => {});
     };
   }, [stealthShortcut]);
@@ -113,6 +123,7 @@ export function useGlobalShortcut() {
   // Global shortcuts (work even when window is not focused)
   useEffect(() => {
     const shortcuts: string[] = [];
+    let cancelled = false;
 
     async function registerShortcuts() {
       const isLauncher = getCurrentWebviewWindow().label === "launcher";
@@ -150,13 +161,20 @@ export function useGlobalShortcut() {
       ];
 
       for (const { key, handler } of defs) {
+        if (cancelled) break;
         if (key === "CmdOrCtrl+M" && !isLauncher) continue;
         try {
           await unregister(key).catch(() => {}); // Clean up stale registration
+          if (cancelled) break;
           await register(key, handler);
+          if (cancelled) {
+            await unregister(key).catch(() => {});
+            break;
+          }
           shortcuts.push(key);
         } catch (err) {
           console.warn(`Failed to register shortcut ${key}:`, err);
+          if (!cancelled) reportShortcutFailure(key);
         }
       }
     }
@@ -164,6 +182,7 @@ export function useGlobalShortcut() {
     registerShortcuts();
 
     return () => {
+      cancelled = true;
       shortcuts.forEach((s) => {
         unregister(s).catch(() => {});
       });

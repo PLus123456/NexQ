@@ -39,6 +39,9 @@ function calls(cmd: string) {
 }
 
 beforeEach(() => {
+  // Each window's debounced sync must stay inside its own test. A real timer
+  // from a reset module graph otherwise fires in a later test under CPU load.
+  vi.useFakeTimers();
   saved.clear();
   keyListeners.length = 0;
   invoke.mockReset();
@@ -48,6 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

@@ -60,7 +60,8 @@
       "hidden": "共享屏幕时已隐藏",
       "visible": "共享屏幕时可见",
       "failed": "无法切换“共享屏幕时隐藏”：{{detail}}"
-    }
+    },
+    "registrationFailed": "无法注册快捷键 {{shortcut}}，可能已被其他应用占用。请在“设置 → 快捷键”更换组合，或在其他应用中释放它。"
   },
   "audioPlayer": {
     "playButton": {

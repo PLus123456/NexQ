@@ -25,6 +25,16 @@ afterEach(() => {
 });
 
 describe("Auto-Trigger", () => {
+  it("automatically answers a Chinese question after the other party pauses", () => {
+    vi.useFakeTimers();
+    setAutoTrigger(true);
+    useTranscriptStore.setState({ segments: [seg("先介绍一下背景。你准备好了吗？")] });
+    render(<QuestionDetector />);
+    act(() => vi.advanceTimersByTime(AUTO_TRIGGER_DELAY_MS));
+    expect(runUserAction).toHaveBeenCalledWith("Assist", "你准备好了吗？");
+    expect(runUserAction).toHaveBeenCalledTimes(1);
+  });
+
   it("answers a question once the other party has been quiet for a moment", () => {
     vi.useFakeTimers();
     setAutoTrigger(true);
@@ -65,6 +75,17 @@ describe("Auto-Trigger", () => {
 });
 
 describe("QuestionDetector", () => {
+  it("handles Chinese punctuation, questions without punctuation, and interview prompts", () => {
+    expect(lastSentence("我们开始吧！谁？")).toBe("谁？");
+    expect(lastSentence("第一句。\n你怎么看这个方案")).toBe("你怎么看这个方案");
+    expect(lastSentence("他说。“你准备好了吗？”")).toBe("“你准备好了吗？”");
+    for (const text of ["谁？", "你怎么看这个方案", "你准备好了吗", "您的计划呢", "請介紹一下你的項目經驗"]) {
+      expect(looksLikeQuestion(text), text).toBe(true);
+    }
+    expect(looksLikeQuestion("谢谢大家。")).toBe(false);
+    expect(looksLikeQuestion("！？")).toBe(false);
+  });
+
   it("checks the newest sentence of a line", () => {
     expect(lastSentence("So here's the situation. What would you do?")).toBe("What would you do?");
     expect(looksLikeQuestion(lastSentence("We run preview days. How many do you run"))).toBe(true);

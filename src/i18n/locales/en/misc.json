@@ -60,7 +60,8 @@
       "hidden": "Hidden from screen share",
       "visible": "Visible in screen share",
       "failed": "Couldn't change screen-share visibility: {{detail}}"
-    }
+    },
+    "registrationFailed": "Could not register {{shortcut}}. Another app may be using it. Change the binding in Settings → Shortcuts, or release it in the other app."
   },
   "audioPlayer": {
     "playButton": {
