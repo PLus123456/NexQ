@@ -15,6 +15,12 @@ function view(defaultTarget: RouteTarget | null, tasks: Record<string, TaskRoute
 }
 
 describe("resolveRoute", () => {
+  it("prediction needs its own HTTP model even when a paid default is configured", () => {
+    const target = { connection_id: "c_ds", model: "deepseek-chat" };
+    expect(resolveRoute(view(target), "question_predict")).toMatchObject({ error: "not_configured", connection_id: null });
+    expect(resolveRoute(view(target, { question_predict: route({ connection_id: "c_cl", model: null }) }), "question_predict").error).toBe("not_configured");
+    expect(resolveRoute(view(target, { question_predict: route({ connection_id: "c_ol", model: "qwen3:4b" }) }), "question_predict")).toMatchObject({ error: null, source: "question_predict", model: "qwen3:4b" });
+  });
   it("nothing configured", () => {
     expect(resolveRoute(view(null), "assist").error).toBe("not_configured");
   });

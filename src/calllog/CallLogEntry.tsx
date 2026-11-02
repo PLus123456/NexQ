@@ -19,6 +19,8 @@ const MODE_COLORS: Record<
   LogEntry["mode"],
   { badge: string; dot: string }
 > = {
+  question_predict: { badge: "bg-info/20 text-info", dot: "bg-info" },
+  question_prepare: { badge: "bg-info/20 text-info", dot: "bg-info" },
   question_detect: { badge: "bg-info/20 text-info", dot: "bg-info" },
   Assist: { badge: "bg-info/20 text-info", dot: "bg-info" },
   WhatToSay: {

@@ -4,6 +4,7 @@ pub mod context_scope;
 pub mod prompt_templates;
 pub mod question_detector;
 pub mod llm_question;
+pub mod question_prediction;
 pub mod transcript_buffer;
 
 use std::collections::HashMap;
@@ -201,6 +202,7 @@ impl IntelligenceEngine {
                 request_id: params.request_id.clone(),
                 session_key: None,
                 scope_label,
+                prepared: false,
             },
         );
 
@@ -332,6 +334,8 @@ pub fn ingest_transcript(
         }
     }
     if state.meeting_active.load(Ordering::SeqCst) {
+        app.state::<question_prediction::QuestionPredictionService>()
+            .observe(app, &text, &speaker, timestamp_ms, is_final);
         app.state::<llm_question::QuestionDetectionService>()
             .observe(app, text, speaker, timestamp_ms, is_final);
     }

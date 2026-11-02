@@ -6,6 +6,8 @@ import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
+import { useStreamStore } from "../stores/streamStore";
+import { useConfigStore } from "../stores/configStore";
 import type { DetectedQuestion } from "../lib/types";
 
 /**
@@ -19,6 +21,7 @@ const isOtherParty = (speaker: string) => ["them", "interviewer"].includes(speak
 interface TrackedQuestion extends DetectedQuestion {
   assisted: boolean;
   revision: number;
+  prepared?: boolean;
 }
 
 export function QuestionDetector() {
@@ -32,6 +35,8 @@ export function QuestionDetector() {
   });
   const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
   const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
+  const busy = useStreamStore((s) => s.isStreaming || s.phase === "sending");
+  const defaultScope = useConfigStore((s) => !s.contextScope || s.contextScope.kind === "default");
   // Changes whenever the other party says more (a new line, or a line growing).
   const otherPartyActivity = useTranscriptStore((s) => {
     for (let i = s.segments.length - 1; i >= 0; i--) {
@@ -66,18 +71,24 @@ export function QuestionDetector() {
         const rest = previous.filter((q) => q !== existing);
         if (!event.question) return rest;
         if (previous[0]?.assisted && previous[0].text === event.question.text) return previous;
-        return [{ ...event.question, assisted: false, revision: event.revision }, ...rest].slice(0, 10);
+        return [{ ...event.question, prepared: event.prepared, assisted: false, revision: event.revision }, ...rest].slice(0, 10);
       });
     });
     return () => { pending.then((u) => u()); result.then((u) => u()); };
   }, [activeMeetingId]);
 
-  const handleAssist = useCallback((index: number) => {
+  const handleAssist = useCallback((index: number, preparedOnly = false) => {
     const questionText = questions[index]?.text;
+    const revision = questions[index]?.revision;
     setQuestions((prev) =>
       prev.map((q, i) => i === index ? { ...q, assisted: true } : q)
     );
-    runUserAction("Assist", questionText).catch(() => {});
+    const request = preparedOnly ? runUserAction("Assist", questionText, true) : runUserAction("Assist", questionText);
+    request.catch(() => {
+      // A settings change/expiry can invalidate a hit between confirmation and
+      // replay. Leave the question available without an unwanted paid retry.
+      if (preparedOnly) setQuestions((prev) => prev.map((q) => q.revision === revision ? { ...q, assisted: false, prepared: false } : q));
+    });
   }, [questions]);
 
   const handleDismiss = useCallback((index: number, e: React.MouseEvent) => {
@@ -90,13 +101,14 @@ export function QuestionDetector() {
 
   // Auto-Trigger: answer the newest question once the other party has been
   // quiet for a moment. More words from them restart the wait.
-  const waiting = autoTrigger && !!latest && !latest.assisted &&
+  const waiting = (autoTrigger || (!!latest?.prepared && defaultScope)) && !busy && !!latest && !latest.assisted &&
     latest.revision === autoRevision && !otherPartyTalking;
   useEffect(() => {
     if (!waiting) return;
-    const timer = setTimeout(() => handleAssist(0), AUTO_TRIGGER_DELAY_MS);
+    const preparedOnly = !!latest?.prepared && defaultScope;
+    const timer = setTimeout(() => handleAssist(0, preparedOnly), preparedOnly ? 0 : AUTO_TRIGGER_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [waiting, latest?.text, otherPartyActivity, handleAssist]);
+  }, [waiting, latest?.text, latest?.prepared, defaultScope, otherPartyActivity, handleAssist]);
 
   return (
     <div className="flex flex-col gap-2.5" role="region" aria-label={t("question.region.ariaLabel")}>

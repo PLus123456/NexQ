@@ -223,3 +223,16 @@
 - `settings:stealth.shortcut.hint` 里的“托盘菜单”想改“菜单栏图标”：P0 在 `settings:general.language.hint` 里已用“托盘菜单”，应用也跨平台（Windows 叫托盘），先保持一致。
 - `misc:colorPicker.colors.warm`（暖灰）想改“暖白”：色值是 `#d6d3d1`，是偏暖的浅灰，保留“暖灰”。
 - `settings:confidence.threshold.always / never`（0%（始终）/ 100%（从不））想按实际行为对调：这是上游英文原文，是否写反要看代码（功能可能根本没接上，见 handoff），译文照原文。
+
+## M2 新增用词（2026-11-02，待人工确认）
+
+| key | 英文 | 中文 | 说明 |
+|---|---|---|---|
+| `llm:tasks.question_predict.label` | Question prediction | 问题预测 | 与“提问检测”区分：尚未实际问出的问题 |
+| `llm:questionPrediction.title` | Next-question prediction (M2) | 预测接下来的问题（M2） | 设置卡片标题 |
+| `llm:questionPrediction.prepare` | Prepare answers in advance | 提前生成答案 | 独立开关 |
+| `llm:questionPrediction.preparationLog` | Answer preparation | 答案预生成 | AI 调用日志中的后台请求类型 |
+| `overlay:prediction.title` | They may ask | 对方可能会问 | 悬浮窗可折叠列表，沿用任务描述 |
+| `overlay:prediction.prepared` | Prepared in advance | 提前准备的答案 | 预览及实际复用答案的标记 |
+| `overlay:prediction.preview` | Prepared answer preview | 预备答案预览 | 无障碍区域名称 |
+| `overlay:prediction.status.*` | Prediction only / Preparing answer… / Answer ready / No prepared answer | 仅预测 / 正在准备答案… / 答案已准备好 / 暂无预备答案 | 失败静默降级，只显示准备状态 |

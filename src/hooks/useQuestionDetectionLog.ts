@@ -10,7 +10,7 @@ export function useQuestionDetectionLog() {
       useCallLogStore.getState().beginEntry({
         id: event.id,
         timestamp: event.timestamp_ms,
-        mode: "question_detect",
+        mode: event.task ?? "question_detect",
         model: event.model,
         provider: event.provider,
         status: event.error ? "error" : "complete",

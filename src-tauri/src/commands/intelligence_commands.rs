@@ -461,6 +461,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
                 request_id: params.request_id.clone(),
                 session_key: Some(session_key.clone()),
                 scope_label: scope_label.clone(),
+                prepared: false,
             },
         );
     };
@@ -638,6 +639,216 @@ fn gemini_cache_for(app: &AppHandle, state: &AppState, resolved: &ResolvedLlm) -
     Some(cache.name)
 }
 
+/// Silent Assist preparation uses the same action policy, original transcript,
+/// prompt builder, RAG retrieval and task route as a foreground answer. It owns
+/// no live-answer lane and emits no stream events until the answer is consumed.
+pub(crate) async fn prepare_prediction_answer(
+    app: &AppHandle,
+    question: &str,
+    cancel: Arc<CancelToken>,
+    revision: u64,
+) -> Result<crate::intelligence::question_prediction::PreparedAnswer, String> {
+    use crate::intelligence::context_builder::ContextBuilder;
+    use crate::intelligence::question_prediction::{
+        bounded_answer, log_request, PreparedAnswer, ANSWER_TIMEOUT,
+    };
+    let started = tokio::time::Instant::now();
+    let registry = app.state::<LlmRegistry>();
+    let claude = llm_registry::claude_context(app);
+    let route = llm_registry::resolve_task(&registry.config(), "assist:Assist", &claude).map_err(
+        |(error, conn)| llm_registry::route_error_message("assist:Assist", error, conn.as_ref()),
+    )?;
+    if route.no_fallback {
+        return Err("Assist route unavailable".into());
+    }
+    // Claude's Utility session is separate from the live meeting. Its cold
+    // initialization must finish cleanup after cancellation instead of being
+    // dropped mid-spawn; the worker holds its lane until that has drained.
+    let claude_route = route.connection.kind == LlmKind::ClaudeCli;
+    let mut model = route
+        .model
+        .clone()
+        .unwrap_or_else(|| claude.fast_model.clone());
+    let mut provider = route.connection.display_name();
+    let result = bounded_answer(cancel.clone(), claude_route, async {
+        let resolved = api::resolve_for_task(app, &LlmTask::from_mode("Assist"))
+            .await
+            .map_err(|e| e.to_string())?;
+        if resolved.connection_id != route.connection.id
+            || resolved.kind != route.connection.kind
+            || cancel.is_cancelled()
+        {
+            return Err("Assist route changed during preparation".into());
+        }
+        model = resolved.model.clone();
+        provider = resolved.display_name.clone();
+        let state = app.state::<AppState>();
+        let (action, defaults, composed, mut transcript) = {
+            let engine = state
+                .intelligence
+                .as_ref()
+                .ok_or("Intelligence engine not initialized")?
+                .lock()
+                .map_err(|e| e.to_string())?;
+            let all = engine.get_action_configs();
+            let action = engine.get_action_config("Assist").cloned();
+            let window = default_window_seconds(
+                "Assist",
+                action.as_ref().and_then(|a| a.transcript_window_seconds),
+                all.global_defaults.transcript_window_seconds,
+            );
+            (
+                action,
+                all.global_defaults.clone(),
+                compose_instructions(&all.instruction_presets, &all.custom_instructions),
+                if window == 0 {
+                    engine.get_all_transcript()
+                } else {
+                    engine.transcript_buffer.get_recent_text(window)
+                },
+            )
+        };
+        let include_transcript = action.as_ref().map_or(true, |a| a.include_transcript);
+        let include_rag = action.as_ref().map_or(true, |a| a.include_rag_chunks);
+        let include_instructions = action
+            .as_ref()
+            .map_or(true, |a| a.include_custom_instructions);
+        let temperature = action
+            .as_ref()
+            .and_then(|a| a.temperature)
+            .unwrap_or(defaults.temperature);
+        let window = default_window_seconds(
+            "Assist",
+            action.as_ref().and_then(|a| a.transcript_window_seconds),
+            defaults.transcript_window_seconds,
+        );
+        let scenario = state
+            .active_scenario
+            .read()
+            .map_err(|e| e.to_string())?
+            .clone();
+        if !scenario.speaker_context.is_empty() && !transcript.is_empty() {
+            transcript = format!("{}\n\n{}", scenario.speaker_context, transcript);
+        }
+        let base = action
+            .as_ref()
+            .map(|a| a.system_prompt.clone())
+            .unwrap_or_else(|| {
+                if scenario.system_prompt.is_empty() {
+                    crate::intelligence::prompt_templates::get_system_prompt("Assist").into()
+                } else {
+                    scenario.system_prompt
+                }
+            });
+        let system = if include_instructions && !composed.is_empty() {
+            format!("{base}\n\nAdditional Instructions: {composed}")
+        } else {
+            base
+        };
+        let system = api::with_answer_language(&system, app);
+        let default_top_k = state
+            .rag
+            .as_ref()
+            .and_then(|r| r.lock().ok())
+            .map_or(5, |r| r.config().top_k);
+        let top_k = action
+            .as_ref()
+            .and_then(|a| a.rag_top_k)
+            .unwrap_or(default_top_k);
+        let mut rag = if include_rag {
+            retrieve_rag(
+                &state,
+                Some(question.into()),
+                tail_chars(&transcript, 500),
+                top_k,
+            )
+            .await?
+        } else {
+            RagRetrieval::default()
+        };
+        if include_rag && rag.context_text.is_empty() {
+            rag.context_text = attached_documents_fallback(&state).unwrap_or_default();
+        }
+        let messages = ContextBuilder::new().build_prompt_with_config(
+            &system,
+            &transcript,
+            None,
+            &rag.context_text,
+            Some(question),
+            !rag.context_text.is_empty(),
+            include_transcript,
+            true,
+        );
+        let start = StreamStartPayload {
+            mode: "Assist".into(),
+            model: model.clone(),
+            provider: provider.clone(),
+            system_prompt: system,
+            user_prompt: messages[1].content.clone(),
+            include_transcript,
+            include_rag,
+            include_instructions,
+            include_question: true,
+            temperature,
+            rag_query: rag.query,
+            rag_chunks: rag.chunks,
+            rag_chunks_filtered: rag.filtered,
+            rag_total_candidates: rag.total_candidates,
+            transcript_window_seconds: window,
+            transcript_segments_count: transcript.lines().filter(|l| l.starts_with('[')).count(),
+            transcript_segments_total: 0,
+            request_id: None,
+            session_key: None,
+            scope_label: None,
+            prepared: true,
+        };
+        let text = api::complete_resolved_text(
+            app,
+            resolved,
+            messages,
+            api::CompleteOptions {
+                temperature: Some(temperature),
+                max_tokens: Some(768),
+                enable_web_search: action.as_ref().is_some_and(|a| a.web_search),
+                timeout: (!claude_route).then_some(ANSWER_TIMEOUT),
+                cancel: Some(cancel.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(PreparedAnswer { text, start })
+    })
+    .await;
+    let (system, user, response) = result
+        .as_ref()
+        .map(|a| {
+            (
+                a.start.system_prompt.clone(),
+                a.start.user_prompt.clone(),
+                a.text.clone(),
+            )
+        })
+        .unwrap_or_else(|_| (String::new(), question.to_string(), String::new()));
+    if app
+        .state::<crate::intelligence::question_prediction::QuestionPredictionService>()
+        .has_revision(revision)
+    {
+        log_request(
+            app,
+            "question_prepare",
+            started,
+            model,
+            provider,
+            system,
+            user,
+            response,
+            result.as_ref().err().cloned(),
+        );
+    }
+    result
+}
+
 #[command]
 pub async fn generate_assist(
     mode: String,
@@ -646,6 +857,7 @@ pub async fn generate_assist(
     request_id: Option<String>,
     past_meeting_id: Option<String>,
     scope: Option<ResolvedScope>,
+    prepared_only: Option<bool>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -718,6 +930,27 @@ pub async fn generate_assist(
         // Action has include_detected_question=false and no custom question
         None
     };
+
+    // Only a live, default-scope Assist may consume a confirmed preparation.
+    // A user-selected transcript scope must always be honored by a fresh call.
+    if mode == "Assist" && past_meeting_id.is_none() && user_scope.is_none() {
+        if let Some(answer) = effective_question.as_ref().and_then(|q| {
+            app_handle.state::<crate::intelligence::question_prediction::QuestionPredictionService>().consume(&q.text)
+        }) {
+            if cancel_token.is_cancelled() { return Ok(()); }
+            let mut start = answer.start;
+            start.request_id = Some(request_id.clone());
+            let _ = app_handle.emit("llm_stream_start", start);
+            let params = GenerationParams { request_id: Some(request_id), cancel: Some(cancel_token), ..Default::default() };
+            emit_token(&app_handle, &params, &answer.text, None);
+            crate::llm::provider::emit_end(&app_handle, &params, 0, 0);
+            return Ok(());
+        }
+    }
+
+    if prepared_only.unwrap_or(false) {
+        return Err("Prepared answer no longer available".into());
+    }
 
     // Resolve per-action settings
     // Read default top-K from RagConfig (Context Strategy) — single source of truth
@@ -1080,6 +1313,7 @@ pub async fn push_transcript(
 pub async fn update_action_configs(
     configs_json: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let configs: AllActionConfigs = serde_json::from_str(&configs_json)
         .map_err(|e| format!("Failed to parse action configs: {}", e))?;
@@ -1098,6 +1332,8 @@ pub async fn update_action_configs(
     engine.set_context_window(configs.global_defaults.transcript_window_seconds);
 
     engine.set_action_configs(configs);
+    drop(engine);
+    crate::intelligence::question_prediction::invalidate(&app);
 
     log::info!("Action configs updated from frontend");
     Ok(())
@@ -1111,6 +1347,7 @@ pub async fn set_active_scenario(
     summary_prompt: String,
     question_detection_prompt: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let mut scenario = state.active_scenario.write()
         .map_err(|e| format!("Failed to lock active scenario: {}", e))?;
@@ -1119,6 +1356,8 @@ pub async fn set_active_scenario(
     scenario.question_detection_prompt = question_detection_prompt;
     log::info!("Active scenario updated (system_prompt len={}, summary_prompt len={})",
         scenario.system_prompt.len(), scenario.summary_prompt.len());
+    drop(scenario);
+    crate::intelligence::question_prediction::invalidate(&app);
     Ok(())
 }
 
@@ -1128,11 +1367,14 @@ pub async fn set_active_scenario(
 pub async fn update_speaker_context(
     speaker_context: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let mut scenario = state.active_scenario.write()
         .map_err(|e| format!("Failed to lock active scenario: {}", e))?;
     scenario.speaker_context = speaker_context;
     log::info!("Speaker context updated (len={})", scenario.speaker_context.len());
+    drop(scenario);
+    crate::intelligence::question_prediction::invalidate(&app);
     Ok(())
 }
 

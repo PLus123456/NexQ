@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   current = {
     revision: 1,
-    settings: { mode: "hybrid", confidence_threshold: 0.7, log_requests: false },
+    settings: { mode: "hybrid", confidence_threshold: 0.7, log_requests: false, prediction_enabled: false, prediction_prepare_answers: true },
     effective_mode: "hybrid",
     fallback_reason: null,
   };
@@ -57,12 +57,27 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("question detection settings", () => {
+  it("starts prediction off and saves preparation independently without configuring a default route", async () => {
+    const user = userEvent.setup();
+    render(<QuestionDetectionCard view={configured()} />);
+    const enabled = await screen.findByRole("switch", { name: "Predict the other person’s next questions" });
+    const prepare = screen.getByRole("switch", { name: "Prepare answers in advance" });
+    expect(enabled).toHaveAttribute("aria-checked", "false");
+    expect(prepare).toBeDisabled();
+    expect(ipc.set).not.toHaveBeenCalled();
+    await user.click(enabled);
+    await waitFor(() => expect(current.settings.prediction_enabled).toBe(true));
+    expect(screen.getByText(/Choose an available HTTP connection and model for Question prediction/)).toBeInTheDocument();
+    await user.click(prepare);
+    await waitFor(() => expect(current.settings.prediction_prepare_answers).toBe(false));
+    expect(current.settings.prediction_enabled).toBe(true);
+  });
   it("switches between all three modes and keeps the chosen threshold", async () => {
     const user = userEvent.setup();
     render(<QuestionDetectionCard view={configured()} />);
     expect(await screen.findByRole("button", { name: "Rules + model confirmation (recommended)" })).toHaveAttribute("aria-pressed", "true");
     await user.click(screen.getByRole("button", { name: "Rules only" }));
-    await waitFor(() => expect(ipc.set).toHaveBeenLastCalledWith({ mode: "rules", confidence_threshold: 0.7, log_requests: false }));
+    await waitFor(() => expect(ipc.set).toHaveBeenLastCalledWith({ mode: "rules", confidence_threshold: 0.7, log_requests: false, prediction_enabled: false, prediction_prepare_answers: true }));
     expect(screen.getByRole("spinbutton", { name: "Confidence threshold" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Model only" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true"));
@@ -105,7 +120,7 @@ describe("question detection settings", () => {
     await waitFor(() => expect(current.settings.confidence_threshold).toBe(0.85));
     await user.click(log);
     await waitFor(() => expect(current.settings.log_requests).toBe(true));
-    expect(ipc.set).toHaveBeenLastCalledWith({ mode: "hybrid", confidence_threshold: 0.85, log_requests: true });
+    expect(ipc.set).toHaveBeenLastCalledWith({ mode: "hybrid", confidence_threshold: 0.85, log_requests: true, prediction_enabled: false, prediction_prepare_answers: true });
     fireEvent.change(threshold, { target: { value: "2" } });
     fireEvent.blur(threshold);
     expect(threshold).toHaveValue(0.85);
@@ -118,14 +133,14 @@ describe("question detection settings", () => {
     act(() => emit({
       ...current,
       revision: 3,
-      settings: { mode: "model", confidence_threshold: 0.9, log_requests: true },
+      settings: { mode: "model", confidence_threshold: 0.9, log_requests: true, prediction_enabled: false, prediction_prepare_answers: true },
       effective_mode: "model",
     }));
     expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("spinbutton", { name: "Confidence threshold" })).toHaveValue(0.9);
     act(() => emit(current));
     expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "Record question detection in AI call logs" })).toHaveAttribute("aria-checked", "true");
   });
 
   it("shows runtime failure and clears it when a later model request succeeds", async () => {

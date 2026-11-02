@@ -6,6 +6,13 @@ use crate::intelligence::llm_question::{
 use tauri::{AppHandle, State};
 
 #[tauri::command]
+pub fn get_question_predictions(
+    service: State<'_, crate::intelligence::question_prediction::QuestionPredictionService>,
+) -> crate::intelligence::question_prediction::PredictionView {
+    service.view()
+}
+
+#[tauri::command]
 pub fn get_question_detection_settings(
     app: AppHandle,
     service: State<'_, QuestionDetectionService>,

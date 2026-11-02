@@ -394,6 +394,11 @@
       "label": "Question detection",
       "short": "Questions",
       "hint": "Checks each completed sentence from the other person. Choose a local small model, such as Qwen3 1.7B or 4B in Ollama, and turn thinking off."
+    },
+    "question_predict": {
+      "label": "Question prediction",
+      "short": "Prediction",
+      "hint": "Predicts up to three likely next questions after a pause. Requires its own HTTP connection and model; never uses the default route."
     }
   },
   "editor": {
@@ -903,7 +908,7 @@
     "threshold": "Confidence threshold",
     "thresholdHint": "0–1. A higher value requires more confidence from the model.",
     "logRequests": "Record question detection in AI call logs",
-    "logHint": "Off by default because detection runs after each sentence. Enable temporarily to inspect prompts, responses and failures.",
+    "logHint": "Off by default because detection runs after each sentence. Enable temporarily to inspect prompts, responses and failures. Includes M2 prediction and answer preparation requests. Unused preparations are never saved as meeting answers.",
     "routeDisabled": "Not configured — use rules",
     "routeFallback": "Rules only until a connection is chosen for this task.",
     "fallback": {
@@ -916,5 +921,16 @@
     "loading": "Loading detection settings…",
     "loadFailed": "Could not load detection settings: {{detail}}",
     "httpOnly": "Question detection supports HTTP connections. A Claude subscription route falls back to rules."
+  },
+  "questionPrediction": {
+    "title": "Next-question prediction (M2)",
+    "hint": "Off by default. Uses recent original conversation from both speakers after a pause, at most once every 25 seconds and 60 rounds per meeting. This uses additional tokens.",
+    "enabled": "Predict the other person’s next questions",
+    "prepare": "Prepare answers in advance",
+    "prepareHint": "Uses the Assist route to prepare at most the two most confident predictions. Unused answers are discarded after 90 seconds and never saved to meeting chat.",
+    "routeMissing": "Choose an available HTTP connection and model for Question prediction in Task routing below. Prediction is skipped until configured.",
+    "routeDisabled": "Not configured (prediction off)",
+    "assistUnavailable": "Choose an available Assist connection and model to prepare answers. Prediction can still run without prepared answers.",
+    "preparationLog": "Answer preparation"
   }
 }

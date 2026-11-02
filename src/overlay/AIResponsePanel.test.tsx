@@ -25,6 +25,20 @@ function answer(mode: string, text: string) {
 const tabs = () => within(screen.getByRole("tablist")).getAllByRole("tab").map((t) => t.textContent);
 
 describe("AIResponsePanel", () => {
+  it("marks a consumed prepared answer and keeps the mark in response history", () => {
+    s().resetForMeeting();
+    render(<AIResponsePanel />);
+    act(() => {
+      s().startStream("Assist", "mock", "mock", { prepared: true });
+      s().appendToken("Ready before the question");
+      s().endStream(0);
+    });
+    expect(screen.getByText("Prepared in advance")).toBeInTheDocument();
+    expect(s().responseHistory[0].prepared).toBe(true);
+    answer("Recap", "Later answer");
+    fireEvent.click(screen.getByRole("tab", { name: "Assist" }));
+    expect(screen.getByText("Prepared in advance")).toBeInTheDocument();
+  });
   beforeEach(() => {
     s().resetForMeeting();
     useMeetingStore.setState({ meetingStartTime: T0 });

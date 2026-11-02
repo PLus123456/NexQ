@@ -88,11 +88,11 @@ export function AIResponsePanel() {
 
   // Switch to "current" tab when a new request starts
   useEffect(() => {
-    if (inFlight) {
+    if (inFlight || currentId) {
       setActiveTab("current");
       setHistoryOpen(false);
     }
-  }, [inFlight]);
+  }, [inFlight, currentId]);
 
   const handleCopy = useCallback(
     async (content: string, id: string) => {
@@ -399,6 +399,7 @@ function AnswerHeader({
         <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-meta font-medium text-primary/80">
           {getModeLabel(mode)}
         </span>
+        {response?.prepared && <span className="shrink-0 text-meta text-info">{t("prediction.prepared")}</span>}
         {(timing || response?.scope_label) && (
           <span className="min-w-0 truncate text-meta tabular-nums text-muted-foreground/45">
             {[response?.scope_label, timing].filter(Boolean).join(" · ")}

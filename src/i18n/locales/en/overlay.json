@@ -219,5 +219,16 @@
     "merge": {
       "heading": "Actually this is..."
     }
+  },
+  "prediction": {
+    "title": "They may ask",
+    "prepared": "Prepared in advance",
+    "preview": "Prepared answer preview",
+    "status": {
+      "predicted": "Prediction only",
+      "preparing": "Preparing answer…",
+      "ready": "Answer ready",
+      "unavailable": "No prepared answer"
+    }
   }
 }

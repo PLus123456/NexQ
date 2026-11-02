@@ -20,7 +20,7 @@ export function actionLabel(mode: string): string {
   return (cfg ? actionDisplayName(cfg) : "") || getModeLabel(mode as IntelligenceMode) || mode;
 }
 
-export async function runUserAction(mode: string, customQuestion?: string): Promise<void> {
+export async function runUserAction(mode: string, customQuestion?: string, preparedOnly = false): Promise<void> {
   const config = useConfigStore.getState();
   const setting = config.contextScope ?? DEFAULT_CONTEXT_SCOPE;
   const stream = useStreamStore.getState();
@@ -29,15 +29,17 @@ export async function runUserAction(mode: string, customQuestion?: string): Prom
   // Another action is already on its way: the backend will refuse this one.
   const busy = stream.isStreaming || stream.phase === "sending";
 
-  stream.setPending(mode, requestId);
+  // Cache replay has no provider wait. A stale hit should leave the current
+  // answer visible; its accepted start event replaces it on success.
+  if (!preparedOnly) stream.setPending(mode, requestId);
   // A one-off scope is used up by this action (not by a click the running
   // stream will refuse).
-  if (!config.contextScopeSticky && setting.kind !== "default" && !busy) {
+  if (!preparedOnly && !config.contextScopeSticky && setting.kind !== "default" && !busy) {
     config.setContextScope({ ...setting, kind: "default" });
   }
 
   try {
-    await generateAssist(mode, customQuestion, { requestId, scope });
+    await generateAssist(mode, customQuestion, { requestId, scope, ...(preparedOnly ? { preparedOnly: true } : {}) });
   } catch (err) {
     useStreamStore.getState().clearPending(requestId);
     throw err;

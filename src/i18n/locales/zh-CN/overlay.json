@@ -215,5 +215,16 @@
     "merge": {
       "heading": "其实这是…"
     }
+  },
+  "prediction": {
+    "title": "对方可能会问",
+    "prepared": "提前准备的答案",
+    "preview": "预备答案预览",
+    "status": {
+      "predicted": "仅预测",
+      "preparing": "正在准备答案…",
+      "ready": "答案已准备好",
+      "unavailable": "暂无预备答案"
+    }
   }
 }

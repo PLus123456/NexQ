@@ -14,6 +14,18 @@ import { useStreamStore } from "../stores/streamStore";
 
 afterEach(cleanup);
 
+it.each(["question_predict", "question_prepare"] as const)("records %s as a separate diagnostic without touching the answer", (task) => {
+  useCallLogStore.getState().clearAll();
+  const before = useStreamStore.getState();
+  renderHook(() => useQuestionDetectionLog());
+  act(() => callbacks.log({
+    task, id: task, timestamp_ms: 1000, latency_ms: 25, model: "mock", provider: "mock",
+    system_prompt: "policy", user_prompt: "conversation", response: "speculation", error: null,
+  }));
+  expect(useCallLogStore.getState().entries[0]).toMatchObject({ mode: task, status: "complete" });
+  expect(useStreamStore.getState()).toBe(before);
+});
+
 it("records opt-in diagnostics separately without changing the active Assist stream", () => {
   useCallLogStore.getState().clearAll();
   const before = useStreamStore.getState();

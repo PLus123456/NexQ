@@ -339,6 +339,9 @@ pub struct StreamStartPayload {
     /// action's default scope.
     #[serde(default)]
     pub scope_label: Option<String>,
+    /// Replayed from a confirmed M2 preparation; no new provider call.
+    #[serde(default)]
+    pub prepared: bool,
 }
 
 /// Metadata about a single RAG chunk, sent to the frontend for AI log display.

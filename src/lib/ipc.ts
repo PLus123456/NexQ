@@ -244,6 +244,7 @@ export async function generateAssist(
     transcriptSegments: JSON.stringify(segments),
     requestId,
     ...(opts.pastMeetingId ? { pastMeetingId: opts.pastMeetingId } : {}),
+    ...(opts.preparedOnly ? { preparedOnly: true } : {}),
     // No scope (or `default`): the backend keeps the action's own window.
     ...(opts.scope && opts.scope.kind !== "default" ? { scope: opts.scope } : {}),
   });

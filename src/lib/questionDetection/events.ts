@@ -10,9 +10,11 @@ export interface DetectionPending {
 export interface DetectionResult extends DetectionPending {
   original_text: string;
   question: DetectedQuestion | null;
+  prepared?: boolean;
 }
 
 export interface DetectionLog {
+  task?: "question_detect" | "question_predict" | "question_prepare";
   id: string;
   timestamp_ms: number;
   latency_ms: number;

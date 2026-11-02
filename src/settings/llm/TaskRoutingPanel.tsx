@@ -44,6 +44,7 @@ const TASK_ICONS: Record<LlmTaskKey, ComponentType<{ className?: string }>> = {
   default: Star,
   assist: Sparkles,
   question_detect: MessageCircleQuestion,
+  question_predict: Sparkles,
   meeting_summary: FileText,
   action_items: ListChecks,
   bookmark_suggestions: Bookmark,
@@ -262,10 +263,10 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
             {isDefault ? (
               !ownConnection && <option value="">{t("routing.connection.choose")}</option>
             ) : (
-              <option value="">{key === "question_detect" ? t("questionDetection.routeDisabled") : t("routing.connection.follow", { task: taskLabel(row.parent) })}</option>
+              <option value="">{key === "question_predict" ? t("questionPrediction.routeDisabled") : key === "question_detect" ? t("questionDetection.routeDisabled") : t("routing.connection.follow", { task: taskLabel(row.parent) })}</option>
             )}
             {view.connections.map((connection) => (
-              <option key={connection.id} value={connection.id} disabled={(key === "question_detect" && connection.kind === "claude_cli") || (!connection.enabled && connection.id !== ownConnection?.id)}>
+              <option key={connection.id} value={connection.id} disabled={((key === "question_detect" || key === "question_predict") && connection.kind === "claude_cli") || (!connection.enabled && connection.id !== ownConnection?.id)}>
                 {connection.name || t("connections.untitled")}
                 {!connection.enabled ? t("routing.connection.disabledSuffix") : ""}
               </option>
@@ -332,6 +333,7 @@ function describeEffective(
   if (effective.error) {
     switch (error) {
       case "not_configured":
+        if (key === "question_predict") return { text: t("questionPrediction.routeMissing"), warn: true };
         if (key === "question_detect") return { text: t(effective.kind === "claude_cli" ? "questionDetection.httpOnly" : "questionDetection.routeFallback"), warn: true };
         return { text: key === "default" ? t("routing.effective.noDefault") : t("routing.effective.notConfigured"), warn: true };
       case "connection_missing":

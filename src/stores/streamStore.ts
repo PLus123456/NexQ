@@ -18,6 +18,7 @@ export type StreamPhase = "idle" | "sending" | "waiting" | "thinking" | "writing
 
 /** What the start event told us about the current request. */
 export interface StreamMeta {
+  prepared: boolean;
   model: string;
   provider: string;
   /** The user's transcript scope ("Last 5 min"), null for the action default. */
@@ -175,6 +176,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       streamMeta: {
         model,
         provider,
+        prepared: details.prepared ?? false,
         scopeLabel: details.scopeLabel ?? null,
         newLines: details.newLines ?? null,
         sessionKey: details.sessionKey ?? null,
@@ -203,6 +205,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       total_ms: started !== null ? now - started : latencyMs,
       first_token_ms: started !== null && state.firstTokenAt !== null ? state.firstTokenAt - started : undefined,
       scope_label: state.streamMeta?.scopeLabel ?? null,
+      prepared: state.streamMeta?.prepared ?? false,
     };
     // A stream stopped before any words is nothing to keep.
     const keep = content.trim().length > 0;
