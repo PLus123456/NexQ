@@ -8,6 +8,7 @@ import { Sparkles, Copy, Download, Loader2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { mdGuards } from "../../components/markdownGuards";
 
 export function stripThinkTags(text: string): string {
   return text
@@ -27,6 +28,7 @@ function cleanMarkdown(text: string): string {
 
 /** Custom ReactMarkdown component overrides for styled rendering */
 export const mdComponents: Components = {
+  ...mdGuards,
   h1: ({ children }) => (
     <h1 className="text-lg font-bold text-foreground mt-6 mb-3 pb-2 border-b border-primary/20">
       {children}

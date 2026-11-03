@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { mdGuards } from "../components/markdownGuards";
 import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { getModeLabel } from "../lib/utils";
@@ -228,7 +229,7 @@ export function AIResponsePanel() {
             <ResponseProgress />
             {currentContent && (
               <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
                   {currentContent}
                 </ReactMarkdown>
                 <span className="inline-block h-3 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
@@ -251,7 +252,7 @@ export function AIResponsePanel() {
               />
             )}
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
                 {currentContent}
               </ReactMarkdown>
             </div>
@@ -271,7 +272,7 @@ export function AIResponsePanel() {
               onPin={() => handlePin(displayResponse!.id)}
             />
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
                 {displayContent}
               </ReactMarkdown>
             </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { mdGuards } from "../components/markdownGuards";
 import { useT } from "../i18n";
 import { getQuestionPredictions, onQuestionPredictions, type PredictionView } from "../lib/questionDetection/predictions";
 import { stripThinkTags } from "../lib/utils";
@@ -53,7 +54,7 @@ export function QuestionPredictions() {
       {preview && <div className="mt-2 border-t border-border/20 pt-2" aria-label={t("prediction.preview")}>
         {preview.answer ? <>
           <p className="mb-1 text-info">{t("prediction.prepared")}</p>
-          <div className="prose prose-sm prose-invert max-w-none"><ReactMarkdown>{stripThinkTags(preview.answer)}</ReactMarkdown></div>
+          <div className="prose prose-sm prose-invert max-w-none"><ReactMarkdown components={mdGuards}>{stripThinkTags(preview.answer)}</ReactMarkdown></div>
         </> : <p className="text-muted-foreground">{t(`prediction.status.${preview.status}`)}</p>}
       </div>}
     </details>

