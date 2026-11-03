@@ -565,8 +565,11 @@ impl RagEngine {
             system: SUMMARY_SYSTEM.to_string(),
             user: format!("Document: {}\nChapter: {}\n\n{}", res.name, chapter.path, chapter.text),
             // The summary is 150-400 words; the rest is room for a thinking
-            // model's reasoning, which counts against the cap.
-            max_tokens: 4000,
+            // model's reasoning, which counts against the cap. DeepSeek
+            // v4.1-flash sometimes thinks past 4000 tokens on a 1.4k-token
+            // chapter and answers nothing, and the chapter stays without a
+            // summary until the file changes or the index is rebuilt.
+            max_tokens: 16000,
             temperature: 0.2,
             json: false,
             timeout,
