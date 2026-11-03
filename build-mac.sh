@@ -94,6 +94,14 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   BUILD_ARGS+=("--config" '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
 
+# A build stopped while Tauri compressed the frontend leaves that asset's
+# cache file empty or cut short, and later builds embed it as is: the window
+# opens with no UI. Finished cache files are backdated to 2000-01-01, so any
+# newer one never got finished.
+find "$SCRIPT_DIR/src-tauri/target" -path "*/out/tauri-codegen-assets/*" -type f \
+  -newermt 2000-01-02 -print -delete 2>/dev/null |
+  sed 's/^/  (removed an unfinished frontend asset: /; s/$/)/' || true
+
 # ── Build ────────────────────────────────────────────────────────────────────
 echo "▶ Building $APP_NAME ($PROFILE) ..."
 if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
