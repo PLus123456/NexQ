@@ -1,14 +1,10 @@
 use serde::Serialize;
 
-/// Approximate token count using chars/4 heuristic.
-/// This is a simple but effective approximation for most LLM tokenizers.
+/// Approximate token count, the same estimate the knowledge base chunks
+/// with: a CJK character counts 1, every 4 other characters count 1.
+/// (Plain chars / 4 put Chinese at a quarter of a token per character.)
 pub fn count_tokens(text: &str) -> usize {
-    if text.is_empty() {
-        return 0;
-    }
-    // chars / 4 heuristic — roughly matches GPT-style tokenizers
-    let char_count = text.chars().count();
-    (char_count + 3) / 4 // round up
+    crate::rag::cjk::estimate_tokens(text)
 }
 
 /// A single segment in the token budget breakdown.
@@ -162,5 +158,12 @@ mod tests {
         // 100 chars => 25 tokens
         let text = "a".repeat(100);
         assert_eq!(count_tokens(&text), 25);
+    }
+
+    #[test]
+    fn test_count_tokens_counts_chinese_per_character() {
+        assert_eq!(count_tokens("上下文长度"), 5);
+        // 4 CJK characters + "abc, " (5 others => 2)
+        assert_eq!(count_tokens("abc, 你好世界"), 6);
     }
 }
