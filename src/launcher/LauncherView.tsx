@@ -390,7 +390,7 @@ export function LauncherView() {
 
         {/* ── RIGHT: CONTEXT + START ── */}
         <div className="dash-main flex flex-1 flex-col overflow-y-auto">
-          <div className="mx-auto w-full max-w-lg space-y-4 px-6 py-5">
+          <div className="mx-auto w-full max-w-2xl space-y-4 px-6 py-5">
 
             {/* Start Meeting — innovative compact button */}
             <div className="flex flex-col items-center">
