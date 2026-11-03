@@ -7,6 +7,7 @@
 ## 打开之前
 
 - 装在 `/Applications/NexQ Plus.app`，和官方 NexQ 是两个独立的 App：Bundle ID `com.plus.nexq`，数据在 `~/Library/Application Support/com.plus.nexq/`，钥匙串条目前缀 `NexQPlus:`。官方版的数据和钥匙串不会被碰。
+- 所有 Key 存在钥匙串的一个条目 `NexQPlus:vault` 里，启动后只读一次。自己编译的版本是临时签名，钥匙串把每次编译都当成新 App，所以每次编译后第一次打开会要一次登录密码，点“始终允许”。以前每个 Key 一个条目（`NexQPlus:llm:…`、`NexQPlus:soniox_us` 等），第一次读到时会搬进 `vault` 并删掉旧条目，那一次还会一条一条地问。改 Key 或删 Key 时，留下的旧条目也会一起删掉。
 - 两个别同时开：全局快捷键和会议检测会互相抢。先退出官方 NexQ。
 - 自动更新是关的，官方更新不会覆盖它。
 - 新的 Bundle ID 等于新 App，第一次开会时 macOS 会重新要麦克风、屏幕与系统录音、语音识别权限。
@@ -101,7 +102,7 @@
 混合检索先召回候选，再交给重排序模型按和问题的相关程度重新排序。AI 助手和“测试知识库”都走这条路。默认关闭；关闭时检索和以前完全一样，不发任何重排请求。
 
 1. 在 **设置 → 上下文策略 → 个人知识库** 找到“重排序（rerank）”一节（在“向量化服务”下面），打开“对检索结果重排序”。和向量化服务一样，改动先进草稿，点“保存”才生效；“放弃修改”恢复已保存的值。
-2. 连接：可以复用某个 OpenAI 兼容的 LLM 连接（请求发到它的 Base URL + `/rerank`，用它的 Key 和请求头；下拉里只列 OpenAI 兼容的连接），也可以单独填 Base URL、认证、请求头和 Key。Base URL 原样使用，不自动补 `/v1`，输入框下面显示实际请求地址。Key 直接存进钥匙串 `NexQPlus:rag-rerank`，`rag/config.json` 里只记是否已保存和末 4 位。
+2. 连接：可以复用某个 OpenAI 兼容的 LLM 连接（请求发到它的 Base URL + `/rerank`，用它的 Key 和请求头；下拉里只列 OpenAI 兼容的连接），也可以单独填 Base URL、认证、请求头和 Key。Base URL 原样使用，不自动补 `/v1`，输入框下面显示实际请求地址。Key 直接存进钥匙串（`NexQPlus:vault` 里的 `rag-rerank`），`rag/config.json` 里只记是否已保存和末 4 位。
 3. 模型：例如硅基流动的 `BAAI/bge-reranker-v2-m3`、Jina 的 `jina-reranker-v2-base-multilingual`、Cohere 的 `rerank-v3.5`，下拉里有这几个候选，也可以手填。TEI 只加载一个模型，可以不填。
 4. 请求格式：“通用”发送 `{model, query, documents, top_n}`，适用于 Jina、Cohere、硅基流动、Xinference、vLLM、LocalAI 等；“TEI”发送 `{query, texts}`，适用于 Hugging Face Text Embeddings Inference，Base URL 填主机地址，例如 `http://<主机>:8080`。
 5. 候选条数默认 30（2–200，不少于返回条数 top-K）；超时默认 2500 ms（200–60000），会议中建议 1000–3000 ms。
@@ -111,7 +112,7 @@
 
 人工验收（本次未调用真实服务、未启动或安装 App；自动测试用的是本地模拟服务）：
 
-1. 配好重排序服务（例如硅基流动 `BAAI/bge-reranker-v2-m3`，或自建 TEI），“测试连接”显示连接成功和“相关的测试段落排在了第一位”；钥匙串里多一条 `NexQPlus:rag-rerank`。
+1. 配好重排序服务（例如硅基流动 `BAAI/bge-reranker-v2-m3`，或自建 TEI），“测试连接”显示连接成功和“相关的测试段落排在了第一位”；钥匙串的 `NexQPlus:vault` 里多了 `rag-rerank`。
 2. 打开“测试知识库”，顶栏出现“重排序：<模型名>”。提问后统计栏显示“已重排 · N 条候选 · X ms”；每条结果的分数徽章是重排分数（悬停显示“重排分数”），旁边的“原第 N”是重排前的名次，名次上升的带绿色箭头。和关闭重排序时对比，更相关的段落应该靠前。
 3. 把 Key 改错或把超时改成 200 ms：测试知识库显示“重排序失败，已沿用融合顺序”和原始错误，结果照常列出；连续问 3 次以上后显示“重排序连续失败、暂停中”；改回正确设置后，下一次检索恢复。
 4. 会议中用 AI 助手提问，照常回答；AI 调用日志里 RAG 块的分数是重排分数。关掉重排序后，测试知识库里不再出现重排标记。
