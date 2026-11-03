@@ -564,7 +564,9 @@ impl RagEngine {
             task: SUMMARY_TASK,
             system: SUMMARY_SYSTEM.to_string(),
             user: format!("Document: {}\nChapter: {}\n\n{}", res.name, chapter.path, chapter.text),
-            max_tokens: 1200,
+            // The summary is 150-400 words; the rest is room for a thinking
+            // model's reasoning, which counts against the cap.
+            max_tokens: 4000,
             temperature: 0.2,
             json: false,
             timeout,

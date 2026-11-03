@@ -25,8 +25,10 @@ export interface LlmTaskDef {
   key: LlmTaskKey;
   /** The task followed without a target; null means an explicit route is required. */
   parent: LlmTaskKey | null;
-  /** Called often during a meeting: a fast model without thinking is recommended. */
+  /** Called often during a meeting: a fast model is recommended. */
   highFrequency?: boolean;
+  /** Called for every transcript sentence: a fast model with thinking off is recommended. */
+  perSentence?: boolean;
   /** Only used when the translation service is set to the AI model. */
   translationOnly?: boolean;
   /** The temperature the feature asks for when nothing overrides it (shown as a placeholder). */
@@ -37,13 +39,13 @@ export interface LlmTaskDef {
 export const LLM_TASKS: readonly LlmTaskDef[] = [
   { key: "default", parent: null },
   { key: "assist", parent: "default", defaultTemperature: 0.6 },
-  { key: "question_detect", parent: null, highFrequency: true, defaultTemperature: 0 },
+  { key: "question_detect", parent: null, highFrequency: true, perSentence: true, defaultTemperature: 0 },
   { key: "question_predict", parent: null, defaultTemperature: 0 },
   { key: "meeting_summary", parent: "default", defaultTemperature: 0.4 },
   { key: "action_items", parent: "default" },
   { key: "bookmark_suggestions", parent: "default" },
   { key: "meeting_ask", parent: "default" },
-  { key: "translation", parent: "default", highFrequency: true, translationOnly: true, defaultTemperature: 0.2 },
+  { key: "translation", parent: "default", highFrequency: true, perSentence: true, translationOnly: true, defaultTemperature: 0.2 },
   { key: "translation_batch", parent: "translation", translationOnly: true, defaultTemperature: 0.2 },
   { key: "rag_answer", parent: "default" },
   { key: "rag_query_rewrite", parent: "default", highFrequency: true, defaultTemperature: 0.3 },

@@ -242,7 +242,7 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
           </div>
           {known && <p className="mt-0.5 text-meta text-muted-foreground">{t(`tasks.${known}.hint`)}</p>}
           {key === "question_detect" && <p className="mt-0.5 text-meta text-muted-foreground">{t("questionDetection.httpOnly")}</p>}
-          {def?.highFrequency && <p className="mt-0.5 text-meta text-warning/90">{t("routing.fastModelHint")}</p>}
+          {def?.perSentence && <p className="mt-0.5 text-meta text-warning/90">{t("routing.fastModelHint")}</p>}
           {def?.translationOnly && <p className="mt-0.5 text-meta text-muted-foreground/80">{t("routing.translationOnly")}</p>}
           {key === "claude_fallback" && !own && (
             <p className="mt-0.5 text-meta text-muted-foreground/80">{t("routing.claudeFallbackLegacy")}</p>

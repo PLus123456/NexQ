@@ -961,7 +961,9 @@ impl RagEngine {
             task: rewrite::TASK,
             system: rewrite::system_prompt(config.rewrite.variants),
             user: rewrite::user_prompt(question),
-            max_tokens: 400,
+            // Room for a thinking model's reasoning too (it counts against
+            // the cap): about 250 tokens on a fast model, 400 at times.
+            max_tokens: 1500,
             temperature: 0.3,
             json: true,
             timeout,

@@ -388,7 +388,7 @@
     "rag_query_rewrite": {
       "label": "Knowledge base query rewriting",
       "short": "Query rewriting",
-      "hint": "Rewrites each knowledge base question into a few other phrasings before searching. Only used when query rewriting is on in the knowledge base settings; runs before every search, so pick a fast model."
+      "hint": "Rewrites each knowledge base question into a few other phrasings before searching. Only used when query rewriting is on in the knowledge base settings; runs before every search, so pick a fast model (thinking may stay on: its reasoning adds a second or two)."
     },
     "rag_summary": {
       "label": "Knowledge base chapter summaries",
