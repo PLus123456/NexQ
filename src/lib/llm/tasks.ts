@@ -17,6 +17,8 @@ export type LlmTaskKey =
   | "translation"
   | "translation_batch"
   | "rag_answer"
+  | "rag_query_rewrite"
+  | "rag_summary"
   | "claude_fallback";
 
 export interface LlmTaskDef {
@@ -44,6 +46,8 @@ export const LLM_TASKS: readonly LlmTaskDef[] = [
   { key: "translation", parent: "default", highFrequency: true, translationOnly: true, defaultTemperature: 0.2 },
   { key: "translation_batch", parent: "translation", translationOnly: true, defaultTemperature: 0.2 },
   { key: "rag_answer", parent: "default" },
+  { key: "rag_query_rewrite", parent: "default", highFrequency: true, defaultTemperature: 0.3 },
+  { key: "rag_summary", parent: "default", defaultTemperature: 0.2 },
   { key: "claude_fallback", parent: "default" },
 ];
 

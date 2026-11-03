@@ -18,6 +18,10 @@ pub struct ScoredChunk {
     /// score this chunk had after fusion.
     pub fused_rank: Option<usize>,
     pub fused_score: Option<f64>,
+    /// Heading path where the text starts ("第三章 研究方法 › 3.2 数据来源").
+    pub heading: Option<String>,
+    /// First and last chunk (`chunk_index`) of an expanded passage.
+    pub chunk_range: Option<(usize, usize)>,
 }
 
 /// How a query is matched.

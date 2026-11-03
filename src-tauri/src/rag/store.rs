@@ -6,8 +6,10 @@
 //! - `rag_documents`: one row per context resource, with the size, mtime and
 //!   content hash used to skip unchanged files.
 //! - `rag_chunks`: integer ids that are also the FTS rowid and the vector key;
-//!   `chunk_hash` (sha256 of the text) lets unchanged chunks keep their row
-//!   and lets a moved or duplicated chunk reuse an existing vector.
+//!   `chunk_hash` (sha256 of the embedded text: heading path + text) lets
+//!   unchanged chunks keep their row and lets a moved or duplicated chunk
+//!   reuse an existing vector. `kind` 1 rows are chapter summaries (`ord` is
+//!   the chapter's number, `source_hash` the hash of what was summarized).
 //! - `rag_spaces`: one per embedding model setup (see `RagConfig::space_key`);
 //!   vectors of different spaces are never compared.
 //! - `rag_vectors`: L2-normalized f32 little-endian vectors per (space, chunk).
@@ -24,10 +26,11 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::cjk;
+use super::expand::OutlineChunk;
 use super::vector_store::{bytes_to_f32_vec, f32_vec_to_bytes};
 
 /// Current schema version.
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE IF NOT EXISTS rag_meta (
@@ -90,6 +93,47 @@ CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(
 );
 ";
 
+/// Heading paths and chapter summaries.
+const SCHEMA_V2: &str = "
+ALTER TABLE rag_chunks ADD COLUMN heading TEXT NOT NULL DEFAULT '';
+ALTER TABLE rag_chunks ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rag_chunks ADD COLUMN source_hash BLOB;
+";
+
+/// What a `rag_chunks` row holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ChunkKind {
+    /// A slice of the document's text.
+    #[default]
+    Text,
+    /// An LLM summary of one chapter.
+    Summary,
+}
+
+impl ChunkKind {
+    fn code(self) -> i64 {
+        match self {
+            Self::Text => 0,
+            Self::Summary => 1,
+        }
+    }
+
+    fn from_code(code: i64) -> Self {
+        if code == 1 { Self::Summary } else { Self::Text }
+    }
+}
+
+/// The text embedded and keyword-indexed for a chunk: its heading path on
+/// the first line, then the text. (`chunks_missing_vectors` builds the same
+/// in SQL.)
+pub fn embed_text(heading: &str, text: &str) -> String {
+    if heading.is_empty() {
+        text.to_string()
+    } else {
+        format!("{heading}\n{text}")
+    }
+}
+
 /// A vector space (one embedding model setup).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SpaceRow {
@@ -134,14 +178,26 @@ pub struct DocMeta {
 }
 
 /// A chunk to store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NewChunk {
     pub ord: usize,
     pub text: String,
     pub token_est: usize,
+    /// sha256 of [`embed_text`].
     pub hash: Vec<u8>,
     pub start_char: usize,
     pub end_char: usize,
+    pub heading: String,
+    pub kind: ChunkKind,
+    /// Summaries: hash of the chapter text they summarize.
+    pub source_hash: Option<Vec<u8>>,
+}
+
+/// A stored chapter summary, reused while its chapter is unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredSummary {
+    pub source_hash: Vec<u8>,
+    pub text: String,
 }
 
 /// Result of [`Store::apply_document`].
@@ -167,6 +223,9 @@ pub struct ChunkDetail {
     pub hash: Vec<u8>,
     pub doc_name: String,
     pub resource_id: String,
+    pub doc_id: i64,
+    pub heading: String,
+    pub kind: ChunkKind,
 }
 
 /// Counts for the status display.
@@ -385,11 +444,12 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
-    /// Stores a document's chunks, changing only what changed: chunks whose
-    /// text is already stored for this document keep their id and vectors,
-    /// the rest are deleted or inserted (with their FTS rows). A new chunk
-    /// whose text exists elsewhere gets a copy of that chunk's vectors in
-    /// every space. One transaction.
+    /// Stores a document's chunks (summaries included), changing only what
+    /// changed: chunks whose text is already stored for this document keep
+    /// their id and vectors, the rest are deleted or inserted (with their FTS
+    /// rows). A new chunk whose text exists elsewhere gets a copy of that
+    /// chunk's vectors in every space. One transaction. The document's chunk
+    /// and token counts are of its text chunks.
     pub fn apply_document(
         &self,
         meta: &DocMeta,
@@ -399,7 +459,8 @@ impl Store {
     ) -> Result<ApplyOutcome, String> {
         let mut conn = self.writer();
         let tx = conn.transaction().map_err(err)?;
-        let token_total: usize = chunks.iter().map(|c| c.token_est).sum();
+        let text_chunks = chunks.iter().filter(|c| c.kind == ChunkKind::Text);
+        let (chunk_count, token_total) = text_chunks.fold((0usize, 0usize), |(n, t), c| (n + 1, t + c.token_est));
         let doc_id: i64 = tx
             .query_row(
                 "INSERT INTO rag_documents
@@ -423,7 +484,7 @@ impl Store {
                     content_hash,
                     chunk_params,
                     if chunks.is_empty() { "empty" } else { "indexed" },
-                    chunks.len() as i64,
+                    chunk_count as i64,
                     token_total as i64,
                     now_ms(),
                 ],
@@ -431,31 +492,39 @@ impl Store {
             )
             .map_err(err)?;
 
-        let mut pool: HashMap<Vec<u8>, Vec<(i64, i64, i64, i64)>> = HashMap::new();
+        type Placement = (i64, i64, i64, Option<Vec<u8>>);
+        let mut pool: HashMap<(i64, Vec<u8>), Vec<(i64, Placement)>> = HashMap::new();
         {
             let mut stmt = tx
-                .prepare("SELECT id, chunk_hash, ord, start_char, end_char FROM rag_chunks WHERE doc_id = ?1 ORDER BY ord DESC")
+                .prepare(
+                    "SELECT id, kind, chunk_hash, ord, start_char, end_char, source_hash FROM rag_chunks
+                     WHERE doc_id = ?1 ORDER BY ord DESC",
+                )
                 .map_err(err)?;
             let rows = stmt
                 .query_map([doc_id], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        (r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?),
+                        (r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<Vec<u8>>>(6)?),
+                    ))
                 })
                 .map_err(err)?;
             for row in rows {
-                let (id, hash, ord, start, end) = row.map_err(err)?;
-                pool.entry(hash).or_default().push((id, ord, start, end));
+                let (id, key, placement) = row.map_err(err)?;
+                pool.entry(key).or_default().push((id, placement));
             }
         }
 
         let mut outcome = ApplyOutcome { doc_id, ..Default::default() };
         {
             let mut update = tx
-                .prepare("UPDATE rag_chunks SET ord = ?2, start_char = ?3, end_char = ?4 WHERE id = ?1")
+                .prepare("UPDATE rag_chunks SET ord = ?2, start_char = ?3, end_char = ?4, source_hash = ?5 WHERE id = ?1")
                 .map_err(err)?;
             let mut insert = tx
                 .prepare(
-                    "INSERT INTO rag_chunks (doc_id, ord, text, token_est, chunk_hash, start_char, end_char)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO rag_chunks (doc_id, ord, text, token_est, chunk_hash, start_char, end_char, heading, kind, source_hash)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )
                 .map_err(err)?;
             let mut insert_fts = tx.prepare("INSERT INTO rag_fts (rowid, body) VALUES (?1, ?2)").map_err(err)?;
@@ -471,12 +540,11 @@ impl Store {
             let mut copied_spaces = tx.prepare("SELECT space_id FROM rag_vectors WHERE chunk_id = ?1").map_err(err)?;
 
             for chunk in chunks {
-                let reused = pool.get_mut(&chunk.hash).and_then(Vec::pop);
-                if let Some((id, ord, start, end)) = reused {
-                    if (ord, start, end) != (chunk.ord as i64, chunk.start_char as i64, chunk.end_char as i64) {
-                        update
-                            .execute(params![id, chunk.ord as i64, chunk.start_char as i64, chunk.end_char as i64])
-                            .map_err(err)?;
+                let reused = pool.get_mut(&(chunk.kind.code(), chunk.hash.clone())).and_then(Vec::pop);
+                if let Some((id, placement)) = reused {
+                    let wanted = (chunk.ord as i64, chunk.start_char as i64, chunk.end_char as i64, chunk.source_hash.clone());
+                    if placement != wanted {
+                        update.execute(params![id, wanted.0, wanted.1, wanted.2, wanted.3]).map_err(err)?;
                     }
                     outcome.kept += 1;
                     continue;
@@ -490,10 +558,15 @@ impl Store {
                         chunk.hash,
                         chunk.start_char as i64,
                         chunk.end_char as i64,
+                        chunk.heading,
+                        chunk.kind.code(),
+                        chunk.source_hash,
                     ])
                     .map_err(err)?;
                 let id = tx.last_insert_rowid();
-                insert_fts.execute(params![id, cjk::fts_document_text(&chunk.text)]).map_err(err)?;
+                insert_fts
+                    .execute(params![id, cjk::fts_document_text(&embed_text(&chunk.heading, &chunk.text))])
+                    .map_err(err)?;
                 if copy_vectors.execute(params![id, chunk.hash]).map_err(err)? > 0 {
                     let spaces = copied_spaces
                         .query_map([id], |r| r.get::<_, i64>(0))
@@ -507,7 +580,7 @@ impl Store {
 
             let mut delete_fts = tx.prepare("DELETE FROM rag_fts WHERE rowid = ?1").map_err(err)?;
             let mut delete_chunk = tx.prepare("DELETE FROM rag_chunks WHERE id = ?1").map_err(err)?;
-            for (id, ..) in pool.into_values().flatten() {
+            for (id, _) in pool.into_values().flatten() {
                 delete_fts.execute([id]).map_err(err)?;
                 delete_chunk.execute([id]).map_err(err)?;
                 outcome.removed.push(id);
@@ -516,6 +589,21 @@ impl Store {
         outcome.removed.sort_unstable();
         tx.commit().map_err(err)?;
         Ok(outcome)
+    }
+
+    /// The chapter summaries stored for a document.
+    pub fn summaries(&self, resource_id: &str) -> Result<Vec<StoredSummary>, String> {
+        let conn = self.reader();
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.source_hash, c.text FROM rag_chunks c JOIN rag_documents d ON d.id = c.doc_id
+                 WHERE d.resource_id = ?1 AND c.kind = 1 AND c.source_hash IS NOT NULL ORDER BY c.ord",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map([resource_id], |r| Ok(StoredSummary { source_hash: r.get(0)?, text: r.get(1)? }))
+            .map_err(err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
     /// Records a new size / mtime / name for a document whose text did not change.
@@ -596,12 +684,14 @@ impl Store {
 
     // ── Vectors ─────────────────────────────────────────────────────────────
 
-    /// Up to `limit` chunks (id > `after_id`, by id) without a vector in `space_id`.
+    /// Up to `limit` chunks (id > `after_id`, by id) without a vector in
+    /// `space_id`, with the text to embed ([`embed_text`]).
     pub fn chunks_missing_vectors(&self, space_id: i64, after_id: i64, limit: usize) -> Result<Vec<(i64, String)>, String> {
         let conn = self.writer();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT c.id, c.text FROM rag_chunks c
+                "SELECT c.id, CASE WHEN c.heading = '' THEN c.text ELSE c.heading || char(10) || c.text END
+                 FROM rag_chunks c
                  WHERE c.id > ?2 AND NOT EXISTS
                    (SELECT 1 FROM rag_vectors v WHERE v.space_id = ?1 AND v.chunk_id = c.id)
                  ORDER BY c.id LIMIT ?3",
@@ -736,7 +826,7 @@ impl Store {
         let conn = self.reader();
         for batch in ids.chunks(500) {
             let sql = format!(
-                "SELECT c.id, c.text, c.ord, c.chunk_hash, d.name, d.resource_id
+                "SELECT c.id, c.text, c.ord, c.chunk_hash, d.name, d.resource_id, c.doc_id, c.heading, c.kind
                  FROM rag_chunks c JOIN rag_documents d ON d.id = c.doc_id
                  WHERE c.id IN ({})",
                 placeholders(batch.len())
@@ -751,12 +841,58 @@ impl Store {
                         hash: r.get(3)?,
                         doc_name: r.get(4)?,
                         resource_id: r.get(5)?,
+                        doc_id: r.get(6)?,
+                        heading: r.get(7)?,
+                        kind: ChunkKind::from_code(r.get(8)?),
                     })
                 })
                 .map_err(err)?;
             for row in rows {
                 let detail = row.map_err(err)?;
                 out.insert(detail.id, detail);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The text chunks of a document in reading order (no texts), for
+    /// context expansion.
+    pub fn document_outline(&self, doc_id: i64) -> Result<Vec<OutlineChunk>, String> {
+        let conn = self.reader();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, ord, token_est, heading, start_char, end_char FROM rag_chunks
+                 WHERE doc_id = ?1 AND kind = 0 ORDER BY ord",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map([doc_id], |r| {
+                Ok(OutlineChunk {
+                    id: r.get(0)?,
+                    ord: r.get::<_, i64>(1)? as usize,
+                    tokens: r.get::<_, i64>(2)? as usize,
+                    heading: r.get(3)?,
+                    start_char: r.get::<_, i64>(4)? as usize,
+                    end_char: r.get::<_, i64>(5)? as usize,
+                })
+            })
+            .map_err(err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(err)
+    }
+
+    /// The texts of the given chunks.
+    pub fn chunk_texts(&self, ids: &[i64]) -> Result<HashMap<i64, String>, String> {
+        let mut out = HashMap::with_capacity(ids.len());
+        let conn = self.reader();
+        for batch in ids.chunks(500) {
+            let sql = format!("SELECT id, text FROM rag_chunks WHERE id IN ({})", placeholders(batch.len()));
+            let mut stmt = conn.prepare_cached(&sql).map_err(err)?;
+            let rows = stmt
+                .query_map(params_from_iter(batch.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .map_err(err)?;
+            for row in rows {
+                let (id, text) = row.map_err(err)?;
+                out.insert(id, text);
             }
         }
         Ok(out)
@@ -883,6 +1019,9 @@ fn migrate(conn: &Connection) -> Result<(), OpenError> {
     if version < 1 {
         conn.execute_batch(&format!("BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;"))?;
     }
+    if version < 2 {
+        conn.execute_batch(&format!("BEGIN; {SCHEMA_V2} PRAGMA user_version = 2; COMMIT;"))?;
+    }
     Ok(())
 }
 
@@ -921,6 +1060,7 @@ pub(crate) mod tests {
                 hash: Sha256::digest(t.as_bytes()).to_vec(),
                 start_char: i * 10,
                 end_char: i * 10 + 5,
+                ..Default::default()
             })
             .collect()
     }
@@ -1096,6 +1236,84 @@ pub(crate) mod tests {
         let details = store.chunk_details(&[a.inserted[0], b.inserted[0]]).unwrap();
         assert_eq!(details[&b.inserted[0]].doc_name, "b.txt");
         assert_eq!(details[&a.inserted[0]].ord, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_1_index_gains_headings_and_kinds_in_place() {
+        let dir = std::env::temp_dir().join(format!("nexq-rag-store-v1-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rag.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!("BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;")).unwrap();
+            conn.execute("INSERT INTO rag_documents (resource_id, name, chunk_params, status) VALUES ('a', 'a.txt', 'p', 'indexed')", [])
+                .unwrap();
+            conn.execute("INSERT INTO rag_chunks (doc_id, ord, text, token_est, chunk_hash) VALUES (1, 0, 'old text', 2, x'00')", [])
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i32 = store.writer().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2);
+        let outline = store.document_outline(1).unwrap();
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].heading, "", "old chunks have no heading");
+        let details = store.chunk_details(&[outline[0].id]).unwrap();
+        assert_eq!(details[&outline[0].id].kind, ChunkKind::Text);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn headings_are_embedded_and_searched_and_summaries_kept_apart() {
+        let (dir, store) = temp_db("headings");
+        let mut list = chunks(&["第一段正文", "第二段正文"]);
+        for c in &mut list {
+            c.heading = "第三章 研究方法 › 3.2 数据来源".into();
+            c.hash = Sha256::digest(embed_text(&c.heading, &c.text).as_bytes()).to_vec();
+        }
+        let summary_text = "本章介绍问卷与访谈的数据来源。";
+        list.push(NewChunk {
+            ord: 0,
+            text: summary_text.into(),
+            token_est: 15,
+            hash: Sha256::digest(embed_text("第三章 研究方法", summary_text).as_bytes()).to_vec(),
+            heading: "第三章 研究方法".into(),
+            kind: ChunkKind::Summary,
+            source_hash: Some(b"chapter-3".to_vec()),
+            ..Default::default()
+        });
+        let out = store.apply_document(&meta("t"), b"h", "p", &list).unwrap();
+        assert_eq!(out.inserted.len(), 3);
+        let doc = store.document("t").unwrap().unwrap();
+        assert_eq!(doc.chunk_count, 2, "summaries are not counted as chunks");
+
+        // The heading is part of what gets embedded and keyword-matched.
+        let space = store.create_space("k", "fp", "openai_compat", "m", 2, "{}").unwrap();
+        let missing = store.chunks_missing_vectors(space.id, 0, 10).unwrap();
+        assert_eq!(missing[0].1, "第三章 研究方法 › 3.2 数据来源\n第一段正文");
+        let hits = store.fts_search(&cjk::fts_match_query("数据来源", 48).unwrap(), 10).unwrap();
+        assert_eq!(hits.len(), 3);
+
+        // The outline holds the text chunks only; details say what each row is.
+        let outline = store.document_outline(doc.id).unwrap();
+        assert_eq!(outline.iter().map(|c| c.id).collect::<Vec<_>>(), out.inserted[..2].to_vec());
+        assert_eq!(outline[1].heading, "第三章 研究方法 › 3.2 数据来源");
+        let details = store.chunk_details(&out.inserted).unwrap();
+        assert_eq!(details[&out.inserted[2]].kind, ChunkKind::Summary);
+        assert_eq!(details[&out.inserted[0]].doc_id, doc.id);
+        assert_eq!(store.chunk_texts(&out.inserted[..1]).unwrap()[&out.inserted[0]], "第一段正文");
+        assert_eq!(
+            store.summaries("t").unwrap(),
+            vec![StoredSummary { source_hash: b"chapter-3".to_vec(), text: summary_text.into() }]
+        );
+
+        // Applying the same list again keeps every row; dropping the summary deletes it.
+        let again = store.apply_document(&meta("t"), b"h", "p", &list).unwrap();
+        assert_eq!((again.kept, again.inserted.len()), (3, 0));
+        let without = store.apply_document(&meta("t"), b"h", "p", &list[..2]).unwrap();
+        assert_eq!(without.removed, vec![out.inserted[2]]);
+        assert!(store.summaries("t").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

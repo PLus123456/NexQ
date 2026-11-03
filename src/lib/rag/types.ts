@@ -50,6 +50,33 @@ export interface IndexingConfig {
   meeting_mode: "pause_local" | "slow" | "normal";
 }
 
+/** Other phrasings of the question searched along with it (LLM task `rag_query_rewrite`). */
+export interface QueryRewriteConfig {
+  enabled: boolean;
+  /** Phrasings asked for (1–5). */
+  variants: number;
+  /** Past this the question is searched alone (500–60000). */
+  timeout_ms: number;
+}
+
+/** What a result brings along: neighbouring chunks, or its whole section when that is short enough. */
+export interface ExpansionConfig {
+  enabled: boolean;
+  /** Chunks on each side of a hit (0–5). */
+  neighbors: number;
+  /** Whole sections up to this many tokens (0 = never). */
+  section_max_tokens: number;
+  /** All passages of one search together. */
+  max_total_tokens: number;
+}
+
+/** One LLM summary per chapter at index time (LLM task `rag_summary`); needs heading splitting. */
+export interface SummaryConfig {
+  enabled: boolean;
+  max_input_tokens: number;
+  timeout_secs: number;
+}
+
 /** "generic": `{model, query, documents, top_n}` (Jina, Cohere, SiliconFlow, vLLM…); "tei": `{query, texts}`. */
 export type RerankFormat = "generic" | "tei";
 
@@ -78,6 +105,9 @@ export interface RagFullConfig extends RagConfig {
   retrieval: RetrievalConfig;
   indexing: IndexingConfig;
   rerank: RerankConfig;
+  rewrite: QueryRewriteConfig;
+  expansion: ExpansionConfig;
+  summaries: SummaryConfig;
 }
 
 /** A JSON merge patch of the config (nested objects merge; null resets a field). */
@@ -115,6 +145,7 @@ export type RebuildReason = "model_changed" | "chunking_changed" | "dimensions_c
 export type IndexStatusName =
   | "scanning"
   | "extracting"
+  | "summarizing"
   | "embedding"
   | "paused"
   | "file_complete"

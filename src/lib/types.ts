@@ -885,6 +885,17 @@ export interface RagSearchResult {
   /** Set when a reranker ordered the results: position (from 1) and score after fusion. */
   fused_rank?: number | null;
   fused_score?: number | null;
+  /** Heading path where the text starts ("第三章 研究方法 › 3.2 数据来源"). */
+  heading?: string | null;
+  /** First and last chunk of an expanded passage. */
+  chunk_range?: [number, number] | null;
+}
+
+/** What query rewriting did in one search ("applied", "empty", "failed", "timeout"). */
+export interface RagRewriteReport {
+  status: "applied" | "empty" | "failed" | "timeout";
+  latency_ms: number;
+  error: string | null;
 }
 
 /**
@@ -911,6 +922,10 @@ export interface RagSearchOutcome {
   degraded: string | null;
   /** null: reranking is off, or there were fewer than two results. */
   rerank: RagRerankReport | null;
+  /** Every query searched: the question, then its rewrites. */
+  queries?: string[];
+  /** null: query rewriting is off. */
+  rewrite?: RagRewriteReport | null;
 }
 
 export interface RagChunkInfo {

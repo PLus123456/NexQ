@@ -152,7 +152,7 @@ async fn retrieve_rag(
 ) -> Result<RagRetrieval, String> {
     let mut out = RagRetrieval::default();
 
-    // Dual search: search with question alone, then with question+transcript, merge results.
+    // Dual search: the question alone and question+transcript, fused.
     // This prevents transcript noise from drowning out a clear question match,
     // while still benefiting from transcript context when relevant.
     let has_question = question_text.is_some();
@@ -172,57 +172,36 @@ async fn retrieve_rag(
     if !(has_question || has_transcript) || !has_indexed_chunks {
         return Ok(out);
     }
-    let (Some(rag_arc), Some(db_arc)) = (state.rag.as_ref(), state.database.as_ref()) else {
+    let Some(rag_arc) = state.rag.as_ref() else {
         return Ok(out);
     };
 
-    let (mut config, embedder_url, embedding_model) = {
+    let mut config = {
         let rag_guard = rag_arc.lock().map_err(|e| e.to_string())?;
-        (rag_guard.config().clone(), rag_guard.embedder_url(), rag_guard.embedding_model())
+        rag_guard.config().clone()
     };
     config.top_k = top_k;
 
-    let mut all_chunks: Vec<rag::search::ScoredChunk> = Vec::new();
-
-    // Search 1: question only (clean semantic match)
+    // The question alone (a clean match) first, then with the transcript
+    // (context); one fused search, so a passage both find comes back once.
+    // Without a question the transcript is searched alone.
+    let mut queries: Vec<String> = Vec::new();
     if let Some(ref q) = question_text {
-        out.query = Some(q.clone());
-        match rag::RagManager::search_async(db_arc, q, &config, &embedder_url, &embedding_model).await {
-            Ok(chunks) => all_chunks.extend(chunks),
-            Err(e) => log::warn!("RAG search (question-only) failed: {}", e),
+        queries.push(q.clone());
+        if has_transcript {
+            queries.push(format!("{}\n\n{}", q, transcript_excerpt));
         }
+    } else {
+        queries.push(transcript_excerpt.clone());
     }
-
-    // Search 2: question + transcript (contextual match)
-    if has_question && has_transcript {
-        let combined = format!("{}\n\n{}", question_text.as_ref().unwrap(), transcript_excerpt);
-        if out.query.is_none() {
-            out.query = Some(combined.clone());
+    out.query = queries.first().cloned();
+    let merged = match rag::RagManager::search_queries_async(&queries, &config).await {
+        Ok(chunks) => chunks,
+        Err(e) => {
+            log::warn!("RAG search failed: {}", e);
+            Vec::new()
         }
-        match rag::RagManager::search_async(db_arc, &combined, &config, &embedder_url, &embedding_model).await {
-            Ok(chunks) => all_chunks.extend(chunks),
-            Err(e) => log::warn!("RAG search (combined) failed: {}", e),
-        }
-    } else if !has_question && has_transcript {
-        // No question at all — search with transcript only as last resort
-        out.query = Some(transcript_excerpt.clone());
-        match rag::RagManager::search_async(db_arc, &transcript_excerpt, &config, &embedder_url, &embedding_model).await {
-            Ok(chunks) => all_chunks.extend(chunks),
-            Err(e) => log::warn!("RAG search (transcript-only) failed: {}", e),
-        }
-    }
-
-    // Deduplicate: keep highest normalized_score per chunk_id
-    let mut best: std::collections::HashMap<String, rag::search::ScoredChunk> = std::collections::HashMap::new();
-    for chunk in all_chunks {
-        let entry = best.entry(chunk.chunk_id.clone()).or_insert(chunk.clone());
-        if chunk.normalized_score > entry.normalized_score {
-            *entry = chunk;
-        }
-    }
-    let mut merged: Vec<rag::search::ScoredChunk> = best.into_values().collect();
-    merged.sort_by(|a, b| b.normalized_score.partial_cmp(&a.normalized_score).unwrap_or(std::cmp::Ordering::Equal));
-    merged.truncate(top_k);
+    };
 
     // Build metadata for AI log
     for c in &merged {

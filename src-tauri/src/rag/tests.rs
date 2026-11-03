@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 
 use super::embedding::test_server::{FakeServer, Reply};
 use super::embedding::RetryPolicy;
-use super::engine::{RagEngine, RagHost, ResourceInfo, SearchOutcome, SearchParams, VectorState};
+use futures::future::BoxFuture;
+
+use super::engine::{LlmRequest, RagEngine, RagHost, ResourceInfo, SearchOutcome, SearchParams, VectorState};
 use super::indexer::JobKind;
 use super::rerank::RerankStatus;
 use super::search::SearchMode;
@@ -26,6 +28,10 @@ struct FakeHost {
     meeting: AtomicBool,
     secret_reads: AtomicUsize,
     connections: Mutex<Vec<ResolvedConnection>>,
+    /// LLM answers by task (an error string after "ERR:"); none: an error.
+    llm: Mutex<HashMap<&'static str, String>>,
+    llm_delay: Mutex<Duration>,
+    llm_calls: Mutex<Vec<LlmRequest>>,
 }
 
 impl RagHost for FakeHost {
@@ -69,6 +75,23 @@ impl RagHost for FakeHost {
             .iter()
             .map(|c| ConnectionSummary { id: c.id.clone(), name: c.id.clone(), kind: c.kind, base_url: c.base_url.clone() })
             .collect()
+    }
+    fn complete(&self, request: LlmRequest) -> BoxFuture<'static, Result<String, String>> {
+        // "{chapter}" in an answer becomes the chapter named in the request.
+        let chapter = request.user.lines().find_map(|l| l.strip_prefix("Chapter: ")).unwrap_or("").to_string();
+        let answer = self.llm.lock().unwrap().get(request.task).map(|a| a.replace("{chapter}", &chapter));
+        let delay = *self.llm_delay.lock().unwrap();
+        self.llm_calls.lock().unwrap().push(request);
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            match answer {
+                Some(text) => match text.strip_prefix("ERR:") {
+                    Some(e) => Err(e.to_string()),
+                    None => Ok(text),
+                },
+                None => Err("no LLM route".to_string()),
+            }
+        })
     }
 }
 
@@ -908,4 +931,173 @@ async fn test_rerank_uses_a_draft_without_saving_it() {
     // Nothing configured: an error instead of a request.
     assert!(f.engine.test_rerank(None).await.unwrap_err().contains("model"));
     assert_eq!(rr.server.hits(), 1);
+}
+
+/// A thesis: a short first chapter (about 100 tokens), a long second one
+/// (about 300) with one sentence about a survey platform in the middle,
+/// then references.
+fn thesis(extra: &str) -> String {
+    let ch1 = [
+        "本章说明研究的开题缘由与写作背景。",
+        "社会调查显示相关问题日益受到关注。",
+        "已有文献对这一现象的解释仍不充分。",
+        "因此本文尝试从新的角度展开分析。",
+        "最后一节概述全文的结构安排与内容。",
+    ]
+    .concat();
+    let ch2: String = (1..=16)
+        .map(|i| if i == 8 { "第八步通过问卷星平台发放调查问卷。".to_string() } else { format!("第{i}步记录实验过程中的观察结果与数据。") })
+        .collect();
+    format!("第一章 绪论\n{ch1}\n第二章 研究方法\n{ch2}{extra}\n参考文献\n[1] 张三. 论文[J]. 期刊, 2020.")
+}
+
+fn chapter_text(thesis: &str, n: usize) -> String {
+    thesis.split('\n').nth(n).unwrap().to_string()
+}
+
+#[tokio::test]
+async fn hits_bring_their_section_or_neighbours_with_heading_paths() {
+    let svc = service().await;
+    let f = Fixture::new("expand", &svc.server.base()).await;
+    let doc = thesis("");
+    f.write("t", &doc);
+    f.engine.update_config(&json!({"expansion": {"neighbors": 1, "section_max_tokens": 200}})).unwrap();
+    f.sync().await;
+
+    // Chapter 1 fits: the hit comes back as the whole chapter, overlaps removed.
+    let out = f.search("开题缘由", SearchMode::Keyword).await;
+    let first = &out.chunks[0];
+    assert_eq!(first.source_file, "t.txt");
+    assert_eq!(first.heading.as_deref(), Some("第一章 绪论"));
+    assert_eq!(first.text, chapter_text(&doc, 1));
+    assert!(first.chunk_range.is_some());
+
+    // Chapter 2 is too long: the hit and its neighbours, a contiguous slice of it.
+    let out = f.search("问卷星平台", SearchMode::Keyword).await;
+    let first = &out.chunks[0];
+    assert_eq!(first.heading.as_deref(), Some("第二章 研究方法"));
+    let (lo, hi) = first.chunk_range.expect("neighbours");
+    assert!(hi > lo);
+    assert!(first.text.contains("问卷星平台"));
+    assert!(chapter_text(&doc, 3).contains(&first.text), "{:?}", first.text);
+    assert!(first.text.chars().count() < chapter_text(&doc, 3).chars().count());
+    assert_eq!(out.chunks.iter().filter(|c| c.source_file == "t.txt").count(), 1, "neighbouring hits merged");
+
+    // Off: the chunk alone, still with its heading.
+    f.engine.update_config(&json!({"expansion": {"enabled": false}})).unwrap();
+    let out = f.search("问卷星平台", SearchMode::Keyword).await;
+    assert_eq!(out.chunks[0].heading.as_deref(), Some("第二章 研究方法"));
+    assert_eq!(out.chunks[0].chunk_range, None);
+    assert!(out.chunks[0].text.chars().count() < first.text.chars().count());
+}
+
+#[tokio::test]
+async fn query_rewrites_are_searched_too_and_any_failure_falls_back() {
+    let svc = service().await;
+    let f = Fixture::new("rewrite", &svc.server.base()).await;
+    f.sync().await;
+    let question = "开销安排";
+    assert!(f.search(question, SearchMode::Keyword).await.chunks.is_empty(), "no keyword in common");
+
+    f.engine.update_config(&json!({"rewrite": {"enabled": true, "variants": 2, "timeout_ms": 1000}})).unwrap();
+    f.host.llm.lock().unwrap().insert("rag_query_rewrite", r#"{"queries": ["预算", "财务报表", "多余的一条"]}"#.into());
+    let out = f.search(question, SearchMode::Keyword).await;
+    assert_eq!(out.queries, vec!["开销安排", "预算", "财务报表"]);
+    assert_eq!(out.rewrite.as_ref().unwrap().status, "applied");
+    assert_eq!(out.chunks[0].source_file, "b.txt");
+    {
+        let calls = f.host.llm_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].task, "rag_query_rewrite");
+        assert!(calls[0].json && calls[0].system.contains("2 different"));
+        assert_eq!(calls[0].user, question);
+    }
+
+    // A failing or slow model: the question alone, quickly.
+    f.host.llm.lock().unwrap().insert("rag_query_rewrite", "ERR:boom".into());
+    let out = f.search(question, SearchMode::Keyword).await;
+    assert_eq!(out.rewrite.as_ref().unwrap().status, "failed");
+    assert_eq!(out.queries, vec![question]);
+    assert!(out.chunks.is_empty());
+    f.host.llm.lock().unwrap().insert("rag_query_rewrite", r#"{"queries": ["预算"]}"#.into());
+    *f.host.llm_delay.lock().unwrap() = Duration::from_secs(5);
+    f.engine.update_config(&json!({"rewrite": {"timeout_ms": 500}})).unwrap();
+    let started = Instant::now();
+    let out = f.search(question, SearchMode::Keyword).await;
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(out.rewrite.as_ref().unwrap().status, "timeout");
+    assert!(out.chunks.is_empty());
+
+    // Off: no LLM call at all.
+    f.engine.update_config(&json!({"rewrite": {"enabled": false}})).unwrap();
+    let calls = f.host.llm_calls.lock().unwrap().len();
+    let out = f.search(question, SearchMode::Keyword).await;
+    assert!(out.rewrite.is_none());
+    assert_eq!(f.host.llm_calls.lock().unwrap().len(), calls);
+}
+
+#[tokio::test]
+async fn several_queries_are_fused_into_one_list() {
+    let svc = service().await;
+    let f = Fixture::new("multi", &svc.server.base()).await;
+    f.sync().await;
+    let queries = vec!["预算".to_string(), "billing roadmap".to_string(), "预算".to_string(), " ".to_string()];
+    let out = f
+        .engine
+        .search_queries(&queries, SearchParams { top_k: 3, mode: SearchMode::Keyword, semantic_weight: 0.7 })
+        .await
+        .unwrap();
+    assert_eq!(out.queries, vec!["预算", "billing roadmap"], "blank and repeated queries dropped");
+    let files: Vec<&str> = out.chunks.iter().map(|c| c.source_file.as_str()).collect();
+    assert!(files.contains(&"b.txt") && files.contains(&"c.txt"), "{files:?}");
+}
+
+#[tokio::test]
+async fn chapter_summaries_are_indexed_searched_and_reused() {
+    let svc = service().await;
+    let f = Fixture::new("summaries", &svc.server.base()).await;
+    f.write("t", &thesis(""));
+    f.host.llm.lock().unwrap().insert("rag_summary", "概述（{chapter}）：本章采用独特方法论框架。".into());
+    f.engine.update_config(&json!({"summaries": {"enabled": true}})).unwrap();
+    let s = f.sync().await;
+    assert!(s.error.is_none(), "{s:?}");
+    {
+        let calls = f.host.llm_calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "two chapters; references are skipped");
+        assert!(calls.iter().all(|c| c.task == "rag_summary" && c.user.starts_with("Document: t.txt\nChapter: ")));
+    }
+    let info = f.engine.index_info().await;
+    assert_eq!(info.pending_vectors, 0, "summaries are embedded too");
+    assert_eq!(info.stale_documents, 0);
+
+    let out = f.search("独特方法论", SearchMode::Keyword).await;
+    let summaries: Vec<_> = out.chunks.iter().filter(|c| c.source_type == "summary").collect();
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].source_file, "t.txt");
+    assert!(summaries.iter().any(|c| c.heading.as_deref() == Some("第一章 绪论") && c.text.contains("（第一章 绪论）")));
+    assert!(summaries.iter().all(|c| c.chunk_range.is_none()), "summaries are not expanded");
+    // Text hits never expand into a summary.
+    let out = f.search("开题缘由", SearchMode::Keyword).await;
+    assert!(!out.chunks[0].text.contains("独特方法论"));
+
+    // Chapter 2 changes: only its summary is written again.
+    std::thread::sleep(Duration::from_millis(5));
+    f.write("t", &thesis("第十七步整理全部的实验记录。"));
+    f.sync().await;
+    assert_eq!(f.host.llm_calls.lock().unwrap().len(), 3);
+
+    // A failed summary leaves the document due for a rebuild, which retries it.
+    f.host.llm.lock().unwrap().insert("rag_summary", "ERR:down".into());
+    std::thread::sleep(Duration::from_millis(5));
+    f.write("t", &thesis("第十八步再次核对数据。"));
+    let s = f.sync().await;
+    assert!(s.error.is_none() && s.files_failed == 0, "the document is still indexed");
+    let info = f.engine.index_info().await;
+    assert_eq!(info.stale_documents, 1);
+    assert!(info.rebuild_reasons.contains(&"chunking_changed"));
+    f.host.llm.lock().unwrap().insert("rag_summary", "概述（{chapter}）：第二次。".into());
+    f.engine.run(JobKind::Rebuild).await.unwrap();
+    assert_eq!(f.engine.index_info().await.stale_documents, 0);
+    let out = f.search("第二次", SearchMode::Keyword).await;
+    assert!(out.chunks.iter().any(|c| c.source_type == "summary"));
 }

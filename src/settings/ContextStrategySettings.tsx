@@ -15,6 +15,7 @@ import { formatDate, formatNumber, Trans, useT } from "../i18n";
 import { EmbeddingSection } from "./rag/EmbeddingSection";
 import { IndexSection } from "./rag/IndexSection";
 import { RerankSection } from "./rag/RerankSection";
+import { RetrievalSection } from "./rag/RetrievalSection";
 import {
   Database,
   Cloud,
@@ -231,6 +232,9 @@ export function ContextStrategySettings() {
 
           {/* ── Reranking ── */}
           <RerankSection />
+
+          {/* ── Answer completeness: context expansion, headings, query rewriting, summaries ── */}
+          <RetrievalSection />
 
           {/* ── Search Settings ── */}
           <div className="rounded-xl border border-border/30 bg-card/50 p-5">

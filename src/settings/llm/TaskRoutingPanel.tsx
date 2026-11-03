@@ -16,6 +16,8 @@ import {
   LifeBuoy,
   ListChecks,
   MessageCircleQuestion,
+  ScrollText,
+  Search,
   Sparkles,
   Star,
   Tag,
@@ -52,6 +54,8 @@ const TASK_ICONS: Record<LlmTaskKey, ComponentType<{ className?: string }>> = {
   translation: Languages,
   translation_batch: Languages,
   rag_answer: BookOpen,
+  rag_query_rewrite: Search,
+  rag_summary: ScrollText,
   claude_fallback: LifeBuoy,
 };
 

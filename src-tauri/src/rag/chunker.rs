@@ -1,8 +1,14 @@
 use super::cjk;
+use super::headings;
 
 /// Bumped whenever the same text could split differently: documents indexed
 /// with another version are re-chunked on the next rebuild.
 pub const CHUNKER_VERSION: u32 = 2;
+
+/// `splitting_strategy` values: split by paragraphs and sentences only, or
+/// first into the sections the headings open (`headings.rs`).
+pub const STRATEGY_RECURSIVE: &str = "recursive";
+pub const STRATEGY_HEADINGS: &str = "headings";
 
 /// A single chunk produced by the text splitter.
 #[derive(Debug, Clone)]
@@ -17,6 +23,9 @@ pub struct TextChunk {
     pub start_char: usize,
     /// End character offset (exclusive) in the (normalized) original text.
     pub end_char: usize,
+    /// Heading path of the chunk's section ("第三章 研究方法 › 3.2 数据来源");
+    /// empty without headings or with the recursive strategy.
+    pub heading: String,
 }
 
 /// Separator levels, tried in order: paragraphs, lines, sentences, clauses,
@@ -63,15 +72,16 @@ pub fn normalize_text(text: &str) -> String {
 /// starting with about `chunk_overlap` tokens of the previous one.
 ///
 /// The text is normalized first (`normalize_text`); chunks are contiguous
-/// slices of it. `strategy` is accepted for compatibility: only the
-/// recursive splitter exists.
+/// slices of it. With [`STRATEGY_HEADINGS`] the text is first cut into the
+/// sections its headings open: no chunk spans two sections, the heading
+/// lines themselves are left out, and each chunk carries its heading path.
 ///
 /// Returns an empty Vec for empty input.
 pub fn chunk_text(
     text: &str,
     chunk_size: usize,
     chunk_overlap: usize,
-    _strategy: &str,
+    strategy: &str,
 ) -> Vec<TextChunk> {
     let text = normalize_text(text);
     if text.is_empty() {
@@ -84,8 +94,31 @@ pub fn chunk_text(
         chunk_overlap
     };
 
+    let mut chunks = Vec::new();
+    if strategy == STRATEGY_HEADINGS {
+        let found = headings::find_headings(&text);
+        for section in headings::sections(&text, &found) {
+            let path = section.path_text();
+            split_range(&text, section.start, section.end, chunk_size, chunk_overlap, &path, &mut chunks);
+        }
+    } else {
+        split_range(&text, 0, text.len(), chunk_size, chunk_overlap, "", &mut chunks);
+    }
+    chunks
+}
+
+/// Chunks of `text[start..end]` appended to `chunks` (overlap only inside the range).
+fn split_range(
+    text: &str,
+    start: usize,
+    end: usize,
+    chunk_size: usize,
+    chunk_overlap: usize,
+    heading: &str,
+    chunks: &mut Vec<TextChunk>,
+) {
     let mut pieces = Vec::new();
-    split_pieces(&text, 0, text.len(), 0, chunk_size, &mut pieces);
+    split_pieces(text, start, end, 0, chunk_size, &mut pieces);
 
     // Greedy packing of consecutive pieces up to chunk_size.
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -105,11 +138,10 @@ pub fn chunk_text(
         spans.push((s, e));
     }
 
-    let mut chunks = Vec::new();
     let mut prev: Option<(usize, usize)> = None;
     for (start, end) in spans {
         let from = match prev {
-            Some((ps, pe)) if chunk_overlap > 0 => overlap_start(&text, ps, pe, chunk_overlap).min(start),
+            Some((ps, pe)) if chunk_overlap > 0 => overlap_start(text, ps, pe, chunk_overlap).min(start),
             _ => start,
         };
         prev = Some((start, end));
@@ -127,9 +159,9 @@ pub fn chunk_text(
             token_count: cjk::estimate_tokens(trimmed),
             start_char: text[..byte_start].chars().count(),
             end_char: text[..byte_end].chars().count(),
+            heading: heading.to_string(),
         });
     }
-    chunks
 }
 
 /// Separate counts so the estimate of joined pieces is exact.
@@ -370,6 +402,38 @@ mod tests {
         for c in &chunks {
             assert!(c.token_count <= 30);
         }
+    }
+
+    #[test]
+    fn heading_strategy_keeps_chunks_inside_sections_with_their_paths() {
+        let background = "研究背景的句子在这里展开说明。".repeat(12);
+        let text = format!("第一章 绪论\n1.1 研究背景\n{background}\n1.2 研究意义\n意义很短。\n第二章 方法\n方法正文。");
+        let chunks = chunk_text(&text, 64, 8, STRATEGY_HEADINGS);
+        let headings: Vec<&str> = chunks.iter().map(|c| c.heading.as_str()).collect();
+        assert!(chunks.len() >= 4, "{headings:?}");
+        assert!(headings[..chunks.len() - 2].iter().all(|h| *h == "第一章 绪论 › 1.1 研究背景"));
+        assert_eq!(headings[chunks.len() - 2], "第一章 绪论 › 1.2 研究意义");
+        assert_eq!(headings[chunks.len() - 1], "第二章 方法");
+        assert_eq!(chunks[chunks.len() - 2].text, "意义很短。", "no overlap from another section");
+        let norm = normalize_text(&text);
+        for (i, c) in chunks.iter().enumerate() {
+            assert_eq!(c.index, i);
+            assert!(!c.text.contains("1.2 研究意义") && !c.text.contains("第二章"), "heading lines left out: {:?}", c.text);
+            let slice: String = norm.chars().skip(c.start_char).take(c.end_char - c.start_char).collect();
+            assert_eq!(slice, c.text);
+        }
+        // The recursive strategy ignores headings.
+        let plain = chunk_text(&text, 64, 8, STRATEGY_RECURSIVE);
+        assert!(plain.iter().all(|c| c.heading.is_empty()));
+        assert!(plain[0].text.starts_with("第一章 绪论"));
+    }
+
+    #[test]
+    fn heading_strategy_without_headings_matches_recursive() {
+        let text = "普通段落，没有任何标题。".repeat(40);
+        let a = chunk_text(&text, 64, 8, STRATEGY_HEADINGS);
+        let b = chunk_text(&text, 64, 8, STRATEGY_RECURSIVE);
+        assert_eq!(a.iter().map(|c| &c.text).collect::<Vec<_>>(), b.iter().map(|c| &c.text).collect::<Vec<_>>());
     }
 
     #[test]
