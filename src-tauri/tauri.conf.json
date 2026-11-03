@@ -17,8 +17,8 @@
       {
         "label": "launcher",
         "title": "NexQ Plus",
-        "width": 900,
-        "height": 650,
+        "width": 1200,
+        "height": 820,
         "minWidth": 700,
         "minHeight": 500,
         "resizable": true,
