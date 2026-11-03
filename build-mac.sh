@@ -89,6 +89,22 @@ fi
 # shellcheck source=scripts/macos-env.sh
 source "$SCRIPT_DIR/scripts/macos-env.sh"
 
+# Code signing: macOS ties keychain access and privacy permissions
+# (microphone, screen recording) to the signature. Signed ad hoc
+# (tauri.macos.conf.json's "-"), every build is a new app and asks again; a
+# certificate keeps them across builds. APPLE_SIGNING_IDENTITY wins, else the
+# first valid "Apple Development" certificate in the keychain is used.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  read -r SIGNING_HASH SIGNING_NAME < <(security find-identity -v -p codesigning 2>/dev/null |
+    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "\(Apple Development: .*\)"$/\1 \2/p' | head -1) || true
+  if [[ -n "${SIGNING_HASH:-}" ]]; then
+    export APPLE_SIGNING_IDENTITY="$SIGNING_HASH"
+    echo "▶ Signing with $SIGNING_NAME"
+  else
+    echo "⚠ No valid Apple Development certificate: signing ad hoc, so macOS asks for the keychain password after every build."
+  fi
+fi
+
 # Updater artifacts need the release signing key; local builds skip them.
 if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   BUILD_ARGS+=("--config" '{"bundle":{"createUpdaterArtifacts":false}}')
