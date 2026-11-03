@@ -78,6 +78,8 @@ Open Settings (`Ctrl+,`) > Context to configure RAG parameters:
 
 Each AI request has a limited token budget for context. The token budget determines how many document chunks can be included alongside the conversation transcript. If you load many documents, only the most relevant chunks are selected within the budget.
 
+The Token Budget meter on the Context panel counts an indexed document as the passages one search brings back (at most about Top K × chunk size, or the passage expansion budget when that is larger), not its whole size: a large knowledge base never goes to the model whole. Documents that aren't indexed yet count in full. A Claude CLI session preloads documents that total 100k tokens or less, so then they count in full too.
+
 ## Best Practices by Use Case
 
 ### For Interviews

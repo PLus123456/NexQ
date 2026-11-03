@@ -530,6 +530,7 @@
       "limitUnknown": "The context length of {{model}} isn't known. Set it in AI model settings → the connection → Context length.",
       "noModel": "No context length is known for the assist model.",
       "model": "Measured against {{model}}: {{limit}} tokens",
+      "library": "{{count}} indexed files, ~{{tokens}} tokens in all, aren't sent whole: a request carries only the passages a search finds, up to ~{{retrieved}}.",
       "meter": {
         "ariaLabel": "Token budget usage"
       },
@@ -542,6 +543,7 @@
           "notes": "Notes",
           "notesPdf": "Notes (PDF)",
           "notesMd": "Notes (MD)",
+          "knowledgeBase": "Knowledge base (per search)",
           "customInstructions": "Custom Instructions",
           "systemPrompt": "System Prompt",
           "transcript": "Transcript"

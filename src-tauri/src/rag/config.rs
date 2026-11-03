@@ -509,6 +509,17 @@ impl RagConfig {
         }
     }
 
+    /// About the most document text one search brings back (tokens): the
+    /// expanded passages' budget, or `top_k` plain chunks when that is more.
+    pub fn retrieved_tokens_max(&self) -> usize {
+        let chunks = self.top_k * self.chunk_size;
+        if self.expansion.enabled {
+            chunks.max(self.expansion.max_total_tokens)
+        } else {
+            chunks
+        }
+    }
+
     /// Enough to send requests: a model and (unless an LLM connection is reused) a base URL.
     pub fn embedding_configured(&self) -> bool {
         !self.embedding.model.is_empty()

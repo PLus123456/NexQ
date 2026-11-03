@@ -682,6 +682,18 @@ impl RagEngine {
         self.status().stats.clone()
     }
 
+    /// Resource ids of the documents the index holds chunks of.
+    pub async fn indexed_resources(&self) -> HashSet<String> {
+        let Some(store) = self.store.clone() else { return HashSet::new() };
+        match blocking(move || store.list_documents()).await {
+            Ok(docs) => docs.into_iter().filter(|d| d.status == "indexed").map(|d| d.resource_id).collect(),
+            Err(e) => {
+                log::warn!("Cannot list the indexed documents: {e}");
+                HashSet::new()
+            }
+        }
+    }
+
     pub(super) fn set_last_error(&self, kind: &str, message: String) {
         self.status().last_error = Some(LastError { message, kind: kind.to_string(), at_ms: super::store::now_ms() });
     }

@@ -584,6 +584,12 @@ export interface TokenBudget {
   /** The assist model's context length; 0 when it isn't known. */
   limit: number;
   segments: TokenBudgetSegment[];
+  /**
+   * Files in the knowledge base index, sent as the passages a search finds
+   * (the "knowledge" segment) instead of whole, and their whole size.
+   */
+  library_files: number;
+  library_tokens: number;
   /** The model the context goes to, and its connection's name. */
   model: string | null;
   connection: string | null;
@@ -593,7 +599,7 @@ export interface TokenBudgetSegment {
   label: string;
   tokens: number;
   color: string;
-  category: "resume" | "jd" | "notes" | "transcript" | "system" | "headroom";
+  category: "resume" | "jd" | "notes" | "knowledge" | "transcript" | "system" | "headroom";
 }
 
 // == QUESTION DETECTION ==

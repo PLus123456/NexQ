@@ -3,6 +3,7 @@ pub mod pdf_extractor;
 pub mod resource_cache;
 pub mod token_counter;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -306,10 +307,15 @@ impl ContextManager {
     }
 
     /// Compute the token budget breakdown.
+    /// The token budget; `indexed` holds the resources in the knowledge base
+    /// index, of which a request gets up to `retrieved_tokens` (0: the
+    /// documents are sent whole).
     pub fn get_token_budget(
         &self,
         model_context_window: u64,
         transcript_tokens: usize,
+        indexed: &HashSet<String>,
+        retrieved_tokens: usize,
     ) -> TokenBudget {
         let budget_resources: Vec<BudgetResource> = self
             .resources
@@ -318,6 +324,7 @@ impl ContextManager {
                 name: r.name.clone(),
                 file_type: r.file_type.clone(),
                 token_count: r.token_count,
+                indexed: indexed.contains(&r.id),
             })
             .collect();
 
@@ -326,6 +333,12 @@ impl ContextManager {
             &self.custom_instructions,
             transcript_tokens,
             model_context_window,
+            retrieved_tokens,
         )
+    }
+
+    /// The loaded documents' whole size in tokens.
+    pub fn resources_tokens(&self) -> usize {
+        self.resources.iter().map(|r| r.token_count).sum()
     }
 }

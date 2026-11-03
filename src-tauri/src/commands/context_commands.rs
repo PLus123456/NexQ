@@ -1,6 +1,11 @@
+use std::collections::HashSet;
+
 use tauri::{command, AppHandle, Manager, State};
 
+use crate::llm::api::LlmKind;
+use crate::llm::cli_agent::routing::DOC_PRELOAD_TOKEN_CAP;
 use crate::llm::registry::{self as llm_registry, LlmRegistry};
+use crate::rag;
 use crate::state::AppState;
 
 #[command]
@@ -140,11 +145,12 @@ pub async fn get_assembled_context(
     Ok(ctx.get_assembled_context())
 }
 
-/// The model the assist route sends the context to, its connection's name
-/// and its context length (0 when it isn't known).
-fn assist_context_window(app: &AppHandle) -> (Option<String>, Option<String>, u64) {
+/// The model the assist route sends the context to, its connection's name,
+/// its context length (0 when it isn't known) and whether it is a Claude
+/// CLI connection.
+fn assist_context_window(app: &AppHandle) -> (Option<String>, Option<String>, u64, bool) {
     let Some(registry) = app.try_state::<LlmRegistry>() else {
-        return (None, None, 0);
+        return (None, None, 0, false);
     };
     let claude = llm_registry::claude_context(app);
     match llm_registry::resolve_task(&registry.config(), "assist:Assist", &claude) {
@@ -154,9 +160,10 @@ fn assist_context_window(app: &AppHandle) -> (Option<String>, Option<String>, u6
                 .as_deref()
                 .and_then(|m| route.connection.context_window(m))
                 .unwrap_or(0);
-            (route.model, Some(route.connection.display_name()), limit)
+            let claude_cli = route.connection.kind == LlmKind::ClaudeCli;
+            (route.model, Some(route.connection.display_name()), limit, claude_cli)
         }
-        Err(_) => (None, None, 0),
+        Err(_) => (None, None, 0, false),
     }
 }
 
@@ -165,7 +172,13 @@ pub async fn get_token_budget(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let (model, connection, model_context_window) = assist_context_window(&app);
+    let (model, connection, model_context_window, claude_cli) = assist_context_window(&app);
+
+    // Indexed documents reach the model as the passages a search finds.
+    let (indexed, retrieved_tokens) = match rag::engine::global() {
+        Some(engine) => (engine.indexed_resources().await, engine.config().retrieved_tokens_max()),
+        None => (HashSet::new(), 0),
+    };
 
     let ctx_mgr = state
         .context
@@ -179,7 +192,11 @@ pub async fn get_token_budget(
     // Transcript tokens default to 0 when not in a meeting
     let transcript_tokens: usize = 0;
 
-    let mut budget = ctx.get_token_budget(model_context_window, transcript_tokens);
+    // A Claude session preloads documents that fit its cap, indexed or not.
+    let sent_whole = claude_cli && ctx.resources_tokens() <= DOC_PRELOAD_TOKEN_CAP;
+    let retrieved_tokens = if sent_whole { 0 } else { retrieved_tokens };
+
+    let mut budget = ctx.get_token_budget(model_context_window, transcript_tokens, &indexed, retrieved_tokens);
     budget.model = model;
     budget.connection = connection;
 

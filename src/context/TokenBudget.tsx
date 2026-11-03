@@ -4,6 +4,7 @@ import { useContextStore } from "../stores/contextStore";
 import { AlertTriangle } from "lucide-react";
 import { useT } from "../i18n";
 import { onLlmConfigChanged } from "../lib/llm/ipc";
+import type { TokenBudget as TokenBudgetData } from "../lib/types";
 
 /**
  * The segment labels the backend sends (src-tauri/src/context/token_counter.rs),
@@ -15,6 +16,7 @@ const SEGMENT_LABEL_KEYS = new Map<string, ParseKeys<"rag">>([
   ["Notes", "context.tokenBudget.segment.labels.notes"],
   ["Notes (PDF)", "context.tokenBudget.segment.labels.notesPdf"],
   ["Notes (MD)", "context.tokenBudget.segment.labels.notesMd"],
+  ["Knowledge base", "context.tokenBudget.segment.labels.knowledgeBase"],
   ["Custom Instructions", "context.tokenBudget.segment.labels.customInstructions"],
   ["System Prompt", "context.tokenBudget.segment.labels.systemPrompt"],
   ["Transcript", "context.tokenBudget.segment.labels.transcript"],
@@ -62,6 +64,7 @@ export function TokenBudget() {
             ? t("context.tokenBudget.limitUnknown", { model })
             : t("context.tokenBudget.noModel")}
         </p>
+        <LibraryNote budget={tokenBudget} />
       </div>
     );
   }
@@ -170,7 +173,26 @@ export function TokenBudget() {
           ))}
         </div>
       )}
+      <LibraryNote budget={tokenBudget} />
     </div>
+  );
+}
+
+/** Why the knowledge base counts as one search's passages, not its size. */
+function LibraryNote({ budget }: { budget: TokenBudgetData }) {
+  const { t } = useT("rag");
+  if (budget.library_files === 0) {
+    return null;
+  }
+  const retrieved = budget.segments.find((s) => s.category === "knowledge")?.tokens ?? 0;
+  return (
+    <p className="mt-2 text-meta text-muted-foreground">
+      {t("context.tokenBudget.library", {
+        count: budget.library_files,
+        tokens: formatNumber(budget.library_tokens),
+        retrieved: formatNumber(retrieved),
+      })}
+    </p>
   );
 }
 
