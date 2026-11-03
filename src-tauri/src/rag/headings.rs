@@ -344,11 +344,16 @@ pub fn chapters(text: &str, headings: &[Heading]) -> Vec<Chapter> {
     out
 }
 
-/// Abstract, contents, references, acknowledgements, appendices: no summary.
+/// Abstract, contents and the lists of tables and figures, declarations,
+/// references, acknowledgements, appendices: no summary.
 fn is_front_or_back_matter(title: &str) -> bool {
     const SKIPPED: &[&str] = &[
         "摘要", "中文摘要", "英文摘要", "abstract", "目录", "目次", "contents", "tableofcontents", "参考文献",
-        "references", "bibliography", "致谢", "致谢辞", "acknowledgements", "acknowledgments", "作者简介",
+        "references", "bibliography", "致谢", "致谢辞", "acknowledgements", "acknowledgments", "acknowledgement",
+        "acknowledgment", "作者简介", "插图目录", "图目录", "表格目录", "表目录", "附表目录", "插图和附表清单",
+        "符号说明", "主要符号表", "符号表", "缩略语", "listoftables", "listoffigures", "listofsymbols",
+        "listofabbreviations", "abbreviations", "nomenclature", "glossary", "declaration", "声明", "独创性声明",
+        "原创性声明", "学位论文原创性声明",
     ];
     let compact: String = title.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
     SKIPPED.contains(&compact.as_str()) || compact.starts_with("附录") || compact.starts_with("appendix")
@@ -480,6 +485,16 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(text[got[0].start..got[0].end].trim(), "第一页。\n第一章 绪论\n第二页。");
         assert!(chapters("只有正文。", &[]).is_empty());
+    }
+
+    #[test]
+    fn front_matter_in_english_gets_no_summary() {
+        for title in ["Acknowledgement", "List of Tables", "List of Figures", "Declaration", "原创性声明", "Appendix G: Re-split"] {
+            assert!(is_front_or_back_matter(title), "{title}");
+        }
+        for title in ["Chapter 6: Conclusion", "Publication and Code Availability", "第三章 研究方法"] {
+            assert!(!is_front_or_back_matter(title), "{title}");
+        }
     }
 
     #[test]

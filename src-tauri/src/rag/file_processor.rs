@@ -20,24 +20,140 @@ pub fn extract_text(file_path: &str, file_type: &str) -> Result<String, String> 
     }
 }
 
-/// Marks the lines of a PDF's extracted `text` that read like one of its
-/// outline (bookmark) titles as Markdown headings at the outline's level.
-/// A PDF without an outline, or one lopdf can't read, gives `text` back.
+/// Prepares a PDF's extracted `text` for the heading splitter: running
+/// headers and footers are cut out, and lines that read like one of its
+/// outline (bookmark) titles become Markdown headings at the outline's level.
+/// A PDF lopdf can't read gives `text` back; one without an outline only
+/// loses its running lines.
 pub fn mark_pdf_outline(file_path: &str, text: &str) -> String {
-    let outline = match lopdf::Document::load(file_path).and_then(|doc| doc.get_toc()) {
-        Ok(toc) => toc.toc.into_iter().map(|t| (t.level, t.title)).collect::<Vec<_>>(),
+    let doc = match lopdf::Document::load(file_path) {
+        Ok(doc) => doc,
         Err(_) => return text.to_string(),
     };
-    mark_outline_lines(text, &outline)
+    let outline = doc
+        .get_toc()
+        .map(|toc| toc.toc.into_iter().map(|t| (t.level, t.title)).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let text = strip_running_lines(text, doc.get_pages().len(), &outline);
+    mark_outline_lines(&text, &outline)
+}
+
+/// Whitespace and case ignored.
+fn outline_key(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+}
+
+/// Cuts out lines that come back on a quarter of the pages or more (at least
+/// 5 times), digits ignored: running headers and footers such as the title
+/// with "Page 5 of 73". Only lines with some letters count, so repeated
+/// table rows of numbers stay.
+///
+/// Word also prints the first heading of a page in its header, even when the
+/// page starts inside the previous section; taken for the heading, that copy
+/// would file the rest of the previous section under the next one. A title
+/// line next to a running line is dropped as such a copy when the same title
+/// comes next in the body of that page (not next to a running line itself),
+/// and only for titles the outline has once ("本章小结" in every chapter is a
+/// real heading each time). Other copies stay for the heading splitter, which
+/// cuts a repeat of an open heading.
+fn strip_running_lines(text: &str, pages: usize, outline: &[(usize, String)]) -> String {
+    if pages < 4 {
+        return text.to_string();
+    }
+    let mut in_outline: HashMap<String, usize> = HashMap::new();
+    for (_, t) in outline {
+        *in_outline.entry(outline_key(t)).or_default() += 1;
+    }
+    // Digit runs become one '#', so "Page 5 of 73" and "Page 12 of 73" match.
+    let shape = |line: &str| -> Option<String> {
+        if line.chars().filter(|c| c.is_alphabetic()).count() < 4 || in_outline.contains_key(&outline_key(line)) {
+            return None;
+        }
+        let mut out = String::new();
+        for c in line.chars().filter(|c| !c.is_whitespace()) {
+            if c.is_ascii_digit() {
+                if !out.ends_with('#') {
+                    out.push('#');
+                }
+            } else {
+                out.extend(c.to_lowercase());
+            }
+        }
+        Some(out)
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let shapes: Vec<Option<String>> = lines.iter().map(|l| shape(l)).collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for s in shapes.iter().flatten() {
+        *counts.entry(s.as_str()).or_default() += 1;
+    }
+    let min = (pages / 4).max(5);
+    let running: Vec<bool> = shapes
+        .iter()
+        .map(|s| s.as_deref().is_some_and(|s| counts.get(s).copied().unwrap_or(0) >= min))
+        .collect();
+    if !running.contains(&true) {
+        return text.to_string();
+    }
+    let blank: Vec<bool> = lines.iter().map(|l| l.trim().is_empty()).collect();
+    // Whether the nearest non-blank line before / after each line is a running one.
+    let mut running_before = vec![false; lines.len()];
+    let mut last = false;
+    for i in 0..lines.len() {
+        running_before[i] = last;
+        if !blank[i] {
+            last = running[i];
+        }
+    }
+    let mut running_after = vec![false; lines.len()];
+    let mut next = false;
+    for i in (0..lines.len()).rev() {
+        running_after[i] = next;
+        if !blank[i] {
+            next = running[i];
+        }
+    }
+    let at_page_edge = |i: usize| running_before[i] || running_after[i];
+    // Running groups started before each line, to tell whether two lines share a page.
+    let mut groups_before = vec![0usize; lines.len() + 1];
+    for i in 0..lines.len() {
+        let starts = running[i] && !running_before[i];
+        groups_before[i + 1] = groups_before[i] + usize::from(starts);
+    }
+    let keys: Vec<String> = lines.iter().map(|l| outline_key(l)).collect();
+    let mut next_same: Vec<Option<usize>> = vec![None; lines.len()];
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for i in (0..lines.len()).rev() {
+        if in_outline.get(&keys[i]) == Some(&1) {
+            next_same[i] = seen.get(keys[i].as_str()).copied();
+            seen.insert(keys[i].as_str(), i);
+        }
+    }
+    let header_copy = |i: usize| -> bool {
+        let Some(n) = next_same[i] else { return false };
+        if running[i] || !at_page_edge(i) || at_page_edge(n) {
+            return false;
+        }
+        // A copy above the header's running lines crosses them to reach its page.
+        let allowed = usize::from(running_after[i]);
+        groups_before[n] - groups_before[i + 1] <= allowed
+    };
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !running[*i] && !header_copy(*i))
+        .map(|(_, l)| *l)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Lines equal to an outline title (whitespace and case ignored) become
-/// `#` headings of its level (1 = outermost).
+/// `#` headings of its level (1 = outermost). A title wrapped over two or
+/// three lines (blank lines between them allowed) becomes one heading line.
 fn mark_outline_lines(text: &str, outline: &[(usize, String)]) -> String {
-    let key = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
     let mut levels: HashMap<String, usize> = HashMap::new();
     for (level, title) in outline {
-        let k = key(title);
+        let k = outline_key(title);
         if !k.is_empty() {
             levels.entry(k).or_insert((*level).clamp(1, 6));
         }
@@ -45,13 +161,52 @@ fn mark_outline_lines(text: &str, outline: &[(usize, String)]) -> String {
     if levels.is_empty() {
         return text.to_string();
     }
-    text.split('\n')
-        .map(|line| match levels.get(&key(line)) {
-            Some(level) => format!("{} {}", "#".repeat(*level), line.trim()),
-            None => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let mut k = outline_key(line);
+        if let Some(level) = levels.get(&k) {
+            out.push(format!("{} {}", "#".repeat(*level), line.trim()));
+            i += 1;
+            continue;
+        }
+        // The start of a longer title: join the next non-blank lines while
+        // they still spell one.
+        let mut joined = None;
+        if k.chars().count() >= 4 && levels.keys().any(|t| t.len() > k.len() && t.starts_with(&k)) {
+            let mut parts = vec![line.trim()];
+            let mut j = i + 1;
+            while j < lines.len() && parts.len() < 3 {
+                let next = lines[j].trim();
+                j += 1;
+                if next.is_empty() {
+                    continue;
+                }
+                k.push_str(&outline_key(next));
+                parts.push(next);
+                if let Some(level) = levels.get(&k) {
+                    joined = Some((format!("{} {}", "#".repeat(*level), parts.join(" ")), j));
+                    break;
+                }
+                if !levels.keys().any(|t| t.starts_with(&k)) {
+                    break;
+                }
+            }
+        }
+        match joined {
+            Some((heading, next)) => {
+                out.push(heading);
+                i = next;
+            }
+            None => {
+                out.push(line.to_string());
+                i += 1;
+            }
+        }
+    }
+    out.join("\n")
 }
 
 /// Extract text from a DOCX (Office Open XML) file.
@@ -322,6 +477,70 @@ mod tests {
         assert_eq!(mark_outline_lines(text, &[]), text);
         // A file lopdf can't read leaves the text alone.
         assert_eq!(mark_pdf_outline("/nonexistent.pdf", "x\ny"), "x\ny");
+    }
+
+    #[test]
+    fn wrapped_outline_titles_become_one_heading() {
+        let outline = vec![
+            (1, "Appendix F: Complete system and component diagrams".to_string()),
+            (1, "Appendix G: UPRN-grouped re-split (leakage-free generalisation check)".to_string()),
+        ];
+        let text = "Figure F.1\nAppendix F: Complete system and component \n\ndiagrams\nBody F.\nAppendix G: UPRN-grouped re-split (leakage-free\n\ngeneralisation check)\nBody G.\nAppendix H: not in the outline\nmore";
+        assert_eq!(
+            mark_outline_lines(text, &outline),
+            "Figure F.1\n# Appendix F: Complete system and component diagrams\nBody F.\n# Appendix G: UPRN-grouped re-split (leakage-free generalisation check)\nBody G.\nAppendix H: not in the outline\nmore"
+        );
+        // A line that only starts like a title stays as it is.
+        let text = "Appendix F: Complete system\nand something else";
+        assert_eq!(mark_outline_lines(text, &outline), text);
+    }
+
+    #[test]
+    fn running_headers_and_footers_are_cut_out() {
+        let mut text = String::new();
+        let bodies = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+        for (page, body) in bodies.iter().enumerate() {
+            text.push_str(&format!("Thesis Title: A Framework\nPage {} of 73\nChapter 1: Introduction\n", page + 1));
+            text.push_str(&format!("The {body} paragraph.\n0.900 0.896\n"));
+        }
+        let outline = vec![(1, "Chapter 1: Introduction".to_string())];
+        let out = strip_running_lines(&text, 8, &outline);
+        assert!(!out.contains("Thesis Title") && !out.contains("Page 3 of 73"));
+        // Outline titles (here the header's copies of an open chapter, left
+        // to the heading splitter), number rows and the body stay.
+        assert_eq!(out.matches("Chapter 1: Introduction").count(), 8);
+        assert_eq!(out.matches("0.900 0.896").count(), 8);
+        assert!(out.contains("The alpha paragraph.") && out.contains("The theta paragraph."));
+        // A section title printed in the header (Word shows the page's first
+        // heading there) goes when the real heading follows; the last copy
+        // and a real heading at the top of a page stay.
+        let text = "Title Line\nPage 1 of 9\n\n5.6 OOD detection\nend of 5.5.\n5.6 OOD detection\nbody of 5.6.\n\
+                    Title Line\nPage 2 of 9\n5.6 OOD detection\nmore 5.6.\nTitle Line\nPage 3 of 9\n5.7 Triage\nbody of 5.7.\n\
+                    Title Line\nPage 4 of 9\nTitle Line\nPage 5 of 9\nTitle Line\nPage 6 of 9";
+        let outline = vec![(2, "5.6 OOD detection".to_string()), (2, "5.7 Triage".to_string())];
+        assert_eq!(
+            strip_running_lines(text, 8, &outline),
+            "\nend of 5.5.\n5.6 OOD detection\nbody of 5.6.\n5.6 OOD detection\nmore 5.6.\n5.7 Triage\nbody of 5.7."
+        );
+        // The same with the copy above the running lines (pdf_extract's
+        // order), and a chapter starting at the top of a page keeps its heading.
+        let text = "end of 4.3 (assessor\n\n4.4 Stack\n\nTitle Line\nPage 19 of 73\n\nlanguage is templated.\n4.4 Stack\nThe stack.\n\
+                    4.4 Stack\nTitle Line\nPage 20 of 73\nmore 4.4.\nChapter 5 Results\nTitle Line\nPage 21 of 73\nChapter 5 Results\nbody 5.\n\
+                    Chapter 5 Results\nTitle Line\nPage 22 of 73\nmore 5.\nTitle Line\nPage 23 of 73";
+        let outline = vec![(2, "4.4 Stack".to_string()), (1, "Chapter 5 Results".to_string())];
+        assert_eq!(
+            strip_running_lines(text, 8, &outline),
+            "end of 4.3 (assessor\n\n\n\nlanguage is templated.\n4.4 Stack\nThe stack.\n4.4 Stack\nmore 4.4.\n\
+             Chapter 5 Results\nChapter 5 Results\nbody 5.\nChapter 5 Results\nmore 5."
+        );
+        // A title the outline has twice is a real heading every time.
+        let text = "Title Line\nPage 1 of 9\n本章小结\n第一章小结。\nTitle Line\nPage 2 of 9\n本章小结\n第二章小结。\n\
+                    Title Line\nPage 3 of 9\nTitle Line\nPage 4 of 9\nTitle Line\nPage 5 of 9";
+        let outline = vec![(2, "本章小结".to_string()), (2, "本章小结".to_string())];
+        assert_eq!(strip_running_lines(text, 8, &outline), "本章小结\n第一章小结。\n本章小结\n第二章小结。");
+        // Too few pages, or nothing repeated often enough: unchanged.
+        assert_eq!(strip_running_lines(&text, 3, &outline), text);
+        assert_eq!(strip_running_lines("a line\nanother", 40, &[]), "a line\nanother");
     }
 
     #[test]
