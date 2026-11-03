@@ -49,6 +49,8 @@ describe("LlmQuickSetup", () => {
     await user.click(await screen.findByRole("button", { name: /DeepSeek/ }));
     expect(onStatusChange).toHaveBeenLastCalledWith("incomplete");
     await user.type(screen.getByLabelText("API Key"), "sk-quick-1234{Enter}");
+    // Templates name no model: the user types one.
+    await user.type(screen.getByLabelText("Default model"), "deepseek-flash{Enter}");
     await user.click(screen.getByRole("button", { name: "Test and save" }));
 
     await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("ok"));
@@ -67,6 +69,7 @@ describe("LlmQuickSetup", () => {
     const { user, onStatusChange, backend } = setup();
     backend.testResult = { ok: false, status: 401, sample: null, error: null, error_body: "invalid api key", hint: "auth_failed" };
     await user.click(await screen.findByRole("button", { name: /DeepSeek/ }));
+    await user.type(screen.getByLabelText("Default model"), "deepseek-flash{Enter}");
     await user.click(screen.getByRole("button", { name: "Test and save" }));
     await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("error", "invalid api key"));
     // The connection that didn't answer was removed again.

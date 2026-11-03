@@ -182,7 +182,6 @@
       "groups": {
         "manual": "Manual",
         "fetched": "Fetched",
-        "suggested": "Suggested",
         "other": "Other"
       }
     }

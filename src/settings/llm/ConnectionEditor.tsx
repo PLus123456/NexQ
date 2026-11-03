@@ -360,7 +360,6 @@ export function ConnectionEditor({ view, saved, draft, onDraftChange, onSaved, o
             <ModelSection
               draft={draft}
               saved={saved}
-              template={template}
               blockedReason={blockedReason}
               onDraftChange={onDraftChange}
             />

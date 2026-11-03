@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { formatNumber, useT } from "../../i18n";
 import { EndpointFields, type EndpointFieldsValue } from "../../components/EndpointFields";
-import { ModelCombobox, type ModelOption } from "../../components/ModelCombobox";
+import { ModelCombobox } from "../../components/ModelCombobox";
 import { ENDPOINT_PATHS } from "../../lib/endpoint";
 import { consentedHosts, rememberConsent } from "../../lib/rag/consent";
 import { hostOf, isLocalAddress } from "../../lib/rag/embeddingPresets";
@@ -46,14 +46,6 @@ function editable(config: RerankConfig): Editable {
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
-/** Well-known model ids offered in the model field (any id can be typed). */
-const MODEL_SUGGESTIONS: ModelOption[] = [
-  "BAAI/bge-reranker-v2-m3",
-  "Qwen/Qwen3-Reranker-8B",
-  "jina-reranker-v2-base-multilingual",
-  "rerank-v3.5",
-].map((id) => ({ id, source: "suggested" as const }));
 
 const FORMATS: RerankFormat[] = ["generic", "tei"];
 
@@ -248,7 +240,7 @@ export function RerankSection() {
             id="rag-rerank-model"
             value={current.model}
             onChange={(model) => edit({ model })}
-            options={MODEL_SUGGESTIONS}
+            options={[]}
             placeholder={t("rerank.model.placeholder")}
           />
           {isTei && <p className={HINT}>{t("rerank.model.teiHint")}</p>}

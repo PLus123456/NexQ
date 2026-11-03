@@ -249,7 +249,6 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
   const options = connection
     ? modelOptions(
         { ...connection, model_cache: fetched ? { models: fetched, fetched_at_ms: null, url: null, error: null } : null },
-        template?.suggestedModels ?? [],
       )
     : [];
   const fields: EndpointFieldsValue | null = connection

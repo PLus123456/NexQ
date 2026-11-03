@@ -14,7 +14,6 @@ import {
   EMBEDDING_PRESETS,
   hostOf,
   isLocalAddress,
-  modelSuggestions,
   presetForBaseUrl,
   type EmbeddingPreset,
 } from "../../lib/rag/embeddingPresets";
@@ -129,13 +128,11 @@ export function EmbeddingSection() {
   const applyPreset = (preset: EmbeddingPreset) => {
     setPresetId(preset.id);
     if (preset.id === "custom") return;
-    const keepModel = preset.models.length === 0 || preset.models.some((m) => m.id === current.model);
     edit({
       provider: preset.provider,
       connection_id: "",
       base_url: preset.baseUrl,
       auth: { ...current.auth, mode: preset.needsKey ? "bearer" : "none" },
-      model: keepModel ? current.model : preset.models[0]?.id ?? "",
       batch_size: preset.maxBatch ? Math.min(current.batch_size, preset.maxBatch) : current.batch_size,
       extra_body_query: preset.extraBodyQuery ?? {},
       extra_body_document: preset.extraBodyDocument ?? {},
@@ -160,19 +157,8 @@ export function EmbeddingSection() {
   const isOllama = current.provider === "ollama";
   const ollamaV1 = isOllama && /\/v1\/?$/i.test(current.base_url.trim());
 
-  const suggestions = modelSuggestions(current.provider, presetId);
   const fetched = isOllama && ollamaStatus?.connected ? ollamaStatus.models : [];
-  const modelOptions: ModelOption[] = [
-    ...fetched.map((id) => ({ id, source: "fetched" as const })),
-    ...suggestions
-      .filter((m) => !fetched.includes(m.id))
-      .map((m) => ({
-        id: m.id,
-        source: "suggested" as const,
-        detail: m.dims ? t("embedding.model.dims", { dims: m.dims }) : undefined,
-      })),
-  ];
-  const acceptsDimensions = suggestions.find((m) => m.id === current.model)?.acceptsDimensions;
+  const modelOptions: ModelOption[] = fetched.map((id) => ({ id, source: "fetched" as const }));
 
   // A connection that no longer exists is shown (and saved) as "own address".
   const patchFromDraft = (): RagConfigPatch => ({
@@ -400,11 +386,7 @@ export function EmbeddingSection() {
             />
             <span>
               {t("embedding.dimensions.send")}
-              <span className="block text-muted-foreground">
-                {acceptsDimensions === false || acceptsDimensions === undefined
-                  ? t("embedding.dimensions.sendHint")
-                  : t("embedding.dimensions.sendSupported")}
-              </span>
+              <span className="block text-muted-foreground">{t("embedding.dimensions.sendHint")}</span>
             </span>
           </label>
         </div>

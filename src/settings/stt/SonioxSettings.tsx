@@ -40,7 +40,6 @@ import {
   SONIOX_KEY_SLOT,
   SONIOX_REGIONS,
   SONIOX_REGION_IDS,
-  SONIOX_SUGGESTED_MODELS,
   sonioxKeySlot,
   sonioxRegionList,
   type SonioxAddKeyResult,
@@ -446,10 +445,7 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
   const mode = config.region_mode;
   const regionList = sonioxRegionList(config);
   const custom = usesCustomEndpoint(config);
-  const modelOptions: ModelOption[] = [
-    ...models.map((id) => ({ id, source: "fetched" as const })),
-    ...SONIOX_SUGGESTED_MODELS.map((id) => ({ id, source: "suggested" as const })),
-  ];
+  const modelOptions: ModelOption[] = models.map((id) => ({ id, source: "fetched" as const }));
   const keyId = `${idPrefix}-key`;
   const keyHintId = `${idPrefix}-key-hint`;
 

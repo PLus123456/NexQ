@@ -103,7 +103,6 @@ export function LlmQuickPicker({ view, onClose }: { view: LlmConfigView; onClose
             ? { ...pending.model_cache, models: pending.model_cache.models.filter((m) => !isEmbeddingModel(m.id)) }
             : null,
         },
-        findTemplate(pending.template)?.suggestedModels ?? [],
       )
     : [];
   // The connection's default model first, then the candidates (each once).

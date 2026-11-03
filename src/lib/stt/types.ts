@@ -71,9 +71,6 @@ export interface SonioxRegionSetting {
   enabled: boolean;
 }
 
-/** Real-time models offered before `/v1/models` has been fetched (any id can be typed). */
-export const SONIOX_SUGGESTED_MODELS: readonly string[] = ["stt-rt-v5"];
-
 export interface SonioxConfig {
   region: SonioxRegion;
   model: string;

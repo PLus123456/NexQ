@@ -194,15 +194,15 @@ describe("ModelCombobox", () => {
       options: [
         { id: "fetched-1", source: "fetched" },
         { id: "manual-1", source: "manual" },
-        { id: "suggested-1", source: "suggested" },
+        { id: "other-1" },
         { id: "fetched-2", source: "fetched" },
       ],
     });
     await user.click(input);
     const groups = screen.getAllByRole("group");
-    expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual(["Manual", "Fetched", "Suggested"]);
+    expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual(["Manual", "Fetched", "Other"]);
     expect(within(groups[1]).getAllByRole("option").map((o) => o.textContent)).toEqual(["fetched-1", "fetched-2"]);
-    expect(optionTexts()).toEqual(["manual-1", "fetched-1", "fetched-2", "suggested-1"]);
+    expect(optionTexts()).toEqual(["manual-1", "fetched-1", "fetched-2", "other-1"]);
   });
 
   it("has no group headers for a single source", async () => {

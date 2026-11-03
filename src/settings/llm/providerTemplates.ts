@@ -3,9 +3,10 @@
 // Rust change (OpenAI-compatible vendors share one protocol). Names and notes
 // are in the `llm` namespace (`templates.items.<id>.*`).
 //
-// Addresses, auth styles, model ids and thinking switches were checked
-// against each vendor's documentation on 2026-11-01; suggested models are
-// only candidates (any id can be typed) and age quickly.
+// Addresses, auth styles and thinking switches were checked against each
+// vendor's documentation on 2026-11-01. Templates name no models: lists
+// written into the app go stale within months, so model inputs only show the
+// user's own list and what the vendor's /models returns.
 
 import type { AuthConfig, CustomHeader } from "../../lib/endpoint";
 import { blankConnection, uniqueName } from "../../lib/llm/connection";
@@ -54,10 +55,6 @@ export interface ProviderTemplate {
   auth: AuthConfig;
   headers?: CustomHeader[];
   modelsEndpoint?: ModelsEndpointMode;
-  /** Candidates shown in model inputs until a list is fetched. */
-  suggestedModels: readonly string[];
-  /** Pre-filled default model. */
-  defaultModel?: string;
   compat?: Partial<LlmCompat>;
   /**
    * Syntax example for turning thinking off or down on this vendor's API.
@@ -90,8 +87,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://api.deepseek.com",
     noVersionPrefix: true,
     auth: BEARER,
-    suggestedModels: ["deepseek-flash", "deepseek-v4-pro"],
-    defaultModel: "deepseek-flash",
     disableThinking: THINKING_TYPE_DISABLED,
     needsKey: true,
     keyUrl: "https://platform.deepseek.com/api_keys",
@@ -103,9 +98,7 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     altBaseUrls: [{ id: "international", url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" }],
     auth: BEARER,
-    suggestedModels: ["qwen-plus", "qwen-flash", "qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"],
     // A rolling alias whose thinking is off by default.
-    defaultModel: "qwen-plus",
     disableThinking: ENABLE_THINKING_FALSE,
     needsKey: true,
     keyUrl: "https://bailian.console.aliyun.com/model/settings/api-key",
@@ -119,9 +112,7 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     auth: BEARER,
     // No documented model list on the data plane.
     modelsEndpoint: "disabled",
-    suggestedModels: ["glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-4.7-flash"],
     // glm-5.3* always think; glm-5.2 can turn it off.
-    defaultModel: "glm-5.2",
     disableThinking: THINKING_TYPE_DISABLED,
     needsKey: true,
     keyUrl: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
@@ -133,8 +124,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://api.moonshot.cn/v1",
     altBaseUrls: [{ id: "international", url: "https://api.moonshot.ai/v1" }],
     auth: BEARER,
-    suggestedModels: ["kimi-k3.1-pro-highspeed", "kimi-k3.1-pro", "kimi-k3", "kimi-k2.6"],
-    defaultModel: "kimi-k3.1-pro-highspeed",
     // Temperature is fixed on current Kimi models: any other value is an error.
     compat: { temperature: "omit" },
     // K3 models always reason; the lowest effort is "low".
@@ -150,8 +139,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     auth: BEARER,
     // Model listing is a signed control-plane API, not this endpoint.
     modelsEndpoint: "disabled",
-    suggestedModels: ["doubao-seed-2-1-lite-260915", "doubao-seed-2-1-pro-260915", "doubao-seed-2-1-turbo-260628", "doubao-seed-2-0-lite-260428"],
-    defaultModel: "doubao-seed-2-1-lite-260915",
     disableThinking: THINKING_TYPE_DISABLED,
     needsKey: true,
     keyUrl: "https://console.volcengine.com/ark",
@@ -163,8 +150,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://api.siliconflow.cn/v1",
     altBaseUrls: [{ id: "international", url: "https://api.siliconflow.com/v1" }],
     auth: BEARER,
-    suggestedModels: ["deepseek-ai/DeepSeek-V4-Flash", "Pro/deepseek-ai/DeepSeek-V4", "Pro/zai-org/GLM-5.2", "Qwen/Qwen3.6-27B"],
-    defaultModel: "deepseek-ai/DeepSeek-V4-Flash",
     disableThinking: ENABLE_THINKING_FALSE,
     needsKey: true,
     keyUrl: "https://cloud.siliconflow.cn/account/ak",
@@ -176,8 +161,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://api.minimax.cn/v1",
     altBaseUrls: [{ id: "international", url: "https://api.minimax.io/v1" }],
     auth: BEARER,
-    suggestedModels: ["MiniMax-M3", "MiniMax-M3.1-Flash"],
-    defaultModel: "MiniMax-M3",
     disableThinking: THINKING_TYPE_DISABLED,
     needsKey: true,
     keyUrl: "https://platform.minimax.cn/user-center/basic-information/interface-key",
@@ -188,8 +171,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "https://qianfan.baidubce.com/v2",
     auth: BEARER,
-    suggestedModels: ["ernie-5.1", "deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3", "qwen3.5-397b-a17b"],
-    defaultModel: "ernie-5.1",
     needsKey: true,
     keyUrl: "https://console.bce.baidu.com/iam/#/iam/apikey/list",
   },
@@ -201,8 +182,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://tokenhub.tencentmaas.com/v1",
     altBaseUrls: [{ id: "international", url: "https://tokenhub-intl.tencentmaas.com/v1" }],
     auth: BEARER,
-    suggestedModels: ["hy3", "hy4-preview"],
-    defaultModel: "hy3",
     disableThinking: THINKING_TYPE_DISABLED,
     needsKey: true,
     keyUrl: "https://console.cloud.tencent.com/tokenhub/apikey",
@@ -214,8 +193,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "https://api.stepfun.com/v1",
     altBaseUrls: [{ id: "international", url: "https://api.stepfun.ai/v1" }],
     auth: BEARER,
-    suggestedModels: ["step-3.5-flash", "step-3.7-flash", "step-5-preview"],
-    defaultModel: "step-3.5-flash",
     // Reasoning models without an off switch: the lowest effort.
     disableThinking: { reasoning_effort: "low" },
     needsKey: true,
@@ -229,8 +206,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "https://api.openai.com/v1",
     auth: BEARER,
-    suggestedModels: ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-4.1-mini"],
-    defaultModel: "gpt-6.1-terra",
     // Reasoning models take only max_completion_tokens and reject temperature.
     compat: { max_tokens_field: "max_completion_tokens", temperature: "omit" },
     disableThinking: { reasoning_effort: "none" },
@@ -243,8 +218,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "anthropic",
     baseUrl: "https://api.anthropic.com",
     auth: header("x-api-key"),
-    suggestedModels: ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-fable-5-1"],
-    defaultModel: "claude-sonnet-5-5",
     // Claude 5 models reject sampling parameters (see llm/anthropic.rs).
     compat: { temperature: "omit" },
     needsKey: true,
@@ -256,8 +229,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "gemini",
     baseUrl: "https://generativelanguage.googleapis.com",
     auth: header("x-goog-api-key"),
-    suggestedModels: ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon", "gemini-3.6-flash"],
-    defaultModel: "gemini-3.8-flash",
     needsKey: true,
     keyUrl: "https://aistudio.google.com/apikey",
   },
@@ -272,8 +243,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
       { name: "HTTP-Referer", value: REPO_URL },
       { name: "X-OpenRouter-Title", value: APP_NAME },
     ],
-    suggestedModels: ["openrouter/auto", "deepseek/deepseek-v4.1-flash", "google/gemini-3.8-flash", "anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol"],
-    defaultModel: "openrouter/auto",
     disableThinking: { reasoning: { enabled: false } },
     needsKey: true,
     keyUrl: "https://openrouter.ai/keys",
@@ -284,8 +253,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "https://api.groq.com/openai/v1",
     auth: BEARER,
-    suggestedModels: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
-    defaultModel: "llama-3.3-70b-versatile",
     compat: { max_tokens_field: "max_completion_tokens" },
     needsKey: true,
     keyUrl: "https://console.groq.com/keys",
@@ -299,7 +266,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     auth: header("api-key"),
     // Lists the catalogue, not your deployments.
     modelsEndpoint: "disabled",
-    suggestedModels: [],
     compat: { max_tokens_field: "max_completion_tokens", temperature: "omit" },
     needsKey: true,
     keyUrl: "https://portal.azure.com/",
@@ -310,8 +276,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "https://api.x.ai/v1",
     auth: BEARER,
-    suggestedModels: ["grok-4.7", "grok-4.3", "grok-4.20-0309-non-reasoning", "grok-4.6"],
-    defaultModel: "grok-4.7",
     needsKey: true,
     keyUrl: "https://console.x.ai/team/default/api-keys",
   },
@@ -321,8 +285,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "https://api.mistral.ai/v1",
     auth: BEARER,
-    suggestedModels: ["mistral-small-2603", "mistral-large-4", "ministral-14b-2512", "codestral-2508"],
-    defaultModel: "mistral-small-2603",
     disableThinking: { reasoning_effort: "none" },
     needsKey: true,
     keyUrl: "https://admin.mistral.ai/organization/api-keys",
@@ -335,7 +297,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "ollama",
     baseUrl: "http://localhost:11434",
     auth: NONE,
-    suggestedModels: [],
     compat: { keep_alive: "30m" },
     disableThinking: { think: false },
     needsKey: false,
@@ -346,7 +307,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     kind: "openai_compat",
     baseUrl: "http://localhost:1234/v1",
     auth: NONE,
-    suggestedModels: [],
     needsKey: false,
   },
   {
@@ -356,7 +316,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "",
     baseUrlPlaceholder: "http://192.168.1.10:8000/v1",
     auth: BEARER,
-    suggestedModels: [],
     // vLLM serving Qwen3 and similar hybrid models.
     disableThinking: { chat_template_kwargs: { enable_thinking: false } },
     needsKey: false,
@@ -370,7 +329,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "",
     auth: NONE,
     modelsEndpoint: "disabled",
-    suggestedModels: [],
     needsKey: false,
   },
   {
@@ -380,7 +338,6 @@ export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
     baseUrl: "",
     baseUrlPlaceholder: "https://api.example.com/v1",
     auth: BEARER,
-    suggestedModels: [],
     needsKey: false,
   },
 ];
@@ -447,7 +404,7 @@ export function connectionFromTemplate(
     auth: { ...template.auth },
     headers: (template.headers ?? []).map((h) => ({ ...h, secret: false })),
     models_endpoint: template.modelsEndpoint ?? connection.models_endpoint,
-    default_model: template.defaultModel ?? null,
+    default_model: null,
     compat: { ...connection.compat, ...template.compat },
   };
 }

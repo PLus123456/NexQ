@@ -314,13 +314,12 @@ export function isEmbeddingModel(id: string): boolean {
 
 /**
  * Model candidates for a connection, in the order the model input shows them:
- * the user's list, the fetched list, then the template's suggestions.
+ * the user's list, then the fetched list.
  */
 export function modelOptions(
   connection: Pick<LlmConnection, "manual_models" | "model_cache" | "default_model"> | null | undefined,
-  suggested: readonly string[] = [],
 ): ModelOption[] {
-  if (!connection) return suggested.map((id) => ({ id, source: "suggested" }));
+  if (!connection) return [];
   const options: ModelOption[] = [];
   for (const id of connection.manual_models) options.push({ id, source: "manual" });
   for (const model of connection.model_cache?.models ?? []) {
@@ -331,7 +330,6 @@ export function modelOptions(
       detail: model.context_window ? `${Math.round(model.context_window / 1000)}K` : undefined,
     });
   }
-  for (const id of suggested) options.push({ id, source: "suggested" });
   return options;
 }
 

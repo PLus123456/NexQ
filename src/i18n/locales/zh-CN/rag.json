@@ -164,16 +164,14 @@
     },
     "model": {
       "label": "模型",
-      "placeholder": "例如 bge-m3",
-      "dims": "{{dims}} 维"
+      "placeholder": "例如 bge-m3"
     },
     "dimensions": {
       "label": "维度",
       "placeholder": "自动",
       "hint": "留空表示用模型返回的维度；填了就会检查每次返回的向量是不是这个维度。",
       "send": "随请求发送维度（dimensions）",
-      "sendHint": "只适用于能缩短向量的模型（OpenAI text-embedding-3、百炼 v3/v4、智谱 embedding-3 等），其他服务可能直接报错。",
-      "sendSupported": "这个模型支持。"
+      "sendHint": "只适用于能缩短向量的模型（OpenAI text-embedding-3、百炼 v3/v4、智谱 embedding-3 等），其他服务可能直接报错。"
     },
     "advanced": {
       "batchSize": "每批条数",

@@ -1,6 +1,6 @@
 // Model id input with candidates: type any id, or pick one from the list.
-// Pure UI: the caller merges and passes the candidates (manual ∪ fetched ∪
-// suggested) and does the fetching (`onRefresh`, `loading`, `error`).
+// Pure UI: the caller merges and passes the candidates (manual ∪ fetched)
+// and does the fetching (`onRefresh`, `loading`, `error`).
 //
 // Controlled: typing only changes the text; `onChange` fires on commit with
 // the trimmed text: Enter, a click on an option, or leaving the field with
@@ -32,8 +32,8 @@ export interface ModelOption {
   id: string;
   /** Display name when it differs from the id. */
   label?: string;
-  /** Where the candidate comes from: "manual" (the user's list), "fetched" (/models), "suggested" (template). */
-  source?: "manual" | "fetched" | "suggested";
+  /** Where the candidate comes from: "manual" (the user's list), "fetched" (/models). */
+  source?: "manual" | "fetched";
   /** Short extra text, e.g. context length. */
   detail?: string;
 }
@@ -42,7 +42,7 @@ export interface ModelComboboxProps {
   value: string;
   /** Called with the trimmed text or the picked option's id (may be "" when the user clears the field). */
   onChange: (model: string) => void;
-  /** Candidates: manual ∪ fetched ∪ suggested, already merged by the caller; duplicates (same id) are shown once (first wins). Plain strings are accepted. */
+  /** Candidates: manual ∪ fetched, already merged by the caller; duplicates (same id) are shown once (first wins). Plain strings are accepted. */
   options: readonly (ModelOption | string)[];
   placeholder?: string;
   disabled?: boolean;
@@ -59,10 +59,10 @@ export interface ModelComboboxProps {
   className?: string;
 }
 
-type Group = "manual" | "fetched" | "suggested" | "other";
+type Group = "manual" | "fetched" | "other";
 
 /** Group order when the list shows headers: the user's list first. */
-const GROUPS: readonly Group[] = ["manual", "fetched", "suggested", "other"];
+const GROUPS: readonly Group[] = ["manual", "fetched", "other"];
 
 interface ModelItem extends ComboboxItem {
   id: string;

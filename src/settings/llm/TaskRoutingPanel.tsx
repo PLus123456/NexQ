@@ -193,7 +193,6 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
             ? { ...ownConnection.model_cache, models: ownConnection.model_cache.models.filter((m) => !isEmbeddingModel(m.id)) }
             : null,
         },
-        findTemplate(ownConnection.template)?.suggestedModels ?? [],
       )
     : [];
 

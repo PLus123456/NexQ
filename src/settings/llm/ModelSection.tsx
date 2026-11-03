@@ -15,7 +15,6 @@ import { listOpenRouterModels } from "../../lib/ipc";
 import { OpenRouterModelCatalog } from "../openrouter/OpenRouterModelCatalog";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { endpointFingerprint, type ConnectionDraft } from "./draft";
-import type { ProviderTemplate } from "./providerTemplates";
 import { BUTTON, HINT, INPUT, LABEL, PLAIN_TEXT } from "./ui";
 
 const HINTS: readonly ResultHint[] = ["check_version_prefix", "auth_failed", "no_model", "base_url_invalid", "looks_openai_compat"];
@@ -28,13 +27,11 @@ function failureText(result: Pick<FetchModelsResult, "error" | "error_body" | "s
 export function ModelSection({
   draft,
   saved,
-  template,
   blockedReason,
   onDraftChange,
 }: {
   draft: ConnectionDraft;
   saved: LlmConnection | null;
-  template: ProviderTemplate | undefined;
   /** Why requests can't be sent right now (e.g. the key must be re-entered); null when they can. */
   blockedReason: string | null;
   onDraftChange: (next: ConnectionDraft) => void;
@@ -56,7 +53,6 @@ export function ModelSection({
   const models = (fetched?.models ?? cache?.models ?? []).filter((m) => !isEmbeddingModel(m.id));
   const options = modelOptions(
     { ...c, model_cache: { models, fetched_at_ms: null, url: null, error: null } },
-    template?.suggestedModels ?? [],
   );
   const testModel = c.default_model?.trim() || c.manual_models[0] || "";
   const modelsOff = c.models_endpoint === "disabled";

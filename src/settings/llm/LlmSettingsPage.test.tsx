@@ -79,6 +79,8 @@ describe("LlmSettingsPage", () => {
 
     await user.type(screen.getByLabelText("API Key"), "sk-secret-1234{Enter}");
     expect(screen.getByText("The new key is saved when you click Save.")).toBeInTheDocument();
+    // Templates name no model: the user types one.
+    await user.type(screen.getByLabelText("Default model"), "deepseek-flash{Enter}");
 
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(backend.view().connections).toHaveLength(1));

@@ -166,16 +166,14 @@
     },
     "model": {
       "label": "Model",
-      "placeholder": "e.g. bge-m3",
-      "dims": "{{dims}}-d"
+      "placeholder": "e.g. bge-m3"
     },
     "dimensions": {
       "label": "Dimensions",
       "placeholder": "Auto",
       "hint": "Leave empty to use what the model returns. A value here is checked against every response.",
       "send": "Send dimensions with each request",
-      "sendHint": "Only for models that can shorten their vectors (OpenAI text-embedding-3, DashScope v3/v4, Zhipu embedding-3…). Other services may reject the request.",
-      "sendSupported": "This model supports it."
+      "sendHint": "Only for models that can shorten their vectors (OpenAI text-embedding-3, DashScope v3/v4, Zhipu embedding-3…). Other services may reject the request."
     },
     "advanced": {
       "batchSize": "Batch size",

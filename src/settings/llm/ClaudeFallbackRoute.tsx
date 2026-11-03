@@ -15,7 +15,6 @@ import type { LlmConfigView } from "../../lib/llm/types";
 import { useConfigStore } from "../../stores/configStore";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { showToast } from "../../stores/toastStore";
-import { findTemplate } from "./providerTemplates";
 import { SELECT } from "./ui";
 
 export function ClaudeFallbackRoute({ view }: { view: LlmConfigView }) {
@@ -53,7 +52,6 @@ export function ClaudeFallbackRoute({ view }: { view: LlmConfigView }) {
             ? { ...connection.model_cache, models: connection.model_cache.models.filter((m) => !isEmbeddingModel(m.id)) }
             : null,
         },
-        findTemplate(connection.template)?.suggestedModels ?? [],
       )
     : [];
 
