@@ -5,6 +5,10 @@ import { useConfigStore } from "../stores/configStore";
 import { testRagAnswer } from "../lib/ipc";
 import { onStreamStart, onStreamToken, onStreamEnd, onStreamError } from "../lib/events";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { answerMd } from "../launcher/meeting-details/AskMeetingTab";
+import { stripThinkTags } from "../launcher/meeting-details/SummaryView";
 import {
   X,
   Search,
@@ -236,7 +240,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   }, []);
 
   const handleCopyResponse = useCallback(() => {
-    navigator.clipboard.writeText(aiResponse);
+    navigator.clipboard.writeText(stripThinkTags(aiResponse));
     setCopiedId("ai-response");
     setTimeout(() => setCopiedId(null), 1500);
   }, [aiResponse]);
@@ -251,6 +255,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const searchMode = ragConfig?.search_mode ?? "hybrid";
   const searchModeKey = SEARCH_MODE_KEYS.get(searchMode);
   const searchModeLabel = searchModeKey ? t(searchModeKey) : searchMode;
+  const answerText = stripThinkTags(aiResponse);
 
   return (
     <div
@@ -258,7 +263,9 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
       onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
-      <div className="w-[680px] max-h-[85vh] flex flex-col rounded-2xl border border-border/50 bg-card shadow-2xl">
+      {/* Most of the window, so long (Chinese) answers have room; a fixed
+          height keeps it from jumping while the answer streams in. */}
+      <div className="flex h-[min(900px,calc(100vh_-_3rem))] w-[min(1000px,calc(100vw_-_3rem))] flex-col rounded-2xl border border-border/50 bg-card shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border/30 px-6 py-4">
           <div className="flex items-center gap-2.5">
@@ -282,7 +289,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
         </div>
 
         {/* Config summary bar */}
-        <div className="flex items-center gap-4 border-b border-border/20 bg-accent/10 px-6 py-2 text-meta text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/20 bg-accent/10 px-6 py-2 text-meta text-muted-foreground">
           <span className="flex items-center gap-1" title={t("context.testSearch.config.searchModel.title")}>
             <Sparkles className="h-3 w-3" />
             {ragConfig?.embedding_model ?? "nomic-embed-text"}
@@ -314,7 +321,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
         </div>
 
         {/* Quick templates */}
-        <div className="flex items-center gap-1.5 border-b border-border/20 px-6 py-2.5">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/20 px-6 py-2.5">
           <span className="text-meta font-medium text-muted-foreground/60 mr-1">
             {t("context.testSearch.templates.prompt")}
           </span>
@@ -374,7 +381,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
 
           {/* Empty state — not yet searched */}
           {testSearchResults.length === 0 && !isBusy && !hasSearched && !error && !aiError && (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="flex h-full flex-col items-center justify-center py-12 text-center">
               <MessageSquare className="h-8 w-8 text-muted-foreground/50 mb-3" />
               <p className="text-xs text-muted-foreground/60">
                 {t("context.testSearch.empty.hint")}
@@ -433,10 +440,16 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                     )}
                   </div>
                 </div>
-                <p className="text-xs text-foreground/90 leading-relaxed whitespace-pre-wrap">
-                  {aiResponse || t("context.testSearch.answer.thinking")}
-                  {isGenerating && <span className="animate-pulse">|</span>}
-                </p>
+                {answerText ? (
+                  <div className="select-text text-sm">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={answerMd}>
+                      {answerText}
+                    </ReactMarkdown>
+                    {isGenerating && <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-primary/60 align-middle" />}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{t("context.testSearch.answer.thinking")}</p>
+                )}
               </div>
             </div>
           )}

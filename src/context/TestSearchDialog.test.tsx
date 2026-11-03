@@ -2,13 +2,20 @@
 // the status of the search (reranked, or fusion order kept and why), and
 // for reranked results the rerank score and the position before reranking.
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
+// The dialog's stream listeners, by event name, so a test can stream an answer.
+const listeners = vi.hoisted(() => new Map<string, (e: { payload: unknown }) => void>());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: unknown) => invoke(cmd, args) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
+    listeners.set(event, handler);
+    return () => listeners.delete(event);
+  },
+}));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({
     get: async () => undefined,
@@ -143,5 +150,28 @@ describe("test search dialog: reranking", () => {
     render(<TestSearchDialog isOpen onClose={() => {}} />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rag_get_settings", undefined));
     expect(await screen.findByText("rerank: loaded-reranker")).toBeInTheDocument();
+  });
+});
+
+describe("test search dialog: answer", () => {
+  it("renders the streamed answer as Markdown", async () => {
+    outcome = { chunks: fused, vector_used: true, degraded: null, rerank: null };
+    const { container } = render(<TestSearchDialog isOpen onClose={() => {}} />);
+    await ask();
+    await waitFor(() => expect(listeners.has("llm_stream_end")).toBe(true));
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "test_rag_answer");
+    const request_id = (call?.[1] as { requestId: string }).requestId;
+
+    const answer = "根据论文，**精确档误差为 28.8%**。\n\n1. 第一点\n2. 第二点\n";
+    act(() => {
+      for (const token of answer.match(/.{1,5}/gs) ?? []) {
+        listeners.get("llm_stream_token")?.({ payload: { token, request_id } });
+      }
+      listeners.get("llm_stream_end")?.({ payload: { total_tokens: 42, latency_ms: 900, request_id, cancelled: false } });
+    });
+
+    expect(screen.getByText("精确档误差为 28.8%").tagName).toBe("STRONG");
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(container.textContent).not.toContain("**");
   });
 });

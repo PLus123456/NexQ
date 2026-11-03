@@ -47,21 +47,37 @@ export const mdComponents: Components = {
       {children}
     </p>
   ),
+  // Native markers, so numbered lists keep their numbers.
   ul: ({ children }) => (
-    <ul className="my-2 ml-1 space-y-1.5">
+    <ul className="my-2 ml-1 space-y-1.5 list-disc pl-5 marker:text-primary/60">
       {children}
     </ul>
   ),
   ol: ({ children }) => (
-    <ol className="my-2 ml-1 space-y-1.5 list-decimal list-inside">
+    <ol className="my-2 ml-1 space-y-1.5 list-decimal pl-5 marker:text-primary/60">
       {children}
     </ol>
   ),
   li: ({ children }) => (
-    <li className="text-sm leading-relaxed text-foreground/80 flex gap-2">
-      <span className="text-primary/60 mt-1.5 shrink-0">•</span>
-      <span>{children}</span>
+    <li className="text-sm leading-relaxed text-foreground/80 pl-1">
+      {children}
     </li>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-2 border-primary/30 pl-3 text-foreground/70">
+      {children}
+    </blockquote>
+  ),
+  // Inline code; inside a code block the <pre> drops the chip look.
+  code: ({ children }) => (
+    <code className="rounded bg-muted/40 px-1 py-0.5 font-mono text-[0.85em] text-foreground">
+      {children}
+    </code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-3 overflow-x-auto rounded-lg border border-border/30 bg-muted/20 p-3 text-xs leading-relaxed [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[1em]">
+      {children}
+    </pre>
   ),
   strong: ({ children }) => (
     <strong className="font-semibold text-foreground">

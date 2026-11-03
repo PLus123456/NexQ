@@ -9,7 +9,7 @@ import { useT } from "../../i18n";
 import { mdComponents, stripThinkTags } from "./SummaryView";
 
 /** Summary markdown styles, with headings and paragraphs sized for a chat answer. */
-const answerMd: Components = {
+export const answerMd: Components = {
   ...mdComponents,
   h1: ({ children }) => <h3 className="mt-4 mb-1.5 text-sm font-semibold text-foreground">{children}</h3>,
   h2: ({ children }) => <h3 className="mt-4 mb-1.5 text-sm font-semibold text-foreground">{children}</h3>,
