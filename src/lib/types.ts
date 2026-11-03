@@ -581,8 +581,12 @@ export type ContextFileType = "pdf" | "txt" | "md" | "docx";
 
 export interface TokenBudget {
   total: number;
+  /** The assist model's context length; 0 when it isn't known. */
   limit: number;
   segments: TokenBudgetSegment[];
+  /** The model the context goes to, and its connection's name. */
+  model: string | null;
+  connection: string | null;
 }
 
 export interface TokenBudgetSegment {

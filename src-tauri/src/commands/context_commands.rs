@@ -1,5 +1,6 @@
-use tauri::{command, State};
+use tauri::{command, AppHandle, Manager, State};
 
+use crate::llm::registry::{self as llm_registry, LlmRegistry};
 use crate::state::AppState;
 
 #[command]
@@ -139,10 +140,33 @@ pub async fn get_assembled_context(
     Ok(ctx.get_assembled_context())
 }
 
+/// The model the assist route sends the context to, its connection's name
+/// and its context length (0 when it isn't known).
+fn assist_context_window(app: &AppHandle) -> (Option<String>, Option<String>, u64) {
+    let Some(registry) = app.try_state::<LlmRegistry>() else {
+        return (None, None, 0);
+    };
+    let claude = llm_registry::claude_context(app);
+    match llm_registry::resolve_task(&registry.config(), "assist:Assist", &claude) {
+        Ok(route) => {
+            let limit = route
+                .model
+                .as_deref()
+                .and_then(|m| route.connection.context_window(m))
+                .unwrap_or(0);
+            (route.model, Some(route.connection.display_name()), limit)
+        }
+        Err(_) => (None, None, 0),
+    }
+}
+
 #[command]
 pub async fn get_token_budget(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let (model, connection, model_context_window) = assist_context_window(&app);
+
     let ctx_mgr = state
         .context
         .as_ref()
@@ -152,12 +176,12 @@ pub async fn get_token_budget(
         .lock()
         .map_err(|e| format!("Failed to lock context manager: {}", e))?;
 
-    // Default model context window: 128k tokens (can be overridden later)
-    let model_context_window: u64 = 128_000;
     // Transcript tokens default to 0 when not in a meeting
     let transcript_tokens: usize = 0;
 
-    let budget = ctx.get_token_budget(model_context_window, transcript_tokens);
+    let mut budget = ctx.get_token_budget(model_context_window, transcript_tokens);
+    budget.model = model;
+    budget.connection = connection;
 
     serde_json::to_string(&budget)
         .map_err(|e| format!("Failed to serialize token budget: {}", e))

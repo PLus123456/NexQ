@@ -94,6 +94,8 @@ export interface LlmConnection {
   default_model: string | null;
   /** The user's own model list, shown first among the candidates. */
   manual_models: string[];
+  /** Context length (tokens) per model id, as typed; beats what the model list says. */
+  context_windows: Record<string, number>;
   params: LlmParams;
   compat: LlmCompat;
   /** Connect timeout (s); null = 10. */

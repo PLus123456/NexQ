@@ -502,6 +502,7 @@ impl LlmRegistry {
         client_fields.created_at_ms = None;
         client_fields.default_model = None;
         client_fields.manual_models.clear();
+        client_fields.context_windows.clear();
         let mut hasher = DefaultHasher::new();
         serde_json::to_string(&client_fields).unwrap_or_default().hash(&mut hasher);
         self.inner.overrides.lock().ok().and_then(|o| o.get(&conn.id).cloned()).hash(&mut hasher);

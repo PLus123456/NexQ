@@ -526,6 +526,10 @@
     "tokenBudget": {
       "title": "Token Budget",
       "usage": "{{used}} / {{limit}} tokens used ({{percent}}%)",
+      "usageUnknown": "~{{used}} tokens",
+      "limitUnknown": "The context length of {{model}} isn't known. Set it in AI model settings → the connection → Context length.",
+      "noModel": "No context length is known for the assist model.",
+      "model": "Measured against {{model}}: {{limit}} tokens",
       "meter": {
         "ariaLabel": "Token budget usage"
       },

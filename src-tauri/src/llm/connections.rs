@@ -221,6 +221,9 @@ pub struct LlmConnection {
     pub headers: Vec<LlmHeader>,
     pub default_model: Option<String>,
     pub manual_models: Vec<String>,
+    /// Context length (tokens) per model id, as the user typed it; beats
+    /// what the model list says.
+    pub context_windows: BTreeMap<String, u64>,
     pub params: RouteParams,
     pub compat: CompatFlags,
     pub timeout_secs: Option<u32>,
@@ -250,6 +253,7 @@ impl Default for LlmConnection {
             headers: Vec::new(),
             default_model: None,
             manual_models: Vec::new(),
+            context_windows: BTreeMap::new(),
             params: RouteParams::default(),
             compat: CompatFlags::default(),
             timeout_secs: None,
@@ -391,6 +395,20 @@ impl LlmConnection {
         self.max_concurrency.filter(|n| *n > 0).unwrap_or(DEFAULT_MAX_CONCURRENCY) as usize
     }
 
+    /// Context length of `model`: the user's value, else the fetched list's.
+    pub fn context_window(&self, model: &str) -> Option<u64> {
+        let model = model.trim();
+        self.context_windows.get(model).copied().filter(|t| *t > 0).or_else(|| {
+            self.model_cache
+                .as_ref()?
+                .models
+                .iter()
+                .find(|m| m.id == model)
+                .and_then(|m| m.context_window)
+                .filter(|t| *t > 0)
+        })
+    }
+
     /// Keychain account of a secret header's value.
     pub fn header_secret_account(&self, header: &str) -> String {
         format!("llm:{}:h:{}", self.id, header.trim().to_ascii_lowercase())
@@ -528,7 +546,7 @@ fn plain_header(name: &str, value: &str) -> LlmHeader {
 
 /// Trims and tidies a connection before it is saved: base URL normalized
 /// (a pasted full endpoint is cut back to the base), blank strings dropped,
-/// manual models de-duplicated.
+/// manual models de-duplicated, empty context lengths dropped.
 pub fn normalize_connection(conn: &mut LlmConnection) {
     conn.name = conn.name.trim().to_string();
     conn.base_url = normalize_base_for_kind(conn.kind, &conn.base_url);
@@ -541,6 +559,11 @@ pub fn normalize_connection(conn: &mut LlmConnection) {
         .into_iter()
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty() && seen.insert(m.clone()))
+        .collect();
+    conn.context_windows = std::mem::take(&mut conn.context_windows)
+        .into_iter()
+        .map(|(model, tokens)| (model.trim().to_string(), tokens))
+        .filter(|(model, tokens)| !model.is_empty() && *tokens > 0)
         .collect();
     conn.headers.retain(|h| !h.name.trim().is_empty());
     for header in &mut conn.headers {
@@ -1246,6 +1269,28 @@ mod tests {
         assert_eq!(c.manual_models, vec!["a", "b"]);
         assert_eq!(c.default_model, None);
         assert_eq!(c.headers, vec![LlmHeader { name: "X-T".into(), value: "v".into(), ..Default::default() }]);
+    }
+
+    #[test]
+    fn context_window_prefers_the_typed_value_over_the_list() {
+        let mut c = LlmConnection {
+            context_windows: BTreeMap::from([(" typed ".to_string(), 1_024_000), ("zero".to_string(), 0)]),
+            model_cache: Some(ModelCache {
+                models: vec![
+                    ModelInfoRecord { id: "typed".into(), context_window: Some(128_000), ..Default::default() },
+                    ModelInfoRecord { id: "listed".into(), context_window: Some(262_144), ..Default::default() },
+                    ModelInfoRecord { id: "zero".into(), context_window: Some(32_768), ..Default::default() },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        normalize_connection(&mut c);
+        assert_eq!(c.context_windows, BTreeMap::from([("typed".to_string(), 1_024_000)]));
+        assert_eq!(c.context_window("typed"), Some(1_024_000));
+        assert_eq!(c.context_window("listed"), Some(262_144));
+        assert_eq!(c.context_window("zero"), Some(32_768), "an empty value falls back to the list");
+        assert_eq!(c.context_window("unknown"), None);
     }
 
     #[test]

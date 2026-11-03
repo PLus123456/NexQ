@@ -24,8 +24,12 @@ pub struct TokenBudgetSegment {
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenBudget {
     pub total: usize,
+    /// The model's context length; 0 when it isn't known.
     pub limit: u64,
     pub segments: Vec<TokenBudgetSegment>,
+    /// The model the context goes to and its connection's name.
+    pub model: Option<String>,
+    pub connection: Option<String>,
 }
 
 /// Categorize a resource by its name/type for color assignment.
@@ -62,7 +66,7 @@ pub struct BudgetResource {
 /// - `resources`: the loaded context resources
 /// - `custom_instructions`: the user's custom instructions text
 /// - `transcript_tokens`: estimated tokens used by the current transcript
-/// - `model_limit`: the model's context window size in tokens
+/// - `model_limit`: the model's context window size in tokens (0: unknown)
 pub fn compute_budget(
     resources: &[BudgetResource],
     custom_instructions: &str,
@@ -133,6 +137,8 @@ pub fn compute_budget(
         total,
         limit,
         segments,
+        model: None,
+        connection: None,
     }
 }
 

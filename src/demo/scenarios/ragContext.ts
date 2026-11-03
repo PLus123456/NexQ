@@ -82,6 +82,8 @@ function makeTokenBudget(): TokenBudget {
       { label: 'System Prompt', tokens: 450, color: '#6b7280', category: 'system' },
       { label: 'Headroom', tokens: 10254, color: '#27272a', category: 'headroom' },
     ],
+    model: null,
+    connection: null,
   };
 }
 

@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import type { ParseKeys } from "i18next";
 import { useContextStore } from "../stores/contextStore";
 import { AlertTriangle } from "lucide-react";
 import { useT } from "../i18n";
+import { onLlmConfigChanged } from "../lib/llm/ipc";
 
 /**
  * The segment labels the backend sends (src-tauri/src/context/token_counter.rs),
@@ -21,8 +23,17 @@ const SEGMENT_LABEL_KEYS = new Map<string, ParseKeys<"rag">>([
 export function TokenBudget() {
   const { t } = useT("rag");
   const tokenBudget = useContextStore((s) => s.tokenBudget);
+  const refreshTokenBudget = useContextStore((s) => s.refreshTokenBudget);
 
-  if (!tokenBudget || tokenBudget.limit === 0) {
+  // The limit is the assist model's context length: follow route and model changes.
+  useEffect(() => {
+    const unlisten = onLlmConfigChanged(() => void refreshTokenBudget()).catch(() => null);
+    return () => {
+      void unlisten.then((fn) => fn?.());
+    };
+  }, [refreshTokenBudget]);
+
+  if (!tokenBudget) {
     return null;
   }
 
@@ -33,6 +44,28 @@ export function TokenBudget() {
 
   const usedTokens = tokenBudget.total;
   const limit = tokenBudget.limit;
+  const model = tokenBudget.model;
+
+  if (limit === 0) {
+    return (
+      <div className="w-full rounded-xl border border-border/50 bg-secondary/30 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-semibold text-muted-foreground">
+            {t("context.tokenBudget.title")}
+          </span>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {t("context.tokenBudget.usageUnknown", { used: formatNumber(usedTokens) })}
+          </span>
+        </div>
+        <p className="mt-1.5 text-meta text-muted-foreground">
+          {model
+            ? t("context.tokenBudget.limitUnknown", { model })
+            : t("context.tokenBudget.noModel")}
+        </p>
+      </div>
+    );
+  }
+
   const usagePercent = Math.min((usedTokens / limit) * 100, 100);
   const isWarning = usagePercent > 80;
   const isCritical = usagePercent > 95;
@@ -53,11 +86,19 @@ export function TokenBudget() {
       className={`w-full rounded-xl border ${borderClass} bg-secondary/30 p-4`}
     >
       {/* Header row */}
-      <div className="mb-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
           <span className="text-xs font-semibold text-muted-foreground">
             {t("context.tokenBudget.title")}
           </span>
+          {model && (
+            <span
+              className="max-w-[12rem] truncate font-mono text-meta text-muted-foreground/80"
+              title={t("context.tokenBudget.model", { model, limit: formatNumber(limit) })}
+            >
+              {model}
+            </span>
+          )}
           {(isWarning || isCritical) && (
             <AlertTriangle
               className={`h-3.5 w-3.5 ${

@@ -493,6 +493,13 @@
         "remove": "移除 {{model}}",
         "hint": "在给这个连接选模型的地方排在最前面。服务器没有模型列表时很有用。"
       },
+      "context": {
+        "label": "上下文长度",
+        "placeholder": "未知，例如 1M",
+        "fromList": "列表里是 {{size}}",
+        "input": "{{model}} 的上下文长度",
+        "hint": "每个模型最多能收多少 token，Token 预算条按它算。可以写 1M、256K、100万 或准确数字。留空就用模型列表里的值（服务器给了的话）。"
+      },
       "fetch": "拉取模型列表",
       "emptyList": "服务器返回的模型列表是空的。",
       "fetchedInfo_other": "已拉取 {{countText}} 个模型 · {{time}}",

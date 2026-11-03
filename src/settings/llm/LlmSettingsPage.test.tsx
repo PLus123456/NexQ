@@ -140,6 +140,41 @@ describe("LlmSettingsPage", () => {
     expect(screen.getByText("All changes saved")).toBeInTheDocument();
   });
 
+  it("saves a context length per model, and blank falls back to the model list", async () => {
+    const { user, backend } = setup({
+      connections: [
+        {
+          ...deepseek,
+          manual_models: ["deepseek-reasoner"],
+          model_cache: {
+            models: [{ id: "deepseek-reasoner", name: "deepseek-reasoner", provider: "deepseek", context_window: 128_000 }],
+            fetched_at_ms: 1,
+            url: null,
+            error: null,
+          },
+        },
+      ],
+    });
+    const chat = await screen.findByLabelText<HTMLInputElement>("Context length of deepseek-chat");
+    const reasoner = screen.getByLabelText<HTMLInputElement>("Context length of deepseek-reasoner");
+    expect(chat.placeholder).toBe("Unknown, e.g. 1M");
+    expect(reasoner.placeholder).toBe("List says 128K");
+
+    await user.type(chat, "1x");
+    expect(chat).toHaveAttribute("aria-invalid", "true");
+    await user.clear(chat);
+    await user.type(chat, "1,024,000");
+    await user.type(reasoner, "256k");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(backend.view().connections[0].context_windows).toEqual({ "deepseek-chat": 1_024_000, "deepseek-reasoner": 256_000 }),
+    );
+
+    await user.clear(reasoner);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(backend.view().connections[0].context_windows).toEqual({ "deepseek-chat": 1_024_000 }));
+  });
+
   it("test chat shows the real address, status and the raw error", async () => {
     const { user, backend } = setup({ connections: [deepseek] });
     backend.testResult = {

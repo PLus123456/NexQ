@@ -2,20 +2,20 @@
 // model list, fetching the list from the server, and a test chat with one
 // tiny request that shows the real address, status and answer or raw error.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, ChevronDown, Loader2, MessageSquare, Plus, RefreshCw, X, XCircle } from "lucide-react";
 import { formatDate, formatNumber, useT } from "../../i18n";
 import { ModelCombobox } from "../../components/ModelCombobox";
 import { cn } from "../../lib/utils";
 import { errorMessage } from "../../lib/llm/ipc";
-import { isEmbeddingModel, modelOptions, toInput } from "../../lib/llm/connection";
+import { formatTokenCount, isEmbeddingModel, modelOptions, parseTokenCount, toInput } from "../../lib/llm/connection";
 import type { FetchModelsResult, LlmConnection, ResultHint, TestConnectionResult } from "../../lib/llm/types";
 import type { ModelInfo, OpenRouterModel } from "../../lib/types";
 import { listOpenRouterModels } from "../../lib/ipc";
 import { OpenRouterModelCatalog } from "../openrouter/OpenRouterModelCatalog";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
 import { endpointFingerprint, type ConnectionDraft } from "./draft";
-import { BUTTON, HINT, INPUT, LABEL, PLAIN_TEXT } from "./ui";
+import { BUTTON, HINT, INPUT, INPUT_INVALID, LABEL, PLAIN_TEXT } from "./ui";
 
 const HINTS: readonly ResultHint[] = ["check_version_prefix", "auth_failed", "no_model", "base_url_invalid", "looks_openai_compat"];
 
@@ -187,6 +187,12 @@ export function ModelSection({
         <p className={HINT}>{t("editor.models.manual.hint")}</p>
       </div>
 
+      <ContextWindows
+        connection={c}
+        listed={fetched?.models ?? cache?.models ?? []}
+        onChange={(context_windows) => update({ context_windows })}
+      />
+
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -230,6 +236,103 @@ export function ModelSection({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Context length per model: the default model, the user's list and any model
+ * that already has a value. Blank uses what the model list says.
+ */
+function ContextWindows({
+  connection,
+  listed,
+  onChange,
+}: {
+  connection: LlmConnection;
+  /** The fetched list, for the context lengths the server reports. */
+  listed: ModelInfo[];
+  onChange: (next: Record<string, number>) => void;
+}) {
+  const { t } = useT("llm");
+  const windows = connection.context_windows;
+  const models = Array.from(
+    new Set(
+      [connection.default_model?.trim() ?? "", ...connection.manual_models, ...Object.keys(windows)].filter(Boolean),
+    ),
+  );
+  if (connection.kind === "claude_cli" || models.length === 0) return null;
+
+  const set = (model: string, tokens: number | null) => {
+    const next = { ...windows };
+    if (tokens === null) delete next[model];
+    else next[model] = tokens;
+    onChange(next);
+  };
+
+  return (
+    <div>
+      <span id={`context-${connection.id}-label`} className={LABEL}>
+        {t("editor.models.context.label")}
+      </span>
+      <ul aria-labelledby={`context-${connection.id}-label`} className="space-y-1.5">
+        {models.map((model) => (
+          <ContextWindowRow
+            key={model}
+            model={model}
+            value={windows[model] ?? null}
+            listed={listed.find((m) => m.id === model)?.context_window ?? null}
+            onChange={(tokens) => set(model, tokens)}
+          />
+        ))}
+      </ul>
+      <p className={HINT}>{t("editor.models.context.hint")}</p>
+    </div>
+  );
+}
+
+function ContextWindowRow({
+  model,
+  value,
+  listed,
+  onChange,
+}: {
+  model: string;
+  value: number | null;
+  listed: number | null;
+  onChange: (tokens: number | null) => void;
+}) {
+  const { t } = useT("llm");
+  const [text, setText] = useState(value ? formatTokenCount(value) : "");
+  const parsed = parseTokenCount(text);
+
+  // Follow outside changes (a discarded draft) without rewriting what is being typed.
+  useEffect(() => {
+    setText((current) => (parseTokenCount(current) === value ? current : value ? formatTokenCount(value) : ""));
+  }, [value]);
+
+  return (
+    <li className="flex items-center gap-2">
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90" title={model}>
+        {model}
+      </span>
+      <input
+        type="text"
+        {...PLAIN_TEXT}
+        inputMode="text"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          const tokens = parseTokenCount(e.target.value);
+          if (tokens !== undefined) onChange(tokens);
+        }}
+        placeholder={
+          listed ? t("editor.models.context.fromList", { size: formatTokenCount(listed) }) : t("editor.models.context.placeholder")
+        }
+        aria-label={t("editor.models.context.input", { model })}
+        aria-invalid={parsed === undefined}
+        className={cn(INPUT, "w-36 shrink-0 font-mono", parsed === undefined && INPUT_INVALID)}
+      />
+    </li>
   );
 }
 

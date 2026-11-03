@@ -511,6 +511,10 @@
     "tokenBudget": {
       "title": "Token 预算",
       "usage": "已用 {{used}} / {{limit}} token（{{percent}}%）",
+      "usageUnknown": "约 {{used}} token",
+      "limitUnknown": "不知道 {{model}} 的上下文长度。到 AI 模型设置 → 这个连接 → 上下文长度 里填上。",
+      "noModel": "不知道助手模型的上下文长度。",
+      "model": "按 {{model}} 的 {{limit}} token 算",
       "meter": {
         "ariaLabel": "Token 预算使用情况"
       },

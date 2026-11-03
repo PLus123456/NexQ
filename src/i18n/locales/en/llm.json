@@ -499,6 +499,13 @@
         "remove": "Remove {{model}}",
         "hint": "Shown first wherever you pick a model for this connection — handy when the server has no model list."
       },
+      "context": {
+        "label": "Context length",
+        "placeholder": "Unknown, e.g. 1M",
+        "fromList": "List says {{size}}",
+        "input": "Context length of {{model}}",
+        "hint": "How many tokens each model takes in; the token budget meter uses it. Type 1M, 256K or an exact number. Blank uses the model list's value when the server reports one."
+      },
       "fetch": "Fetch model list",
       "emptyList": "The server returned an empty model list.",
       "fetchedInfo_one": "{{countText}} model fetched · {{time}}",

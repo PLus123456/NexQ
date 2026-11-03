@@ -73,6 +73,7 @@ export function blankConnection(kind: LlmKind, id = newConnectionId()): LlmConne
     headers: [],
     default_model: null,
     manual_models: [],
+    context_windows: {},
     params: {},
     compat: { ...DEFAULT_COMPAT, temperature: kind === "anthropic" ? "omit" : "pass" },
     timeout_secs: null,
@@ -192,6 +193,13 @@ export function normalizeConnection(raw: unknown): LlmConnection {
     manual_models: Array.isArray(r.manual_models)
       ? r.manual_models.filter((m): m is string => typeof m === "string" && m.trim() !== "")
       : [],
+    context_windows: isRecord(r.context_windows)
+      ? Object.fromEntries(
+          Object.entries(r.context_windows).filter(
+            (e): e is [string, number] => e[0].trim() !== "" && typeof e[1] === "number" && e[1] > 0,
+          ),
+        )
+      : {},
     params: normalizeParams(r.params),
     compat: normalizeCompat(r.compat, kind),
     timeout_secs: numOrNull(r.timeout_secs),
@@ -331,6 +339,28 @@ export function modelOptions(
     });
   }
   return options;
+}
+
+const TOKEN_UNITS: Record<string, number> = { k: 1_000, m: 1_000_000, "万": 10_000 };
+
+/**
+ * A typed context length in tokens: "1M", "256k", "100万", "1,024,000".
+ * null when blank, undefined when it isn't a size.
+ */
+export function parseTokenCount(text: string): number | null | undefined {
+  const compact = text.replace(/[\s,_]/g, "");
+  if (!compact) return null;
+  const match = /^(\d+(?:\.\d+)?)([kKmM万])?$/.exec(compact);
+  if (!match) return undefined;
+  const tokens = Math.round(Number(match[1]) * (match[2] ? TOKEN_UNITS[match[2].toLowerCase()] : 1));
+  return tokens > 0 ? tokens : undefined;
+}
+
+/** Tokens as the user would type them back: 1000000 → "1M", 256000 → "256K", others exact. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
+  if (tokens % 1_000 === 0) return `${tokens / 1_000}K`;
+  return String(tokens);
 }
 
 /** Same editable fields (what Rust keeps itself, like the model cache, is ignored). */
