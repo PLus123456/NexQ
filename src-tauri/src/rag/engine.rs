@@ -839,10 +839,16 @@ impl RagEngine {
         let mut results = results.into_iter();
         let first = results.next().expect("the first query")?;
         let mut more: Vec<(Vec<i64>, f64)> = Vec::new();
-        for ((query, weight), result) in weighted.iter().skip(1).zip(results) {
+        for (i, ((query, weight), result)) in weighted.iter().skip(1).zip(results).enumerate() {
             match result {
                 Ok(ranked) => more.push((ranked.fused.iter().map(|(id, _)| *id).collect(), *weight)),
-                Err(e) => log::warn!("RAG search for {query:?} failed: {e}"),
+                // The query is the user's own words, and the log goes into bug reports: its size only.
+                Err(e) => log::warn!(
+                    "RAG search for query {} of {} ({} chars) failed: {e}",
+                    i + 2,
+                    weighted.len(),
+                    query.chars().count()
+                ),
             }
         }
         let fused = if more.is_empty() {
