@@ -1263,6 +1263,18 @@ pub async fn start_capture_per_party(
     let you_muted_flag = state.you_muted.clone();
     let them_muted_flag = state.them_muted.clone();
 
+    // Echo cancellation: what "Them" plays on the speakers is the reference
+    // for the mic. Only for an output: an input "Them" (a second mic, the
+    // same mic, a room mic) also carries the user's own voice.
+    let echo_flag = state.echo_cancellation.clone();
+    let echo_reference = !system_is_input;
+    if echo_reference {
+        log::info!(
+            "Echo cancellation available: the output is the mic's reference (currently {})",
+            if echo_flag.load(Ordering::Relaxed) { "on" } else { "off" }
+        );
+    }
+
     // Audio processing task: levels + recording + STT feed per party
     let app_handle = app.clone();
     tokio::spawn(async move {
@@ -1288,7 +1300,23 @@ pub async fn start_capture_per_party(
         let mut you_feed_error_emitted = false;
         let mut them_feed_error_emitted = false;
 
+        let mut echo = crate::audio::echo_cancel::MicEchoFilter::new();
+
         while let Some(mut chunk) = rx.recv().await {
+            // Echo cancellation comes first: levels, recording and STT all
+            // get the cleaned mic.
+            let cancel_echo = echo_reference && echo_flag.load(Ordering::Relaxed);
+            match chunk.source {
+                AudioSource::System => echo.reference(cancel_echo, &chunk.pcm_data),
+                AudioSource::Mic => {
+                    chunk.pcm_data = echo.mic(cancel_echo, std::mem::take(&mut chunk.pcm_data));
+                    if chunk.pcm_data.is_empty() {
+                        continue; // held back until the reference catches up
+                    }
+                }
+                AudioSource::Room => {}
+            }
+
             // Apply VAD from the correct per-source instance
             let vad_result = match chunk.source {
                 AudioSource::Mic | AudioSource::Room => mic_vad.process_chunk(&chunk.pcm_data),
@@ -1982,6 +2010,17 @@ fn restore_default_device_if_overridden(state: &AppState, app: &tauri::AppHandle
             }
         }
     }
+}
+
+// ── Echo cancellation ───────────────────────────────────────────────
+
+/// Turn echo cancellation for "You" on or off; applies mid-meeting.
+#[command]
+pub async fn set_echo_cancellation(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    state.echo_cancellation.store(enabled, Ordering::Relaxed);
+    log::info!("Echo cancellation {}", if enabled { "on" } else { "off" });
+    Ok(())
 }
 
 // ── Per-party mute control ──────────────────────────────────────────
