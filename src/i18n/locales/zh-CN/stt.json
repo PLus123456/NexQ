@@ -204,6 +204,11 @@
       "disabled": "已关闭录音",
       "toggleFailed": "切换录音失败"
     },
+    "echoCancellation": {
+      "label": "回声消除",
+      "hint": "去掉麦克风从扬声器里收到的对方声音，免得被当成你说的话再转录一遍",
+      "ariaLabel": "切换回声消除"
+    },
     "monitor": {
       "title": "实时监测",
       "monitoringAll": "正在监测所有设备",

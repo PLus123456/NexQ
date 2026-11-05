@@ -118,6 +118,8 @@ export function MeetingAudioSettings() {
   } = useConfigStore();
   const diarizationEnabled = useConfigStore((s) => s.diarizationEnabled);
   const setDiarizationEnabled = useConfigStore((s) => s.setDiarizationEnabled);
+  const echoCancellation = useConfigStore((s) => s.echoCancellation);
+  const setEchoCancellation = useConfigStore((s) => s.setEchoCancellation);
   // Remote Whisper can be picked once its server address is set.
   const hasBaseUrl = useConfigStore((s) => s.openaiCompatSttConfig.base_url.trim() !== "");
 
@@ -366,6 +368,21 @@ export function MeetingAudioSettings() {
           label={t("stt:meetingAudio.recording.ariaLabel")}
         />
       </div>
+
+      {/* ── Echo Cancellation — needs the other side's output as the reference ── */}
+      {!config.them.is_input_device && (
+        <div className="flex items-center justify-between rounded-xl border border-border/20 bg-card/40 px-4 py-3">
+          <div>
+            <p className="text-xs font-medium text-foreground">{t("stt:meetingAudio.echoCancellation.label")}</p>
+            <p className="mt-0.5 text-meta text-muted-foreground/70">{t("stt:meetingAudio.echoCancellation.hint")}</p>
+          </div>
+          <ToggleSwitch
+            checked={echoCancellation}
+            onChange={setEchoCancellation}
+            label={t("stt:meetingAudio.echoCancellation.ariaLabel")}
+          />
+        </div>
+      )}
 
       {/* ── Bottom row: Live Monitor | Audio Sessions ── */}
       <div className="grid grid-cols-2 gap-4">

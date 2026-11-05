@@ -204,6 +204,11 @@
       "disabled": "Audio recording disabled",
       "toggleFailed": "Failed to toggle recording"
     },
+    "echoCancellation": {
+      "label": "Echo cancellation",
+      "hint": "Remove the other side's voice that your microphone picks up from the speakers, so it isn't transcribed as you",
+      "ariaLabel": "Toggle echo cancellation"
+    },
     "monitor": {
       "title": "Live Monitor",
       "monitoringAll": "Monitoring all devices",
