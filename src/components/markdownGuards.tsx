@@ -8,7 +8,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
  * never in the app's own window.
  */
 export const mdGuards: Components = {
-  img: ({ alt }) => (alt ? <span className="text-foreground/60">[{alt}]</span> : null),
+  img: ({ alt }) => (alt ? <span className="text-foreground/60">[{alt}]</span> : null), // i18n-ignore: brackets around the alt text
   a: ({ href, children }) => (
     <a
       href={href}

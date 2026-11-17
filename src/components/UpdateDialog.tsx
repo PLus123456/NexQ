@@ -4,9 +4,9 @@ import { open } from "@tauri-apps/plugin-shell";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { releaseNotesUrl, restartToUpdate } from "../hooks/useUpdater";
 import { NEXQ_VERSION } from "../lib/version";
-import { APP_NAME } from "../lib/brand";
-import { fetchReleaseNotes, formatReleaseDate, type ChangelogRelease } from "../lib/changelog";
+import { fetchReleaseNotes, type ChangelogRelease } from "../lib/changelog";
 import { releaseWave } from "../lib/releaseWave.mjs";
+import { formatDate, t, useT } from "../i18n";
 
 type Notes =
   | { status: "loading" }
@@ -50,12 +50,35 @@ function ReleaseWave({ version, progress }: { version: string; progress: number 
 /** A long jump shows the newest releases first; older notes are a click away. */
 const NEWEST_RELEASES_SHOWN = 5;
 
+/** A changelog date ("2026-11-05") in the UI language, or null without one. */
+function releaseDate(date: string | null | undefined): string | null {
+  const [year, month, day] = (date ?? "").split("-").map(Number);
+  if (!year || !month || !day) return null;
+  // Local midnight, so the day doesn't shift with the time zone.
+  return formatDate(new Date(year, month - 1, day));
+}
+
+/** releaseNotes.mjs names the sections in English (the installer uses them too). */
+const SECTION_KEYS = {
+  Changed: "updates.dialog.sections.changed",
+  New: "updates.dialog.sections.new",
+  Faster: "updates.dialog.sections.faster",
+  Fixed: "updates.dialog.sections.fixed",
+  Reverted: "updates.dialog.sections.reverted",
+} as const;
+
+function sectionTitle(title: string): string {
+  const key = SECTION_KEYS[title as keyof typeof SECTION_KEYS];
+  return key ? t(`settings:${key}`) : title;
+}
+
 function ReleaseNotes({ notes, version }: { notes: Notes; version: string }) {
+  const { t } = useT("settings");
   const [showAll, setShowAll] = useState(false);
 
   if (notes.status === "loading") {
     return (
-      <div aria-label="Loading release notes" className="space-y-3 py-1">
+      <div aria-label={t("updates.dialog.notes.loading")} className="space-y-3 py-1">
         <div className="h-3 w-3/4 animate-pulse rounded bg-muted/70" />
         <div className="h-3 w-1/2 animate-pulse rounded bg-muted/70" />
         <div className="h-3 w-2/3 animate-pulse rounded bg-muted/70" />
@@ -65,9 +88,7 @@ function ReleaseNotes({ notes, version }: { notes: Notes; version: string }) {
 
   if (notes.status === "failed") {
     return (
-      <p className="text-sm text-muted-foreground">
-        Couldn't load the notes for this update. You can still install it, or read them on GitHub.
-      </p>
+      <p className="text-sm text-muted-foreground">{t("updates.dialog.notes.failed")}</p>
     );
   }
 
@@ -76,9 +97,7 @@ function ReleaseNotes({ notes, version }: { notes: Notes; version: string }) {
 
   if (listed.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        Small improvements, with nothing new to call out.
-      </p>
+      <p className="text-sm text-muted-foreground">{t("updates.dialog.notes.empty")}</p>
     );
   }
 
@@ -95,12 +114,12 @@ function ReleaseNotes({ notes, version }: { notes: Notes; version: string }) {
               <span className="font-semibold tabular-nums text-foreground/90">
                 {release.version}
               </span>
-              <span className="text-muted-foreground/70">{formatReleaseDate(release.date)}</span>
+              <span className="text-muted-foreground/70">{releaseDate(release.date)}</span>
             </div>
           )}
           {release.sections.map((section) => (
             <div key={section.title} className="grid grid-cols-[56px_minmax(0,1fr)] gap-x-3">
-              <span className="pt-px text-xs font-medium text-primary">{section.title}</span>
+              <span className="pt-px text-xs font-medium text-primary">{sectionTitle(section.title)}</span>
               <ul className="space-y-1.5">
                 {section.items.map((item, i) => (
                   <li key={`${i}-${item}`} className="break-words text-sm leading-snug text-foreground/85">
@@ -117,7 +136,7 @@ function ReleaseNotes({ notes, version }: { notes: Notes; version: string }) {
           onClick={() => setShowAll(true)}
           className="text-xs font-medium text-primary transition-colors hover:text-primary/80"
         >
-          Show {hidden} older {hidden === 1 ? "release" : "releases"}
+          {t("updates.dialog.notes.showOlder", { count: hidden })}
         </button>
       )}
     </div>
@@ -167,6 +186,7 @@ function ScrollingNotes({ children }: { children: React.ReactNode }) {
  * version in one step and sees the notes for what they actually get.
  */
 export function UpdateDialog() {
+  const { t } = useT("settings");
   const dialogOpen = useUpdaterStore((s) => s.dialogOpen);
   const phase = useUpdaterStore((s) => s.phase);
   const version = useUpdaterStore((s) => s.version);
@@ -210,11 +230,11 @@ export function UpdateDialog() {
   if (!visible || !version) return null;
 
   const releases = notes.status === "loaded" ? notes.releases : [];
-  const released = formatReleaseDate(releases.find((r) => r.version === version)?.date);
+  const released = releaseDate(releases.find((r) => r.version === version)?.date);
   const facts = [
-    `You're on ${NEXQ_VERSION}`,
-    releases.length > 1 ? `${releases.length} releases since yours` : null,
-    released ? `Released ${released}` : null,
+    t("updates.dialog.facts.current", { version: NEXQ_VERSION }),
+    releases.length > 1 ? t("updates.dialog.facts.behind", { count: releases.length }) : null,
+    released ? t("updates.dialog.facts.released", { date: released }) : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -225,11 +245,19 @@ export function UpdateDialog() {
       ? Math.min(100, Math.round((progress.received / progress.total) * 100))
       : null;
 
-  let installLabel = "Install and restart";
-  if (installing) installLabel = "Restarting…";
-  else if (refresh === "checking") installLabel = "Checking for newer…";
+  let installLabel = t("updates.dialog.install.label");
+  if (installing) installLabel = t("updates.dialog.install.restarting");
+  else if (refresh === "checking") installLabel = t("updates.dialog.install.checking");
   else if (fetching) {
-    installLabel = `Getting ${refreshVersion ?? "the latest"}${pct !== null ? ` · ${pct}%` : "…"}`;
+    if (refreshVersion) {
+      installLabel = pct !== null
+        ? t("updates.dialog.install.gettingProgress", { version: refreshVersion, percent: pct })
+        : t("updates.dialog.install.getting", { version: refreshVersion });
+    } else {
+      installLabel = pct !== null
+        ? t("updates.dialog.install.gettingLatestProgress", { percent: pct })
+        : t("updates.dialog.install.gettingLatest");
+    }
   }
 
   const handleInstall = async () => {
@@ -257,7 +285,7 @@ export function UpdateDialog() {
       >
         <header className="space-y-4 px-6 pt-6">
           <div>
-            <p className="text-xs font-medium text-primary">Update ready</p>
+            <p className="text-xs font-medium text-primary">{t("updates.dialog.label")}</p>
             <div className="mt-1 flex flex-wrap items-baseline gap-x-3">
               <h2
                 id="update-dialog-version"
@@ -283,16 +311,16 @@ export function UpdateDialog() {
             onClick={() => open(releaseNotesUrl(version)).catch(() => {})}
             className="mr-auto flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
-            Full release notes
+            {t("updates.dialog.fullNotes")}
             <ArrowUpRight className="h-3 w-3" />
           </button>
           <button
             onClick={() => setDialogOpen(false)}
             disabled={installing}
-            title={autoUpdate ? `It installs by itself when you quit ${APP_NAME}` : undefined}
+            title={autoUpdate ? t("updates.dialog.laterHint") : undefined}
             className="rounded-lg px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-50"
           >
-            Later
+            {t("updates.dialog.later")}
           </button>
           <button
             autoFocus

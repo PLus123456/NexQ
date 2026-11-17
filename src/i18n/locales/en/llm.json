@@ -54,10 +54,8 @@
       "noModels": "No models available"
     },
     "updatePill": {
-      "title": "Restart {{appName}} to install v{{version}}",
-      "ready": "Update ready · v{{version}}",
-      "restart": "Restart",
-      "restarting": "Restarting…"
+      "title": "See what's new in v{{version}} and install it",
+      "ready": "Update ready · v{{version}}"
     }
   },
   "actionItems": {
@@ -973,7 +971,8 @@
       },
       "apiKey": {
         "placeholder": "API key..."
-      }
+      },
+      "applyFailed": "Couldn't apply the custom endpoint: {{detail}}"
     },
     "connection": {
       "test": "Test Connection",

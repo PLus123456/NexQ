@@ -2,6 +2,7 @@ import { ScreenShare, ScreenShareOff } from "lucide-react";
 import { useConfigStore } from "../stores/configStore";
 import { toggleStealthMode } from "../hooks/useGlobalShortcut";
 import { formatShortcut } from "../lib/shortcutLabel";
+import { useT } from "../i18n";
 
 /**
  * Stealth ("Hide from screen share") toggle for the launcher header.
@@ -12,6 +13,7 @@ import { formatShortcut } from "../lib/shortcutLabel";
  * visible off-switch here is the reliable way back.
  */
 export function LauncherStealthButton() {
+  const { t } = useT("launcher");
   const stealthMode = useConfigStore((s) => s.stealthMode);
   const stealthShortcut = useConfigStore((s) => s.stealthShortcut);
 
@@ -23,7 +25,7 @@ export function LauncherStealthButton() {
           ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "text-muted-foreground/50 hover:bg-secondary hover:text-foreground"
       }`}
-      aria-label={`${stealthMode ? "Hidden from screen share — click to show" : "Visible in screen share — click to hide"} (${formatShortcut(stealthShortcut)})`}
+      aria-label={t(stealthMode ? "main.stealth.hidden" : "main.stealth.visible", { shortcut: formatShortcut(stealthShortcut) })}
       aria-pressed={stealthMode}
     >
       {stealthMode

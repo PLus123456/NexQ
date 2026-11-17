@@ -27,7 +27,8 @@
     "oralExam": {
       "name": "口试",
       "description": "备考辅助：老师提问、回答指导、知识盲区"
-    }
+    },
+    "deletedCustom": "自定义场景"
   },
   "noisePresets": {
     "quietOffice": {

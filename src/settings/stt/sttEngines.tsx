@@ -63,31 +63,14 @@ export function SttEngineIcon({ id, className }: { id: string; className?: strin
   return <Icon className={className} />;
 }
 
-/**
- * Engines added upstream that have no `stt:engines.<id>` strings yet: shown in
- * English until the translation pass adds them (then drop the entry here).
- */
-const UNTRANSLATED_ENGINES = {
-  cartesia: { label: "Cartesia", description: "Ink-2 streaming with turn detection" }, // i18n-ignore: until stt:engines.cartesia exists
-} as const satisfies Partial<Record<STTProviderType, { label: string; description: string }>>;
-
-type UntranslatedEngine = keyof typeof UNTRANSLATED_ENGINES;
-
-function isUntranslatedEngine(id: string): id is UntranslatedEngine {
-  return id in UNTRANSLATED_ENGINES;
-}
-
 /** The engine's name in the UI language (product names stay as they are); unknown ids as is. */
 export function sttEngineLabel(id: string): string {
   const meta = sttProviderMeta(id);
-  if (!meta) return id;
-  if (isUntranslatedEngine(meta.id)) return UNTRANSLATED_ENGINES[meta.id].label;
-  return t(`stt:engines.${meta.id}.label`);
+  return meta ? t(`stt:engines.${meta.id}.label`) : id;
 }
 
 /** One-line description of the engine for cards and pickers. */
 export function sttEngineDescription(id: STTProviderType): string {
-  if (isUntranslatedEngine(id)) return UNTRANSLATED_ENGINES[id].description;
   return t(`stt:engines.${id}.description`);
 }
 

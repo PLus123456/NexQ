@@ -144,6 +144,8 @@ comment on the same line). `--fail-on-report` also fails on findings.
 | Rerank | 重排序 | |
 | Hybrid search | 混合检索 | |
 | AI Actions | AI 动作 | |
+| Question Detection | 问题检测 | |
+| Auto-Answer | 自动回答 | Formerly Auto-Trigger (自动触发) |
 | Assist | AI 助手 | |
 | Summary | 会议总结 | |
 | Action items | 待办事项 | |

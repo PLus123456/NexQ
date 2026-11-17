@@ -386,7 +386,7 @@ export function QuestionDetector() {
     runYourAction("Assist", question.text).catch((err) => {
       // No answer came, so it stays a card to click.
       useQuestionStore.getState().holdBack(question.segmentId, question.text);
-      showToast(String(err).includes(REFUSED) ? "Another answer is still running" : t("modes.errors.generateFailed"), "error");
+      showToast(t(String(err).includes(REFUSED) ? "modes.errors.anotherRunning" : "modes.errors.generateFailed"), "error");
     });
   }, [questions, t]);
 

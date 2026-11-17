@@ -17,6 +17,10 @@
     "settings": {
       "ariaLabel": "Settings (Ctrl+,)"
     },
+    "stealth": {
+      "hidden": "Hidden from screen share — click to show ({{shortcut}})",
+      "visible": "Visible in screen share — click to hide ({{shortcut}})"
+    },
     "search": {
       "placeholder": "Search meetings...",
       "ariaLabel": "Search meetings",

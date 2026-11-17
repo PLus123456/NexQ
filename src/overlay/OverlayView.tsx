@@ -318,7 +318,7 @@ export function OverlayView() {
             icon={<Minus className="h-3.5 w-3.5" />}
             onClick={handleMinimizeToDashboard}
             tooltip={stealthHide
-              ? `Hide to ${isMacPlatform() ? "menu bar" : "tray"} (${formatShortcut("CmdOrCtrl+B")} brings it back)`
+              ? t(isMacPlatform() ? "overlay.hideToMenuBar" : "overlay.hideToTray", { shortcut: formatShortcut("CmdOrCtrl+B") })
               : t("overlay.minimize")}
           />
 

@@ -119,6 +119,8 @@
     "transparency": "透明度：{{percent}}%（点击切换）",
     "settings": "设置",
     "minimize": "最小化到主窗口（Ctrl+B 可恢复）",
+    "hideToTray": "隐藏到系统托盘（{{shortcut}} 可恢复）",
+    "hideToMenuBar": "隐藏到菜单栏（{{shortcut}} 可恢复）",
     "translate": {
       "label": "翻译",
       "toggle": "开关实时翻译",

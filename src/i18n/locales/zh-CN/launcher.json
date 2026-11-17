@@ -17,6 +17,10 @@
     "settings": {
       "ariaLabel": "设置（Ctrl+,）"
     },
+    "stealth": {
+      "hidden": "共享屏幕时已隐藏，点击显示（{{shortcut}}）",
+      "visible": "共享屏幕时可见，点击隐藏（{{shortcut}}）"
+    },
     "search": {
       "placeholder": "搜索会议…",
       "ariaLabel": "搜索会议",

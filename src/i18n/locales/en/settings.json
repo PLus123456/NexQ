@@ -65,7 +65,7 @@
       "hint": "Launch {{appName}} automatically when you log in",
       "ariaLabel": "Toggle start on login"
     },
-    "movedNotice": "Context Window, Auto-Trigger, and AI instructions have moved to the <strong>AI Actions</strong> tab.",
+    "movedNotice": "Context Window, Question Detection, Auto-Answer, and AI instructions have moved to the <strong>AI Actions</strong> tab.",
     "overlayOpacity": {
       "label": "Overlay Transparency",
       "hint": "How transparent the overlay background is",
@@ -104,7 +104,7 @@
       "ready": {
         "title": "v{{version}} ready to install",
         "installsOnQuit": "Installs when you quit {{appName}}",
-        "restartToInstall": "Restart to install"
+        "openToInstall": "Open it to install"
       },
       "error": {
         "checkFailed": "Update check failed",
@@ -115,7 +115,6 @@
         "detail": "Automatic updates are off"
       },
       "checkForUpdates": "Check for updates",
-      "restartNow": "Restart now",
       "download": "Download",
       "skipVersion": "Skip this version",
       "auto": {
@@ -158,9 +157,44 @@
   "updates": {
     "toast": {
       "ready": "{{appName}} v{{version}} is ready",
-      "restartOrQuit": "Restart from the footer, or it installs when you quit.",
-      "restartToInstall": "Restart from the footer to install.",
+      "installOrQuit": "Install it from the footer, or it installs when you quit.",
+      "installFromFooter": "Install it from the footer.",
       "whatsNew": "What's new"
+    },
+    "dialog": {
+      "label": "Update ready",
+      "facts": {
+        "current": "You're on {{version}}",
+        "behind_one": "{{count}} release since yours",
+        "behind_other": "{{count}} releases since yours",
+        "released": "Released {{date}}"
+      },
+      "notes": {
+        "loading": "Loading release notes",
+        "failed": "Couldn't load the notes for this update. You can still install it, or read them on GitHub.",
+        "empty": "Small improvements, with nothing new to call out.",
+        "showOlder_one": "Show {{count}} older release",
+        "showOlder_other": "Show {{count}} older releases"
+      },
+      "sections": {
+        "changed": "Changed",
+        "new": "New",
+        "faster": "Faster",
+        "fixed": "Fixed",
+        "reverted": "Reverted"
+      },
+      "fullNotes": "Full release notes",
+      "later": "Later",
+      "laterHint": "It installs by itself when you quit {{appName}}",
+      "install": {
+        "label": "Install and restart",
+        "restarting": "Restarting…",
+        "checking": "Checking for newer…",
+        "getting": "Getting {{version}}…",
+        "gettingProgress": "Getting {{version}} · {{percent}}%",
+        "gettingLatest": "Getting the latest…",
+        "gettingLatestProgress": "Getting the latest · {{percent}}%"
+      }
     },
     "restartDialog": {
       "title": "End meeting and update?",
@@ -244,10 +278,15 @@
       "title": "AI Behavior",
       "subtitle": "Control automation and response characteristics"
     },
-    "autoTrigger": {
-      "label": "Auto-Trigger",
-      "ariaLabel": "Toggle auto-trigger",
-      "help": "When enabled, {{appName}} listens for questions directed at you during the meeting and automatically generates suggested answers.\n\nTurn OFF during presentations or when you want manual-only control. You can still trigger actions manually with the overlay buttons."
+    "questionDetection": {
+      "label": "Question Detection",
+      "ariaLabel": "Toggle question detection",
+      "help": "When enabled, questions from the other party appear as cards in the overlay. Click a card to get an answer to that question.\n\nTurn OFF to hide the cards. You can still trigger actions manually with the overlay buttons."
+    },
+    "autoAnswer": {
+      "label": "Auto-Answer",
+      "ariaLabel": "Toggle auto-answer",
+      "help": "When enabled, {{appName}} answers the newest detected question on its own, once the other party has been quiet for a moment. With Cartesia or Deepgram Flux it answers as soon as they finish speaking.\n\nAsk for anything yourself to stop an automatic answer and get yours instead. Turn OFF to keep the question cards and choose which ones to answer. Needs Question Detection."
     },
     "temperature": {
       "label": "Temperature",

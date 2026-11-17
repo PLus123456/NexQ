@@ -248,7 +248,7 @@ export function LLMSettings() {
   const applyCustomIfActive = (custom: { authType?: CustomAuthType; authValue?: string } = {}) => {
     if (selectedProvider !== "custom" || useConfigStore.getState().llmProvider !== "custom" || !customBaseUrl.trim()) return;
     setLLMProvider(buildProviderConfig(custom)).catch((e) =>
-      showToast(`Couldn't apply the custom endpoint: ${e instanceof Error ? e.message : String(e)}`, "error"),
+      showToast(t("legacy.custom.applyFailed", { detail: e instanceof Error ? e.message : String(e) }), "error"),
     );
   };
 

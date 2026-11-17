@@ -226,17 +226,17 @@ describe("ServiceStatusBar text", () => {
     expect(screen.getByTitle("AI 模型：自定义 / my-model")).toBeInTheDocument();
   });
 
-  it("shows the update pill with the app name", async () => {
+  it("shows the update pill, which opens what's new", async () => {
     useUpdaterStore.setState({ phase: "ready", version: "2.30.0" });
     const { unmount } = render(<ServiceStatusBar />);
-    expect(screen.getByTitle("Restart NexQ Plus to install v2.30.0")).toBeInTheDocument();
+    expect(screen.getByTitle("See what's new in v2.30.0 and install it")).toBeInTheDocument();
     expect(screen.getByText("Update ready · v2.30.0")).toBeInTheDocument();
     expect(screen.getByText("What's new")).toBeInTheDocument();
     unmount();
 
     await changeUiLanguage("zh-CN");
     render(<ServiceStatusBar />);
-    expect(screen.getByTitle("重启 NexQ Plus 以安装 v2.30.0")).toBeInTheDocument();
+    expect(screen.getByTitle("查看 v2.30.0 的更新内容并安装")).toBeInTheDocument();
     expect(screen.getByText("更新已就绪 · v2.30.0")).toBeInTheDocument();
     expect(screen.getByText("更新内容")).toBeInTheDocument();
   });

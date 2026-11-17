@@ -121,6 +121,8 @@
     "transparency": "Transparency: {{percent}}% (click to cycle)",
     "settings": "Settings",
     "minimize": "Minimize to Dashboard (Ctrl+B brings it back)",
+    "hideToTray": "Hide to tray ({{shortcut}} brings it back)",
+    "hideToMenuBar": "Hide to menu bar ({{shortcut}} brings it back)",
     "translate": {
       "label": "Translate",
       "toggle": "Toggle auto-translate",

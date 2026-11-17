@@ -3,10 +3,10 @@
 // English-only model…). Writes `PartyAudioConfig.language` through `onChange`.
 
 import { AlertTriangle, Info } from "lucide-react";
-import { useT } from "../../i18n";
+import { currentUiLanguage, useT } from "../../i18n";
 import { LanguageCombobox } from "../../components/LanguageCombobox";
-import { AUTO_LANGUAGE, baseLanguage } from "../../lib/languages";
-import { cartesiaSupportsLanguage, sttProviderMeta } from "../../lib/stt/providerMeta";
+import { AUTO_LANGUAGE, baseLanguage, languageLabel } from "../../lib/languages";
+import { CARTESIA_LANGUAGES, cartesiaSupportsLanguage, sttProviderMeta } from "../../lib/stt/providerMeta";
 import type { PartyAudioConfig } from "../../lib/types";
 import { useConfigStore } from "../../stores/configStore";
 import { partyLanguage, sttEngineLabel } from "./sttEngines";
@@ -24,6 +24,12 @@ export interface PartyLanguageFieldProps {
 interface Hint {
   tone: "info" | "warning";
   text: string;
+}
+
+/** The languages Cartesia ink-2 detects, as a list in the UI language. */
+function cartesiaLanguageList(): string {
+  const names = CARTESIA_LANGUAGES.map((code) => languageLabel(code));
+  return new Intl.ListFormat(currentUiLanguage(), { style: "long", type: "conjunction" }).format(names);
 }
 
 export function PartyLanguageField({ party, onChange, id, "aria-label": ariaLabel, className }: PartyLanguageFieldProps) {
@@ -65,9 +71,10 @@ export function PartyLanguageField({ party, onChange, id, "aria-label": ariaLabe
   }
   if (meta?.id === "cartesia") {
     // ink-2 has no language setting; the choice only matters for this check.
+    const languages = cartesiaLanguageList();
     hints.push(isAuto || cartesiaSupportsLanguage(value)
-      ? { tone: "info", text: "Cartesia detects English, French, Hindi, Japanese and Spanish on its own." }
-      : { tone: "warning", text: "Cartesia transcribes only English, French, Hindi, Japanese and Spanish. Choose another provider for this language." });
+      ? { tone: "info", text: t("stt:language.hints.cartesiaAuto", { languages }) }
+      : { tone: "warning", text: t("stt:language.hints.cartesiaUnsupported", { languages }) });
   }
   if (isVietnamese && meta?.id === "parakeet_tdt") {
     hints.push({ tone: "warning", text: t("stt:language.hints.parakeetVietnameseUnsupported") });

@@ -47,6 +47,10 @@
     "soniox": {
       "label": "Soniox",
       "description": "Real-time recognition with live translation"
+    },
+    "cartesia": {
+      "label": "Cartesia",
+      "description": "Ink-2 streaming with turn detection"
     }
   },
   "groups": {
@@ -107,6 +111,8 @@
       "ignored": "{{engine}} ignores the language setting: the model decides.",
       "whisperCppAuto": "Whisper.cpp detects the language in each short chunk and can switch back and forth. Choose a language if you know it.",
       "deepgramAuto": "Auto-detect needs a Nova 2 or Nova 3 model; {{model}} transcribes English.",
+      "cartesiaAuto": "Cartesia detects {{languages}} on its own.",
+      "cartesiaUnsupported": "Cartesia transcribes only {{languages}}. Choose another provider for this language.",
       "parakeetVietnameseUnsupported": "The included Parakeet models do not support Vietnamese. Choose a multilingual Whisper model, Deepgram Nova-3, or Azure Speech.",
       "deepgramVietnamese": "Select a Deepgram model that supports Vietnamese, such as Nova-3.",
       "parakeetCtcEnglishOnly": "Parakeet CTC 110M is English-only. Use Parakeet TDT 0.6B v3 for Russian and other supported languages."
@@ -298,6 +304,8 @@
     "features": "Features",
     "models": {
       "nova3": "Best accuracy, latest model",
+      "flux": "Knows when a speaker is done, so Auto-Answer replies at once (English)",
+      "fluxMultilingual": "Turn detection in 10 languages",
       "nova2": "Great accuracy, widely used",
       "nova": "Previous generation",
       "enhanced": "High accuracy, conservative",
@@ -307,6 +315,10 @@
       "whisperSmall": "OpenAI Whisper small",
       "whisperTiny": "Smallest, fastest Whisper",
       "whisperBase": "OpenAI Whisper base"
+    },
+    "flux": {
+      "turns": "Flux tells {{appName}} when each speaker has finished, so Auto-Answer replies right away instead of waiting 1.5 s, and can start on a likely finish.",
+      "usage": "It doesn't tell speakers apart. {{appName}} streams silence to it, so quiet time counts toward Deepgram usage. Muted time doesn't: muting closes the stream."
     },
     "presets": {
       "default": {

@@ -27,7 +27,8 @@
     "oralExam": {
       "name": "Oral Exam",
       "description": "Exam prep — professor questions, coached responses, knowledge gaps"
-    }
+    },
+    "deletedCustom": "custom scenario"
   },
   "noisePresets": {
     "quietOffice": {

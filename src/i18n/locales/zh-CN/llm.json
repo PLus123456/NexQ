@@ -53,10 +53,8 @@
       "noModels": "没有可用的模型"
     },
     "updatePill": {
-      "title": "重启 {{appName}} 以安装 v{{version}}",
-      "ready": "更新已就绪 · v{{version}}",
-      "restart": "重启",
-      "restarting": "正在重启…"
+      "title": "查看 v{{version}} 的更新内容并安装",
+      "ready": "更新已就绪 · v{{version}}"
     }
   },
   "actionItems": {
@@ -962,7 +960,8 @@
       },
       "apiKey": {
         "placeholder": "输入 API Key…"
-      }
+      },
+      "applyFailed": "无法应用自定义端点：{{detail}}"
     },
     "connection": {
       "test": "测试连接",

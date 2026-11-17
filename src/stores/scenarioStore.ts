@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { load, Store } from "@tauri-apps/plugin-store";
 import type { AIScenario, ScenarioTemplate } from "../lib/types";
 import { BUILT_IN_SCENARIOS, getScenarioById, scenarioDescription } from "../lib/scenarios";
+import { t } from "../i18n";
 
 const STORE_FILE = "config.json";
 
@@ -212,5 +213,5 @@ export function useMeetingScenarios(): ScenarioTemplate[] {
 /** How a saved meeting's scenario reads: "team meeting", or a custom scenario's name. */
 export function scenarioLabel(id: string, customScenarios: ScenarioTemplate[]): string {
   if (!id.startsWith("custom_")) return id.replace(/_/g, " ");
-  return customScenarios.find((s) => s.id === id)?.name ?? "custom scenario";
+  return customScenarios.find((s) => s.id === id)?.name ?? t("misc:scenarios.deletedCustom");
 }

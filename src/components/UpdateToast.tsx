@@ -46,7 +46,7 @@ export function UpdateReadyToast() {
             {t("updates.toast.ready", { version: visibleVersion })}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {autoUpdate ? t("updates.toast.restartOrQuit") : t("updates.toast.restartToInstall")}
+            {autoUpdate ? t("updates.toast.installOrQuit") : t("updates.toast.installFromFooter")}
           </p>
           <button
             onClick={() => {

@@ -32,7 +32,6 @@ import {
 } from "lucide-react";
 import { LocalModelManager } from "./LocalModelManager";
 import { currentPlatform } from "../lib/platform";
-import { APP_NAME } from "../lib/brand";
 import {
   isSttProviderAvailable,
   sttKeySlot,
@@ -74,16 +73,14 @@ interface DeepgramModelInfo {
   /** Model name (product name, not translated). */
   name: string;
   tier: "latest" | "flux" | "standard" | "economy" | "whisper";
-  descriptionKey?: ParseKeys<"stt">;
-  /** English description of a model added before its translation. */
-  description?: string;
+  descriptionKey: ParseKeys<"stt">;
   costPerMin: number;
 }
 
 const DEEPGRAM_MODELS: DeepgramModelInfo[] = [
   { id: "nova-3", name: "Nova 3", tier: "latest", descriptionKey: "deepgram.models.nova3", costPerMin: 0.0059 },
-  { id: "flux-general-en", name: "Flux", tier: "flux", description: "Knows when a speaker is done, so Auto-Answer replies at once (English)", costPerMin: 0.0077 },
-  { id: "flux-general-multi", name: "Flux Multilingual", tier: "flux", description: "Turn detection in 10 languages", costPerMin: 0.0078 },
+  { id: "flux-general-en", name: "Flux", tier: "flux", descriptionKey: "deepgram.models.flux", costPerMin: 0.0077 },
+  { id: "flux-general-multi", name: "Flux Multilingual", tier: "flux", descriptionKey: "deepgram.models.fluxMultilingual", costPerMin: 0.0078 },
   { id: "nova-2", name: "Nova 2", tier: "standard", descriptionKey: "deepgram.models.nova2", costPerMin: 0.0043 },
   { id: "nova", name: "Nova", tier: "standard", descriptionKey: "deepgram.models.nova", costPerMin: 0.0043 },
   { id: "enhanced", name: "Enhanced", tier: "standard", descriptionKey: "deepgram.models.enhanced", costPerMin: 0.0043 },
@@ -1073,9 +1070,7 @@ function DeepgramAdvancedSettings() {
                       <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">{t("stt:deepgram.newTag")}</span>
                     )}
                   </div>
-                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">
-                    {model.descriptionKey ? t(model.descriptionKey) : model.description}
-                  </p>
+                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{t(model.descriptionKey)}</p>
                   <p className={`text-meta font-mono mt-0.5 ${tierColors[model.tier]}`}>
                     {t("stt:deepgram.pricePerMinute", { price: model.costPerMin.toFixed(4) })}
                   </p>
@@ -1088,14 +1083,8 @@ function DeepgramAdvancedSettings() {
 
       {isFlux && (
         <div className="px-5 py-3 border-b border-border/20 bg-info/5">
-          <p className="text-xs text-foreground/90">
-            Flux tells {APP_NAME} when each speaker has finished, so Auto-Answer replies right away instead of
-            waiting 1.5 s, and can start on a likely finish.
-          </p>
-          <p className="mt-1 text-meta text-muted-foreground/80">
-            It doesn&apos;t tell speakers apart. {APP_NAME} streams silence to it, so quiet time counts toward
-            Deepgram usage. Muted time doesn&apos;t: muting closes the stream.
-          </p>
+          <p className="text-xs text-foreground/90">{t("stt:deepgram.flux.turns")}</p>
+          <p className="mt-1 text-meta text-muted-foreground/80">{t("stt:deepgram.flux.usage")}</p>
         </div>
       )}
 

@@ -153,7 +153,8 @@
     "errors": {
       "cancelFailed": "Couldn't cancel generation",
       "generateFailed": "Couldn't generate AI response",
-      "sendFailed": "Couldn't send question"
+      "sendFailed": "Couldn't send question",
+      "anotherRunning": "Another answer is still running"
     },
     "ask": {
       "closeLabel": "Close question input"

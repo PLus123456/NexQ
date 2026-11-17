@@ -203,7 +203,7 @@ function Updates() {
   } else if (phase === "ready" && version) {
     dotClass = "bg-primary";
     title = t("about.updates.ready.title", { version });
-    detail = autoUpdate ? t("about.updates.ready.installsOnQuit") : t("about.updates.ready.restartToInstall");
+    detail = autoUpdate ? t("about.updates.ready.installsOnQuit") : t("about.updates.ready.openToInstall");
     action = { label: t("updates.toast.whatsNew"), onClick: () => openUpdateDialog(), primary: true };
   } else if (phase === "error") {
     dotClass = "bg-destructive";

@@ -47,6 +47,10 @@
     "soniox": {
       "label": "Soniox",
       "description": "实时识别，同步翻译"
+    },
+    "cartesia": {
+      "label": "Cartesia",
+      "description": "Ink-2 流式识别，能判断说话人是否说完"
     }
   },
   "groups": {
@@ -107,6 +111,8 @@
       "ignored": "{{engine}} 忽略语言设置，由模型决定。",
       "whisperCppAuto": "Whisper.cpp 对每个短片段单独检测语言，可能来回切换。知道语言时最好明确选择。",
       "deepgramAuto": "自动检测需要 Nova 2 或 Nova 3 模型，{{model}} 会按英语识别。",
+      "cartesiaAuto": "Cartesia 会自动识别{{languages}}。",
+      "cartesiaUnsupported": "Cartesia 只能识别{{languages}}。这种语言请换用其他识别引擎。",
       "parakeetVietnameseUnsupported": "内置的 Parakeet 模型不支持越南语。请选择多语言 Whisper 模型、Deepgram Nova-3 或 Azure Speech。",
       "deepgramVietnamese": "请选择支持越南语的 Deepgram 模型，例如 Nova-3。",
       "parakeetCtcEnglishOnly": "Parakeet CTC 110M 只支持英语。俄语等其他语言请使用 Parakeet TDT 0.6B v3。"
@@ -297,6 +303,8 @@
     "features": "功能",
     "models": {
       "nova3": "准确度最高，最新模型",
+      "flux": "能判断说话人何时说完，自动回答随即开始（英语）",
+      "fluxMultilingual": "支持 10 种语言，能判断说话人是否说完",
       "nova2": "准确度高，使用广泛",
       "nova": "上一代模型",
       "enhanced": "准确度高，偏保守",
@@ -306,6 +314,10 @@
       "whisperSmall": "OpenAI Whisper small",
       "whisperTiny": "最小、最快的 Whisper",
       "whisperBase": "OpenAI Whisper base"
+    },
+    "flux": {
+      "turns": "Flux 会告诉 {{appName}} 每位说话人何时说完，自动回答因此能立即开始，不必再等 1.5 秒；判断对方很可能已说完时，也会提前开始。",
+      "usage": "它不区分说话人。{{appName}} 没人说话时也会持续发送音频，这段时间同样计入 Deepgram 用量；静音期间不计，因为静音会断开音频流。"
     },
     "presets": {
       "default": {

@@ -150,7 +150,8 @@
     "errors": {
       "cancelFailed": "取消生成失败",
       "generateFailed": "生成 AI 回答失败",
-      "sendFailed": "发送问题失败"
+      "sendFailed": "发送问题失败",
+      "anotherRunning": "另一个回答还在生成中"
     },
     "ask": {
       "closeLabel": "关闭提问框"

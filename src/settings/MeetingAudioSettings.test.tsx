@@ -88,6 +88,25 @@ describe.each(["vi", "vi-VN"])("Vietnamese model guidance for %s", (language) =>
   });
 });
 
+describe("Cartesia language guidance", () => {
+  const renderCartesia = (language: string) =>
+    render(<PartyLanguageField party={{ ...initialConfig.you, stt_provider: "cartesia", language }} onChange={() => {}} />);
+
+  it("names the languages it detects, in the UI language", async () => {
+    renderCartesia("auto");
+    expect(screen.getByText("Cartesia detects English, French, Hindi, Japanese, and Spanish on its own.")).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("Cartesia 会自动识别英语、法语、印地语、日语和西班牙语。")).toBeInTheDocument();
+  });
+
+  it("warns about a language it can't transcribe", async () => {
+    renderCartesia("de-DE");
+    expect(screen.getByText(/^Cartesia transcribes only English, French, Hindi, Japanese, and Spanish\./)).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("Cartesia 只能识别英语、法语、印地语、日语和西班牙语。这种语言请换用其他识别引擎。")).toBeInTheDocument();
+  });
+});
+
 describe.each([
   { surface: "settings", Component: MeetingAudioSettings },
   { surface: "wizard", Component: AudioSetupStep },

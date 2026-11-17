@@ -29,7 +29,7 @@ describe("UpdateReadyToast", () => {
     render(<UpdateReadyToast />);
 
     expect(await screen.findByText("NexQ Plus v2.30.0 is ready")).toBeInTheDocument();
-    expect(screen.getByText("Restart from the footer, or it installs when you quit.")).toBeInTheDocument();
+    expect(screen.getByText("Install it from the footer, or it installs when you quit.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "What's new" }));
     // The update dialog shows the notes (with a link to RELEASES_URL), in the app.
@@ -56,7 +56,7 @@ describe("UpdateReadyToast", () => {
     render(<UpdateReadyToast />);
 
     expect(await screen.findByText("NexQ Plus v2.30.0 已就绪")).toBeInTheDocument();
-    expect(screen.getByText("在底栏重启即可安装。")).toBeInTheDocument();
+    expect(screen.getByText("可以在底栏安装。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "更新内容" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
   });

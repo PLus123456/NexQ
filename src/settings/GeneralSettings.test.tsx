@@ -73,7 +73,7 @@ describe("GeneralSettings", () => {
     expect(screen.getByRole("switch", { name: "Toggle start on login" })).toBeInTheDocument();
     expect(screen.getByText("AI Actions").tagName).toBe("STRONG");
     expect(screen.getByText(/have moved to the/)).toHaveTextContent(
-      "Context Window, Auto-Trigger, and AI instructions have moved to the AI Actions tab.",
+      "Context Window, Question Detection, Auto-Answer, and AI instructions have moved to the AI Actions tab.",
     );
   });
 

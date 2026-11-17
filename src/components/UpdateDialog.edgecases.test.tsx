@@ -16,6 +16,7 @@ vi.mock("../lib/version", async (importOriginal) => ({
 
 import { UpdateDialog } from "./UpdateDialog";
 import { useUpdaterStore } from "../stores/updaterStore";
+import { changeUiLanguage } from "../i18n";
 
 const state = () => useUpdaterStore.getState();
 
@@ -182,5 +183,50 @@ describe("UpdateDialog with unusual release notes", () => {
     changelog(`${heading("2.1.0")}### Features\n\n${item("<b>bold</b> stays literal")}`);
     open("2.1.0");
     await screen.findByText("<b>bold</b> stays literal");
+  });
+});
+
+describe("UpdateDialog in Chinese", () => {
+  beforeEach(async () => {
+    state().reset();
+    useUpdaterStore.setState({ autoUpdate: true, skippedVersion: undefined });
+    await changeUiLanguage("zh-CN");
+  });
+
+  afterEach(async () => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    await changeUiLanguage("en");
+  });
+
+  it("translates the dialog around the notes", async () => {
+    const releases = Array.from({ length: 7 }, (_, i) => {
+      const v = `2.${7 - i}.0`;
+      return `${heading(v)}### Bug Fixes\n\n${item(`fix in ${v}`)}`;
+    }).join("");
+    changelog(releases);
+    open("2.7.0");
+
+    await screen.findByText("Fix in 2.7.0");
+    expect(screen.getByText("更新已就绪")).toBeTruthy();
+    expect(screen.getByText("当前版本 2.0.0 · 已落后 7 个版本 · 发布于 2026年11月5日")).toBeTruthy();
+    expect(screen.getAllByText("修复").length).toBe(5);
+    expect(screen.getByRole("button", { name: "显示更早的 2 个版本" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /完整更新说明/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "稍后" }).title).toBe("退出 NexQ Plus 时会自动安装");
+    expect(screen.getByRole("button", { name: "安装并重启" })).toBeTruthy();
+  });
+
+  it("translates the empty and failed notes", async () => {
+    changelog(heading("2.1.0"));
+    open("2.1.0");
+    await screen.findByText("一些小改进，没有需要特别说明的变化。");
+    cleanup();
+
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    open("2.1.0");
+    await screen.findByText(/无法加载这次更新的说明/);
   });
 });
