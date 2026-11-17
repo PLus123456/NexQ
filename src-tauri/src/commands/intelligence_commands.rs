@@ -1311,9 +1311,16 @@ pub async fn update_action_configs(
     // Also sync global defaults to intelligence engine settings
     engine.set_auto_trigger(configs.global_defaults.auto_trigger);
     engine.set_context_window(configs.global_defaults.transcript_window_seconds);
+    let question_detection = configs.global_defaults.question_detection;
 
     engine.set_action_configs(configs);
     drop(engine);
+    // After the engine lock: switching detection off also clears its question.
+    if let Some(detection) =
+        app.try_state::<crate::intelligence::llm_question::QuestionDetectionService>()
+    {
+        detection.set_question_detection(&app, question_detection);
+    }
     crate::intelligence::question_prediction::invalidate(&app);
 
     log::info!("Action configs updated from frontend");

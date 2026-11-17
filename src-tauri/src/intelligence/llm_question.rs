@@ -200,6 +200,9 @@ struct Inner {
     worker_running: bool,
     active_cancel: Option<Arc<CancelToken>>,
     runtime_failure: Option<(u64, String)>,
+    /// The Question Detection switch (action config `question_detection`),
+    /// pushed with the action configs. Separate from Auto-Answer.
+    question_detection: bool,
 }
 
 impl Inner {
@@ -214,7 +217,27 @@ impl Inner {
             worker_running: false,
             active_cancel: None,
             runtime_failure: None,
+            question_detection: true,
         }
+    }
+
+    /// Lines are classified while Question Detection is on, and also while
+    /// predictions (M2) are on with it off: only a detected question can
+    /// confirm a prediction and replay its prepared answer.
+    fn detecting(&self) -> bool {
+        self.question_detection || self.settings.prediction_enabled
+    }
+
+    /// Returns true when detection just stopped: the pending line and any
+    /// request in flight are dropped, so no model call is paid for after that.
+    fn set_question_detection(&mut self, on: bool) -> bool {
+        let was_detecting = self.detecting();
+        self.question_detection = on;
+        if was_detecting && !self.detecting() {
+            self.invalidate();
+            return true;
+        }
+        false
     }
 
     fn invalidate(&mut self) {
@@ -263,6 +286,11 @@ impl Inner {
         });
         while self.context.len() > 150 {
             self.context.pop_front();
+        }
+        // Detection off: keep the context (switching it back on mid-meeting
+        // still resolves references), but decide nothing and call no model.
+        if !self.detecting() {
+            return None;
         }
         if source != "Them" && source != "Interviewer" {
             // Once the user responds, a classifier snapshot taken before that
@@ -313,6 +341,9 @@ impl Inner {
 
     fn take_job(&mut self) -> Option<Job> {
         let pending = self.pending.take()?;
+        if !self.detecting() {
+            return None;
+        }
         let cancel = Arc::new(CancelToken::new());
         self.active_cancel = Some(cancel.clone());
         Some(Job {
@@ -471,6 +502,32 @@ impl QuestionDetectionService {
         let view = self.view(app);
         let _ = app.emit(SETTINGS_EVENT, &view);
         Ok(view)
+    }
+
+    /// Follows the Question Detection switch, which reaches the backend with
+    /// every action-config sync (`update_action_configs`), so a change applies
+    /// mid-meeting. Do not call it while holding the intelligence engine lock.
+    pub fn set_question_detection(&self, app: &AppHandle, on: bool) {
+        let stopped = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            if inner.question_detection == on {
+                return;
+            }
+            let stopped = inner.set_question_detection(on);
+            stopped.then_some(inner.revision)
+        };
+        log::info!("[question-detection] Question Detection switch: {on}");
+        let Some(revision) = stopped else { return };
+        self.wake.notify_one();
+        clear_engine_question(app);
+        let _ = app.emit(
+            "question_detection_pending",
+            serde_json::json!({
+                "revision": revision, "timestamp_ms": 0, "source": "Settings",
+            }),
+        );
     }
 
     pub fn reset_session(&self) {
@@ -1284,6 +1341,149 @@ mod tests {
             .unwrap();
         assert_eq!(publications.load(Ordering::SeqCst), 0);
         assert!(!inner.lock().unwrap().worker_running);
+    }
+
+    fn gated(mode: DetectionMode, question_detection: bool, prediction_enabled: bool) -> Inner {
+        let mut inner = Inner::new(QuestionDetectionSettings {
+            mode,
+            prediction_enabled,
+            ..Default::default()
+        });
+        inner.set_question_detection(question_detection);
+        inner
+    }
+
+    /// Runs the worker over whatever `observe` left pending and counts the
+    /// classifier calls (the model request lives in `execute`).
+    async fn classifier_calls(inner: Inner) -> usize {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(Mutex::new(inner));
+        inner.lock().unwrap().worker_running = true;
+        let counted = calls.clone();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_worker(
+                inner.clone(),
+                Arc::new(Notify::new()),
+                move |_| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    async { Outcome::default() }
+                },
+                |_, _, _| {},
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!inner.lock().unwrap().worker_running);
+        calls.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn detection_off_without_predictions_classifies_nothing_and_calls_no_model() {
+        for mode in [DetectionMode::Rules, DetectionMode::Hybrid, DetectionMode::Model] {
+            let mut inner = gated(mode, false, false);
+            let revision = inner.revision;
+            let now = Instant::now();
+            assert!(inner
+                .observe("What is your plan?".into(), "Them".into(), 1, now, Duration::ZERO)
+                .is_none());
+            assert!(inner
+                .observe("This plan.".into(), "You".into(), 2, now, Duration::ZERO)
+                .is_none());
+            assert!(inner
+                .observe("什么时候交付？".into(), "Interviewer".into(), 3, now, Duration::ZERO)
+                .is_none());
+            assert!(inner.pending.is_none());
+            assert_eq!(inner.revision, revision, "no pending event while off");
+            assert_eq!(inner.context.len(), 3, "context is still kept");
+            assert_eq!(classifier_calls(inner).await, 0, "{mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn detection_on_or_predictions_on_classifies_as_before() {
+        for mode in [DetectionMode::Rules, DetectionMode::Hybrid, DetectionMode::Model] {
+            // Predictions (M2) need detection to confirm a prepared answer.
+            for (detection, predictions) in [(true, false), (true, true), (false, true)] {
+                let mut inner = gated(mode, detection, predictions);
+                let now = Instant::now();
+                let pending = inner
+                    .observe("What is your plan?".into(), "Them".into(), 1, now, Duration::ZERO)
+                    .expect("a line from the other side is classified");
+                assert_eq!(pending.original_text, "What is your plan?");
+                assert_eq!(classifier_calls(inner).await, 1, "{mode:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn switching_detection_off_mid_meeting_cancels_the_request_in_flight() {
+        let inner = Arc::new(Mutex::new(Inner::new(QuestionDetectionSettings::default())));
+        let wake = Arc::new(Notify::new());
+        let started = Arc::new(Notify::new());
+        let publications = Arc::new(AtomicUsize::new(0));
+        inner.lock().unwrap().observe(
+            "What is your plan?".into(),
+            "Them".into(),
+            1,
+            Instant::now(),
+            Duration::ZERO,
+        );
+        inner.lock().unwrap().worker_running = true;
+        let worker = {
+            let started = started.clone();
+            let publications = publications.clone();
+            tokio::spawn(run_worker(
+                inner.clone(),
+                wake.clone(),
+                move |job| {
+                    let started = started.clone();
+                    async move {
+                        started.notify_one();
+                        assert_eq!(
+                            run_bounded(job.cancel, Duration::from_secs(2), std::future::pending())
+                                .await,
+                            Err(LlmCallError::Cancelled)
+                        );
+                        Outcome::default()
+                    }
+                },
+                move |_, _, _| {
+                    publications.fetch_add(1, Ordering::SeqCst);
+                },
+            ))
+        };
+        started.notified().await;
+        assert!(inner.lock().unwrap().set_question_detection(false));
+        wake.notify_one();
+        tokio::time::timeout(Duration::from_millis(100), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(publications.load(Ordering::SeqCst), 0);
+
+        let mut state = inner.lock().unwrap();
+        assert!(!state.set_question_detection(false), "no change, nothing to stop");
+        assert!(state
+            .observe("And the budget?".into(), "Them".into(), 2, Instant::now(), Duration::ZERO)
+            .is_none());
+        // Switched back on: the next line is classified, with what was said meanwhile.
+        assert!(!state.set_question_detection(true));
+        assert!(state
+            .observe("When can you start?".into(), "Them".into(), 3, Instant::now(), Duration::ZERO)
+            .is_some());
+        assert!(state.take_job().unwrap().context.contains("And the budget?"));
+    }
+
+    #[test]
+    fn switching_detection_off_keeps_classifying_while_predictions_are_on() {
+        let mut inner = gated(DetectionMode::Hybrid, true, true);
+        let now = Instant::now();
+        inner.observe("What is your plan?".into(), "Them".into(), 1, now, Duration::ZERO);
+        let job = inner.take_job().unwrap();
+        assert!(!inner.set_question_detection(false));
+        assert!(!job.cancel.is_cancelled());
+        assert!(inner.is_current(&job));
     }
 
     #[test]
