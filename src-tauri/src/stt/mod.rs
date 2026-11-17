@@ -1,4 +1,5 @@
 pub mod deepgram;
+pub mod deepgram_flux;
 pub mod fbank;
 pub mod local_engines;
 pub mod provider;
@@ -7,6 +8,7 @@ pub mod windows_native;
 pub mod word_diff;
 // Sub-PRD 9: Additional providers
 pub mod azure_speech;
+pub mod cartesia;
 pub mod groq_whisper;
 pub mod whisper_api;
 // STT Engine Overhaul: New streaming providers
@@ -105,12 +107,15 @@ struct TranscriptSegmentPayload {
     timestamp_ms: u64,
     is_final: bool,
     confidence: f32,
+    /// The provider's turn signal ("eager_end", "resumed", "end"), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn: Option<provider::TurnSignal>,
 }
 
 /// Routes audio chunks to the active STT provider and emits IPC events.
 ///
 /// The STTRouter manages:
-/// - The active STT provider (Windows Native, Deepgram, Whisper API, Azure Speech, Groq Whisper)
+/// - The active STT provider (Windows Native, Deepgram, Whisper API, Azure Speech, Groq Whisper, Cartesia)
 /// - Dual audio streams (mic -> "User", system -> "Interviewer")
 /// - IPC event emission for transcript_update (interim) and transcript_final
 /// - Provider switching at runtime
@@ -139,6 +144,8 @@ pub struct STTRouter {
     pub(crate) groq_whisper_api_key: Option<String>,
     /// Groq Whisper configuration (model, temperature, etc.)
     pub(crate) groq_config: groq_whisper::GroqConfig,
+    /// Cartesia API key (cached from credential store)
+    pub(crate) cartesia_api_key: Option<String>,
     /// Counter for generating unique segment IDs
     segment_counter: u64,
     /// Reference to the Tauri app handle for emitting events
@@ -160,6 +167,7 @@ impl STTRouter {
             azure_speech_region: None,
             groq_whisper_api_key: None,
             groq_config: groq_whisper::GroqConfig::default(),
+            cartesia_api_key: None,
             segment_counter: 0,
             app_handle: None,
         }
@@ -251,6 +259,14 @@ impl STTRouter {
                 p.set_language(&self.language); // must be after set_config — set_config overwrites language
                 Box::new(p)
             }
+            STTProviderType::Cartesia => {
+                let mut p = cartesia::CartesiaSTT::new();
+                if let Some(ref key) = self.cartesia_api_key {
+                    p.set_api_key(key);
+                }
+                p.set_language(&self.language);
+                Box::new(p)
+            }
             STTProviderType::SherpaOnnx
             | STTProviderType::OrtStreaming
             | STTProviderType::ParakeetTdt
@@ -323,6 +339,7 @@ impl STTRouter {
                     timestamp_ms: result.timestamp_ms,
                     is_final: result.is_final,
                     confidence: result.confidence,
+                    turn: result.turn,
                 };
 
                 let payload = TranscriptEventPayload { segment };
@@ -493,6 +510,17 @@ impl STTRouter {
         }
     }
 
+    /// Set the Cartesia API key.
+    pub fn set_cartesia_api_key(&mut self, key: &str) {
+        self.cartesia_api_key = Some(key.to_string());
+
+        if self.active_type == Some(STTProviderType::Cartesia) {
+            let mut p = cartesia::CartesiaSTT::with_api_key(key);
+            p.set_language(&self.language);
+            self.active_provider = Some(Box::new(p));
+        }
+    }
+
     /// Test the connection for a given provider type.
     pub async fn test_provider_connection(
         &self,
@@ -567,6 +595,17 @@ impl STTRouter {
                 // Configured and tested in their own settings cards (probe commands).
                 Err(format!("Test {} from its settings card", provider_type.as_str()))
             }
+            STTProviderType::Cartesia => {
+                let key = self
+                    .cartesia_api_key
+                    .as_deref()
+                    .ok_or("No Cartesia API key configured")?;
+                let provider = cartesia::CartesiaSTT::with_api_key(key);
+                provider
+                    .test_connection()
+                    .await
+                    .map_err(|e| format!("Connection test failed: {}", e))
+            }
             STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
                 // Local engines — always "available" if a model is downloaded.
                 // Model availability is checked at capture time in create_stt_provider_for_party.
@@ -592,5 +631,31 @@ impl STTRouter {
             AudioSource::System => "Interviewer",
             AudioSource::Room => "Room",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(turn: Option<provider::TurnSignal>) -> serde_json::Value {
+        serde_json::to_value(TranscriptSegmentPayload {
+            id: "seg_1".into(),
+            text: "Any questions?".into(),
+            speaker: "Them".into(),
+            speaker_id: None,
+            speaker_tag: None,
+            timestamp_ms: 1,
+            is_final: true,
+            confidence: 1.0,
+            turn,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn router_lines_carry_the_turn_signal_only_when_there_is_one() {
+        assert_eq!(payload(Some(provider::TurnSignal::End))["turn"], "end");
+        assert!(payload(None).get("turn").is_none());
     }
 }

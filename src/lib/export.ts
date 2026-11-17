@@ -5,6 +5,7 @@
 import type { Meeting, TranscriptSegment, AIScenario, SpeakerIdentity } from "./types";
 import { formatTimestamp, formatDurationLong, getSpeakerLabel, getModeLabel } from "./utils";
 import { showToast } from "../stores/toastStore";
+import { useScenarioStore } from "../stores/scenarioStore";
 import { defaultRemoteSpeakerName, remoteKeyOf } from "./speakerLabels";
 import { formatDate, t } from "../i18n";
 
@@ -61,8 +62,15 @@ function formatMeetingStart(meeting: Meeting): string {
   return formatDate(new Date(meeting.start_time), DATE_TIME_FIELDS);
 }
 
-/** Scenario as the exported document shows it; an id we don't know shows as stored, underscores as spaces. */
+/**
+ * Scenario as the exported document shows it: a custom scenario by its name;
+ * an id we don't know shows as stored, underscores as spaces.
+ */
 function scenarioLabel(scenario: AIScenario): string {
+  if (scenario.startsWith("custom_")) {
+    return useScenarioStore.getState().customScenarios.find((s) => s.id === scenario)?.name
+      ?? t("misc:export.scenarios.custom");
+  }
   switch (scenario) {
     case "team_meeting":
       return t("misc:export.scenarios.teamMeeting");
@@ -86,21 +94,23 @@ function segmentTime(seg: TranscriptSegment, startMs: number): string {
 }
 
 function safeFilename(title: string): string {
-  // Retain Unicode letters (including Chinese) while excluding path separators
-  // and other filename punctuation. Bound UTF-8 bytes, not JS code units, so
-  // long Chinese titles fit the filesystem limit with room for an extension.
-  const clean = title.normalize("NFC").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "").trim();
-  let name = "";
+  // Keep Unicode and valid punctuation; remove characters forbidden in Windows
+  // filenames (which also covers macOS path separators). Leading dots would
+  // hide the file on macOS and Linux.
+  const clean = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").replace(/^[. ]+/, "");
+  // Bound UTF-8 bytes, not JS code units, so long Chinese titles fit the
+  // filesystem limit with room for an extension.
+  let bounded = "";
   let bytes = 0;
   const encoder = new TextEncoder();
   for (const char of clean) {
     bytes += encoder.encode(char).length;
     if (bytes > 200) break;
-    name += char;
+    bounded += char;
   }
-  name = name.trim() || "meeting";
-  // Windows device names are reserved even when a file extension is added.
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name) ? `_${name}` : name;
+  const name = bounded.trim().replace(/[. ]+$/g, "") || "meeting";
+  // Windows reserves device names even when followed by an extension.
+  return /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name) ? `_${name}` : name;
 }
 
 // ── Export: Markdown ──────────────────────────────────────────────────────────

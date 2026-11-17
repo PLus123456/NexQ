@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useScenarioStore } from "../stores/scenarioStore";
 import { useCallLogStore } from "../stores/callLogStore";
-import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { showToast } from "../stores/toastStore";
 import { translateBatchForParties } from "../lib/translation/ipc";
@@ -13,8 +12,7 @@ import { APP_NAME } from "../lib/brand";
 import { errorMessage } from "../stores/translationStore";
 import { useT } from "../i18n";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { QuestionDetector } from "./QuestionDetector";
-import { QuestionPredictions } from "./QuestionPredictions";
+import { QuestionPanel } from "./QuestionDetector";
 import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { AIResponsePanel } from "./AIResponsePanel";
 import { ModeButtons } from "./ModeButtons";
@@ -54,7 +52,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toggleStealthMode } from "../hooks/useGlobalShortcut";
-import { formatShortcut } from "../lib/shortcutLabel";
+import { formatShortcut, isMacPlatform } from "../lib/shortcutLabel";
 import { formatDuration } from "../lib/utils";
 
 // ════════════════════════════════════════════════════════════════
@@ -66,7 +64,7 @@ export function OverlayView() {
   const audioMode = useMeetingStore((s) => s.audioMode);
   const endMeetingFlow = useMeetingStore((s) => s.endMeetingFlow);
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
-  const scenarioTemplate = useScenarioStore((s) => s.getActiveTemplate());
+  const scenarioName = useScenarioStore((s) => s.getActiveTemplate().name);
   const [askInputVisible, setAskInputVisible] = useState(false);
   const [devLogOpen, setDevLogOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -86,8 +84,7 @@ export function OverlayView() {
   const cycleLayout = () => setLayoutMode((m) => m === "split" ? "ai" : m === "ai" ? "transcript" : "split");
   const toggleLog = useCallLogStore((s) => s.toggleOpen);
   const logOpen = useCallLogStore((s) => s.isOpen);
-  const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
-  const predictionEnabled = useQuestionDetectionStore((s) => s.view?.settings.prediction_enabled ?? false);
+  // Question detection settings (mode, predictions) for the question panel.
   const loadQuestionSettings = useQuestionDetectionStore((s) => s.load);
   useEffect(() => { void loadQuestionSettings(); }, [loadQuestionSettings]);
 
@@ -206,9 +203,26 @@ export function OverlayView() {
 
   // Hide the overlay and show the dashboard; the overlay keeps its meeting
   // view, so RETURN, Ctrl+B or the tray bring it straight back.
-  const handleMinimizeToDashboard = useCallback(() => {
+  // Under stealth mode AND an active meeting, hide the overlay to the tray
+  // instead of revealing the launcher — showing the dashboard full-size
+  // during a meeting would leak NexQ to anyone looking at the screen.
+  const stealthHide = stealthMode && !!activeMeeting;
+  const handleMinimizeToDashboard = useCallback(async () => {
+    if (stealthHide) {
+      // Hide the overlay without revealing the launcher. If the window API
+      // isn't available (should not happen inside Tauri), do nothing: under
+      // stealth a silent click is better than a visible launcher.
+      try {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const overlay = await WebviewWindow.getByLabel("overlay");
+        await overlay?.hide();
+      } catch (e) {
+        console.warn("[overlay] stealth-hide fell through, overlay stays visible:", e);
+      }
+      return;
+    }
     showLauncherWindow().catch(() => {});
-  }, []);
+  }, [stealthHide]);
 
   const meetingTitle = activeMeeting?.title || APP_NAME;
 
@@ -244,7 +258,7 @@ export function OverlayView() {
           </span>
           {/* Scenario chip */}
           <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-white/5">
-            {scenarioTemplate.name}
+            {scenarioName}
           </span>
           <span className="text-xs text-muted-foreground/60 tabular-nums font-medium">
             {elapsedMs > 0 ? formatDuration(elapsedMs) : "00:00"}
@@ -300,7 +314,13 @@ export function OverlayView() {
           />
           <HeaderBtn icon={<Eye className="h-3.5 w-3.5" />} onClick={cycleOpacity} tooltip={t("overlay.transparency", { percent: Math.round(overlayOpacity * 100) })} />
           <HeaderBtn icon={<Settings className="h-3.5 w-3.5" />} onClick={() => setCurrentView("settings")} tooltip={t("overlay.settings")} />
-          <HeaderBtn icon={<Minus className="h-3.5 w-3.5" />} onClick={handleMinimizeToDashboard} tooltip={t("overlay.minimize")} />
+          <HeaderBtn
+            icon={<Minus className="h-3.5 w-3.5" />}
+            onClick={handleMinimizeToDashboard}
+            tooltip={stealthHide
+              ? `Hide to ${isMacPlatform() ? "menu bar" : "tray"} (${formatShortcut("CmdOrCtrl+B")} brings it back)`
+              : t("overlay.minimize")}
+          />
 
           {/* Translation controls */}
           <button
@@ -403,13 +423,7 @@ export function OverlayView() {
         {/* ── RIGHT ── */}
         {layoutMode !== "transcript" ? (
         <div className="flex min-w-[180px] min-h-0 flex-1 basis-[220px] flex-col gap-2.5 overflow-hidden">
-          {/* M2 previews and cache hits also work with auto-generation off. */}
-          {(autoTrigger || predictionEnabled) && (
-            <div className="shrink-0 rounded-xl border border-info/10 bg-info/5 px-4 py-3">
-              <QuestionDetector />
-              <QuestionPredictions />
-            </div>
-          )}
+          <QuestionPanel />
 
           {/* AI Response */}
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card/20">

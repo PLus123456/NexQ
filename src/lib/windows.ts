@@ -24,19 +24,33 @@ export async function showLauncherWindow(): Promise<void> {
  * Show the overlay window and hide the launcher. Only the overlay window's
  * own view decides what it renders, so callers outside it should use
  * {@link showMeetingOverlay}.
+ *
+ * Non-stealth: show the overlay first, then hide the launcher. A slow
+ * `overlay.show()` otherwise leaves a blank screen frame.
+ *
+ * Stealth: hide the launcher first, then show the overlay. Under stealth
+ * we don't want to leak the launcher on screen between the two calls; the
+ * brief blank frame is preferable to a visible launcher-flash.
  */
 export async function showOverlayWindow(): Promise<void> {
   logToFile("info", "windows", "Showing the overlay window");
+  const { useConfigStore } = await import("../stores/configStore");
+  const stealth = useConfigStore.getState().stealthMode;
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const overlay = await WebviewWindow.getByLabel("overlay");
   const launcher = await WebviewWindow.getByLabel("launcher");
 
+  if (stealth) {
+    await launcher?.hide().catch(() => {});
+  }
   if (overlay) {
     await overlay.show().catch(() => {});
     await overlay.unminimize().catch(() => {});
     await overlay.setFocus().catch(() => {});
   }
-  await launcher?.hide().catch(() => {});
+  if (!stealth) {
+    await launcher?.hide().catch(() => {});
+  }
 }
 
 /** Window -> overlay window: bring back the floating meeting overlay. */
@@ -88,6 +102,16 @@ export function meetingEndRoute(windowLabel: string, overlayActive: boolean): "h
 export function meetingShortcutAction(hasMeeting: boolean, quitPending: boolean): "end" | "start" | "ignore" {
   if (hasMeeting) return "end";
   return quitPending ? "ignore" : "start";
+}
+
+/**
+ * Where Ctrl+B goes: from the overlay to the dashboard, back to the meeting
+ * overlay during a meeting, and otherwise to the dashboard, so the shortcut
+ * always brings NexQ back (it has no taskbar button under stealth mode).
+ */
+export function switchShortcutTarget(overlayVisible: boolean, hasMeeting: boolean): "launcher" | "overlay" {
+  if (overlayVisible) return "launcher";
+  return hasMeeting ? "overlay" : "launcher";
 }
 
 /**

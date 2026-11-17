@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("UpdateReadyToast", () => {
-  it("announces a downloaded update and links to this fork's release notes", async () => {
+  it("announces a downloaded update and opens what's new; release notes are this fork's", async () => {
     const user = userEvent.setup();
     useUpdaterStore.setState({ phase: "ready", version: "2.30.0" });
     render(<UpdateReadyToast />);
@@ -32,12 +32,22 @@ describe("UpdateReadyToast", () => {
     expect(screen.getByText("Restart from the footer, or it installs when you quit.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "What's new" }));
-    expect(shell.open).toHaveBeenCalledWith(`${RELEASES_URL}/tag/v2.30.0`);
+    // The update dialog shows the notes (with a link to RELEASES_URL), in the app.
+    expect(useUpdaterStore.getState().dialogOpen).toBe(true);
+    expect(shell.open).not.toHaveBeenCalled();
     expect(RELEASES_URL.startsWith(REPO_URL)).toBe(true);
     expect(RELEASES_URL_FROM_HOOK).toBe(RELEASES_URL);
-
-    await user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("can be dismissed", async () => {
+    const user = userEvent.setup();
+    useUpdaterStore.setState({ phase: "ready", version: "2.30.0" });
+    render(<UpdateReadyToast />);
+
+    await user.click(await screen.findByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(useUpdaterStore.getState().dialogOpen).toBe(false);
   });
 
   it("is translated in Chinese", async () => {

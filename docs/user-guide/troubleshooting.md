@@ -56,10 +56,11 @@ This only appears the first time you install. Subsequent launches will not trigg
 
 ### Microphone Echo or Feedback
 
-**Problem**: Your own voice appears in the "Them" transcript, or there is echo.
+**Problem**: The other side's words also appear under "You", your own voice appears in the "Them" transcript, or there is echo.
 
 **Solution**:
 
+- Keep **Echo cancellation** on in Settings > Audio (on by default). It removes the speakers' sound from the microphone when "Them" is an output device
 - Use headphones to prevent your speakers from feeding back into the microphone
 - Ensure "You" and "Them" are using different physical devices
 - Check that your meeting app has echo cancellation enabled
@@ -76,7 +77,7 @@ This only appears the first time you install. Subsequent launches will not trigg
 2. **Don't use Windows Speech for "Them"**: Windows Speech only listens to your default microphone. It can't transcribe audio playing on your computer (Zoom, Teams, YouTube). Use Parakeet TDT, Deepgram or Groq for the other side.
 3. **Check provider config**: Open Settings > STT and verify your provider is correctly configured
 4. **Test connection**: Click **Test Connection** to verify the STT provider is reachable
-5. **Check API key**: For cloud providers (Deepgram, Groq), ensure your API key is valid and has not expired
+5. **Check API key**: For cloud providers (Deepgram, Groq, Cartesia), ensure your API key is valid and has not expired
 6. **Check internet connection**: Cloud STT providers require a stable internet connection. If your connection is intermittent, transcription may fail silently
 7. **Try Web Speech API**: Switch to Web Speech API temporarily to verify audio is reaching the STT pipeline. If Web Speech works but your chosen provider does not, the issue is with the provider configuration
 8. **Check the Dev Log**: press `Ctrl+Shift+L` in the meeting window for STT errors, or send your log (see [Collecting logs](#collecting-logs-for-a-bug-report))
@@ -91,6 +92,17 @@ This only appears the first time you install. Subsequent launches will not trigg
 - Web Speech API has session limits in some browser engines. Ending and restarting the meeting resets the session
 - Do not switch STT providers mid-session without stopping first -- hot-swapping the Web Speech API breaks the browser recognition session
 - Ensure you have an active internet connection (Web Speech API may require it depending on the system)
+
+### Cartesia Problems
+
+**Problem**: Cartesia transcribes the wrong words, shows "reconnecting", or uses more credits than expected.
+
+**Solution**:
+
+- **Language**: Cartesia transcribes only English, French, Hindi, Japanese and Spanish. For other languages, choose a different provider. Settings > STT shows a warning when the selected language isn't supported
+- **Reconnecting**: if the connection drops, NexQ reconnects on its own (after 1, 2, 4 and 8 seconds, then every 15 seconds) and keeps the sentence in progress. Speech while offline isn't transcribed
+- **"Cartesia refused the API key or account"**: NexQ stops retrying. Check the key in Settings > STT and your credit balance at [play.cartesia.ai](https://play.cartesia.ai/usage)
+- **Credits**: Cartesia bills every second of audio it receives while a channel is unmuted, including silence. One unmuted channel uses about 10,800 credits per hour; Cartesia on both "You" and "Them" uses about 21,600. Muting a channel closes its Cartesia stream, so muted time costs nothing; unmuting reconnects in a fraction of a second and keeps your first words. In in-person meetings the room mic is transcribed as "Them", so NexQ doesn't start a "You" provider at all, and "You" uses no credits
 
 ### Local Whisper Model Slow or Inaccurate
 
@@ -116,6 +128,7 @@ This only appears the first time you install. Subsequent launches will not trigg
 3. **Check API key**: For cloud providers, ensure your API key is valid
 4. **Ollama**: Verify Ollama is running (`ollama list` in terminal) and has at least one model pulled
 5. **Check model selection**: Ensure a model is selected in the LLM settings dropdown
+6. **Custom endpoint**: the error names each path NexQ tried (`/chat/completions`, then `/api/chat`) and what the endpoint answered. `401 Unauthorized` means the token or key is wrong: paste it again under Settings > LLM > Custom, and it applies at once. `404` with "model not found" means the model name is wrong. For Ollama Cloud, use the base URL `https://ollama.com/v1`, **Bearer Token** and a model name such as `gemma4:31b`
 
 ### Ollama Not Detected
 
@@ -139,6 +152,7 @@ This only appears the first time you install. Subsequent launches will not trigg
 3. **Check your internet connection.** Cloud providers require a stable connection. Slow or intermittent connections cause delayed responses.
 4. **Reduce the context window.** In Settings, reduce the amount of transcript data sent to the LLM. Less input means faster responses.
 5. **Close other resource-intensive applications.** Local LLMs compete with other apps for CPU/RAM.
+6. **Automatic answers start 1.5 seconds after the question?** That's the quiet wait for engines that can end a line mid-sentence. Transcribe the other party with Cartesia or Deepgram Flux (Settings > STT Providers): both say when the speaker has finished, so Auto-Answer starts at once. With Flux, quiet time counts toward Deepgram usage, since NexQ streams silence to it; muted time doesn't.
 
 ## Overlay Issues
 

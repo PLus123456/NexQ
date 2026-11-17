@@ -70,10 +70,19 @@ fn accumulator_segment_json(id: &str, speaker: &str, output: &AccumulatorOutput)
             seg["speaker_id"] = serde_json::json!(speaker_id);
         }
     }
+    with_turn(seg, output.turn)
+}
+
+/// Adds the provider's turn signal ("eager_end", "resumed", "end"), if any.
+fn with_turn(mut seg: serde_json::Value, turn: Option<crate::stt::provider::TurnSignal>) -> serde_json::Value {
+    if let Some(turn) = turn {
+        seg["turn"] = serde_json::json!(turn.as_str());
+    }
     seg
 }
 
-/// The `segment` of a transcript event for a line an engine segmented itself.
+/// The `segment` of a transcript event for a line straight from an engine
+/// that segments on its own (whisper.cpp, Soniox), without the accumulator.
 fn direct_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::TranscriptResult) -> serde_json::Value {
     let mut seg = serde_json::json!({
         "id": id,
@@ -89,7 +98,7 @@ fn direct_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::T
             seg["speaker_id"] = serde_json::json!(speaker_id);
         }
     }
-    seg
+    with_turn(seg, result.turn)
 }
 
 /// A side of the meeting with its own device and STT pipeline.
@@ -271,12 +280,13 @@ pub async fn start_capture(
                 router.azure_speech_key.clone(),
                 router.azure_speech_region.clone(),
                 router.groq_whisper_api_key.clone(),
+                router.cartesia_api_key.clone(),
                 router.language.clone(),
             ))
         });
 
         match stt_config {
-            Some((pt, dk, dg_cfg, wk, ak, ar, gk, lang)) => {
+            Some((pt, dk, dg_cfg, wk, ak, ar, gk, ck, lang)) => {
                 use crate::stt::provider::STTProviderType;
                 let p: Box<dyn STTProvider> = match pt {
                     STTProviderType::Deepgram => {
@@ -310,6 +320,15 @@ pub async fn start_capture(
                             None => crate::stt::groq_whisper::GroqWhisperSTT::new(),
                         };
                         p.set_language(&lang);
+                        Box::new(p)
+                    }
+                    STTProviderType::Cartesia => {
+                        let mut p = match ck.as_deref() {
+                            Some(k) => crate::stt::cartesia::CartesiaSTT::with_api_key(k),
+                            None => crate::stt::cartesia::CartesiaSTT::new(),
+                        };
+                        p.set_language(&lang);
+                        p.set_app_handle(app.clone());
                         Box::new(p)
                     }
                     _ => return Ok(()), // shouldn't reach
@@ -774,7 +793,7 @@ fn read_all_peaks_raw() -> Vec<DevicePeakLevel> {
 /// matching the format that cpal uses for device names.
 #[cfg(target_os = "windows")]
 fn get_device_friendly_name(device: &windows::Win32::Media::Audio::IMMDevice) -> Option<String> {
-    use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
+    use windows::Win32::Foundation::PROPERTYKEY;
     use windows::core::GUID;
     unsafe {
         // PKEY_Device_FriendlyName = {a45c254e-df1c-4efd-8020-67d146a850e0}, 14
@@ -984,6 +1003,30 @@ pub async fn get_audio_sessions() -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize audio sessions: {}", e))
 }
 
+/// Whether a party's STT needs the OS default mic switched to its device (IPolicyConfig).
+/// Web Speech and Windows Speech only hear the default recording device; every
+/// other provider reads NexQ's own capture of the chosen device. A party whose
+/// STT is skipped needs no switch.
+fn needs_default_mic_override(config: &crate::audio::PartyAudioConfig, stt_skipped: bool) -> bool {
+    let provider = config.stt_provider.as_str();
+    !stt_skipped
+        && (provider == "web_speech" || provider == "windows_native")
+        && config.is_input_device
+        && config.device_id != "default"
+}
+
+/// How often the audio loop re-checks the mute flags when no audio arrives (200 ms).
+const MUTE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Pass a party's mute flag on to its provider when it changed.
+fn sync_mute(provider: &mut Option<Box<dyn STTProvider>>, applied: &mut bool, flag: &AtomicBool) {
+    if crate::stt::provider::mute_changed(applied, flag.load(Ordering::Relaxed)) {
+        if let Some(p) = provider.as_mut() {
+            p.set_muted(*applied);
+        }
+    }
+}
+
 /// Start per-party audio capture with independent STT pipelines.
 ///
 /// Each party (You / Them) independently selects:
@@ -991,6 +1034,8 @@ pub async fn get_audio_sessions() -> Result<String, String> {
 ///   - An STT provider (web_speech, windows_native, deepgram, etc.)
 ///
 /// If STT = "web_speech", Rust skips STT for that party (frontend handles it).
+/// `skip_you_stt` (in-person meetings, where the room mic is "Them") starts no
+/// "You" provider at all, so a cloud provider isn't billed for a muted mic.
 /// Audio is still captured for levels, recording, and (optionally) the other party's STT.
 #[command]
 pub async fn start_capture_per_party(
@@ -998,6 +1043,7 @@ pub async fn start_capture_per_party(
     you_config: String,
     them_config: String,
     expected_meeting_id: Option<String>,
+    skip_you_stt: Option<bool>,
 ) -> Result<(), String> {
     use crate::audio::PartyAudioConfig;
 
@@ -1005,6 +1051,7 @@ pub async fn start_capture_per_party(
         serde_json::from_str(&you_config).map_err(|e| format!("Invalid you_config: {}", e))?;
     let them: PartyAudioConfig =
         serde_json::from_str(&them_config).map_err(|e| format!("Invalid them_config: {}", e))?;
+    let skip_you_stt = skip_you_stt.unwrap_or(false);
 
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
@@ -1036,10 +1083,11 @@ pub async fn start_capture_per_party(
     }
 
     log::info!(
-        "Starting per-party capture: You={{device='{}', input={}, stt={}}}, Them={{device='{}', input={}, stt={}}}",
+        "Starting per-party capture: You={{device='{}', input={}, stt={}, skipped={}}}, Them={{device='{}', input={}, stt={}}}",
         you.device_id,
         you.is_input_device,
         you.stt_provider,
+        skip_you_stt,
         them.device_id,
         them.is_input_device,
         them.stt_provider
@@ -1065,20 +1113,16 @@ pub async fn start_capture_per_party(
     // The override must happen before capture starts so that Web Speech API
     // picks up the correct device when recognition.start() is called.
     {
-        let needs_override = |config: &crate::audio::PartyAudioConfig, role: &str| -> bool {
-            let provider = config.stt_provider.as_str();
-            let is_web_or_win = provider == "web_speech" || provider == "windows_native";
-            let result = is_web_or_win && config.is_input_device && config.device_id != "default";
-            log::info!(
-                "IPolicyConfig check [{}]: provider='{}', is_input={}, device_id='{}', needs_override={}",
-                role, provider, config.is_input_device, config.device_id, result
-            );
-            result
-        };
+        let you_needs_override = needs_default_mic_override(&you, skip_you_stt);
+        let them_needs_override = needs_default_mic_override(&them, false);
+        log::info!(
+            "IPolicyConfig check: You needs_override={} (provider='{}', stt_skipped={}), Them needs_override={} (provider='{}')",
+            you_needs_override, you.stt_provider, skip_you_stt, them_needs_override, them.stt_provider
+        );
 
-        if needs_override(&you, "You") || needs_override(&them, "Them") {
+        if you_needs_override || them_needs_override {
             // Pick the device that needs the override (prefer "You" if both need it)
-            let target_device = if needs_override(&you, "You") {
+            let target_device = if you_needs_override {
                 &you.device_id
             } else {
                 &them.device_id
@@ -1147,10 +1191,10 @@ pub async fn start_capture_per_party(
         }
 
         // Emit IPolicyConfig status event for frontend synchronization
-        let override_applied = needs_override(&you, "You") || needs_override(&them, "Them");
+        let override_applied = you_needs_override || them_needs_override;
         let _ = app.emit("ipolicy_status", serde_json::json!({
             "applied": override_applied,
-            "target_device": if needs_override(&you, "You") { &you.device_id } else { &them.device_id },
+            "target_device": if you_needs_override { &you.device_id } else { &them.device_id },
         }));
     }
 
@@ -1186,7 +1230,12 @@ pub async fn start_capture_per_party(
     // Provider setup can fail after the native devices opened (missing key,
     // unavailable model, invalid config). No processing task owns them yet.
     let providers = async {
-        let you_stt = create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?;
+        let you_stt = if skip_you_stt {
+            crate::stt::emit_stt_debug(&app, "info", "stt", "'You' STT skipped (in-person meeting)");
+            None
+        } else {
+            create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?
+        };
         let them_stt = create_stt_provider_for_party(&them, &you, &state, &app, Party::Them, &session_prefix).await?;
         Ok::<_, String>((you_stt, them_stt))
     }.await;
@@ -1218,9 +1267,15 @@ pub async fn start_capture_per_party(
     let mut you_stt_provider = you_stt;
     let mut them_stt_provider = them_stt;
 
+    // A party that's already muted (hot-swap, in-person) starts muted, so a
+    // provider that bills for an open stream doesn't connect until unmute.
+    let you_muted_at_start = state.you_muted.load(Ordering::Relaxed);
+    let them_muted_at_start = state.them_muted.load(Ordering::Relaxed);
+
     if let Some(ref mut provider) = you_stt_provider {
         crate::stt::emit_stt_debug(&app, "info", "stt",
             &format!("Starting 'You' STT ({})", you.stt_provider));
+        provider.set_muted(you_muted_at_start);
         match provider.start_stream(you_stt_tx).await {
             Ok(()) => {
                 log::info!("'You' party STT started ({})", you.stt_provider);
@@ -1245,6 +1300,7 @@ pub async fn start_capture_per_party(
     if let Some(ref mut provider) = them_stt_provider {
         crate::stt::emit_stt_debug(&app, "info", "stt",
             &format!("Starting 'Them' STT ({})", them.stt_provider));
+        provider.set_muted(them_muted_at_start);
         match provider.start_stream(them_stt_tx).await {
             Ok(()) => {
                 log::info!("'Them' party STT started ({})", them.stt_provider);
@@ -1323,7 +1379,29 @@ pub async fn start_capture_per_party(
 
         let mut echo = crate::audio::echo_cancel::MicEchoFilter::new();
 
-        while let Some(mut chunk) = rx.recv().await {
+        // Mute state last passed to each provider. Checked on every chunk and on
+        // a timer: Windows loopback sends no chunks while nothing plays, and a
+        // mute then must still reach the provider.
+        let mut you_muted_applied = you_muted_at_start;
+        let mut them_muted_applied = them_muted_at_start;
+        let mut mute_check = tokio::time::interval(MUTE_CHECK_INTERVAL);
+        mute_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            let mut chunk = tokio::select! {
+                received = rx.recv() => match received {
+                    Some(chunk) => chunk,
+                    None => break,
+                },
+                _ = mute_check.tick() => {
+                    sync_mute(&mut you_stt_provider, &mut you_muted_applied, &you_muted_flag);
+                    sync_mute(&mut them_stt_provider, &mut them_muted_applied, &them_muted_flag);
+                    continue;
+                }
+            };
+            sync_mute(&mut you_stt_provider, &mut you_muted_applied, &you_muted_flag);
+            sync_mute(&mut them_stt_provider, &mut them_muted_applied, &them_muted_flag);
+
             // Echo cancellation comes first: levels, recording and STT all
             // get the cleaned mic.
             let cancel_echo = echo_reference && echo_flag.load(Ordering::Relaxed);
@@ -1617,7 +1695,14 @@ async fn create_stt_provider_for_party(
                 Some(k) => crate::stt::deepgram::DeepgramSTT::with_api_key(k),
                 None => crate::stt::deepgram::DeepgramSTT::new(),
             };
-            p.set_language(&language::deepgram_language(&stt_language, &dg_config.model));
+            // Flux takes the party's language only as a hint (flux-general-multi);
+            // "auto" sends none, so Flux detects the language itself.
+            let lang = if crate::stt::deepgram_flux::is_flux_model(&dg_config.model) {
+                stt_language.clone()
+            } else {
+                language::deepgram_language(&stt_language, &dg_config.model)
+            };
+            p.set_language(&lang);
             p.set_config(dg_config);
             p.set_app_handle(app.clone());
             p.set_party(party_role);
@@ -1660,6 +1745,21 @@ async fn create_stt_provider_for_party(
             // The party's language overrides the shared config's (per instance).
             p.set_shared_config(state.shared_groq_config.clone());
             p.set_language(&stt_language);
+            p.set_app_handle(app.clone());
+            p.set_party(party_role);
+            Ok(Some(Box::new(p)))
+        }
+        STTProviderType::Cartesia => {
+            // ink-2 detects the language itself; the party's language only
+            // warns when ink-2 can't transcribe it.
+            let lang = language::without_auto(&stt_language);
+            let key = get_credential_key(state, "cartesia");
+            log::info!("Cartesia key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
+            let mut p = match key.as_deref() {
+                Some(k) => crate::stt::cartesia::CartesiaSTT::with_api_key(k),
+                None => crate::stt::cartesia::CartesiaSTT::new(),
+            };
+            p.set_language(&lang);
             p.set_app_handle(app.clone());
             p.set_party(party_role);
             Ok(Some(Box::new(p)))
@@ -2195,6 +2295,7 @@ pub async fn get_mute_status(app: AppHandle) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::audio::{NativeTranslationConfig, PartyAudioConfig, PartyRole};
+    use crate::stt::provider::{TranscriptResult, TurnSignal};
     use crate::stt::soniox::SonioxTranslation;
     use std::sync::{Arc, Mutex};
 
@@ -2369,6 +2470,7 @@ mod tests {
             segment_id: Some("sx1_1".into()),
             duration_ms: Some(300),
             speaker_tag: Some("S2".into()),
+            turn: None,
         };
         let seg = direct_segment_json("them_ab12_sx1_1", "Them", &result);
         assert_eq!(seg["id"], "them_ab12_sx1_1");
@@ -2376,5 +2478,84 @@ mod tests {
         assert_eq!(seg["speaker_tag"], "S2");
         assert_eq!(seg["speaker_id"], "speaker_1");
         assert_eq!(seg["is_final"], true);
+    }
+
+
+    fn output(turn: Option<TurnSignal>) -> AccumulatorOutput {
+        AccumulatorOutput {
+            id: "acc_1".into(),
+            text: "What would you do?".into(),
+            speaker: "Them".into(),
+            speaker_tag: None,
+            timestamp_ms: 5,
+            is_final: true,
+            confidence: 1.0,
+            turn,
+        }
+    }
+
+    #[test]
+    fn a_line_carries_its_turn_signal_only_when_it_has_one() {
+        let seg = accumulator_segment_json("them_x_acc_1", "Them", &output(Some(TurnSignal::End)));
+        assert_eq!(seg["turn"], "end");
+        assert_eq!(seg["text"], "What would you do?");
+        let plain = accumulator_segment_json("them_x_acc_1", "Them", &output(None));
+        assert!(plain.get("turn").is_none());
+    }
+
+    #[test]
+    fn a_line_straight_from_a_provider_carries_its_turn_signal() {
+        let result = TranscriptResult {
+            text: "Hello".into(),
+            is_final: false,
+            confidence: 0.8,
+            timestamp_ms: 7,
+            speaker: Some("You".into()),
+            language: None,
+            segment_id: None,
+            duration_ms: None,
+            speaker_tag: None,
+            turn: Some(TurnSignal::EagerEnd),
+        };
+        let seg = direct_segment_json("you_x_1", "User", &result);
+        assert_eq!((seg["turn"].as_str(), seg["speaker"].as_str()), (Some("eager_end"), Some("User")));
+        let plain = direct_segment_json("you_x_1", "User", &TranscriptResult { turn: None, ..result });
+        assert!(plain.get("turn").is_none());
+    }
+
+    fn party_on(stt_provider: &str, device_id: &str, is_input_device: bool) -> PartyAudioConfig {
+        PartyAudioConfig {
+            role: PartyRole::You,
+            device_id: device_id.to_string(),
+            is_input_device,
+            stt_provider: stt_provider.to_string(),
+            local_model_id: None,
+            language: None,
+            native_translation: None,
+        }
+    }
+
+    /// Web Speech and Windows Speech hear only the OS default mic, so a
+    /// non-default input device needs the default switched to it.
+    #[test]
+    fn default_mic_override_only_for_speech_engines_on_a_chosen_mic() {
+        let headset = "Microphone (Logi USB Headset H340)";
+        assert!(needs_default_mic_override(&party_on("web_speech", headset, true), false));
+        assert!(needs_default_mic_override(&party_on("windows_native", headset, true), false));
+        // Every other provider reads NexQ's own capture of the chosen device.
+        assert!(!needs_default_mic_override(&party_on("cartesia", headset, true), false));
+        assert!(!needs_default_mic_override(&party_on("parakeet_tdt", headset, true), false));
+        // Already the default, or an output device: nothing to switch.
+        assert!(!needs_default_mic_override(&party_on("web_speech", "default", true), false));
+        assert!(!needs_default_mic_override(&party_on("web_speech", "Speakers (Realtek)", false), false));
+    }
+
+    /// In an in-person meeting "You" isn't transcribed, so its engine choice
+    /// must not move the Windows default mic.
+    #[test]
+    fn a_skipped_party_never_switches_the_default_mic() {
+        let headset = "Microphone (Logi USB Headset H340)";
+        assert!(!needs_default_mic_override(&party_on("web_speech", headset, true), true));
+        assert!(!needs_default_mic_override(&party_on("windows_native", headset, true), true));
     }
 }

@@ -28,6 +28,56 @@ pub struct TranscriptResult {
     /// provider separates speakers. `speaker` stays the party label.
     #[serde(default)]
     pub speaker_tag: Option<String>,
+    /// Where the provider says the speaker is in their turn, for providers
+    /// that detect turns themselves (Cartesia, Deepgram Flux). None for all
+    /// others, whose finals can end mid-sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<TurnSignal>,
+}
+
+/// A provider's own end-of-turn detection, carried on a transcript result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnSignal {
+    /// The speaker has probably finished; `Resumed` may withdraw it.
+    EagerEnd,
+    /// The speaker kept talking after an `EagerEnd`.
+    Resumed,
+    /// The speaker has finished the turn.
+    End,
+}
+
+impl TurnSignal {
+    /// The value carried in transcript events.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnSignal::EagerEnd => "eager_end",
+            TurnSignal::Resumed => "resumed",
+            TurnSignal::End => "end",
+        }
+    }
+}
+
+#[cfg(test)]
+mod turn_signal_tests {
+    use super::*;
+
+    #[test]
+    fn turn_signals_travel_as_snake_case() {
+        assert_eq!(serde_json::to_string(&TurnSignal::EagerEnd).unwrap(), "\"eager_end\"");
+        assert_eq!(serde_json::to_string(&TurnSignal::Resumed).unwrap(), "\"resumed\"");
+        assert_eq!(serde_json::to_string(&TurnSignal::End).unwrap(), "\"end\"");
+    }
+
+    #[test]
+    fn a_result_without_a_turn_signal_has_none_and_writes_none() {
+        let r: TranscriptResult = serde_json::from_str(
+            r#"{"text":"hi","is_final":true,"confidence":1.0,"timestamp_ms":1,"speaker":null,"language":null}"#,
+        )
+        .unwrap();
+        assert_eq!(r.turn, None);
+        assert!(!serde_json::to_string(&r).unwrap().contains("turn"));
+    }
 }
 
 /// The in-person speaker id ("speaker_0") of a diarization tag ("S1").
@@ -100,6 +150,8 @@ pub enum STTProviderType {
     OpenAICompat,
     /// NexQ Plus: Soniox real-time WebSocket (transcription + one-way translation).
     Soniox,
+    /// Cartesia ink-2 over WebSocket, with Cartesia's own turn detection.
+    Cartesia,
 }
 
 impl STTProviderType {
@@ -117,6 +169,7 @@ impl STTProviderType {
             STTProviderType::ParakeetTdt => "parakeet_tdt",
             STTProviderType::OpenAICompat => "openai_compat",
             STTProviderType::Soniox => "soniox",
+            STTProviderType::Cartesia => "cartesia",
         }
     }
 
@@ -134,6 +187,7 @@ impl STTProviderType {
             "parakeet_tdt" => Some(STTProviderType::ParakeetTdt),
             "openai_compat" => Some(STTProviderType::OpenAICompat),
             "soniox" => Some(STTProviderType::Soniox),
+            "cartesia" => Some(STTProviderType::Cartesia),
             _ => None,
         }
     }
@@ -170,6 +224,20 @@ pub trait STTProvider: Send + Sync {
 
     /// Set the recognition language (e.g., "en-US", "es-ES").
     fn set_language(&mut self, language: &str);
+
+    /// The party was muted or unmuted. A provider that bills for an open
+    /// stream can close it while muted. Must not block: the audio loop calls it.
+    fn set_muted(&mut self, _muted: bool) {}
+}
+
+/// Record a party's mute flag: true when it differs from the state last
+/// passed to its provider (`applied`), which is then updated.
+pub fn mute_changed(applied: &mut bool, muted: bool) -> bool {
+    if *applied == muted {
+        return false;
+    }
+    *applied = muted;
+    true
 }
 
 /// Provider info for the frontend.
@@ -335,6 +403,16 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
             ],
         },
         STTProviderInfo {
+            provider_type: "cartesia".to_string(),
+            name: "Cartesia".to_string(),
+            requires_api_key: true,
+            is_local: false,
+            supported_languages: crate::stt::cartesia::SUPPORTED_LANGUAGES
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+        },
+        STTProviderInfo {
             provider_type: "sherpa_onnx".to_string(),
             name: "Sherpa-ONNX (Local, Streaming)".to_string(),
             requires_api_key: false,
@@ -400,4 +478,21 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
             ],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The audio loop tells a provider about mute only when the flag changes.
+    #[test]
+    fn mute_changes_are_reported_once() {
+        let mut applied = false;
+        assert!(!mute_changed(&mut applied, false));
+        assert!(mute_changed(&mut applied, true));
+        assert!(applied);
+        assert!(!mute_changed(&mut applied, true));
+        assert!(mute_changed(&mut applied, false));
+        assert!(!applied);
+    }
 }

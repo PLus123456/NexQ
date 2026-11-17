@@ -26,6 +26,7 @@ const ALL_IDS = Object.keys({
   whisper_api: true,
   azure_speech: true,
   groq_whisper: true,
+  cartesia: true,
   web_speech: true,
   sherpa_onnx: true,
   ort_streaming: true,
@@ -56,6 +57,7 @@ describe("STT_PROVIDERS", () => {
       whisper_api: "Whisper API",
       azure_speech: "Azure",
       groq_whisper: "Groq STT",
+      cartesia: "Cartesia",
       sherpa_onnx: "Sherpa-ONNX",
       ort_streaming: "ORT Streaming",
       parakeet_tdt: "Parakeet TDT",
@@ -67,7 +69,7 @@ describe("STT_PROVIDERS", () => {
 
   it("needs an API key for the keyed cloud engines; remote Whisper's key is optional", () => {
     const keyed = STT_PROVIDERS.filter((p) => p.requiresApiKey).map((p) => p.id);
-    expect(keyed.sort()).toEqual(["azure_speech", "deepgram", "groq_whisper", "soniox", "whisper_api"]);
+    expect(keyed.sort()).toEqual(["azure_speech", "cartesia", "deepgram", "groq_whisper", "soniox", "whisper_api"]);
     const remote = sttProviderMeta("openai_compat")!;
     expect(remote.requiresBaseUrl).toBe(true);
     expect(sttKeySlot(remote)).toBe("openai_compat_stt");
@@ -86,7 +88,7 @@ describe("STT_PROVIDERS", () => {
     const support = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.languageSupport]));
     expect(support).toMatchObject({
       soniox: "auto", openai_compat: "auto", whisper_cpp: "auto", groq_whisper: "auto",
-      whisper_api: "auto", deepgram: "auto", sherpa_onnx: "auto",
+      whisper_api: "auto", deepgram: "auto", sherpa_onnx: "auto", cartesia: "auto",
       web_speech: "noAuto", windows_native: "noAuto", azure_speech: "noAuto",
       ort_streaming: "ignored", parakeet_tdt: "ignored",
     });
@@ -133,6 +135,7 @@ describe("STT_PROVIDER_OPTIONS", () => {
       { value: "whisper_api", label: "Whisper API", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "azure_speech", label: "Azure Speech", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "groq_whisper", label: "Groq Whisper", icon: "zap", requiresKey: true, isCloud: true },
+      { value: "cartesia", label: "Cartesia", icon: "cloud", requiresKey: true, isCloud: true },
       { value: "openai_compat", label: "Remote Whisper", icon: "cloud", requiresKey: false, isCloud: true },
       { value: "soniox", label: "Soniox", icon: "cloud", requiresKey: true, isCloud: true },
     ]);
@@ -150,7 +153,7 @@ describe("exclusive engines", () => {
 
   it("fall back, in order, to picker engines that aren't exclusive", () => {
     expect(EXCLUSIVE_FALLBACK_ORDER).toEqual([
-      "deepgram", "soniox", "groq_whisper", "whisper_api", "azure_speech",
+      "deepgram", "soniox", "groq_whisper", "whisper_api", "azure_speech", "cartesia",
       "sherpa_onnx", "ort_streaming", "parakeet_tdt", "whisper_cpp",
     ]);
     for (const id of EXCLUSIVE_FALLBACK_ORDER) {

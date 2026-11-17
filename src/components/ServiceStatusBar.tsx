@@ -28,7 +28,7 @@ import { AgentStatusChip } from "./AgentStatusChip";
 import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { sonioxRegionName } from "../settings/stt/sonioxRegions";
-import { restartToUpdate } from "../hooks/useUpdater";
+import { openUpdateDialog } from "../hooks/useUpdater";
 import { Trans, useT } from "../i18n";
 import { useLlmConfig } from "../stores/llmConnectionsStore";
 import { LlmQuickPicker } from "./llm/LlmQuickPicker";
@@ -375,39 +375,25 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
 
 // ── Update Pill ────────────────────────────────────────────────────
 
-function UpdatePill() {
-  const { t } = useT("llm");
+export function UpdatePill() {
+  const { t } = useT(["llm", "settings"]);
   const phase = useUpdaterStore((s) => s.phase);
   const version = useUpdaterStore((s) => s.version);
-  const [installing, setInstalling] = useState(false);
 
   if (phase !== "ready" || !version) return null;
-
-  const handleClick = async () => {
-    setInstalling(true);
-    try {
-      await restartToUpdate();
-    } finally {
-      // Only reached if the user cancelled or the install failed.
-      setInstalling(false);
-    }
-  };
 
   return (
     <>
       <Divider />
       <button
-        onClick={handleClick}
-        disabled={installing}
+        onClick={openUpdateDialog}
         title={t("statusBar.updatePill.title", { version })}
-        className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60"
+        className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
       >
         <ArrowUpCircle className="h-3 w-3" />
         <span>{t("statusBar.updatePill.ready", { version })}</span>
         <span className="text-primary/50">—</span>
-        <span className="font-semibold">
-          {installing ? t("statusBar.updatePill.restarting") : t("statusBar.updatePill.restart")}
-        </span>
+        <span className="font-semibold">{t("settings:updates.toast.whatsNew")}</span>
       </button>
     </>
   );

@@ -3,6 +3,7 @@ import type { ParseKeys } from "i18next";
 import type { AIScenario, MeetingSummary } from "../lib/types";
 import { useT } from "../i18n";
 import { formatRelativeTime, formatDurationLong } from "../lib/utils";
+import { scenarioLabel, useScenarioStore } from "../stores/scenarioStore";
 import {
   Trash2,
   Pencil,
@@ -53,6 +54,10 @@ export function MeetingCard({
   staggerIndex = 0,
 }: MeetingCardProps) {
   const { t } = useT(["launcher", "common"]);
+  // A custom scenario reads as its name (also after a rename in another window).
+  const customScenario = useScenarioStore((s) =>
+    meeting.ai_scenario?.startsWith("custom_") ? scenarioLabel(meeting.ai_scenario, s.customScenarios) : null
+  );
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(meeting.title);
   const [isSaving, setIsSaving] = useState(false);
@@ -140,11 +145,12 @@ export function MeetingCard({
     [meeting.id, onToggleFavorite]
   );
 
-  /** Scenario id as plain words; an id outside the table keeps the old "id with a space" look. */
-  const scenarioLabel = (scenario: AIScenario): string => {
+  /** Built-in scenario id as plain words; an id outside the table keeps the old "id with a space" look. */
+  const builtInScenarioLabel = (scenario: AIScenario): string => {
     const key = SCENARIO_LABEL_KEYS[scenario];
     return key ? t(key) : String(scenario).replace("_", " ");
   };
+  const scenario = meeting.ai_scenario ? customScenario ?? builtInScenarioLabel(meeting.ai_scenario) : null;
 
   const durationDisplay = meeting.duration_seconds
     ? formatDurationLong(meeting.duration_seconds * 1000)
@@ -295,9 +301,9 @@ export function MeetingCard({
               </span>
             )}
 
-            {meeting.ai_scenario && (
-              <span className="text-[9px] font-medium text-muted-foreground/50 truncate max-w-[80px]">
-                {scenarioLabel(meeting.ai_scenario)}
+            {scenario && (
+              <span className="text-[9px] font-medium text-muted-foreground/50 truncate max-w-[80px]" title={scenario}>
+                {scenario}
               </span>
             )}
 

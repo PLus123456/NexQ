@@ -155,6 +155,7 @@ impl WhisperApiSTT {
                                         segment_id: None,
                                         duration_ms: None,
                                         speaker_tag: None,
+                                        turn: None,
                                     };
                                     let _ = result_tx.send(result).await;
                                 }
@@ -263,6 +264,7 @@ impl STTProvider for WhisperApiSTT {
                     segment_id: None,
                     duration_ms: None,
                     speaker_tag: None,
+                    turn: None,
                 };
                 let _ = tx.send(interim).await;
 

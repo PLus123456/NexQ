@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, X } from "lucide-react";
-import { open } from "@tauri-apps/plugin-shell";
 import { useT } from "../i18n";
 import { useUpdaterStore } from "../stores/updaterStore";
-import { releaseNotesUrl } from "../hooks/useUpdater";
+import { openUpdateDialog } from "../hooks/useUpdater";
 
 const AUTO_DISMISS_MS = 12_000;
 
 /**
  * One-time notice when an update has finished downloading. The footer pill
- * stays as the persistent way to restart; this only announces it once per
- * version, with a link to the release notes.
+ * stays as the persistent way in; this only announces it once per version.
  */
 export function UpdateReadyToast() {
   const { t } = useT(["settings", "common"]);
@@ -51,7 +49,10 @@ export function UpdateReadyToast() {
             {autoUpdate ? t("updates.toast.restartOrQuit") : t("updates.toast.restartToInstall")}
           </p>
           <button
-            onClick={() => open(releaseNotesUrl(visibleVersion)).catch(() => {})}
+            onClick={() => {
+              setVisibleVersion(null);
+              openUpdateDialog();
+            }}
             className="mt-1.5 text-xs font-medium text-primary hover:underline"
           >
             {t("updates.toast.whatsNew")}

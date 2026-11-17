@@ -36,6 +36,7 @@ import {
   Play,
   FlaskConical,
 } from "lucide-react";
+import { LauncherStealthButton } from "./LauncherStealthButton";
 
 // ── Favorites (localStorage) ──
 
@@ -297,6 +298,8 @@ export function LauncherView() {
             </span>
           </button>
         )}
+
+        <LauncherStealthButton />
 
         <button
           onClick={() => setCurrentView("settings")}

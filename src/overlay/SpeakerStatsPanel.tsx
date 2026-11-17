@@ -3,6 +3,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import type { TFunction } from "i18next";
+import { useShallow } from "zustand/react/shallow";
 import { useT } from "../i18n";
 import { useSpeakerStore } from "../stores/speakerStore";
 import { BarChart3, Pencil, Check, X } from "lucide-react";
@@ -77,7 +78,7 @@ function InlineRename({ speakerId, displayName, color }: { speakerId: string; di
 
 export function SpeakerStatsPanel({ isOpen }: SpeakerStatsPanelProps) {
   const { t } = useT("overlay");
-  const speakers = useSpeakerStore((s) => s.getAllSpeakers());
+  const speakers = useSpeakerStore(useShallow((s) => s.getAllSpeakers()));
 
   if (!isOpen) return null;
 

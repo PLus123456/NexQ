@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useT } from "../i18n";
 import { useStreamStore } from "../stores/streamStore";
-import { runUserAction } from "../lib/userAction";
+import { runYourAction, useAutoAnswerRunning } from "../lib/autoAnswer";
 import { showToast } from "../stores/toastStore";
 import { Send, X } from "lucide-react";
 
@@ -15,6 +15,9 @@ export function AskInput({ visible, onClose }: AskInputProps) {
   const { t } = useT("overlay");
   const [inputText, setInputText] = useState("");
   const isStreaming = useStreamStore((s) => s.isStreaming);
+  // An automatic answer gives way to what you ask; an answer you asked for does not.
+  const autoRunning = useAutoAnswerRunning();
+  const locked = isStreaming && !autoRunning;
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus the input when made visible
@@ -26,16 +29,16 @@ export function AskInput({ visible, onClose }: AskInputProps) {
 
   const handleSubmit = useCallback(() => {
     const text = inputText.trim();
-    if (!text || isStreaming) return;
+    if (!text || locked) return;
 
     // Send question in AskQuestion mode (with the picked transcript scope)
-    runUserAction("AskQuestion", text).catch((err) => {
+    runYourAction("AskQuestion", text).catch((err) => {
       const msg = err instanceof Error ? err.message : t("ask.errors.sendFailed");
       showToast(msg, "error");
     });
     setInputText("");
     onClose();
-  }, [inputText, isStreaming, onClose, t]);
+  }, [inputText, locked, onClose, t]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -65,13 +68,13 @@ export function AskInput({ visible, onClose }: AskInputProps) {
         onKeyDown={handleKeyDown}
         placeholder={t("ask.input.placeholder")}
         aria-label={t("ask.input.ariaLabel")}
-        disabled={isStreaming}
+        disabled={locked}
         maxLength={2000}
         className="flex-1 bg-transparent text-xs text-foreground/90 placeholder:text-muted-foreground/50 outline-none"
       />
       <button
         onClick={handleSubmit}
-        disabled={!inputText.trim() || isStreaming}
+        disabled={!inputText.trim() || locked}
         className="rounded-lg p-1.5 text-primary transition-colors duration-150 hover:bg-primary/10 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
         title={t("ask.send.title")}
         aria-label={t("ask.send.ariaLabel")}

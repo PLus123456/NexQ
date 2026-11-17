@@ -23,7 +23,7 @@ import {
   checkForUpdates,
   downloadUpdateNow,
   hydrateUpdater,
-  restartToUpdate,
+  openUpdateDialog,
   setAutoUpdate,
   skipVersion,
 } from "../hooks/useUpdater";
@@ -204,7 +204,7 @@ function Updates() {
     dotClass = "bg-primary";
     title = t("about.updates.ready.title", { version });
     detail = autoUpdate ? t("about.updates.ready.installsOnQuit") : t("about.updates.ready.restartToInstall");
-    action = { label: t("about.updates.restartNow"), onClick: () => restartToUpdate(), primary: true };
+    action = { label: t("updates.toast.whatsNew"), onClick: () => openUpdateDialog(), primary: true };
   } else if (phase === "error") {
     dotClass = "bg-destructive";
     title = version ? t("about.updates.error.downloadFailed") : t("about.updates.error.checkFailed");

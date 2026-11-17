@@ -381,6 +381,19 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_named_request_leaves_any_other_running() {
+        let engine = IntelligenceEngine::new();
+        assert_eq!(engine.cancel(Some("auto-1")), None); // nothing running
+        let guard = engine.begin_generation("yours", GenerationLane::LiveAnswer).unwrap();
+        // An automatic answer that already ended must not stop yours.
+        assert_eq!(engine.cancel(Some("auto-1")), None);
+        assert!(!guard.cancel_token().is_cancelled());
+        assert_eq!(engine.cancel(Some("yours")), Some("yours".to_string()));
+        assert!(guard.cancel_token().is_cancelled());
+        assert_eq!(engine.cancel(Some("yours")), None);
+    }
+
+    #[test]
     fn each_generation_gets_a_fresh_cancel_token() {
         let engine = IntelligenceEngine::new();
         let first = engine.begin_generation("req-1", GenerationLane::LiveAnswer).unwrap();

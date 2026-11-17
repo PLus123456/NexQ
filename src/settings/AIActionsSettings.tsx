@@ -81,8 +81,15 @@ const LENGTH_SUMMARY_KEYS: Record<string, ParseKeys<"settings">> = {
   detailed: "aiActions.style.summary.length.detailed",
 };
 
-/** Help content for each setting (translation keys) — shown via HelpButton/HelpPanel toggle */
-const HELP: Record<string, { titleKey: ParseKeys<"settings">; bodyKey: ParseKeys<"settings"> }> = {
+/**
+ * Help content for each setting — shown via HelpButton/HelpPanel toggle.
+ * Translation keys, or plain text for help not translated yet.
+ */
+type HelpContent =
+  | { titleKey: ParseKeys<"settings">; bodyKey: ParseKeys<"settings"> }
+  | { title: string; body: string };
+
+const HELP: Record<string, HelpContent> = {
   tone: { titleKey: "aiActions.style.tone.label", bodyKey: "aiActions.style.tone.help" },
   format: { titleKey: "aiActions.style.format.label", bodyKey: "aiActions.style.format.help" },
   length: { titleKey: "aiActions.style.length.label", bodyKey: "aiActions.style.length.help" },
@@ -93,6 +100,11 @@ const HELP: Record<string, { titleKey: ParseKeys<"settings">; bodyKey: ParseKeys
   instructions: {
     titleKey: "aiActions.instructions.label",
     bodyKey: "aiActions.instructions.help",
+  },
+  // Not translated yet.
+  questionDetection: {
+    title: "Question Detection",
+    body: "When enabled, questions from the other party appear as cards in the overlay. Click a card to get an answer to that question.\n\nTurn OFF to hide the cards. You can still trigger actions manually with the overlay buttons.",
   },
   autoTrigger: { titleKey: "aiActions.autoTrigger.label", bodyKey: "aiActions.autoTrigger.help" },
   temperature: { titleKey: "aiActions.temperature.label", bodyKey: "aiActions.temperature.help" },
@@ -179,9 +191,9 @@ function HelpPanel({ id }: { id: string }) {
   if (!content) return null;
   return (
     <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-3 space-y-1">
-      <p className="text-xs font-semibold text-primary/80">{t(content.titleKey)}</p>
+      <p className="text-xs font-semibold text-primary/80">{"titleKey" in content ? t(content.titleKey) : content.title}</p>
       <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
-        {t(content.bodyKey)}
+        {"bodyKey" in content ? t(content.bodyKey) : content.body}
       </p>
     </div>
   );
@@ -555,19 +567,42 @@ export function AIActionsSettings() {
             />
 
             <div className="space-y-4">
-              {/* Auto-Trigger */}
+              {/* Question Detection */}
               <div>
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    {t("aiActions.autoTrigger.label")}
-                    <HelpButton id="autoTrigger" activeId={openHelp} onToggle={toggleHelp} />
+                    Question Detection
+                    <HelpButton id="questionDetection" activeId={openHelp} onToggle={toggleHelp} />
                   </label>
                   <Toggle
-                    checked={configs.globalDefaults.autoTrigger}
-                    onChange={(v) => handleGlobalDefaultChange("autoTrigger", v)}
-                    label={t("aiActions.autoTrigger.ariaLabel")}
+                    checked={configs.globalDefaults.questionDetection}
+                    onChange={(v) => handleGlobalDefaultChange("questionDetection", v)}
+                    label="Toggle question detection"
                   />
                 </div>
+                {openHelp === "questionDetection" && <HelpPanel id="questionDetection" />}
+              </div>
+
+              {/* Auto-Answer: only answers questions detection found */}
+              <div>
+                <fieldset
+                  disabled={!configs.globalDefaults.questionDetection}
+                  className={`min-w-0 ${configs.globalDefaults.questionDetection ? "" : "opacity-50"}`}
+                >
+                  <div className="flex items-center justify-between">
+                    {/* Upstream renamed this Auto-Answer and reworded its help: the
+                        translation pass updates the aiActions.autoTrigger texts. */}
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      {t("aiActions.autoTrigger.label")}
+                      <HelpButton id="autoTrigger" activeId={openHelp} onToggle={toggleHelp} />
+                    </label>
+                    <Toggle
+                      checked={configs.globalDefaults.autoTrigger}
+                      onChange={(v) => handleGlobalDefaultChange("autoTrigger", v)}
+                      label={t("aiActions.autoTrigger.ariaLabel")}
+                    />
+                  </div>
+                </fieldset>
                 {openHelp === "autoTrigger" && <HelpPanel id="autoTrigger" />}
               </div>
 

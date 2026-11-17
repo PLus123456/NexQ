@@ -39,14 +39,14 @@ Live two-party transcription, instant AI answers grounded in your own documents,
 
 - **Local-first and private.** Audio is captured on your machine, and you choose where it goes: fully offline engines (Whisper, Parakeet, Ollama) or the cloud providers you configure. No bot joins your call.
 - **Free and open source.** MIT licensed, no account, no subscription, no usage caps.
-- **Bring your own models.** 10 speech-to-text engines and 9 LLM providers, from local Whisper and Ollama to Deepgram, OpenAI, Gemini, or your existing Claude Pro/Max subscription.
+- **Bring your own models.** 11 speech-to-text engines and 9 LLM providers, from local Whisper and Ollama to Deepgram, OpenAI, Gemini, or your existing Claude Pro/Max subscription.
 - **Built for the moment.** Answers stream in while the other person is still talking, grounded in your resume, notes, or slides.
 
 ## What's new
 
 > **v2.25**
 > - **macOS support (Apple Silicon, beta).** Native macOS build, Keychain credential storage and the transparent overlay. A community contribution by [@visitek](https://github.com/visitek).
-> - **Stealth Mode: "Hide from screen share".** NexQ stays visible to you but is left out of screen sharing, recordings and screenshots (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). Toggle it in Settings, from the overlay header or the tray, or with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> on macOS).
+> - **Stealth Mode: "Hide from screen share".** NexQ stays visible to you but is left out of screen sharing, recordings and screenshots (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). While it's on, the overlay keeps a plain arrow cursor, and its minimize button hides it to the tray (the menu bar on macOS) during a meeting instead of opening the dashboard. NexQ also leaves the taskbar on Windows, where <kbd>Alt</kbd>+<kbd>Tab</kbd>, the tray and the shortcuts still reach it, and the Dock and <kbd>Cmd</kbd>+<kbd>Tab</kbd> on macOS, where the menu-bar icon and the shortcuts still reach it. On macOS 14 and later, some recorders that use ScreenCaptureKit can still capture NexQ, so try a test share first. Toggle it in Settings, from the dashboard or overlay header, from the tray, or with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> on macOS).
 > - **Czech transcription.**
 >
 > **Recently shipped:** transcript paragraphs with separated remote speakers, a transcript scope picker and answer history (v2.24); a Claude model picker read from the CLI with per-model effort (v2.23); Claude via your own subscription, silent background updates, and "Ask a past meeting" (v2.22). See the full [CHANGELOG](CHANGELOG.md).
@@ -59,7 +59,7 @@ Live two-party transcription, instant AI answers grounded in your own documents,
 
 **Transcription**
 - Two independent streams: your mic ("You") and system audio ("Them"), each with its own engine, language and mute
-- 10 STT engines, local or cloud ([table below](#supported-providers))
+- 11 STT engines, local or cloud ([table below](#supported-providers))
 - Speaker labeling and remote-speaker separation
 - Real-time translation into 100+ languages (5 providers, including offline OPUS-MT)
 
@@ -143,7 +143,7 @@ Guides: [Getting started](docs/user-guide/getting-started.md) · [Choosing provi
 ## Supported providers
 
 <details>
-<summary><b>Speech-to-text (10)</b></summary>
+<summary><b>Speech-to-text (11)</b></summary>
 
 | Engine | Runs | Notes |
 |---|---|---|
@@ -157,6 +157,7 @@ Guides: [Getting started](docs/user-guide/getting-started.md) · [Choosing provi
 | Groq Whisper | Cloud | Fast Whisper with a free tier |
 | Whisper API | Cloud | OpenAI Whisper REST API |
 | Azure Speech | Cloud | Azure Cognitive Services |
+| Cartesia | Cloud | ink-2 real-time streaming with built-in turn detection |
 
 </details>
 

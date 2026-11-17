@@ -1,3 +1,91 @@
+# [2.37.0](https://github.com/naxhq/NexQ/compare/v2.36.1...v2.37.0) (2026-11-10)
+
+
+### Features
+
+* **tray:** click the tray icon to bring NexQ back; the menu opens the dashboard ([e1d10f1](https://github.com/naxhq/NexQ/commit/e1d10f179cc8702b56d32e28c7484a2a4f73d0ab))
+## [2.36.1](https://github.com/naxhq/NexQ/compare/v2.36.0...v2.36.1) (2026-11-09)
+# [2.36.0](https://github.com/naxhq/NexQ/compare/v2.35.1...v2.36.0) (2026-11-08)
+
+
+### Features
+
+* **audio:** echo cancellation keeps the speakers' sound from being transcribed as you ([#83](https://github.com/naxhq/NexQ/issues/83)) ([e877dc8](https://github.com/naxhq/NexQ/commit/e877dc8b924c0f73c9d7c8105218598338f6dca9)), closes [#82](https://github.com/naxhq/NexQ/issues/82)
+* **stealth:** stealth mode also hides NexQ from the taskbar and keeps the overlay cursor still ([#81](https://github.com/naxhq/NexQ/issues/81)) ([0939d6c](https://github.com/naxhq/NexQ/commit/0939d6cd464b4436fc0a06dc9e4adb0fb87d0b56)), closes [#80](https://github.com/naxhq/NexQ/issues/80)
+## [2.35.1](https://github.com/naxhq/NexQ/compare/v2.35.0...v2.35.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **release:** Mac updates are back after GitHub retired the macOS 14 build machines ([ccc0f6d](https://github.com/naxhq/NexQ/commit/ccc0f6dd12455877fa1eaec24a5dc67141b7494d))
+# [2.35.0](https://github.com/naxhq/NexQ/compare/v2.34.0...v2.35.0) (2026-11-06)
+
+
+### Bug Fixes
+
+* **installer:** first-time downloads pulse the waveform instead of opening a gray panel ([4c1f3a5](https://github.com/naxhq/NexQ/commit/4c1f3a5b5a05b5e4a12c64555b6dbe64a340e632))
+* **updater:** the changelog copes with long jumps and releases with nothing listed ([4a4c234](https://github.com/naxhq/NexQ/commit/4a4c234ef5df85f6315e46f7f0b3db1b0f6f2d3b))
+
+
+### Features
+
+* **installer:** first installs say what NexQ does and what happens next ([942785a](https://github.com/naxhq/NexQ/commit/942785aba2d69b3b63c72411d892ff9b4a0e7ebd))
+* **installer:** NexQ's own install, update and uninstall screens ([2c7a8cd](https://github.com/naxhq/NexQ/commit/2c7a8cd18776871202889581f8f68a694e54fef7))
+* **updater:** show what's new before installing, and always install the newest version ([308165c](https://github.com/naxhq/NexQ/commit/308165c3959c389db9975b2fbc459f115d7e0ec8))
+# [2.34.0](https://github.com/naxhq/NexQ/compare/v2.33.0...v2.34.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **llm:** a custom endpoint shows its real error and uses a new token at once ([#79](https://github.com/naxhq/NexQ/issues/79)) ([010a632](https://github.com/naxhq/NexQ/commit/010a6325b76f64eaaa3e58deefddd33104cc6f67)), closes [#78](https://github.com/naxhq/NexQ/issues/78)
+
+
+### Features
+
+* **stt:** Auto-Answer replies as soon as Cartesia or Deepgram Flux says the speaker finished ([#77](https://github.com/naxhq/NexQ/issues/77)) ([7127c1b](https://github.com/naxhq/NexQ/commit/7127c1bff827d893f3076f489843981e4bb497a9)), closes [#76](https://github.com/naxhq/NexQ/issues/76)
+# [2.33.0](https://github.com/naxhq/NexQ/compare/v2.32.0...v2.33.0) (2026-11-04)
+
+
+### Bug Fixes
+
+* **overlay:** question cards are back for anyone with saved AI settings ([2e0c258](https://github.com/naxhq/NexQ/commit/2e0c258473854bc3473db6d95f2afe6be95a988f))
+
+
+### Features
+
+* **overlay:** Auto-Answer is off by default ([e5d85d4](https://github.com/naxhq/NexQ/commit/e5d85d48e89bb517688c42632afc851fb5c89573))
+* **stt:** Cartesia isn't billed while a party is muted ([#75](https://github.com/naxhq/NexQ/issues/75)) ([4951b8c](https://github.com/naxhq/NexQ/commit/4951b8ced5481f3719d0bc1cb208e5edf4d166d6)), closes [#74](https://github.com/naxhq/NexQ/issues/74)
+# [2.32.0](https://github.com/naxhq/NexQ/compare/v2.31.0...v2.32.0) (2026-11-04)
+
+
+### Bug Fixes
+
+* **intelligence:** a bare "Right?" is no longer treated as a question ([441c771](https://github.com/naxhq/NexQ/commit/441c77159c217985c05495d03ca52cdcc3971f66))
+* **meetings:** in-person meetings no longer run a muted "You" transcriber ([#73](https://github.com/naxhq/NexQ/issues/73)) ([d78f182](https://github.com/naxhq/NexQ/commit/d78f182168bf14e7bbbf47124cf696695df17f25))
+* **overlay:** coming back to the overlay no longer re-answers old questions ([559956f](https://github.com/naxhq/NexQ/commit/559956f3ef505ec9b91ab2c76d9536601f0730da))
+* **overlay:** edited scenario prompts and Speaker Stats no longer crash the overlay ([5a60c9e](https://github.com/naxhq/NexQ/commit/5a60c9efaf545472571901f3798a13f06a3cab23)), closes [#185](https://github.com/naxhq/NexQ/issues/185) [#72](https://github.com/naxhq/NexQ/issues/72)
+* **overlay:** the scenario chip shows the running meeting's scenario ([506b44f](https://github.com/naxhq/NexQ/commit/506b44f6dab1f307d0853a0cad9dbea2acfab89a))
+* **scenarios:** an edit in one window no longer overwrites the other's ([3dc69de](https://github.com/naxhq/NexQ/commit/3dc69deccf283998a9a6900a57d15a542ccc90db))
+* **transcript:** an interim no final follows no longer hangs in the transcript ([17e4770](https://github.com/naxhq/NexQ/commit/17e4770439d58b768dc4eb3dc18d6638e70cc56f))
+
+
+### Features
+
+* **overlay:** separate question detection from auto-answer ([7da5ee7](https://github.com/naxhq/NexQ/commit/7da5ee7674cc9dbec3a7ee39726580f963da580b))
+* **scenarios:** meetings can use custom scenarios ([63e0371](https://github.com/naxhq/NexQ/commit/63e037188bd42d31683faf559702d601f7dc4263))
+# [2.31.0](https://github.com/naxhq/NexQ/compare/v2.30.0...v2.31.0) (2026-11-02)
+
+
+### Bug Fixes
+
+* **intelligence:** detect Chinese and Japanese questions ([#61](https://github.com/naxhq/NexQ/issues/61)) ([e5f099f](https://github.com/naxhq/NexQ/commit/e5f099fe9f2ecd6b73e2253120e9f15f5c088bb7))
+* **meetings:** count CJK characters in meeting statistics ([#63](https://github.com/naxhq/NexQ/issues/63)) ([a683744](https://github.com/naxhq/NexQ/commit/a683744af124b026e3b1cca0a627a12aaf38032c))
+* **meetings:** preserve Unicode export filenames ([#62](https://github.com/naxhq/NexQ/issues/62)) ([730a233](https://github.com/naxhq/NexQ/commit/730a2332202c2aabb266dccbc8a02b2c2ef35719))
+
+
+### Features
+
+* **stt:** add Cartesia ink-2 streaming provider ([#71](https://github.com/naxhq/NexQ/issues/71)) ([ee2c518](https://github.com/naxhq/NexQ/commit/ee2c5186cca2ef4856762ee6646e6f6c040c1ffc)), closes [#59](https://github.com/naxhq/NexQ/issues/59)
 # [2.30.0](https://github.com/naxhq/NexQ/compare/v2.29.1...v2.30.0) (2026-11-02)
 
 

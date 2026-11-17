@@ -13,6 +13,7 @@ import { useTranscriptStore } from "../stores/transcriptStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { stopCapture, startCapturePerParty, setTranslationLanguages } from "../lib/ipc";
 import { sttProviderMeta } from "../lib/stt/providerMeta";
+import { skipYouStt } from "../lib/audioMode";
 import type { MeetingAudioConfig } from "../lib/types";
 import type { SonioxConfig } from "../lib/stt/types";
 import { updateSonioxConfig } from "../lib/stt/ipc";
@@ -88,7 +89,11 @@ export function useAudioConfigSync() {
             await setTranslationLanguages(fresh.targetLang, fresh.sourceLang === "auto" ? undefined : fresh.sourceLang);
           }
           if (!active()) break;
-          await startCapturePerParty(fresh.config.you, fresh.config.them, meetingId);
+          log("info", "config", "Hot-swap: starting new capture pipeline...");
+          await startCapturePerParty(fresh.config.you, fresh.config.them, {
+            skipYouStt: skipYouStt(useMeetingStore.getState().audioMode),
+            expectedMeetingId: meetingId,
+          });
           if (!active()) {
             // End/unmount can happen while the start IPC is in flight.
             await stopCapture(false, meetingId);

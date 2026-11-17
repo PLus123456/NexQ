@@ -1180,6 +1180,8 @@ pub async fn generate_assist(
     result
 }
 
+/// Stops the answer being generated. With `request_id`, only that answer: if
+/// another one is running instead, it is left alone.
 #[command]
 pub async fn cancel_generation(
     request_id: Option<String>,

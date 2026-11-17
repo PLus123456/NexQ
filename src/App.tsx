@@ -2,6 +2,7 @@ import { useEffect, useCallback, useState } from "react";
 import { useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
 import { useAIActionsStore } from "./stores/aiActionsStore";
+import { useScenarioStore, watchSavedScenarios } from "./stores/scenarioStore";
 import { LauncherView } from "./launcher/LauncherView";
 import { OverlayView } from "./overlay/OverlayView";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
@@ -13,16 +14,19 @@ import { t as translate, useT } from "./i18n";
 import { initOnboarding } from "./stores/onboardingStore";
 import { resolveAppView } from "./lib/onboarding/view";
 import { UpdateReadyToast } from "./components/UpdateToast";
+import { UpdateDialog } from "./components/UpdateDialog";
 import { useTheme } from "./hooks/useTheme";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
 import { useTranslationEvents } from "./hooks/useTranslationEvents";
 import { useAutoTranslate } from "./hooks/useAutoTranslate";
 import { useTraySync } from "./hooks/useTraySync";
+import { useStealthCursor } from "./hooks/useStealthCursor";
 import { useUpdater } from "./hooks/useUpdater";
 import { useAgentFallbackToast } from "./hooks/useAgentFallbackToast";
 import { refreshClaudeModelsOnStart } from "./stores/agentStore";
 import { useTranslationStore } from "./stores/translationStore";
 import { CallLogPanel } from "./calllog";
+import { OverlayResizeHandles } from "./overlay/OverlayResizeHandles";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { ActiveMeetingProvider } from "./components/ActiveMeetingProvider";
 import { initMeetingSpeakers, resetMeetingScopedStores } from "./stores/resetMeeting";
@@ -84,10 +88,15 @@ function App() {
     // Translate button and the translation settings show.
     useTranslationStore.getState().loadConfig().then(() => useTranslationStore.getState().syncBackend());
     // Load scenario config (custom scenarios, overrides, active scenario)
-    import("./stores/scenarioStore").then(({ useScenarioStore }) => {
-      useScenarioStore.getState().loadScenarioConfig();
-    }).catch(() => { /* non-critical */ });
+    useScenarioStore.getState().loadScenarioConfig();
   }, [loadConfig]);
+
+  useEffect(() => {
+    const watching = watchSavedScenarios().catch(() => undefined);
+    return () => {
+      watching.then((stop) => stop?.());
+    };
+  }, []);
 
   // Load recent meetings on app start
   useEffect(() => {
@@ -107,6 +116,8 @@ function App() {
       }
     });
   }, []);
+  // OVERLAY window: stealth mode keeps the arrow cursor across the whole window.
+  useStealthCursor(windowLabel);
 
   // LAUNCHER window: the meeting runs in the overlay window. When a meeting
   // starts (or anything asks this window for the meeting view), bring the
@@ -228,6 +239,10 @@ function App() {
         } catch (err) {
           console.warn("[App] Failed to reset meeting stores in overlay:", err);
         }
+        // This window read the scenarios at startup; the launcher may have changed
+        // them since, and only it saves the meeting's scenario as the active one.
+        await useScenarioStore.getState().loadScenarioConfig();
+        useScenarioStore.setState({ activeScenarioId: aiScenario });
         useMeetingStore.setState({
           activeMeeting: meeting,
           currentView: "overlay",
@@ -404,6 +419,10 @@ function App() {
         </ErrorBoundary>
         <ActiveMeetingProvider isLauncherWindow={false} />
         <ToastContainer />
+        {/* Settings -> About can open here too */}
+        <UpdateDialog />
+        {/* macOS + stealth only: resize the overlay without macOS's resize cursors */}
+        <OverlayResizeHandles />
       </div>
     );
   }
@@ -436,6 +455,7 @@ function App() {
 
       {/* One-time "update ready" notice (the footer pill stays) */}
       <UpdateReadyToast />
+      <UpdateDialog />
 
       {/* Demo mode — scenario picker modal + floating exit badge */}
       <DemoPicker />

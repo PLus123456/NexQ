@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { LocalModelManager } from "./LocalModelManager";
 import { currentPlatform } from "../lib/platform";
+import { APP_NAME } from "../lib/brand";
 import {
   isSttProviderAvailable,
   sttKeySlot,
@@ -72,13 +73,17 @@ interface DeepgramModelInfo {
   id: string;
   /** Model name (product name, not translated). */
   name: string;
-  tier: "latest" | "standard" | "economy" | "whisper";
-  descriptionKey: ParseKeys<"stt">;
+  tier: "latest" | "flux" | "standard" | "economy" | "whisper";
+  descriptionKey?: ParseKeys<"stt">;
+  /** English description of a model added before its translation. */
+  description?: string;
   costPerMin: number;
 }
 
 const DEEPGRAM_MODELS: DeepgramModelInfo[] = [
   { id: "nova-3", name: "Nova 3", tier: "latest", descriptionKey: "deepgram.models.nova3", costPerMin: 0.0059 },
+  { id: "flux-general-en", name: "Flux", tier: "flux", description: "Knows when a speaker is done, so Auto-Answer replies at once (English)", costPerMin: 0.0077 },
+  { id: "flux-general-multi", name: "Flux Multilingual", tier: "flux", description: "Turn detection in 10 languages", costPerMin: 0.0078 },
   { id: "nova-2", name: "Nova 2", tier: "standard", descriptionKey: "deepgram.models.nova2", costPerMin: 0.0043 },
   { id: "nova", name: "Nova", tier: "standard", descriptionKey: "deepgram.models.nova", costPerMin: 0.0043 },
   { id: "enhanced", name: "Enhanced", tier: "standard", descriptionKey: "deepgram.models.enhanced", costPerMin: 0.0043 },
@@ -985,6 +990,9 @@ function DeepgramAdvancedSettings() {
   };
 
   const activeModel = DEEPGRAM_MODELS.find((m) => m.id === deepgramConfig.model);
+  // Flux (/v2/listen) detects turns itself and has none of Nova's formatting,
+  // endpointing, diarization or dictation options.
+  const isFlux = deepgramConfig.model.startsWith("flux-");
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/50 overflow-hidden">
@@ -1041,6 +1049,7 @@ function DeepgramAdvancedSettings() {
           {DEEPGRAM_MODELS.map((model) => {
             const tierColors: Record<string, string> = {
               latest: "text-success",
+              flux: "text-info",
               standard: "text-info",
               economy: "text-warning",
               whisper: "text-purple-400",
@@ -1064,7 +1073,9 @@ function DeepgramAdvancedSettings() {
                       <span className="rounded bg-success/10 px-1 py-0.5 text-[8px] font-bold text-success">{t("stt:deepgram.newTag")}</span>
                     )}
                   </div>
-                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">{t(model.descriptionKey)}</p>
+                  <p className="text-meta text-muted-foreground/70 leading-tight mt-0.5">
+                    {model.descriptionKey ? t(model.descriptionKey) : model.description}
+                  </p>
                   <p className={`text-meta font-mono mt-0.5 ${tierColors[model.tier]}`}>
                     {t("stt:deepgram.pricePerMinute", { price: model.costPerMin.toFixed(4) })}
                   </p>
@@ -1075,7 +1086,21 @@ function DeepgramAdvancedSettings() {
         </div>
       </div>
 
-      {/* Core Feature Toggles */}
+      {isFlux && (
+        <div className="px-5 py-3 border-b border-border/20 bg-info/5">
+          <p className="text-xs text-foreground/90">
+            Flux tells {APP_NAME} when each speaker has finished, so Auto-Answer replies right away instead of
+            waiting 1.5 s, and can start on a likely finish.
+          </p>
+          <p className="mt-1 text-meta text-muted-foreground/80">
+            It doesn&apos;t tell speakers apart. {APP_NAME} streams silence to it, so quiet time counts toward
+            Deepgram usage. Muted time doesn&apos;t: muting closes the stream.
+          </p>
+        </div>
+      )}
+
+      {/* Core Feature Toggles (Nova only) */}
+      {!isFlux && (<>
       <div className="px-5 py-3 border-b border-border/20">
         <label className="mb-2 block text-meta font-medium text-muted-foreground uppercase tracking-wider">{t("stt:deepgram.features")}</label>
         <div className="space-y-2">
@@ -1160,6 +1185,7 @@ function DeepgramAdvancedSettings() {
           <p className="text-meta text-muted-foreground/60">{t("stt:deepgram.endpointing.disabled")}</p>
         )}
       </div>
+      </>)}
 
       {/* Advanced toggle */}
       <button
@@ -1175,13 +1201,15 @@ function DeepgramAdvancedSettings() {
         <div className="border-t border-border/20">
           {/* Advanced Feature Toggles */}
           <div className="px-5 py-3 border-b border-border/20 space-y-2">
-            <DeepgramToggle
-              label={t("stt:deepgram.toggles.diarize.label")}
-              param="diarize"
-              description={t("stt:deepgram.toggles.diarize.description")}
-              checked={deepgramConfig.diarize}
-              onChange={(v) => updateField("diarize", v)}
-            />
+            {!isFlux && (
+              <DeepgramToggle
+                label={t("stt:deepgram.toggles.diarize.label")}
+                param="diarize"
+                description={t("stt:deepgram.toggles.diarize.description")}
+                checked={deepgramConfig.diarize}
+                onChange={(v) => updateField("diarize", v)}
+              />
+            )}
             <DeepgramToggle
               label={t("stt:deepgram.toggles.numerals.label")}
               param="numerals"
@@ -1196,13 +1224,15 @@ function DeepgramAdvancedSettings() {
               checked={deepgramConfig.profanity_filter}
               onChange={(v) => updateField("profanity_filter", v)}
             />
-            <DeepgramToggle
-              label={t("stt:deepgram.toggles.dictation.label")}
-              param="dictation"
-              description={t("stt:deepgram.toggles.dictation.description")}
-              checked={deepgramConfig.dictation}
-              onChange={(v) => updateField("dictation", v)}
-            />
+            {!isFlux && (
+              <DeepgramToggle
+                label={t("stt:deepgram.toggles.dictation.label")}
+                param="dictation"
+                description={t("stt:deepgram.toggles.dictation.description")}
+                checked={deepgramConfig.dictation}
+                onChange={(v) => updateField("dictation", v)}
+              />
+            )}
           </div>
 
           {/* Keyterm Prompting */}

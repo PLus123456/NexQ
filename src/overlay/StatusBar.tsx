@@ -29,6 +29,7 @@ const STT_SHORT_LABELS: Record<string, string> = {
   azure_speech: "Azure",
   groq_whisper: "GroqSTT",
   soniox: "Soniox",
+  cartesia: "Cartesia",
 };
 
 export function StatusBar() {

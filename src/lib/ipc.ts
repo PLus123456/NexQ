@@ -125,12 +125,18 @@ export async function getAudioSessions(): Promise<AudioSessionInfo[]> {
 export async function startCapturePerParty(
   youConfig: PartyAudioConfig,
   themConfig: PartyAudioConfig,
-  expectedMeetingId?: string
+  options: {
+    /** In-person meetings: don't run a (muted) transcriber for "You". */
+    skipYouStt?: boolean;
+    /** Only restart capture if this meeting is still the active one. */
+    expectedMeetingId?: string;
+  } = {}
 ): Promise<void> {
   return invoke("start_capture_per_party", {
     youConfig: JSON.stringify(youConfig),
     themConfig: JSON.stringify(themConfig),
-    ...(expectedMeetingId ? { expectedMeetingId } : {}),
+    skipYouStt: options.skipYouStt ?? false,
+    ...(options.expectedMeetingId ? { expectedMeetingId: options.expectedMeetingId } : {}),
   });
 }
 
@@ -255,8 +261,9 @@ export async function generateAssist(
   });
 }
 
+/** Stops the answer being generated; with `requestId`, only if that one is still running. */
 export async function cancelGeneration(requestId?: string): Promise<void> {
-  return invoke("cancel_generation", requestId ? { requestId } : undefined);
+  return invoke("cancel_generation", requestId ? { requestId } : {});
 }
 
 export async function setAutoTrigger(enabled: boolean): Promise<void> {

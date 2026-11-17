@@ -31,7 +31,7 @@ The installer uses NSIS and installs per-user (no admin rights required). The de
 After installation, NexQ starts automatically. You will see:
 
 - **Launcher window** (900x650) -- the main dashboard for managing meetings, settings, and history
-- **System tray icon** -- NexQ lives in your taskbar tray; closing the window hides it to tray rather than quitting
+- **System tray icon** -- NexQ lives in your taskbar tray; closing the window hides it to tray rather than quitting. Click the icon to bring NexQ back
 
 ## Quick Setup
 
@@ -86,6 +86,8 @@ NexQ uses an LLM to generate AI assistance during meetings. The easiest local op
 5. **Press Ctrl+M** again to end the meeting
 
 The meeting is saved automatically with full transcript, AI interactions, and summary.
+
+In meeting details, **Words** counts each Chinese character and Japanese kana individually, since those languages don't put spaces between words. Other text, including Korean, is counted by whitespace-separated words. Punctuation alone is not counted. **Pace** and the header's speaker percentages use the same counts.
 
 ## Next Steps
 

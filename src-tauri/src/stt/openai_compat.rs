@@ -1257,6 +1257,7 @@ impl Utterance {
             segment_id: Some(format!("oc_utt_{}", self.count)),
             duration_ms: Some(self.end_ms - self.start_ms),
             speaker_tag: None,
+            turn: None,
         }
     }
 }

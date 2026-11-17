@@ -2,12 +2,13 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "NexQ Plus",
   "mainBinaryName": "nexq-plus",
-  "version": "2.30.0",
+  "version": "2.37.0",
   "identifier": "com.plus.nexq",
   "build": {
     "beforeDevCommand": "node scripts/fetch-onnxruntime.mjs && npm run dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "node scripts/fetch-onnxruntime.mjs && npm run build",
+    "beforeBundleCommand": "node scripts/nsis-release-info.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -47,8 +48,7 @@
       "id": "main",
       "iconPath": "icons/icon.png",
       "iconAsTemplate": false,
-      "tooltip": "NexQ Plus",
-      "menuOnLeftClick": false
+      "tooltip": "NexQ Plus"
     },
     "security": {
       "csp": null,
@@ -74,9 +74,9 @@
         "displayLanguageSelector": false,
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
-        "headerImage": "nsis-header.bmp",
-        "sidebarImage": "nsis-sidebar.bmp",
-        "installerHooks": "./nsis-hooks.nsh"
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "./nsis-hooks.nsh",
+        "template": "./nsis/installer.nsi"
       }
     }
   },

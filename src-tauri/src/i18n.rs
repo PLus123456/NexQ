@@ -89,6 +89,7 @@ pub fn load_from_config(app: &AppHandle) {
 /// Fixed text shown by Rust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Text {
+    OpenDashboard,
     StartMeeting,
     StopMeeting,
     MuteMicrophone,
@@ -118,6 +119,7 @@ pub fn tr(text: Text) -> &'static str {
 pub fn tr_in(lang: UiLanguage, text: Text) -> &'static str {
     match lang {
         UiLanguage::En => match text {
+            Text::OpenDashboard => "Open Dashboard",
             Text::StartMeeting => "Start Meeting",
             Text::StopMeeting => "Stop Meeting",
             Text::MuteMicrophone => "Mute Microphone",
@@ -139,6 +141,7 @@ pub fn tr_in(lang: UiLanguage, text: Text) -> &'static str {
             Text::IndexingFiles => "Indexing files...",
         },
         UiLanguage::ZhCn => match text {
+            Text::OpenDashboard => "打开主窗口",
             Text::StartMeeting => "开始会议",
             Text::StopMeeting => "结束会议",
             Text::MuteMicrophone => "麦克风静音",
@@ -197,7 +200,7 @@ mod tests {
     #[test]
     fn every_text_has_both_languages() {
         let all = [
-            Text::StartMeeting, Text::StopMeeting, Text::MuteMicrophone, Text::MuteSystemAudio,
+            Text::OpenDashboard, Text::StartMeeting, Text::StopMeeting, Text::MuteMicrophone, Text::MuteSystemAudio,
             Text::HideFromScreenShare, Text::HideOverlay, Text::ShowOverlay, Text::CopyLastAiAnswer,
             Text::CopyActionItems, Text::CopySummary, Text::CopyTranscript, Text::Settings, Text::Quit,
             Text::Idle, Text::Recording, Text::RecordingMicMuted, Text::RecordingOverlayHidden,

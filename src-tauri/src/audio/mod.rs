@@ -35,7 +35,7 @@ pub struct PartyAudioConfig {
     pub device_id: String,
     pub is_input_device: bool,
     /// "web_speech" | "whisper_cpp" | "deepgram" | "whisper_api" | "azure_speech" | "groq_whisper"
-    /// | "openai_compat" | "soniox" | ...
+    /// | "cartesia" | "openai_compat" | "soniox" | ...
     pub stt_provider: String,
     /// Model ID for local STT engines (e.g., "base", "small", "medium").
     /// Only used when stt_provider is a local engine like "whisper_cpp".

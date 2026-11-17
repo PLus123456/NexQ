@@ -3,7 +3,8 @@ import { Check, ChevronDown, Play, X } from "lucide-react";
 import { dismissMeetingPrompt, getDetectedMeeting } from "../lib/ipc";
 import { emitStartDetectedMeeting, onDetectedMeetingEnded, onMeetingDetected } from "../lib/events";
 import { composeMeetingTitle } from "../lib/meetingTitle";
-import { BUILT_IN_SCENARIOS, scenarioDescription, scenarioName } from "../lib/scenarios";
+import { scenarioDescription, scenarioName } from "../lib/scenarios";
+import { useMeetingScenarios, useScenarioStore } from "../stores/scenarioStore";
 import { useT } from "../i18n";
 import type { AIScenario, MeetingPromptInfo } from "../lib/types";
 
@@ -31,13 +32,15 @@ export function MeetingPrompt({
   const { t } = useT(["misc", "common"]);
   const { meeting } = info;
   const [title, setTitle] = useState(meeting.title ?? "");
-  const [scenario, setScenario] = useState<AIScenario>(info.default_scenario);
+  const [pickedScenario, setScenario] = useState<AIScenario>(info.default_scenario);
+  const scenarios = useMeetingScenarios();
+  const scenario = useScenarioStore((s) => s.resolveScenario(pickedScenario));
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(0);
   const chevronRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const currentScenario = BUILT_IN_SCENARIOS.find((s) => s.id === scenario);
+  const currentScenario = scenarios.find((s) => s.id === scenario);
   const scenarioLabel = currentScenario ? scenarioName(currentScenario) : t("meetingPrompt.typeFallback");
 
   const start = useCallback(() => {
@@ -45,11 +48,11 @@ export function MeetingPrompt({
   }, [meeting.app_name, onStart, scenario, title]);
 
   const openMenu = useCallback(() => {
-    const idx = Math.max(0, BUILT_IN_SCENARIOS.findIndex((s) => s.id === scenario));
+    const idx = Math.max(0, scenarios.findIndex((s) => s.id === scenario));
     setFocusIdx(idx);
     setMenuOpen(true);
     onMenuToggle?.(true);
-  }, [onMenuToggle, scenario]);
+  }, [onMenuToggle, scenario, scenarios]);
 
   const closeMenu = useCallback(() => {
     setMenuOpen(false);
@@ -84,13 +87,13 @@ export function MeetingPrompt({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (menuOpen) {
-        const count = BUILT_IN_SCENARIOS.length;
+        const count = scenarios.length;
         if (e.key === "Escape") closeMenu(); // i18n-ignore: 键名
         else if (e.key === "ArrowDown") setFocusIdx((i) => (i + 1) % count);
         else if (e.key === "ArrowUp") setFocusIdx((i) => (i - 1 + count) % count);
         else if (e.key === "Home") setFocusIdx(0); // i18n-ignore: 键名
         else if (e.key === "End") setFocusIdx(count - 1); // i18n-ignore: 键名
-        else if (e.key === "Enter" || e.key === " ") choose(BUILT_IN_SCENARIOS[focusIdx].id as AIScenario); // i18n-ignore: 键名
+        else if (e.key === "Enter" || e.key === " ") choose(scenarios[focusIdx].id as AIScenario); // i18n-ignore: 键名
         else return;
         e.preventDefault();
         return;
@@ -100,7 +103,7 @@ export function MeetingPrompt({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [choose, closeMenu, focusIdx, menuOpen, onDismiss, start]);
+  }, [choose, closeMenu, focusIdx, menuOpen, onDismiss, scenarios, start]);
 
   return (
     <div
@@ -196,12 +199,12 @@ export function MeetingPrompt({
           <div
             role="listbox"
             aria-label={t("meetingPrompt.typeMenu.label")}
-            className="scope-pop-enter absolute right-0 top-full z-10 mt-1.5 w-64 rounded-2xl border border-white/10 bg-[hsl(228_22%_9%/0.97)] p-1.5 shadow-[0_14px_36px_-10px_rgba(0,0,0,0.7)] backdrop-blur-xl"
+            className="scope-pop-enter absolute right-0 top-full z-10 mt-1.5 max-h-[288px] w-64 overflow-y-auto rounded-2xl border border-white/10 bg-[hsl(228_22%_9%/0.97)] p-1.5 shadow-[0_14px_36px_-10px_rgba(0,0,0,0.7)] backdrop-blur-xl"
           >
             <p className="px-2.5 pb-1 pt-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/45">
               {t("meetingPrompt.typeMenu.heading")}
             </p>
-            {BUILT_IN_SCENARIOS.map((s, idx) => {
+            {scenarios.map((s, idx) => {
               const selected = s.id === scenario;
               return (
                 <button
@@ -254,9 +257,18 @@ export function MeetingPromptWindow() {
       setInfo({ meeting: { app: "zoom", app_name: "Zoom", title: "Weekly design sync" }, auto_dismiss_secs: 60, default_scenario: "team_meeting" }); // i18n-ignore: 仅开发预览用的演示数据
       return;
     }
-    getDetectedMeeting().then((current) => current && setInfo(current)).catch(() => {});
+    // This window stays open between calls, and the scenarios can change meanwhile.
+    const readScenarios = () => useScenarioStore.getState().loadScenarioConfig();
+    getDetectedMeeting()
+      .then(async (current) => {
+        if (!current) return;
+        await readScenarios();
+        setInfo(current);
+      })
+      .catch(() => {});
     const unlisteners: Array<() => void> = [];
-    onMeetingDetected((next) => {
+    onMeetingDetected(async (next) => {
+      await readScenarios();
       setInfo(next);
       setGeneration((g) => g + 1);
     }).then((fn) => unlisteners.push(fn));

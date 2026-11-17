@@ -1,7 +1,8 @@
 import type { ParseKeys } from "i18next";
 import { Radar } from "lucide-react";
 import { useConfigStore } from "../stores/configStore";
-import { BUILT_IN_SCENARIOS, scenarioName } from "../lib/scenarios";
+import { scenarioName } from "../lib/scenarios";
+import { useMeetingScenarios, useScenarioStore } from "../stores/scenarioStore";
 import { isMacPlatform } from "../lib/shortcutLabel";
 import { useT } from "../i18n";
 import type { AIScenario, MeetingDetectionConfig } from "../lib/types";
@@ -38,6 +39,8 @@ export function MeetingDetectionSettings() {
   const config = useConfigStore((s) => s.meetingDetection);
   const setConfig = useConfigStore((s) => s.setMeetingDetection);
   const update = (patch: Partial<MeetingDetectionConfig>) => setConfig({ ...config, ...patch });
+  const scenarios = useMeetingScenarios();
+  const startAs = useScenarioStore((s) => s.resolveScenario(config.default_scenario));
   // Detection reads Windows audio sessions; macOS support comes later.
   const unsupported = isMacPlatform();
 
@@ -113,11 +116,11 @@ export function MeetingDetectionSettings() {
               <label className="block">
                 <span className="text-xs font-medium text-foreground/80">{t("meetingDetection.startAs.label")}</span>
                 <select
-                  value={config.default_scenario}
+                  value={startAs}
                   onChange={(e) => update({ default_scenario: e.target.value as AIScenario })}
                   className="mt-1.5 w-full cursor-pointer rounded-lg border border-border/50 bg-background px-3 py-2 text-xs text-foreground focus:border-primary focus:outline-none"
                 >
-                  {BUILT_IN_SCENARIOS.map((s) => (
+                  {scenarios.map((s) => (
                     <option key={s.id} value={s.id}>
                       {scenarioName(s)}
                     </option>

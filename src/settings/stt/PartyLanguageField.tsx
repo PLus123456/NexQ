@@ -6,7 +6,7 @@ import { AlertTriangle, Info } from "lucide-react";
 import { useT } from "../../i18n";
 import { LanguageCombobox } from "../../components/LanguageCombobox";
 import { AUTO_LANGUAGE, baseLanguage } from "../../lib/languages";
-import { sttProviderMeta } from "../../lib/stt/providerMeta";
+import { cartesiaSupportsLanguage, sttProviderMeta } from "../../lib/stt/providerMeta";
 import type { PartyAudioConfig } from "../../lib/types";
 import { useConfigStore } from "../../stores/configStore";
 import { partyLanguage, sttEngineLabel } from "./sttEngines";
@@ -59,8 +59,15 @@ export function PartyLanguageField({ party, onChange, id, "aria-label": ariaLabe
   if (isAuto && meta?.id === "whisper_cpp") {
     hints.push({ tone: "info", text: t("stt:language.hints.whisperCppAuto") });
   }
-  if (isAuto && meta?.id === "deepgram" && !/^nova-[23]\b/.test(deepgramModel)) {
+  // Flux Multilingual detects the language too.
+  if (isAuto && meta?.id === "deepgram" && !/^nova-[23]\b/.test(deepgramModel) && deepgramModel !== "flux-general-multi") {
     hints.push({ tone: "warning", text: t("stt:language.hints.deepgramAuto", { model: deepgramModel }) });
+  }
+  if (meta?.id === "cartesia") {
+    // ink-2 has no language setting; the choice only matters for this check.
+    hints.push(isAuto || cartesiaSupportsLanguage(value)
+      ? { tone: "info", text: "Cartesia detects English, French, Hindi, Japanese and Spanish on its own." }
+      : { tone: "warning", text: "Cartesia transcribes only English, French, Hindi, Japanese and Spanish. Choose another provider for this language." });
   }
   if (isVietnamese && meta?.id === "parakeet_tdt") {
     hints.push({ tone: "warning", text: t("stt:language.hints.parakeetVietnameseUnsupported") });

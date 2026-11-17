@@ -55,6 +55,7 @@ When the meeting starts, the overlay window (500x700, always-on-top, transparent
 - Place it **near your webcam** but slightly to the side, so glancing at it looks natural
 - Resize it to a comfortable reading size -- you should be able to read suggestions without squinting
 - The overlay is transparent -- **only you can see it**. It will not appear in screen shares
+- Turn on **Hide from screen share** (`Ctrl+Shift+H`, `⌘⇧H` on macOS) before the call. Besides keeping NexQ out of the share, the overlay's cursor stays a plain arrow, and NexQ leaves the taskbar (Windows) or the Dock and Cmd+Tab (macOS). On macOS 14 and later, run a test share first: some recorders can still capture NexQ. Turn it off afterwards from the dashboard header
 - Use `Ctrl+B` to toggle between the launcher and overlay windows
 
 ## During the Interview
@@ -69,6 +70,12 @@ When the meeting starts, the overlay window (500x700, always-on-top, transparent
    - `3` -- Follow-Up (generates follow-up questions)
    - `4` -- Recap (summarizes the conversation so far)
    - `5` -- Ask Question (free-form query)
+
+Question detection recognizes `?` and `？`, common Chinese question words (such as 什么 / 什麼, 怎么 / 怎麼 and 哪), Chinese sentence endings 吗 / 嗎 and 呢, and Japanese question endings such as ですか, ますか and でしょうか. Suggestions ending in 吧 ("let's…"), phrases such as 没什么 or 无论如何, and a bare tag such as "Right?" or "You know?" are not treated as questions. These are heuristic signals: an ambiguous phrase can still be marked as a question.
+
+Detected questions appear as cards in the overlay. Click the card you need to get an answer. To have the newest question answered automatically, turn on **Auto-Answer** in Settings > AI Actions.
+
+For the fastest automatic answers, transcribe the interviewer with Cartesia or Deepgram Flux. Both tell NexQ when the interviewer has finished, so the answer starts right away instead of after 1.5 seconds of quiet. If the interviewer keeps going after a pause, NexQ drops the answer it started and answers the complete question. Press `Space`, or click a question or an action, at any time to get your own answer instead.
 
 **Important**: Do not stare at the overlay. Glance at it naturally, the way you would glance at notes. Maintain eye contact with your camera.
 

@@ -20,12 +20,24 @@ export function actionLabel(mode: string): string {
   return (cfg ? actionDisplayName(cfg) : "") || getModeLabel(mode as IntelligenceMode) || mode;
 }
 
-export async function runUserAction(mode: string, customQuestion?: string, preparedOnly = false): Promise<void> {
+/**
+ * Resolves once the answer has finished (or was stopped); rejects when it
+ * couldn't start, e.g. "Generation already in progress". `requestId` lets the
+ * caller name the request, to stop exactly this one later. `preparedOnly`
+ * only replays a prepared answer (no provider call); `true` is shorthand for
+ * `{ preparedOnly: true }`.
+ */
+export async function runUserAction(
+  mode: string,
+  customQuestion?: string,
+  opts: { requestId?: string; preparedOnly?: boolean } | boolean = {},
+): Promise<void> {
+  const { requestId: givenRequestId, preparedOnly = false } = typeof opts === "boolean" ? { preparedOnly: opts } : opts;
   const config = useConfigStore.getState();
   const setting = config.contextScope ?? DEFAULT_CONTEXT_SCOPE;
   const stream = useStreamStore.getState();
   const scope = resolveScope(setting, mode, actionLabel(mode), stream.lastUserRequest, Date.now());
-  const requestId = crypto.randomUUID();
+  const requestId = givenRequestId ?? crypto.randomUUID();
   // Another action is already on its way: the backend will refuse this one.
   const busy = stream.isStreaming || stream.phase === "sending";
 

@@ -1107,6 +1107,7 @@ impl Session {
             segment_id: Some(sentence_id(connection, s.seq)),
             duration_ms,
             speaker_tag: if self.diarize { s.speaker.map(|n| format!("S{}", n)) } else { None },
+            turn: None,
         }
     }
 

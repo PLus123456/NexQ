@@ -118,6 +118,14 @@ export const STT_PROVIDERS: readonly SttProviderMeta[] = [
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {
+    // ink-2 has no language setting: it detects CARTESIA_LANGUAGES on its own,
+    // and reports when a speaker finished (Auto-Answer replies at once).
+    id: "cartesia", label: "Cartesia", pickerLabel: "Cartesia", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
+    platforms: ALL_PLATFORMS,
+    requiresApiKey: true, isCloud: true, isLocal: false,
+    supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
+  },
+  {
     // NexQ Plus: faster-whisper-server / speaches, vLLM, LocalAI… on any machine.
     id: "openai_compat", label: "Remote Whisper", pickerLabel: "Remote Whisper", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
@@ -174,12 +182,22 @@ export const EXCLUSIVE_PROVIDERS: readonly STTProviderType[] = ["web_speech", "w
  * server address is set.
  */
 export const EXCLUSIVE_FALLBACK_ORDER: readonly STTProviderType[] = [
-  "deepgram", "soniox", "groq_whisper", "whisper_api", "azure_speech",
+  "deepgram", "soniox", "groq_whisper", "whisper_api", "azure_speech", "cartesia",
   "sherpa_onnx", "ort_streaming", "parakeet_tdt", "whisper_cpp",
 ];
 
 export function isExclusiveProvider(provider: string): boolean {
   return EXCLUSIVE_PROVIDERS.includes(provider as STTProviderType);
+}
+
+// ── Languages ──
+
+/** Languages Cartesia ink-2 detects on its own (it has no language setting). */
+export const CARTESIA_LANGUAGES: readonly string[] = ["en", "fr", "hi", "ja", "es"];
+
+/** Whether Cartesia ink-2 transcribes `language`, a code such as "fr" or "fr-FR" (not "auto"). */
+export function cartesiaSupportsLanguage(language: string): boolean {
+  return CARTESIA_LANGUAGES.includes(language.split("-")[0].toLowerCase());
 }
 
 // ── Local model ids ──

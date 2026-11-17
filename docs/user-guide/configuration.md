@@ -11,7 +11,7 @@ The General settings panel controls app-wide behavior and preferences. Here you 
 - **App behavior** -- startup options, system tray behavior, and window preferences
 - **Theme and appearance** -- light/dark mode and visual customization
 - **Language** -- interface language selection
-- **Update preferences** -- NexQ downloads updates quietly in the background and shows an "Update ready" button in the footer; click Restart when convenient, or it installs when you quit (never during a meeting). Turn this off under Settings > About > Automatic updates
+- **Update preferences** -- NexQ downloads updates quietly in the background and shows an "Update ready" button in the footer. Click it to see what's new and install when convenient, or it installs when you quit (never during a meeting). You always get the newest version, even if several came out since your last update. Turn this off under Settings > About > Automatic updates
 - **Data management** -- storage location and cleanup options
 
 ## Speech-to-Text (STT) Providers
@@ -34,8 +34,9 @@ NexQ uses a two-party audio model: **"You"** (microphone) and **"Them"** (system
 - **Requires API Key**: Yes
 - **Runs Locally**: No (cloud)
 - **Best For**: High-accuracy real-time transcription
-- **Models**: nova-3 (recommended), nova-2, nova, enhanced, base
-- **Configuration Options**:
+- **Models**: nova-3 (recommended), nova-2, nova, enhanced, base; Flux and Flux Multilingual for Auto-Answer
+- **Flux**: tells NexQ when a speaker has finished, so Auto-Answer replies at once. It doesn't tell speakers apart. Quiet time counts toward Deepgram usage; muted time doesn't, since muting closes the stream
+- **Configuration Options** (Flux uses only numerals, the profanity filter and key terms):
   - Smart formatting, punctuation, numerals
   - Endpointing threshold (silence detection)
   - Diarization, profanity filter
@@ -53,6 +54,16 @@ NexQ uses a two-party audio model: **"You"** (microphone) and **"Them"** (system
   - Temperature (0.0--1.0)
   - Batch segment duration
   - Response format, timestamp granularity
+
+### Cartesia
+
+- **Setup**: Create an account at [cartesia.ai](https://cartesia.ai) and create an API key at [play.cartesia.ai/keys](https://play.cartesia.ai/keys)
+- **Requires API Key**: Yes
+- **Runs Locally**: No (cloud)
+- **Best For**: Real-time transcription where each line ends when the speaker finishes a thought
+- **Model**: ink-2. Cartesia decides where each turn ends and detects the language on its own, so there is nothing to configure
+- **Languages**: English, French, Hindi, Japanese, Spanish. Settings warns when the selected language isn't one of them
+- **Cost**: Billed per second of audio while a channel is unmuted, silence included (about 3 credits per second for each channel that uses Cartesia). Muted time isn't billed: muting closes the stream
 
 ### Whisper (Local)
 
@@ -191,7 +202,8 @@ NexQ supports loading documents (PDF, TXT, MD, DOCX) as context for AI responses
 The AI Actions panel configures how NexQ's AI assistance behaves during meetings. Key options include:
 
 - **Action types** -- enable or disable specific AI modes (Assist, What to Say, Shorten, Follow-Up, Recap, Ask Question)
-- **Auto-trigger settings** -- configure whether AI suggestions appear automatically based on conversation flow, or only when manually triggered
+- **Question Detection** -- show questions from the other party as cards in the overlay; click a card to get an answer to that question
+- **Auto-Answer** -- off by default. Turn it on to answer the newest detected question automatically, instead of clicking the card you need. With Cartesia or Deepgram Flux, the answer starts as soon as the speaker finishes, or earlier when they have probably finished; if they keep talking, that early answer is dropped and the full question is answered. Other engines wait for 1.5 seconds of quiet, since they can end a line mid-sentence. Asking for something yourself during an automatic answer (`Space`, a number key, a button or a question card) stops it and runs what you asked for; an automatic answer never interrupts yours
 - **Response style** -- adjust the tone, length, and format of AI responses
 - **Context window** -- control how much conversation history is sent to the LLM with each request
 

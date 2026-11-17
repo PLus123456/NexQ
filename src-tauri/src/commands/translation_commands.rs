@@ -366,11 +366,11 @@ pub async fn translate_batch(
             let db_arc = state.database.as_ref().ok_or("DB not initialized")?;
             let db = db_arc.lock().map_err(|_| "DB lock poisoned")?;
 
-            let total: usize = db.connection().query_row(
+            let total = db.connection().query_row(
                 &format!("SELECT COUNT(*) FROM transcript_segments ts WHERE ts.meeting_id = ?1 AND ts.is_final = 1{filter}"),
                 [&meeting_id],
-                |row| row.get(0),
-            ).map_err(|e| e.to_string())?;
+                |row| row.get::<_, i64>(0),
+            ).map_err(|e| e.to_string())? as usize;
 
             // A translation counts only for the text the line has now: one
             // made while the line was still growing is done again.

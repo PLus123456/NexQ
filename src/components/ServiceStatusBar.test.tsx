@@ -231,14 +231,14 @@ describe("ServiceStatusBar text", () => {
     const { unmount } = render(<ServiceStatusBar />);
     expect(screen.getByTitle("Restart NexQ Plus to install v2.30.0")).toBeInTheDocument();
     expect(screen.getByText("Update ready · v2.30.0")).toBeInTheDocument();
-    expect(screen.getByText("Restart")).toBeInTheDocument();
+    expect(screen.getByText("What's new")).toBeInTheDocument();
     unmount();
 
     await changeUiLanguage("zh-CN");
     render(<ServiceStatusBar />);
     expect(screen.getByTitle("重启 NexQ Plus 以安装 v2.30.0")).toBeInTheDocument();
     expect(screen.getByText("更新已就绪 · v2.30.0")).toBeInTheDocument();
-    expect(screen.getByText("重启")).toBeInTheDocument();
+    expect(screen.getByText("更新内容")).toBeInTheDocument();
   });
 });
 
