@@ -65,10 +65,18 @@ NexQ Plus 是 NexQ（Tauri 2 + React + Rust 的会议/面试助手）的自用�
 不能启动真正的 App，用仓库里的预览页：
 
 ```bash
-npm run harness
+npm run harness -- --port 5211
 ```
 
-然后在浏览器打开它打印出来的地址。预览页用假数据渲染答案窗，地址参数可以换场景和窗口大小，用法见 `harness/README.md`。验收用的场景是 `?scene=streaming&w=420&h=560`。
+然后在浏览器打开 <http://localhost:5211/>。预览页用假数据渲染答案窗，地址参数可以换场景和窗口大小，用法见 `harness/README.md`。验收用的场景是 `?scene=streaming&w=420&h=560`。
+
+这台机器上还有别人在用默认的 5199 端口，所以你固定用 5211。截图脚本要告诉它地址：
+
+```bash
+HARNESS_URL=http://localhost:5211 node harness/shot.mjs "scene=streaming&w=420&h=560" /tmp/streaming.png
+```
+
+做完后把预览页停掉。
 
 ## 验收
 
