@@ -376,11 +376,17 @@ pub struct EffectiveParams {
     pub json_mode: bool,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+    /// The thinking parameter of this request as body fields, built by
+    /// `llm::thinking` for the connection's API (`http::thinking_fields`).
+    /// `None` sends nothing: the setting is Auto, the model has no such
+    /// parameter, the server refused it, or `extra_body` sets thinking by hand.
+    pub thinking: Option<Value>,
     pub extra_body: Option<Value>,
 }
 
 /// Merges parameter layers, lowest priority first: a later `Some` wins;
-/// `extra_body` patches are applied in order.
+/// `extra_body` patches are applied in order. (The thinking setting is
+/// resolved by `thinking::resolve`, not here.)
 pub fn merge_params<'a>(layers: impl IntoIterator<Item = &'a RouteParams>) -> EffectiveParams {
     let mut out = EffectiveParams::default();
     for layer in layers {
@@ -430,6 +436,36 @@ pub fn apply_extra_body(body: &mut Value, extra: Option<&Value>) {
     merge_patch(body, &Value::Object(allowed));
 }
 
+/// What closes every request body: the thinking parameter (`params.thinking`),
+/// then `extra_body`, whose keys have the last word.
+pub fn finish_body(body: &mut Value, params: &EffectiveParams) {
+    if let Some(fields) = &params.thinking {
+        merge_patch(body, fields);
+    }
+    apply_extra_body(body, params.extra_body.as_ref());
+}
+
+/// Top-level body keys with which the APIs a connection can speak set a
+/// model's thinking: OpenAI and its compatibles (`reasoning_effort`,
+/// `reasoning`, and the `thinking` / `enable_thinking` / `thinking_budget`
+/// switches of DeepSeek, Volcengine, GLM, Qwen…), Anthropic (`thinking`) and
+/// Ollama (`think`).
+const THINKING_BODY_KEYS: &[&str] =
+    &["thinking", "think", "reasoning", "reasoning_effort", "enable_thinking", "thinking_budget"];
+
+/// Whether `extra_body` sets the model's thinking by hand: one of
+/// [`THINKING_BODY_KEYS`], vLLM's `chat_template_kwargs.enable_thinking`, or
+/// Gemini's `generationConfig.thinkingConfig`. NexQ then adds no thinking
+/// parameter of its own, so the two can never contradict each other.
+pub fn sets_thinking(extra_body: Option<&Value>) -> bool {
+    let Some(Value::Object(extra)) = extra_body else { return false };
+    THINKING_BODY_KEYS.iter().any(|key| extra.contains_key(*key))
+        || extra.get("chat_template_kwargs").is_some_and(|k| k.get("enable_thinking").is_some())
+        || ["generationConfig", "generation_config"].iter().any(|config| {
+            extra.get(*config).is_some_and(|c| c.get("thinkingConfig").or_else(|| c.get("thinking_config")).is_some())
+        })
+}
+
 /// The temperature to send after the compat switch (`None` = omit).
 pub fn temperature_to_send(compat: &CompatFlags, requested: Option<f64>) -> Option<f64> {
     match compat.temperature {
@@ -459,7 +495,7 @@ pub fn openai_chat_body(model: &str, messages: &[LLMMessage], params: &Effective
     if compat.stream_usage {
         body["stream_options"] = json!({"include_usage": true});
     }
-    apply_extra_body(&mut body, params.extra_body.as_ref());
+    finish_body(&mut body, params);
     body
 }
 
@@ -489,7 +525,7 @@ pub fn ollama_chat_body(model: &str, messages: &[LLMMessage], params: &Effective
     if !options.is_empty() {
         body["options"] = Value::Object(options);
     }
-    apply_extra_body(&mut body, params.extra_body.as_ref());
+    finish_body(&mut body, params);
     body
 }
 
@@ -667,7 +703,7 @@ mod tests {
 
     #[test]
     fn params_merge_from_low_to_high() {
-        let conn = RouteParams { temperature: Some(0.9), max_tokens: Some(100), extra_body: Some(json!({"a": 1, "nested": {"x": 1}}).as_object().unwrap().clone()) };
+        let conn = RouteParams { temperature: Some(0.9), max_tokens: Some(100), extra_body: Some(json!({"a": 1, "nested": {"x": 1}}).as_object().unwrap().clone()), ..Default::default() };
         let caller = RouteParams { temperature: Some(0.3), ..Default::default() };
         let route = RouteParams { max_tokens: Some(50), extra_body: Some(json!({"nested": {"y": 2}, "a": null}).as_object().unwrap().clone()), ..Default::default() };
         let merged = merge_params([&conn, &caller, &route]);
@@ -722,6 +758,59 @@ mod tests {
         let body = ollama_chat_body("llama3", &messages, &EffectiveParams::default(), &CompatFlags { keep_alive: Some("1h".into()), ..Default::default() });
         assert_eq!(body["keep_alive"], "1h");
         assert!(body.get("options").is_none());
+    }
+
+    #[test]
+    fn thinking_fields_go_in_before_extra_body() {
+        let messages = vec![LLMMessage { role: "user".into(), content: "hi".into() }];
+        // The thinking parameter is merged into the body; extra_body keeps the last word.
+        let params = EffectiveParams {
+            thinking: Some(json!({"reasoning_effort": "none"})),
+            extra_body: Some(json!({"top_p": 0.5, "reasoning_effort": "high", "model": "evil"})),
+            ..Default::default()
+        };
+        let body = openai_chat_body("m", &messages, &params, &CompatFlags::default());
+        assert_eq!((body["model"].as_str(), body["top_p"].as_f64()), (Some("m"), Some(0.5)));
+        assert_eq!(body["reasoning_effort"], "high");
+        let params = EffectiveParams { thinking: Some(json!({"think": false})), max_tokens: Some(8), ..Default::default() };
+        let body = ollama_chat_body("m", &messages, &params, &CompatFlags::default());
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"], json!({"num_predict": 8}));
+        // Nested fields join what is already there.
+        let mut body = json!({"generationConfig": {"maxOutputTokens": 10}});
+        let params = EffectiveParams {
+            thinking: Some(json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}})),
+            ..Default::default()
+        };
+        finish_body(&mut body, &params);
+        assert_eq!(body, json!({"generationConfig": {"maxOutputTokens": 10, "thinkingConfig": {"thinkingBudget": 0}}}));
+    }
+
+    #[test]
+    fn extra_body_sets_thinking_only_with_a_thinking_key() {
+        for extra in [
+            json!({"thinking": {"type": "disabled"}}),
+            json!({"think": false}),
+            json!({"reasoning_effort": "low"}),
+            json!({"reasoning": {"effort": "high"}}),
+            json!({"enable_thinking": false}),
+            json!({"thinking_budget": 1024}),
+            json!({"chat_template_kwargs": {"enable_thinking": false}}),
+            json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}),
+        ] {
+            assert!(sets_thinking(Some(&extra)), "{extra}");
+        }
+        for extra in [
+            json!({}),
+            json!({"top_p": 0.9, "options": {"num_ctx": 8192}}),
+            json!({"chat_template_kwargs": {"add_generation_prompt": true}}),
+            json!({"generationConfig": {"topK": 40}}),
+            json!({"output_config": {"format": {"type": "json_schema"}}}),
+            json!("thinking"),
+        ] {
+            assert!(!sets_thinking(Some(&extra)), "{extra}");
+        }
+        assert!(!sets_thinking(None));
     }
 
     #[test]

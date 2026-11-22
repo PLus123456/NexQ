@@ -1,156 +1,259 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => undefined));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-import type { MeetingAudioConfig, PartyAudioConfig } from "../lib/types";
-import { captureKey, useAudioConfigSync } from "./useAudioConfigSync";
-
+import { emit } from "@tauri-apps/api/event";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { setPartyLanguage, startCapturePerParty, stopCapture } from "../lib/ipc";
+import type { MeetingAudioConfig } from "../lib/types";
 import { useConfigStore } from "../stores/configStore";
-import { useTranslationStore } from "../stores/translationStore";
 import { useMeetingStore } from "../stores/meetingStore";
-import { DEFAULT_SONIOX_CONFIG } from "../lib/stt/types";
+import { autoDetectProblem } from "../lib/sttLanguages";
+import { useAudioConfigSync } from "./useAudioConfigSync";
 
-const config = (them: Partial<PartyAudioConfig>): MeetingAudioConfig => ({
-  you: { role: "You", device_id: "default", is_input_device: true, stt_provider: "whisper_cpp", language: "zh-CN" },
-  them: { role: "Them", device_id: "default", is_input_device: false, stt_provider: "soniox", language: "auto", ...them },
-  recording_enabled: false,
+vi.mock("../lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/ipc")>()),
+  startCapturePerParty: vi.fn(),
+  setPartyLanguage: vi.fn(),
+  stopCapture: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/event")>()),
+  emit: vi.fn(async () => {}),
+}));
+
+// What Rust sends back for a refused swap, built the way the settings screens word it.
+const REFUSAL = autoDetectProblem({ provider: "azure_speech" }, {}, "You")!;
+
+const config: MeetingAudioConfig = {
+  you: { role: "You", device_id: "default", is_input_device: true, stt_provider: "deepgram" },
+  them: { role: "Them", device_id: "default", is_input_device: false, stt_provider: "deepgram" },
+  recording_enabled: true,
   preset_name: null,
+};
+const changed: MeetingAudioConfig = {
+  ...config,
+  you: { ...config.you, stt_provider: "azure_speech" },
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(setPartyLanguage).mockResolvedValue(true);
+  vi.useFakeTimers();
+  useMeetingStore.setState({ isRecording: true, audioMode: "online" });
+  useConfigStore.setState({ meetingAudioConfig: config });
 });
 
-describe("captureKey", () => {
-  it("changes with the translation target while Soniox follows it", () => {
-    const cfg = config({ native_translation: { mode: "one_way" } });
-    expect(captureKey(cfg, "zh-CN")).not.toBe(captureKey(cfg, "ja"));
-  });
-
-  it("ignores the translation target otherwise", () => {
-    const own = config({ native_translation: { mode: "one_way", target_language: "en" } });
-    expect(captureKey(own, "zh-CN")).toBe(captureKey(own, "ja"));
-    const off = config({ native_translation: { mode: "off" } });
-    expect(captureKey(off, "zh-CN")).toBe(captureKey(off, "ja"));
-    const deepgram = config({ stt_provider: "deepgram", native_translation: { mode: "one_way" } });
-    expect(captureKey(deepgram, "zh-CN")).toBe(captureKey(deepgram, "ja"));
-    // The plain config key, as before.
-    expect(captureKey(off, "zh-CN")).toBe(JSON.stringify(off));
-  });
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  useMeetingStore.setState({ isRecording: false });
+  useConfigStore.setState({ meetingAudioConfig: null });
 });
 
+async function change(next: MeetingAudioConfig) {
+  act(() => useConfigStore.setState({ meetingAudioConfig: next }));
+  await act(() => vi.advanceTimersByTimeAsync(300));
+}
 
-describe("active capture settings", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    invoke.mockReset().mockResolvedValue(undefined);
-    useMeetingStore.setState({ isRecording: true, isEndingMeeting: false, activeMeeting: { id: "m1" } as never });
-    useConfigStore.setState({ meetingAudioConfig: config({ native_translation: { mode: "one_way" } }), sonioxConfig: { ...DEFAULT_SONIOX_CONFIG } });
-    useTranslationStore.setState({ targetLang: "zh-CN", sourceLang: "auto" });
-  });
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-  });
-  const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
-  const calls = (name: string) => invoke.mock.calls.filter(([cmd]) => cmd === name);
-  const changeModel = (model: string) => act(() => {
-    useConfigStore.setState({ sonioxConfig: { ...DEFAULT_SONIOX_CONFIG, model } });
-  });
-  const deferred = () => {
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => { resolve = done; });
-    return { promise, resolve };
+it("tells the user about a refused switch and keeps the running capture's config", async () => {
+  vi.mocked(startCapturePerParty).mockRejectedValueOnce(REFUSAL);
+  renderHook(() => useAudioConfigSync());
+
+  await change(changed);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenCalledWith(changed.you, changed.them, { skipYouStt: false });
+  expect(stopCapture).not.toHaveBeenCalled();
+  expect(emit).toHaveBeenCalledWith(
+    "capture_warning",
+    "Auto-detect doesn't work with Azure Speech, used for You. Your meeting keeps its current setup.",
+  );
+
+  // Back to what is still running: nothing to restart.
+  await change(config);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+});
+
+it("can switch again after a refusal", async () => {
+  vi.mocked(startCapturePerParty).mockRejectedValueOnce(REFUSAL).mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
+
+  await change(changed);
+  const other: MeetingAudioConfig = { ...config, you: { ...config.you, stt_provider: "groq_whisper" } };
+  await change(other);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(other.you, other.them, { skipYouStt: false });
+});
+
+it("applies a change made while a swap is running once that swap ends", async () => {
+  let finishFirst!: () => void;
+  vi.mocked(startCapturePerParty)
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+    .mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
+
+  await change(changed);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+
+  const later: MeetingAudioConfig = { ...config, you: { ...config.you, stt_provider: "groq_whisper" } };
+  await change(later);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1); // first swap still running
+
+  await act(async () => finishFirst());
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(later.you, later.them, { skipYouStt: false });
+});
+
+it("restarts the whole capture when Rust can't restart a side's language on its own", async () => {
+  vi.mocked(startCapturePerParty).mockResolvedValue(undefined);
+  vi.mocked(setPartyLanguage).mockResolvedValue(false);
+  renderHook(() => useAudioConfigSync());
+
+  // The older config (no language) is what the meeting started with: no swap.
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(startCapturePerParty).not.toHaveBeenCalled();
+
+  const spanishThem: MeetingAudioConfig = { ...config, them: { ...config.them, language: "es-ES" } };
+  await change(spanishThem);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(
+    config.you,
+    { ...config.them, language: "es-ES" },
+    { skipYouStt: false },
+  );
+  expect(vi.mocked(startCapturePerParty).mock.calls[0][0]).not.toHaveProperty("language");
+
+  // Another language on the same side swaps again; the same config doesn't.
+  await change({ ...spanishThem, them: { ...spanishThem.them, language: "auto" } });
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+  await change({ ...spanishThem, them: { ...spanishThem.them, language: "auto" } });
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+});
+
+it("retries a failure that may have stopped the capture, and says so", async () => {
+  vi.mocked(startCapturePerParty).mockRejectedValueOnce("Audio device busy").mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
+
+  await change(changed);
+  expect(emit).toHaveBeenCalledWith("capture_warning", "Couldn't switch speech-to-text: Audio device busy");
+
+  await change(config);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(config.you, config.them, { skipYouStt: false });
+});
+
+const spanishThem: MeetingAudioConfig = { ...config, them: { ...config.them, language: "es-ES" } };
+
+it("restarts only one side's speech-to-text for a language-only change", async () => {
+  renderHook(() => useAudioConfigSync());
+
+  await change(spanishThem);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(1);
+  expect(setPartyLanguage).toHaveBeenCalledWith("them", spanishThem.them, { skipYouStt: false });
+  expect(startCapturePerParty).not.toHaveBeenCalled();
+
+  // The other side next: that is one side again, from the config now running.
+  const spanishBoth: MeetingAudioConfig = { ...spanishThem, you: { ...spanishThem.you, language: "fr-FR" } };
+  await change(spanishBoth);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(2);
+  expect(setPartyLanguage).toHaveBeenLastCalledWith("you", spanishBoth.you, { skipYouStt: false });
+  expect(startCapturePerParty).not.toHaveBeenCalled();
+
+  // What runs now is the new config: going back to it later is no change.
+  await change(spanishBoth);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(2);
+});
+
+it("tells Rust the room is an in-person meeting's other side", async () => {
+  useMeetingStore.setState({ audioMode: "in_person" });
+  renderHook(() => useAudioConfigSync());
+
+  await change(spanishThem);
+  expect(setPartyLanguage).toHaveBeenCalledWith("them", spanishThem.them, { skipYouStt: true });
+});
+
+it("restarts the whole capture when a side's provider changes along with a language", async () => {
+  vi.mocked(startCapturePerParty).mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
+
+  const both: MeetingAudioConfig = {
+    ...config,
+    them: { ...config.them, language: "es-ES", stt_provider: "groq_whisper" },
   };
+  await change(both);
+  expect(setPartyLanguage).not.toHaveBeenCalled();
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+});
 
-  it("applies Soniox config and the inherited target before starting its new session", async () => {
-    renderHook(useAudioConfigSync);
-    changeModel("stt-rt-new");
-    act(() => useTranslationStore.setState({ targetLang: "ja" }));
-    await advance(500);
-    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual([
-      "stop_capture", "update_soniox_config", "set_translation_languages", "start_capture_per_party",
-    ]);
-    expect(JSON.parse(String(calls("update_soniox_config")[0][1]?.configJson)).model).toBe("stt-rt-new");
-    expect(calls("set_translation_languages")[0][1]).toMatchObject({ targetLang: "ja" });
-  });
+it("restarts the whole capture when both sides' languages change at once", async () => {
+  vi.mocked(startCapturePerParty).mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
 
-  it("does not postpone the debounce when unrelated translation results arrive", async () => {
-    renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    for (let i = 0; i < 5; i++) {
-      await advance(100);
-      act(() => useTranslationStore.setState({ batchProgress: { completed: i, total: 5 } }));
-    }
-    expect(calls("start_capture_per_party")).toHaveLength(1);
+  await change({
+    ...config,
+    you: { ...config.you, language: "fr-FR" },
+    them: { ...config.them, language: "es-ES" },
   });
+  expect(setPartyLanguage).not.toHaveBeenCalled();
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+});
 
-  it("does not restart for Soniox edits when neither party uses Soniox", async () => {
-    useConfigStore.setState({ meetingAudioConfig: config({ stt_provider: "deepgram" }) });
-    renderHook(useAudioConfigSync);
-    changeModel("unused-model");
-    await advance(1000);
-    expect(invoke).not.toHaveBeenCalled();
-  });
+it("restarts the whole capture when the replacement provider can't start", async () => {
+  vi.mocked(startCapturePerParty).mockResolvedValue(undefined);
+  vi.mocked(setPartyLanguage).mockRejectedValueOnce("Failed to start STT: no connection");
+  renderHook(() => useAudioConfigSync());
 
-  it("consumes another edit made while the previous start is in flight", async () => {
-    const starting = deferred();
-    let starts = 0;
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "start_capture_per_party" && ++starts === 1) await starting.promise;
-    });
-    renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    await advance(500);
-    changeModel("model-two");
-    await advance(500);
-    expect(calls("start_capture_per_party")).toHaveLength(1);
-    await act(async () => starting.resolve());
-    await advance(200);
-    expect(calls("start_capture_per_party")).toHaveLength(2);
-    expect(calls("update_soniox_config").map(([, args]) => JSON.parse(String(args?.configJson)).model)).toEqual(["model-one", "model-two"]);
-  });
+  await change(spanishThem);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(spanishThem.you, spanishThem.them, { skipYouStt: false });
+  expect(emit).not.toHaveBeenCalled();
+  // The full restart brought the new language up: it is what runs now.
+  await change(spanishThem);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+});
 
-  it("does not restart after meeting end begins during stop", async () => {
-    const stopping = deferred();
-    invoke.mockImplementation(async (cmd) => { if (cmd === "stop_capture") await stopping.promise; });
-    renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    await advance(300);
-    act(() => useMeetingStore.setState({ isEndingMeeting: true }));
-    await act(async () => stopping.resolve());
-    await advance(1000);
-    expect(calls("start_capture_per_party")).toHaveLength(0);
-  });
+it("falls back to the whole capture when the one-side restart fails, or does nothing", async () => {
+  vi.mocked(startCapturePerParty).mockResolvedValue(undefined);
+  vi.mocked(setPartyLanguage).mockRejectedValueOnce("Audio state lock poisoned").mockResolvedValueOnce(false);
+  renderHook(() => useAudioConfigSync());
 
-  it("stops a start that completes after the meeting has begun ending", async () => {
-    const starting = deferred();
-    invoke.mockImplementation(async (cmd) => { if (cmd === "start_capture_per_party") await starting.promise; });
-    renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    await advance(500);
-    act(() => useMeetingStore.setState({ isEndingMeeting: true }));
-    await act(async () => starting.resolve());
-    expect(calls("stop_capture").map(([, args]) => args?.keepRecording)).toEqual([true, false]);
-  });
+  await change(spanishThem);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).toHaveBeenLastCalledWith(spanishThem.you, spanishThem.them, { skipYouStt: false });
+  expect(emit).not.toHaveBeenCalled();
 
-  it("scopes stale completion cleanup to the original meeting", async () => {
-    const starting = deferred();
-    invoke.mockImplementation(async (cmd) => { if (cmd === "start_capture_per_party") await starting.promise; });
-    renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    await advance(500);
-    act(() => useMeetingStore.setState({ activeMeeting: { id: "m2" } as never }));
-    await act(async () => starting.resolve());
-    expect(calls("start_capture_per_party")[0][1]?.expectedMeetingId).toBe("m1");
-    expect(calls("stop_capture")[calls("stop_capture").length - 1]?.[1]).toEqual({ keepRecording: false, expectedMeetingId: "m1" });
-  });
+  // Rust answered false (nothing it could restart): the whole capture again.
+  await change({ ...spanishThem, you: { ...spanishThem.you, language: "fr-FR" } });
+  expect(setPartyLanguage).toHaveBeenCalledTimes(2);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
+});
 
-  it("cancels a debounced restart on unmount or when the edit is reverted", async () => {
-    const { unmount } = renderHook(useAudioConfigSync);
-    changeModel("model-one");
-    changeModel(DEFAULT_SONIOX_CONFIG.model);
-    await advance(1000);
-    expect(invoke).not.toHaveBeenCalled();
-    changeModel("model-two");
-    unmount();
-    await advance(1000);
-    expect(invoke).not.toHaveBeenCalled();
-  });
+it("keeps the running config when Rust refuses Auto-detect for the side", async () => {
+  vi.mocked(setPartyLanguage).mockRejectedValueOnce(REFUSAL);
+  renderHook(() => useAudioConfigSync());
+
+  await change({ ...config, you: { ...config.you, language: "auto" } });
+  expect(setPartyLanguage).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).not.toHaveBeenCalled(); // a full swap would only be refused again
+  expect(emit).toHaveBeenCalledWith(
+    "capture_warning",
+    "Auto-detect doesn't work with Azure Speech, used for You. Your meeting keeps its current setup.",
+  );
+
+  // Back to what is still running: nothing to restart.
+  await change(config);
+  expect(setPartyLanguage).toHaveBeenCalledTimes(1);
+  expect(startCapturePerParty).not.toHaveBeenCalled();
+});
+
+it("restarts the whole capture after a failed swap, since what runs is unknown", async () => {
+  vi.mocked(startCapturePerParty).mockRejectedValueOnce("Audio device busy").mockResolvedValue(undefined);
+  renderHook(() => useAudioConfigSync());
+
+  await change(changed);
+  expect(startCapturePerParty).toHaveBeenCalledTimes(1);
+
+  await change(spanishThem);
+  expect(setPartyLanguage).not.toHaveBeenCalled();
+  expect(startCapturePerParty).toHaveBeenCalledTimes(2);
 });

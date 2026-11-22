@@ -88,9 +88,39 @@ describe("runUserAction", () => {
     useStreamStore.setState({ phase: "idle", pendingRequestId: null });
   });
 
+  it("a request that fails after its stream started ends that stream with the error", async () => {
+    generateAssist.mockImplementationOnce(async (...args: unknown[]) => {
+      const { requestId } = args[2] as { requestId: string };
+      useStreamStore.getState().startStream("AskQuestion", "m", "p", { requestId });
+      throw "Images work only with Claude (subscription).";
+    });
+    await expect(runUserAction("AskQuestion", "q")).rejects.toBe("Images work only with Claude (subscription).");
+    expect(useStreamStore.getState().isStreaming).toBe(false);
+    expect(useStreamStore.getState().error).toBe("Images work only with Claude (subscription).");
+  });
+
+  it("a failure doesn't touch another request's running stream", async () => {
+    useStreamStore.getState().startStream("Assist", "m", "p", { requestId: "other" });
+    generateAssist.mockRejectedValueOnce(new Error("Generation already in progress"));
+    await expect(runUserAction("Recap")).rejects.toThrow("already in progress");
+    expect(useStreamStore.getState().isStreaming).toBe(true);
+    expect(useStreamStore.getState().error).toBeNull();
+  });
+
   it("a failed request clears its Sending… state", async () => {
     generateAssist.mockRejectedValueOnce(new Error("Generation already in progress"));
     await expect(runUserAction("Assist")).rejects.toThrow("already in progress");
     expect(useStreamStore.getState().phase).toBe("idle");
+  });
+  it("sends the pills that were on and keeps them for the progress line", async () => {
+    await runUserAction("Assist", "q", { sources: { notes: true, tools: false } });
+    expect((generateAssist.mock.calls[0][2] as { sources: unknown }).sources).toEqual({ notes: true, tools: false });
+    expect(useStreamStore.getState().requestSources).toEqual({ notes: true, tools: false });
+  });
+
+  it("sends no sources key for an automatic answer", async () => {
+    await runUserAction("Assist", "q", { requestId: "auto" });
+    expect(generateAssist.mock.calls[0][2]).not.toHaveProperty("sources");
+    expect(useStreamStore.getState().requestSources).toBeNull();
   });
 });

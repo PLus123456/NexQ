@@ -22,6 +22,7 @@ import { CLAUDE_FALLBACK_PROVIDERS, useConfigStore } from "../stores/configStore
 import { showToast } from "../stores/toastStore";
 import { useLlmConfig } from "../stores/llmConnectionsStore";
 import { ClaudeFallbackRoute } from "./llm/ClaudeFallbackRoute";
+import { ProviderCard, STATUS_DOT_CLASS, type StatusTone } from "./ProviderCard";
 
 type T = TFunction<["llm", "common"]>;
 
@@ -114,15 +115,15 @@ function connectionState(status: ClaudeCliStatus | undefined, failed: boolean): 
 }
 
 // Color carries the state: green ok, amber needs the user, neutral absent.
-const DOT_CLASS: Record<ConnectionState, string> = {
-  checking: "bg-muted-foreground/40 animate-pulse",
-  failed: "bg-warning",
-  connected: "bg-success",
-  api_billed: "bg-warning",
-  logged_out: "bg-warning",
-  unknown: "bg-warning",
-  not_installed: "bg-muted-foreground/40",
-  npm_only: "bg-warning",
+const STATE_TONE: Record<ConnectionState, StatusTone> = {
+  checking: "checking",
+  failed: "warn",
+  connected: "ok",
+  api_billed: "warn",
+  logged_out: "warn",
+  unknown: "warn",
+  not_installed: "neutral",
+  npm_only: "warn",
 };
 
 function planLabel(plan: string | null): string | null {
@@ -227,8 +228,10 @@ const BUTTON_CLASS =
 interface ClaudeCliSettingsProps {
   /** The Claude row is the provider being viewed (shows its details). */
   selected: boolean;
-  /** Claude CLI is the active provider. */
+  /** Claude CLI is the provider in use. */
   active: boolean;
+  /** Name of the provider in use, for the "Viewing Claude" line while another one is. */
+  inUseLabel?: string;
   onSelect: () => void;
   /**
    * Shown inside the connection editor: no provider rows and no "Use Claude"
@@ -242,7 +245,7 @@ interface ClaudeCliSettingsProps {
  * driven through the user's own login (Beta), plus placeholder rows for
  * Gemini CLI and Codex CLI.
  */
-export function ClaudeCliSettings({ selected, active, onSelect, embedded = false }: ClaudeCliSettingsProps) {
+export function ClaudeCliSettings({ selected, active, inUseLabel, onSelect, embedded = false }: ClaudeCliSettingsProps) {
   const { t } = useT(["llm", "common"]);
   const status = useAgentStore((s) => s.status);
   const checking = useAgentStore((s) => s.checking);
@@ -270,36 +273,16 @@ export function ClaudeCliSettings({ selected, active, onSelect, embedded = false
 
       {!embedded && (
         <div className="mt-4 grid grid-cols-3 gap-2.5">
-          <button
-            type="button"
+          <ProviderCard
+            name={CLAUDE}
+            icon={<Terminal className="h-3.5 w-3.5 text-muted-foreground" />}
+            status={{ label: stateLabel, tone: STATE_TONE[state] }}
+            inUse={active}
+            viewing={selected}
             onClick={onSelect}
-            aria-pressed={selected}
-            aria-label={
-              active
-                ? t("claudeCli.providerRow.ariaLabelActive", { state: stateLabel })
-                : t("claudeCli.providerRow.ariaLabel", { state: stateLabel })
-            }
-            className={`relative flex flex-col items-start rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer ${
-              selected
-                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
-                : "border-border/50 hover:border-border hover:bg-accent/50"
-            }`}
-          >
-            <div className="flex w-full items-center gap-1.5">
-              <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-xs font-medium">{CLAUDE}</span>
-              {active && <span className="ml-auto text-meta font-medium text-primary/80">{t("claudeCli.active")}</span>}
-            </div>
-            <span className="mt-1.5 flex w-full items-center gap-1.5 text-meta text-muted-foreground">
-              <span
-                data-testid="claude-status-dot"
-                data-state={state}
-                aria-hidden="true"
-                className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[state]}`}
-              />
-              <span className="truncate">{stateLabel}</span>
-            </span>
-          </button>
+            dotTestId="claude-status-dot"
+            dotState={state}
+          />
           {/* Product names: the same in every language. */}
           {["Gemini CLI", "Codex CLI"].map((label) => (
             <button
@@ -312,7 +295,10 @@ export function ClaudeCliSettings({ selected, active, onSelect, embedded = false
                 <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
                 <span className="text-xs font-medium text-muted-foreground">{label}</span>
               </div>
-              <span className="mt-1.5 text-meta text-muted-foreground/70">{t("claudeCli.comingSoon")}</span>
+              <span className="mt-1.5 flex items-center gap-1.5 text-meta text-muted-foreground/70">
+                <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_CLASS.neutral}`} />
+                {t("claudeCli.comingSoon")}
+              </span>
             </button>
           ))}
         </div>
@@ -324,6 +310,7 @@ export function ClaudeCliSettings({ selected, active, onSelect, embedded = false
           state={state}
           checking={checking}
           active={active || embedded}
+          inUseLabel={inUseLabel}
           refreshStatus={refreshStatus}
         />
       )}
@@ -336,12 +323,14 @@ function ClaudeDetails({
   state,
   checking,
   active,
+  inUseLabel,
   refreshStatus,
 }: {
   status: ClaudeCliStatus | undefined;
   state: ConnectionState;
   checking: boolean;
   active: boolean;
+  inUseLabel?: string;
   refreshStatus: () => Promise<void>;
 }) {
   const { t } = useT(["llm", "common"]);
@@ -411,7 +400,9 @@ function ClaudeDetails({
     <div className="mt-4 space-y-4 border-t border-border/20 pt-4">
       {!active && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-          <p className="text-xs text-muted-foreground">{t("claudeCli.inactive.hint")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("claudeCli.inactive.viewing", { provider: inUseLabel ?? t("claudeCli.inactive.anotherProvider") })}
+          </p>
           <button
             type="button"
             onClick={handleActivate}

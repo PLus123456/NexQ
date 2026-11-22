@@ -24,6 +24,7 @@ use super::provider::{
     CancelToken, CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, TokenSink,
 };
 use super::registry::{self, ClaudeContext, LlmRegistry, RoutedProvider};
+use super::thinking::ThinkingSetting;
 use super::{ProviderType, SharedProvider};
 use crate::i18n::UiLanguage;
 use crate::llm::cli_agent::routing::{self as claude_routing, AgentFallbackPayload, ClaudeHealth};
@@ -160,6 +161,14 @@ pub struct CompleteOptions {
     /// Whole-call limit; `None` = no limit.
     pub timeout: Option<Duration>,
     pub cancel: Option<Arc<CancelToken>>,
+    /// A thinking choice made in code for this call; it beats the task
+    /// route's and the connection's settings. `Auto` (the default) leaves
+    /// the choice to them.
+    pub thinking: ThinkingSetting,
+    /// A background JSON task that wants no thinking: when neither this
+    /// call, the task's route nor the connection sets anything, "off" is
+    /// sent (see `thinking::resolve`). The user's own setting still wins.
+    pub thinking_auto_off: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,6 +510,8 @@ where
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         silent: true,
         cancel: Some(cancel.clone()),
+        thinking: opts.thinking,
+        thinking_auto_off: opts.thinking_auto_off,
         ..Default::default()
     };
 
@@ -610,6 +621,18 @@ mod tests {
         assert!(params.json_mode);
         assert!(params.enable_web_search);
         assert!(params.cancel.is_some());
+        assert!(params.thinking.is_auto() && !params.thinking_auto_off, "thinking is left to the settings");
+    }
+
+    #[tokio::test]
+    async fn complete_text_passes_the_thinking_choice_to_the_provider() {
+        let fake = FakeProvider::answering(&["{}"]);
+        let background = CompleteOptions { thinking_auto_off: true, ..Default::default() };
+        let params = complete_with(&fake, background).await.1.unwrap();
+        assert!(params.thinking.is_auto() && params.thinking_auto_off);
+        let explicit = CompleteOptions { thinking: ThinkingSetting::High, ..Default::default() };
+        let params = complete_with(&fake, explicit).await.1.unwrap();
+        assert_eq!((params.thinking, params.thinking_auto_off), (ThinkingSetting::High, false));
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ use url::Url;
 
 use super::api::LlmKind;
 use super::provider::ModelInfo;
+use super::thinking::ThinkingSetting;
 use super::ProviderType;
 use crate::net::endpoint::{
     self, AuthConfig, AuthMode, EndpointPreview, EndpointWarning, CHAT_COMPLETIONS_PATH,
@@ -150,6 +151,12 @@ pub struct RouteParams {
     pub max_tokens: Option<u64>,
     /// Merged into the request body (JSON Merge Patch).
     pub extra_body: Option<Map<String, Value>>,
+    /// How much the model thinks: `"auto"` (nothing is sent, the default),
+    /// `"off"`, `"low"` or `"high"`, mapped to each API's own parameter by
+    /// `llm::thinking`. A route's setting beats its connection's; `"auto"`
+    /// on a route means "as the connection says". A thinking key written
+    /// into `extra_body` by hand has the last word.
+    pub thinking: ThinkingSetting,
 }
 
 impl RouteParams {
@@ -157,6 +164,7 @@ impl RouteParams {
         self.temperature.is_none()
             && self.max_tokens.is_none()
             && self.extra_body.as_ref().is_none_or(Map::is_empty)
+            && self.thinking.is_auto()
     }
 }
 
@@ -1433,6 +1441,37 @@ mod tests {
         assert!(!is_valid_task_key("assist:"));
         assert!(!is_valid_task_key("Bad Key"));
         assert!(is_valid_task_key("claude_fallback"));
+    }
+
+    #[test]
+    fn params_carry_a_thinking_setting_that_defaults_to_auto() {
+        use crate::llm::thinking::ThinkingSetting::{Auto, High, Off};
+        // Files from before the setting, and anything unreadable, are Auto.
+        for old in [json!({}), json!({"temperature": 0.3}), json!({"thinking": null}), json!({"thinking": "nonsense"})] {
+            let params: RouteParams = serde_json::from_value(old).unwrap();
+            assert_eq!(params.thinking, Auto);
+        }
+        assert!(RouteParams::default().is_empty());
+        let off: RouteParams = serde_json::from_value(json!({"thinking": "off"})).unwrap();
+        assert_eq!(off.thinking, Off);
+        assert!(!off.is_empty(), "a route that only sets thinking is a route");
+        assert!(validate_params(&off).is_ok());
+        assert_eq!(serde_json::to_value(&off).unwrap()["thinking"], "off");
+        assert_eq!(serde_json::to_value(RouteParams::default()).unwrap()["thinking"], "auto");
+
+        // On connections and on routes alike, next to the other parameters.
+        let cfg: LlmConfigFile = serde_json::from_value(json!({
+            "connections": [{"id": "c_1", "base_url": "https://h/v1", "params": {"thinking": "high", "max_tokens": 64}}],
+            "routing": {
+                "default": {"target": {"connection_id": "c_1", "model": "m"}},
+                "tasks": {"question_detect": {"target": {"connection_id": "c_1", "model": "m"}, "params": {"thinking": "off"}}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(cfg.connections[0].params.thinking, High);
+        let resolved = resolve_route(&cfg, "question_detect").unwrap();
+        assert_eq!(resolved.overrides.iter().map(|p| p.thinking).collect::<Vec<_>>(), vec![Off]);
+        assert!(resolve_route(&cfg, "meeting_summary").unwrap().overrides.is_empty());
     }
 
     #[test]

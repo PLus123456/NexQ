@@ -19,7 +19,7 @@ describe("catalog", () => {
   });
 
   it("keeps today's lists and order", () => {
-    expect(STT_COMMON).toHaveLength(19);
+    expect(STT_COMMON).toHaveLength(20);
     expect(STT_COMMON.slice(0, 3)).toEqual(["en-US", "en-GB", "es-ES"]);
     expect(STT_COMMON[STT_COMMON.length - 1]).toBe("vi-VN");
     expect(TRANSLATION_COMMON).toHaveLength(38);

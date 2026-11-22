@@ -4,7 +4,7 @@
 //! (`fake_mode=...`, `fake_record=...`): the session controls the child's
 //! environment and parallel tests cannot share process env vars.
 
-use nexq_lib::llm::cli_agent::command::SessionConfig;
+use nexq_lib::llm::cli_agent::command::{SessionConfig, SourcesLaunch};
 use nexq_lib::llm::cli_agent::detect::find_claude_binary;
 use nexq_lib::llm::cli_agent::models::probe_models;
 use nexq_lib::llm::cli_agent::protocol::AgentErrorKind;
@@ -75,6 +75,76 @@ fn cfg(mode: &str, record: Option<&Path>) -> SessionConfig {
         effort: Some("low".into()),
         system_prompt,
         thinking: false,
+        sources: None,
+    }
+}
+
+/// The private mcp-config file (it holds secrets) is gone as soon as the
+/// session's init has arrived (the CLI keeps the config in memory), and still
+/// gone after `close` and after a plain drop.
+#[tokio::test]
+async fn private_mcp_config_file_is_deleted_once_init_arrived() {
+    let json = r#"{"mcpServers":{"a":{"command":"x","env":{"API_KEY":"va"}}}}"#;
+    let sources = SourcesLaunch { mcp_config_json: Some(json.into()), ..Default::default() };
+    let with = |mode| SessionConfig { sources: Some(sources.clone()), ..cfg(mode, None) };
+
+    let closed = ClaudeSession::spawn(fake_bin(), with("normal")).await.unwrap();
+    let path = closed.mcp_config_path().expect("mcp config path").to_path_buf();
+    assert!(!path.exists(), "secrets file left on disk after init");
+    closed.close().await;
+    assert!(!path.exists(), "file left after close");
+
+    let dropped = ClaudeSession::spawn(fake_bin(), with("normal")).await.unwrap();
+    let path = dropped.mcp_config_path().unwrap().to_path_buf();
+    drop(dropped);
+    assert!(!path.exists(), "file left after drop");
+
+    // A plain session never writes one.
+    let plain = spawn("normal").await;
+    assert!(plain.mcp_config_path().is_none());
+    plain.close().await;
+}
+
+/// A with-sources session with some failed MCP servers still starts while
+/// something is usable (a notes folder, or a server that connected); the
+/// statuses are in `init_info`. With nothing usable left the start fails and
+/// the error carries the statuses.
+#[tokio::test]
+async fn failed_mcp_servers_fail_the_start_only_when_nothing_is_usable() {
+    let sources = |dirs: Vec<PathBuf>| SourcesLaunch {
+        add_dirs: dirs,
+        mcp_config_json: Some(r#"{"mcpServers":{}}"#.into()),
+        server_labels: vec![("mira".to_string(), "Mira".to_string())],
+        ..Default::default()
+    };
+    let with = |mcp: &str, dirs: Vec<PathBuf>| SessionConfig {
+        sources: Some(sources(dirs)),
+        ..cfg(&format!("normal
+fake_mcp={mcp}"), None)
+    };
+
+    // One server failed, another connected: starts.
+    let s = ClaudeSession::spawn(fake_bin(), with("mira:failed,wiki:connected", vec![])).await.unwrap();
+    let states: Vec<_> = s.init_info().mcp_servers.iter().map(|m| (m.name.clone(), m.status.clone())).collect();
+    assert_eq!(states, [("mira".into(), "failed".into()), ("wiki".into(), "connected".into())]);
+    s.close().await;
+
+    // The only server failed but a notes folder is left: starts.
+    let s = ClaudeSession::spawn(fake_bin(), with("mira:failed", vec![std::env::temp_dir()])).await.unwrap();
+    s.close().await;
+
+    // Only server, failed, no folder: nothing usable, with the statuses.
+    let err = match ClaudeSession::spawn(fake_bin(), with("mira:failed", vec![])).await {
+        Err(e) => e,
+        Ok(_) => panic!("started with nothing usable"),
+    };
+    match err {
+        AgentError::NoUsableSources { message, info } => {
+            assert_eq!(message, "Mira didn't start");
+            assert_eq!(info.mcp_servers.len(), 1);
+            assert_eq!(info.mcp_servers[0].status, "failed");
+        }
+        other => panic!("{other:?}"),
     }
 }
 
@@ -436,6 +506,72 @@ async fn real_claude_models() {
     assert!(models.iter().any(|m| m.value == "sonnet"));
 }
 
+/// A solid-colour PNG, base64 encoded (no `data:` prefix).
+fn solid_png_base64(width: u32, height: u32, rgba: [u8; 4]) -> String {
+    let img = image::RgbaImage::from_pixel(width, height, image::Rgba(rgba));
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png).expect("encode png");
+    let bytes = png.into_inner();
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Manual smoke test of Ask images against the real, logged-in `claude`, with
+/// the app's own launch args and stream-json (two Haiku requests):
+/// `cargo test --test claude_session real_claude_image -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn real_claude_image() {
+    use nexq_lib::llm::cli_agent::protocol::ImageAttachment;
+    let bin = find_claude_binary().expect("claude.exe not found");
+    let cfg = SessionConfig {
+        model: "haiku".into(),
+        effort: Some("low".into()),
+        system_prompt: "You are a terse assistant. Answer in as few words as possible.".into(),
+        thinking: false,
+        sources: None,
+    };
+    let session = ClaudeSession::spawn(bin, cfg).await.expect("spawn real claude");
+
+    // A small red square: answered from the picture.
+    let red = ImageAttachment { media_type: "image/png".into(), data: solid_png_base64(64, 64, [255, 0, 0, 255]) };
+    let (_, on_delta) = collector();
+    let turn = session
+        .ask_with_images("What color is this square? Answer with one word.", &[red], on_delta, token())
+        .await
+        .expect("image turn");
+    println!("red square -> {:?}", turn.text);
+    assert!(turn.text.to_lowercase().contains("red"), "not read from the image: {}", turn.text);
+
+    // 1000x9000: over the API's 8000 px limit. What does the CLI report?
+    let tall = ImageAttachment { media_type: "image/png".into(), data: solid_png_base64(1000, 9000, [0, 0, 255, 255]) };
+    let (_, on_delta) = collector();
+    let result = session
+        .ask_with_images("What color is this? One word.", &[tall], on_delta, token())
+        .await;
+    println!("1000x9000 -> {result:?}");
+
+    // Bytes that are not an image (a base64 body Claude can't decode): the
+    // error path `ask_meeting_session` turns into "Claude couldn't use the attached image".
+    let broken = ImageAttachment { media_type: "image/png".into(), data: "bm90IGEgcG5n".into() };
+    let (_, on_delta) = collector();
+    let result = session
+        .ask_with_images("What color is this? One word.", &[broken], on_delta, token())
+        .await;
+    println!("not an image -> {result:?}");
+    session.close().await;
+}
+
 /// Manual smoke test against the real, logged-in `claude` (costs a few tokens):
 /// `cargo test --test claude_session real_claude -- --ignored`
 #[tokio::test]
@@ -447,6 +583,7 @@ async fn real_claude_two_turns() {
         effort: Some("low".into()),
         system_prompt: "You are a terse assistant. Answer in as few words as possible.".into(),
         thinking: false,
+        sources: None,
     };
     let session = ClaudeSession::spawn(bin, cfg)
         .await

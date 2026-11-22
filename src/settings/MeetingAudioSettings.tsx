@@ -7,6 +7,9 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Trans, currentUiLanguage, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
+import { useMeetingStore } from "../stores/meetingStore";
+import { skipYouStt } from "../lib/audioMode";
+import { updatePartyConfig } from "../lib/sideLanguage";
 import {
   listAudioDevices,
   setRecordingEnabled,
@@ -133,6 +136,8 @@ export function MeetingAudioSettings() {
   const readiness = useSttReadiness();
   // This platform's engines (Windows Speech only on Windows), in picker order.
   const offered = useMemo(() => sttProvidersFor(currentPlatform()), []);
+  // In an in-person meeting only the room microphone ("Them") is transcribed.
+  const inPerson = useMeetingStore((s) => skipYouStt(s.audioMode));
 
   const [deviceLevels, setDeviceLevels] = useState<Record<string, number>>({});
   const [devicePeaks, setDevicePeaks] = useState<Record<string, number>>({});
@@ -213,12 +218,9 @@ export function MeetingAudioSettings() {
   const updateParty = useCallback(
     (party: Party, updates: Partial<PartyAudioConfig>, keepPreset = false) => {
       const current = useConfigStore.getState().meetingAudioConfig ?? config;
-      const newConfig: MeetingAudioConfig = {
-        ...current,
-        [party]: { ...current[party], ...updates },
-        preset_name: keepPreset ? current.preset_name : null,
-      };
-      setMeetingAudioConfig(newConfig);
+      // Stored the same way as by the meeting overlay's language picker.
+      const next = updatePartyConfig(current, party, updates);
+      setMeetingAudioConfig(keepPreset ? { ...next, preset_name: current.preset_name } : next);
     },
     [config, setMeetingAudioConfig]
   );
@@ -240,7 +242,7 @@ export function MeetingAudioSettings() {
 
   function handlePresetSelect(preset: MeetingPreset) {
     const allDevices = [...devices.inputs, ...devices.outputs];
-    // Keeps each party's language and translation target.
+    // A preset picks devices and engines; each party's language and translation target stay.
     const resolved = applyPreset(preset, allDevices, config);
     setMeetingAudioConfig(resolved);
     const missing = presetRequirements(preset, readiness, hasBaseUrl);
@@ -312,6 +314,9 @@ export function MeetingAudioSettings() {
           readiness={readiness}
           hasBaseUrl={hasBaseUrl}
           otherPartyProvider={config.them.stt_provider}
+          // In-person meetings don't transcribe "You": there is no language to set.
+          showLanguage={!inPerson}
+          sideName={t("common:labels.you")}
           onChange={(updates, keepPreset) => updateParty("you", updates, keepPreset)}
         />
         <PartyPanel
@@ -333,6 +338,8 @@ export function MeetingAudioSettings() {
           readiness={readiness}
           hasBaseUrl={hasBaseUrl}
           otherPartyProvider={config.you.stt_provider}
+          showLanguage
+          sideName={inPerson ? t("common:labels.room") : t("common:labels.them")}
           onChange={(updates, keepPreset) => updateParty("them", updates, keepPreset)}
         />
       </div>
@@ -578,6 +585,8 @@ function PartyPanel({
   readiness,
   hasBaseUrl,
   otherPartyProvider,
+  showLanguage,
+  sideName,
   onChange,
 }: {
   label: string;
@@ -595,6 +604,10 @@ function PartyPanel({
   readiness: SttReadiness;
   hasBaseUrl: boolean;
   otherPartyProvider: STTProviderType | null;
+  /** Whether this side is transcribed, so its language can be set. */
+  showLanguage?: boolean;
+  /** "You", "Them" or "Room" in the UI language: names the language picker. */
+  sideName: string;
   /** `keepPreset`: the change doesn't take the config off its preset (language). */
   onChange: (updates: Partial<PartyAudioConfig>, keepPreset?: boolean) => void;
 }) {
@@ -785,21 +798,23 @@ function PartyPanel({
           </div>
         )}
 
-        {/* Recognition language */}
-        <div>
-          <label
-            htmlFor={languageId}
-            className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60"
-          >
-            {t("stt:language.label")}
-          </label>
-          <PartyLanguageField
-            id={languageId}
-            aria-label={t("stt:language.partyAriaLabel", { party: partyLabel(role) })}
-            party={party}
-            onChange={(code) => onChange({ language: code }, true)}
-          />
-        </div>
+        {/* Recognition language of this side alone, with what its engine makes of it */}
+        {showLanguage && (
+          <div>
+            <label
+              htmlFor={languageId}
+              className="mb-1.5 block text-meta font-semibold uppercase tracking-wider text-muted-foreground/60"
+            >
+              {t("stt:language.label")}
+            </label>
+            <PartyLanguageField
+              id={languageId}
+              aria-label={t("stt:language.partyAriaLabel", { party: sideName })}
+              party={party}
+              onChange={(code) => onChange({ language: code }, true)}
+            />
+          </div>
+        )}
 
         {/* Soniox translates in the same stream */}
         {party.stt_provider === "soniox" && (

@@ -299,6 +299,109 @@ describe("LlmSettingsPage", () => {
     await waitFor(() => expect(backend.view().connections[0].default_model).toBe("deepseek/deepseek-v4.1-flash"));
   });
 
+  it("saves how much a connection's model thinks, and a task can set its own", async () => {
+    const { user, backend } = setup({
+      connections: [deepseek],
+      routing: { default: { target: { connection_id: deepseek.id, model: null }, params: {} }, tasks: {} },
+    });
+    await user.selectOptions(await screen.findByLabelText("Thinking"), "off");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(backend.view().connections[0].params).toEqual({ thinking: "off" }));
+
+    // A task follows the connection until it sets its own.
+    await user.click(screen.getByRole("tab", { name: "Task routing" }));
+    const row = screen.getByText("Meeting summary").closest("div.rounded-lg") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Parameters" }));
+    const thinking = within(row).getByLabelText<HTMLSelectElement>("Thinking");
+    expect(thinking).toHaveValue("auto");
+    expect(thinking.options[0]).toHaveTextContent("Inherited: Off");
+    await user.selectOptions(thinking, "high");
+    await waitFor(() =>
+      expect(backend.view().routing.tasks.meeting_summary).toEqual({ target: null, params: { thinking: "high" } }),
+    );
+    expect(within(row).getByRole("button", { name: "Parameters (1 set)" })).toBeInTheDocument();
+
+    // Back to following the connection: nothing is stored for the task.
+    await user.selectOptions(within(row).getByLabelText("Thinking"), "auto");
+    await waitFor(() => expect(backend.view().routing.tasks.meeting_summary).toBeUndefined());
+  });
+
+  it("says when the extra request body sets thinking by hand, on the connection and on the tasks it answers", async () => {
+    const { user, backend } = setup({
+      connections: [deepseek],
+      routing: { default: { target: { connection_id: deepseek.id, model: null }, params: {} }, tasks: {} },
+    });
+    const overridden = "An extra request body already sets “reasoning_effort”, so this setting isn't applied.";
+    await screen.findByLabelText("Thinking");
+    expect(screen.queryByText(overridden)).toBeNull();
+    await user.click(screen.getByLabelText("Extra request body (JSON)"));
+    await user.paste('{"reasoning_effort": "none"}');
+    // Shown for the unsaved edit already.
+    expect(screen.getByText(overridden)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(backend.view().connections[0].params).toEqual({ extra_body: { reasoning_effort: "none" } }));
+
+    // A task on that connection is told the same, until its own body removes the key.
+    await user.click(screen.getByRole("tab", { name: "Task routing" }));
+    const row = screen.getByText("AI assist").closest("div.rounded-lg") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Parameters" }));
+    expect(within(row).getByText(overridden)).toBeInTheDocument();
+    await user.click(within(row).getByLabelText("Extra request body (JSON)"));
+    await user.paste('{"reasoning_effort": null}');
+    await waitFor(() =>
+      expect(backend.view().routing.tasks.assist).toEqual({ target: null, params: { extra_body: { reasoning_effort: null } } }),
+    );
+    await waitFor(() => expect(within(row).queryByText(overridden)).toBeNull());
+  });
+
+  it("turns a task's Thinking setting off while the Claude subscription answers it", async () => {
+    const subscription = mockConnection({ id: "claude-subscription", name: "Claude subscription", kind: "claude_cli" });
+    const { user } = setup({
+      connections: [deepseek, subscription],
+      routing: {
+        default: { target: { connection_id: deepseek.id, model: null }, params: {} },
+        tasks: { assist: { target: { connection_id: subscription.id, model: null }, params: {} } },
+      },
+    });
+    await user.click(await screen.findByRole("tab", { name: "Task routing" }));
+    const assist = screen.getByText("AI assist").closest("div.rounded-lg") as HTMLElement;
+    await user.click(within(assist).getByRole("button", { name: "Parameters" }));
+    expect(within(assist).getByLabelText("Thinking")).toBeDisabled();
+    expect(within(assist).getByLabelText("Thinking")).toHaveAccessibleDescription(
+      "Not used with Claude (subscription): its Fast and Deep models have their own thinking switches.",
+    );
+
+    // A task an HTTP connection answers keeps the setting.
+    const summary = screen.getByText("Meeting summary").closest("div.rounded-lg") as HTMLElement;
+    await user.click(within(summary).getByRole("button", { name: "Parameters" }));
+    expect(within(summary).getByLabelText("Thinking")).toBeEnabled();
+  });
+
+  it("the connection list tells in use, viewing and ready apart", async () => {
+    const { user } = setup({
+      connections: [{ ...deepseek, verified_at_ms: 1 }, ollama],
+      routing: { default: { target: { connection_id: deepseek.id, model: null }, params: {} }, tasks: {} },
+    });
+    const list = await screen.findByRole("navigation", { name: "Connections" });
+    const inUse = within(list).getByRole("button", { name: /DeepSeek/ });
+    const other = within(list).getByRole("button", { name: /Home Ollama/ });
+    // In use: a task answers with it. Viewing: its editor is open. Status: one word.
+    expect(inUse).toHaveAttribute("data-in-use", "true");
+    expect(inUse).toHaveAttribute("aria-current", "true");
+    expect(within(inUse).getByText("Default")).toBeInTheDocument();
+    expect(within(inUse).getByText("Ready")).toBeInTheDocument();
+    expect(other).not.toHaveAttribute("data-in-use");
+    expect(other).not.toHaveAttribute("aria-current");
+    expect(within(other).getByText("Not tested")).toBeInTheDocument();
+
+    // Viewing another connection doesn't change which one is in use.
+    await user.click(other);
+    expect(other).toHaveAttribute("aria-current", "true");
+    expect(other).not.toHaveAttribute("data-in-use");
+    expect(inUse).not.toHaveAttribute("aria-current");
+    expect(inUse).toHaveAttribute("data-in-use", "true");
+  });
+
   it("follows a change made in the other window", async () => {
     const { backend } = setup({ connections: [deepseek] });
     expect(await screen.findByLabelText("Connection name")).toBeInTheDocument();
@@ -314,5 +417,7 @@ describe("LlmSettingsPage", () => {
     expect(await screen.findByRole("tab", { name: "任务路由" })).toBeInTheDocument();
     expect(screen.getByText("默认：DeepSeek / deepseek-chat")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /测试对话/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("思考")).toHaveDisplayValue("自动");
+    expect(within(screen.getByRole("navigation", { name: "连接列表" })).getByText("未测试")).toBeInTheDocument();
   });
 });

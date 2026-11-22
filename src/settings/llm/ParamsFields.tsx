@@ -1,16 +1,20 @@
-// Request parameter fields (temperature, max tokens, extra request body) for a
-// connection's defaults and for a task route's overrides. Empty = not set at
-// this level. Numbers commit on blur / Enter; the JSON body commits once it is
-// a valid object.
+// Request parameter fields (temperature, max tokens, thinking, extra request
+// body) for a connection's defaults and for a task route's overrides. Empty =
+// not set at this level (thinking: Auto). Numbers commit on blur / Enter; the
+// JSON body commits once it is a valid object.
 
 import { useEffect, useId, useState } from "react";
 import { useT } from "../../i18n";
 import { cn } from "../../lib/utils";
-import type { LlmParams } from "../../lib/llm/types";
-import { HINT, INPUT, INPUT_INVALID, LABEL, LINK_BUTTON, PLAIN_TEXT } from "./ui";
+import { extraBodyThinkingKey, layeredThinking, mergedExtraBody, thinkingOf } from "../../lib/llm/connection";
+import type { LlmParams, ThinkingSetting } from "../../lib/llm/types";
+import { THINKING_OPTIONS, normalizeThinking } from "../../lib/llmRequestOptions";
+import { HINT, INPUT, INPUT_INVALID, LABEL, LINK_BUTTON, PLAIN_TEXT, SELECT } from "./ui";
 
 /** Keys the backend never lets the extra body override. */
 const RESERVED_KEYS = ["model", "messages", "stream"] as const;
+
+const NO_LAYERS: readonly LlmParams[] = [];
 
 type JsonCheck =
   | { ok: true; value: Record<string, unknown> | null }
@@ -195,12 +199,73 @@ export function NumberField({
   );
 }
 
+/**
+ * How much the model thinks before it answers: Auto (the model decides), Off,
+ * Low or High. Auto is "not set at this level": on a task route it follows
+ * `inherited` (a parent task's or the connection's setting), which the first
+ * option then names.
+ */
+export function ThinkingField({
+  id,
+  value,
+  onChange,
+  inherited = "auto",
+  overriddenBy,
+  unusedHint,
+  disabled = false,
+}: {
+  id: string;
+  value: ThinkingSetting;
+  onChange: (next: ThinkingSetting) => void;
+  /** What applies while this level is on Auto. */
+  inherited?: ThinkingSetting;
+  /** The extra request body's key that sets thinking by hand: the backend then leaves this setting out. */
+  overriddenBy?: string | null;
+  /** Why the setting has no effect here (the Claude subscription): shown instead of the hint, and the control is off. */
+  unusedHint?: string;
+  disabled?: boolean;
+}) {
+  const { t } = useT("llm");
+  const hintId = `${id}-hint`;
+  return (
+    <div>
+      <label htmlFor={id} className={LABEL}>
+        {t("params.thinking.label")}
+      </label>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(normalizeThinking(e.target.value))}
+        disabled={disabled || unusedHint !== undefined}
+        aria-describedby={hintId}
+        className={SELECT}
+      >
+        {THINKING_OPTIONS.map(({ value: option }) => (
+          <option key={option} value={option}>
+            {option === "auto" && inherited !== "auto"
+              ? t("params.thinking.inherited", { value: t(`params.thinking.options.${inherited}`) })
+              : t(`params.thinking.options.${option}`)}
+          </option>
+        ))}
+      </select>
+      <div id={hintId}>
+        <p className={HINT}>{unusedHint ?? t("params.thinking.hint")}</p>
+        {overriddenBy && unusedHint === undefined && (
+          <p className="mt-1 text-xs text-warning">{t("params.thinking.overridden", { key: overriddenBy })}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ParamsFields({
   value,
   onChange,
   idPrefix,
   temperaturePlaceholder,
   maxTokensPlaceholder,
+  inherited = NO_LAYERS,
+  thinkingUnusedHint,
   disableThinking,
   onValidityChange,
   disabled = false,
@@ -210,6 +275,15 @@ export function ParamsFields({
   idPrefix?: string;
   temperaturePlaceholder?: string;
   maxTokensPlaceholder?: string;
+  /**
+   * A task route: the parameter layers under it, lowest priority first (its
+   * connection's defaults, then its parent routes'). They decide what the
+   * Thinking setting follows while it is Auto, and their extra request bodies
+   * count when checking for a thinking key set by hand.
+   */
+  inherited?: readonly LlmParams[];
+  /** Why the Thinking setting has no effect here (the Claude subscription); turns the control off. */
+  thinkingUnusedHint?: string;
   disableThinking?: Record<string, unknown>;
   onValidityChange?: (valid: boolean) => void;
   disabled?: boolean;
@@ -252,6 +326,17 @@ export function ParamsFields({
           disabled={disabled}
         />
       </div>
+      <ThinkingField
+        id={`${id}-thinking`}
+        value={thinkingOf(value)}
+        // Auto is never stored: the parameter is left out, like an empty field.
+        onChange={(thinking) => set({ thinking: thinking === "auto" ? null : thinking })}
+        inherited={layeredThinking(inherited)}
+        // A thinking key in the extra request body (here or in a layer underneath) has the last word.
+        overriddenBy={extraBodyThinkingKey(mergedExtraBody([...inherited, value]))}
+        unusedHint={thinkingUnusedHint}
+        disabled={disabled}
+      />
       <JsonObjectField
         id={`${id}-extra-body`}
         value={value.extra_body}

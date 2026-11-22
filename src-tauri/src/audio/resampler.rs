@@ -28,7 +28,7 @@ const BUTTERWORTH_8_Q: [f64; 4] = [0.5098, 0.6013, 0.9000, 2.5629];
 
 impl StreamResampler {
     pub fn new(from_rate: u32, to_rate: u32, channels: u16) -> Self {
-        let low_pass = if to_rate < from_rate {
+        let low_pass = if to_rate > 0 && to_rate < from_rate {
             let cutoff = to_rate as f64 * 0.45;
             BUTTERWORTH_8_Q
                 .iter()
@@ -39,7 +39,9 @@ impl StreamResampler {
         };
         Self {
             channels: channels.max(1) as usize,
-            same_rate: from_rate == to_rate,
+            // A zero rate makes no sense: pass the audio through rather than
+            // loop forever.
+            same_rate: from_rate == to_rate || from_rate == 0 || to_rate == 0,
             step: from_rate as f64 / to_rate.max(1) as f64,
             position: 1.0,
             previous: 0.0,
@@ -143,7 +145,7 @@ mod tests {
             .flat_map(|n| {
                 let s =
                     (2.0 * std::f64::consts::PI * freq * n as f64 / rate as f64).sin() * 10_000.0;
-                std::iter::repeat(s as i16).take(channels as usize)
+                std::iter::repeat_n(s as i16, channels as usize)
             })
             .collect()
     }
@@ -172,6 +174,77 @@ mod tests {
         // Stereo: L=100, R=200, L=300, R=400
         let input = vec![100i16, 200, 300, 400];
         assert_eq!(resample(&input, 16000, 16000, 2), vec![150, 350]);
+    }
+
+    /// A chunk of one or two frames at 3:1 can be too short for a sample:
+    /// the result is empty (callers send nothing), and the stream carries on.
+    #[test]
+    fn a_chunk_too_short_for_a_sample_gives_nothing_and_the_stream_carries_on() {
+        let mut r = StreamResampler::new(48_000, 16_000, 1);
+        assert!(r.process(&[1000]).is_empty(), "one frame: no sample yet");
+        let mut r = StreamResampler::new(48_000, 16_000, 1);
+        let mut total = 0;
+        for _ in 0..300 {
+            total += r.process(&[500, 500]).len();
+        }
+        assert_eq!(total, 200, "600 frames at 3:1, in 2-frame chunks");
+    }
+
+    /// One-frame chunks at 3:1 mostly give nothing, some give a sample, and
+    /// over time it still comes to a third.
+    #[test]
+    fn one_frame_chunks_give_empty_results_and_the_right_total() {
+        let mut r = StreamResampler::new(48_000, 16_000, 1);
+        let (mut empty, mut total) = (0, 0);
+        for _ in 0..3000 {
+            let out = r.process(&[100]);
+            if out.is_empty() {
+                empty += 1;
+            }
+            total += out.len();
+        }
+        assert!(empty > 0, "some chunks gave nothing");
+        assert!((total as i64 - 1000).abs() <= 1, "{total} samples for 3000 frames");
+    }
+
+    /// 44.1 kHz is not a whole ratio: the count still follows the rate
+    /// whatever the chunk size.
+    #[test]
+    fn a_44100_hz_stream_keeps_the_exact_rate() {
+        for chunk in [441usize, 512] {
+            let mut r = StreamResampler::new(44_100, 16_000, 1);
+            let chunks = 4_410_000 / chunk;
+            let input = vec![0i16; chunk];
+            let out: usize = (0..chunks).map(|_| r.process(&input).len()).sum();
+            let expected = (chunks * chunk) as f64 * 16_000.0 / 44_100.0;
+            assert!(
+                (out as f64 - expected).abs() <= 1.0,
+                "{chunk}-frame chunks: {out} samples, expected {expected:.1}"
+            );
+        }
+    }
+
+    /// 8 kHz to 16 kHz doubles the samples, the new ones halfway between
+    /// (the output trails the input by one frame, so the first chunk is two
+    /// samples short).
+    #[test]
+    fn upsampling_8k_to_16k_doubles_the_samples() {
+        let ramp: Vec<i16> = (0..8).map(|i| i * 100).collect();
+        let mut r = StreamResampler::new(8_000, 16_000, 1);
+        let first = r.process(&ramp);
+        let halves: Vec<i16> = (0..first.len() as i16).map(|i| i * 50).collect();
+        assert_eq!(first, halves);
+        assert_eq!(first.len(), 2 * ramp.len() - 2);
+        for _ in 0..100 {
+            assert_eq!(r.process(&ramp).len(), 2 * ramp.len(), "exactly twice");
+        }
+    }
+
+    /// A rate of zero passes the audio through; it must not loop forever.
+    #[test]
+    fn a_zero_rate_passes_through() {
+        assert_eq!(resample(&[1, 2, 3], 0, 16_000, 1), vec![1, 2, 3]);
+        assert_eq!(resample(&[1, 2, 3, 4], 48_000, 0, 2), vec![2, 4]);
     }
 
     #[test]

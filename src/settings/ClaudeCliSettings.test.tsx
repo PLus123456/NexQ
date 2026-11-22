@@ -267,6 +267,8 @@ describe("ClaudeCliSettings", () => {
       model: "haiku",
       detail: null,
       error_kind: null,
+      with_sources: false,
+      sources_notice: null,
       usage: { ...EMPTY_USAGE },
     };
     renderSettings();
@@ -549,7 +551,8 @@ describe("ClaudeCliSettings", () => {
         screen.getByText("使用这台电脑上你自己的 Claude 登录，NexQ Plus 看不到你的登录凭据。"),
       ).toBeInTheDocument();
       // "Claude" and the other tools' names stay as they are.
-      expect(screen.getByRole("button", { name: "Claude，已连接" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Claude，已连接，未使用" })).toBeInTheDocument();
+      expect(screen.getByText("正在查看 Claude。NexQ Plus 当前使用：其他服务商。")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /gemini cli/i })).toBeDisabled();
       expect(screen.getAllByText("即将推出")).toHaveLength(2);
       expect(screen.getByText("me@example.com · Max")).toBeInTheDocument();

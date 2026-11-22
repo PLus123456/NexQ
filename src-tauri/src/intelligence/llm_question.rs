@@ -824,6 +824,9 @@ async fn execute_job(app: &AppHandle, job: Job) -> Outcome {
                 timeout: Some(REQUEST_TIMEOUT),
                 cancel: Some(job.cancel.clone()),
                 json_mode: true,
+                // A frequent, deadline-bound JSON task: no thinking unless the
+                // user set one for this task's route or its connection.
+                thinking_auto_off: true,
                 ..Default::default()
             },
         ),

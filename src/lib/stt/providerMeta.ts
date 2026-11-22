@@ -15,8 +15,13 @@ export type SttPlatform = "macos" | "windows" | "linux";
 /**
  * What the engine does with the party's language:
  * - "auto": takes a language or detects it ("auto");
- * - "noAuto": needs a language (auto-detect falls back to English);
+ * - "noAuto": needs a language (Auto-detect is refused: the side goes without
+ *   transcription until a language is picked);
  * - "ignored": the model decides, the setting is only a label.
+ * This is the engine as a whole. Whether Auto-detect works with the model a
+ * side runs (Deepgram, Whisper.cpp, Parakeet, Sherpa-ONNX) is
+ * `supportsSTTAutoDetection` in lib/sttLanguages.ts, which reads this for
+ * every other engine.
  */
 export type SttLanguageSupport = "auto" | "noAuto" | "ignored";
 
@@ -96,7 +101,7 @@ export const STT_PROVIDERS: readonly SttProviderMeta[] = [
     id: "deepgram", label: "Deepgram", pickerLabel: "Deepgram", icon: "cloud", // i18n-ignore: product names (the settings word the others via stt:engines.*)
     platforms: ALL_PLATFORMS,
     requiresApiKey: true, isCloud: true, isLocal: false,
-    // Nova 2/3 detect ("multi"); older models fall back to English.
+    // Nova 3 and Flux Multilingual detect; Auto-detect is refused with the other models.
     supportsNativeTranslation: false, languageSupport: "auto", hidden: false,
   },
   {

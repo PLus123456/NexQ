@@ -9,10 +9,15 @@ import { sonioxRegionInText } from "../settings/stt/sonioxRegions";
 import { useSttRegionStore } from "../stores/sttRegionStore";
 import { showToast } from "../stores/toastStore";
 
-/** The event's party ("You" / "Them") in the UI language; anything else as sent. */
-function partyName(party: string): string {
+/**
+ * The event's party in the UI language; anything else as sent. Upstream's
+ * engines name the other side of an in-person meeting "Room" (the fork's own
+ * engines keep "Them", which the region display is keyed by).
+ */
+export function partyName(party: string): string {
   if (party === "You") return t("common:labels.you");
   if (party === "Them") return t("common:labels.them");
+  if (party === "Room") return t("common:labels.room");
   return party;
 }
 

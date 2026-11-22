@@ -175,6 +175,8 @@ describe("test search dialog: answer", () => {
     expect(container.querySelectorAll("ol > li")).toHaveLength(2);
     expect(container.textContent).not.toContain("**");
     expect(container.querySelector("img")).toBeNull();
-    expect(screen.getByText("[图]")).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("evil.example");
+    // Shown as its description, in the words of lib/answerMarkdown (every answer renderer's guard).
+    expect(screen.getByText("[Image: 图]")).toBeInTheDocument();
   });
 });

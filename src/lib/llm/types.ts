@@ -7,8 +7,10 @@
 // Rust saves and broadcasts the new view, and both windows apply it. Secrets
 // never reach the frontend; a connection only says whether one is saved.
 
-import type { ModelInfo } from "../types";
+import type { ModelInfo, ThinkingSetting } from "../types";
 import type { AuthConfig } from "../endpoint";
+
+export type { ThinkingSetting };
 
 /** Request protocol of a connection. A new OpenAI-compatible vendor is a template, not a kind. */
 export type LlmKind = "openai_compat" | "anthropic" | "gemini" | "ollama" | "claude_cli";
@@ -32,6 +34,12 @@ export type ModelsEndpointMode = "auto" | "custom" | "disabled";
 export interface LlmParams {
   temperature?: number | null;
   max_tokens?: number | null;
+  /**
+   * How much the model thinks before it answers: "off", "low" or "high".
+   * "auto" is the same as not set: a route then follows its connection, and a
+   * connection lets the model decide. The settings never store "auto".
+   */
+  thinking?: ThinkingSetting | null;
   /** Merged into the request body (JSON Merge Patch); `model`, `messages`, `stream` can't be overridden. */
   extra_body?: Record<string, unknown> | null;
 }

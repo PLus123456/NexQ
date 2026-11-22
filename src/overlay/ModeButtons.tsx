@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { useStreamStore } from "../stores/streamStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useConfigStore } from "../stores/configStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import { cancelGeneration } from "../lib/ipc";
 import { runYourAction, useAutoAnswerRunning } from "../lib/autoAnswer";
 import { actionDisplayName } from "../lib/actionNames";
+import { AskImageChips, askPlaceholder, useAskImages } from "./AskImages";
+import { SCREENSHOT_EVENT, takePendingScreenshots } from "../lib/screenCapture";
+import { sendAsk } from "./sendAsk";
 import { DEFAULT_CONTEXT_SCOPE, scopeHint } from "../lib/contextScope";
 import { showToast } from "../stores/toastStore";
 import { ContextScopePicker } from "./ContextScopePicker";
+import { SourcePills } from "../sources/SourcePills";
 import type { IntelligenceMode } from "../lib/types";
 import {
   Loader2,
@@ -122,15 +127,79 @@ export function ModeButtons() {
     [isStreaming, locked, streaming, currentMode, t]
   );
 
-  const handleAskSubmit = useCallback(() => {
-    const text = askInputText.trim();
-    if (!text || locked) return;
-    runYourAction("AskQuestion", text).catch((err) =>
-      showToast(err instanceof Error ? err.message : t("modes.errors.sendFailed"), "error")
-    );
+  const {
+    images: askImages,
+    sending: askSending,
+    setSending: setAskSending,
+    canAttach: canAttachImage,
+    announcement: askAnnouncement,
+    onPaste: onAskPaste,
+    attach: attachAskImages,
+    remove: removeAskImage,
+    removeSent: removeSentImages,
+    clear: clearAskImages,
+  } = useAskImages();
+
+  // The overlay stays mounted between meetings: each meeting starts with an
+  // empty Ask box (no leftover text or screenshots from the last one).
+  const meetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
+  useEffect(() => {
     setAskInputText("");
     setAskInputVisible(false);
-  }, [askInputText, locked, t]);
+    clearAskImages();
+  }, [meetingId, clearAskImages]);
+
+  // The capture shortcut: open the Ask box with the screenshot attached, the
+  // same way a paste would, and put the cursor in it (also when it was already
+  // open). Also takes one that arrived before this mounted.
+  const askInputRef = useRef<HTMLInputElement>(null);
+  const [focusAsk, setFocusAsk] = useState(0);
+  const wantsFocus = useRef(false);
+  // The user's own answer is running: the Ask box stays hidden until it ends.
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+  useEffect(() => {
+    const take = (e?: Event) => {
+      const files = takePendingScreenshots();
+      if (files.length === 0) return;
+      e?.preventDefault(); // taken: nobody else needs to make room for it
+      setAskInputVisible(true);
+      // A refused screenshot (no free slot, wrong provider) is explained by the
+      // attach itself; only an accepted one is announced.
+      const accepted = attachAskImages(files);
+      if (accepted && lockedRef.current) showToast(t("ask.screenshot.waiting"), "info");
+      wantsFocus.current = true;
+      setFocusAsk((n) => n + 1);
+    };
+    take();
+    window.addEventListener(SCREENSHOT_EVENT, take);
+    return () => window.removeEventListener(SCREENSHOT_EVENT, take);
+  }, [attachAskImages, t]);
+  useEffect(() => {
+    // Waits for the Ask box to exist (it is hidden while an answer runs).
+    if (wantsFocus.current && askInputRef.current) {
+      askInputRef.current.focus();
+      wantsFocus.current = false;
+    }
+  }, [focusAsk, locked, askInputVisible]);
+
+  const handleAskSubmit = useCallback(() => {
+    if (locked) return;
+    // A screenshot taken while this request is on its way is not part of it.
+    const carried = askSending ? [] : askImages;
+    const sent = sendAsk({
+      typed: askInputText,
+      images: carried,
+      fallbackError: t("modes.errors.sendFailed"),
+      onSending: setAskSending,
+      onSent: () => removeSentImages(carried),
+      // A failed send keeps the typed text and the images, to send again.
+      onFailed: (typed) => setAskInputText((current) => current || typed),
+    });
+    if (!sent) return;
+    setAskInputText("");
+    setAskInputVisible(false);
+  }, [askInputText, askImages, askSending, locked, removeSentImages, setAskSending, t]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -164,21 +233,37 @@ export function ModeButtons() {
           );
         })}
         <ContextScopePicker />
+        <SourcePills scope="live" />
       </div>
 
       {/* Inline Ask input */}
       {askInputVisible && !locked && (
-        <div className="flex items-center gap-1.5 rounded-lg border border-info/20 bg-info/5 px-2 py-1 slide-down-enter">
+        <div
+          className="flex flex-col gap-1 rounded-lg border border-info/20 bg-info/5 px-2 py-1 slide-down-enter"
+          // Keys pressed on the thumbnails' remove buttons (Space, digits) must not
+          // reach the meeting shortcuts; Escape closes the box from anywhere in it.
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setAskInputVisible(false);
+            }
+          }}
+        >
+          <AskImageChips images={askSending ? [] : askImages} onRemove={removeAskImage} announcement={askAnnouncement} />
+          <div className="flex items-center gap-1.5">
           <input
+            ref={askInputRef}
             type="text"
             value={askInputText}
             onChange={(e) => setAskInputText(e.target.value)}
+            onPaste={onAskPaste}
             onKeyDown={(e) => {
               e.stopPropagation();
               if (e.key === "Enter") { e.preventDefault(); handleAskSubmit(); }
               if (e.key === "Escape") { e.preventDefault(); setAskInputVisible(false); }
             }}
-            placeholder={t("ask.input.placeholder")}
+            placeholder={askPlaceholder(canAttachImage)}
             aria-label={t("ask.input.ariaLabel")}
             autoFocus
             maxLength={2000}
@@ -186,7 +271,7 @@ export function ModeButtons() {
           />
           <button
             onClick={handleAskSubmit}
-            disabled={!askInputText.trim()}
+            disabled={!askInputText.trim() && (askImages.length === 0 || askSending)}
             className="rounded-md p-1 text-info/60 hover:bg-info/10 hover:text-info disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             aria-label={t("ask.send.ariaLabel")}
           >
@@ -199,6 +284,7 @@ export function ModeButtons() {
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>
+          </div>
         </div>
       )}
     </div>

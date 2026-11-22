@@ -4,9 +4,12 @@ use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
+use crate::audio::capture_supervisor::{CaptureCounters, CaptureStatus, StatusSink};
 use crate::audio::device_manager;
+use crate::audio::recording_mixer::{wall_clock_ms, CaptureTimes, MixSide, RecordingMixer};
 use crate::audio::session_monitor;
 use crate::audio::vad::{calculate_peak, calculate_rms, VoiceActivityDetector};
+use crate::audio::side_swap::{self, Side, SideSwapMsg, SwapSignal, Tagged};
 use crate::audio::{AudioCaptureManager, AudioLevel, AudioSource};
 use crate::stt::provider::STTProvider;
 use crate::stt::segment_accumulator::AccumulatorOutput;
@@ -73,17 +76,10 @@ fn accumulator_segment_json(id: &str, speaker: &str, output: &AccumulatorOutput)
     with_turn(seg, output.turn)
 }
 
-/// Adds the provider's turn signal ("eager_end", "resumed", "end"), if any.
-fn with_turn(mut seg: serde_json::Value, turn: Option<crate::stt::provider::TurnSignal>) -> serde_json::Value {
-    if let Some(turn) = turn {
-        seg["turn"] = serde_json::json!(turn.as_str());
-    }
-    seg
-}
-
-/// The `segment` of a transcript event for a line straight from an engine
-/// that segments on its own (whisper.cpp, Soniox), without the accumulator.
-fn direct_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::TranscriptResult) -> serde_json::Value {
+/// A line straight from a provider that segments on its own (whisper.cpp,
+/// Soniox), without the accumulator. A diarized line (Soniox) carries
+/// `speaker_tag` and `speaker_id` like an accumulated one.
+fn result_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::TranscriptResult) -> serde_json::Value {
     let mut seg = serde_json::json!({
         "id": id,
         "text": result.text,
@@ -101,36 +97,41 @@ fn direct_segment_json(id: &str, speaker: &str, result: &crate::stt::provider::T
     with_turn(seg, result.turn)
 }
 
-/// A side of the meeting with its own device and STT pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Party {
-    You,
-    Them,
+/// Adds the provider's turn signal ("eager_end", "resumed", "end"), if any.
+fn with_turn(mut seg: serde_json::Value, turn: Option<crate::stt::provider::TurnSignal>) -> serde_json::Value {
+    if let Some(turn) = turn {
+        seg["turn"] = serde_json::json!(turn.as_str());
+    }
+    seg
 }
 
-impl Party {
-    /// Label used by providers, status events and logs.
-    fn role(self) -> &'static str {
-        match self {
-            Party::You => "You",
-            Party::Them => "Them",
-        }
-    }
+// ── NexQ Plus: one transcript pipeline for both sides ───────────────
 
-    /// Speaker of the party's transcript lines.
-    fn speaker(self) -> &'static str {
-        match self {
-            Party::You => "User",
-            Party::Them => "Them",
-        }
+/// A side's label in the fork's own engines, their status events and the logs.
+/// Always "You" or "Them": the room of an in-person meeting is "Them" here
+/// (upstream's engines are told "Room", see `start_capture_per_party`).
+fn side_label(side: Side) -> &'static str {
+    match side {
+        Side::You => "You",
+        Side::Them => "Them",
     }
+}
 
-    /// Start of the party's segment ids, e.g. "them_ab12_".
-    fn segment_prefix(self, session_prefix: &str) -> String {
-        match self {
-            Party::You => format!("you_{}_", session_prefix),
-            Party::Them => format!("them_{}_", session_prefix),
-        }
+/// Speaker of a side's transcript lines.
+fn side_speaker(side: Side) -> &'static str {
+    match side {
+        Side::You => "User",
+        Side::Them => "Them",
+    }
+}
+
+/// Start of a side's segment ids, e.g. "them_ab12_". `session_prefix` is the
+/// capture's prefix, with the provider's generation once the side's provider
+/// was swapped (`side_swap::generation_prefix`: "them_ab12s1_").
+fn segment_prefix(side: Side, session_prefix: &str) -> String {
+    match side {
+        Side::You => format!("you_{}_", session_prefix),
+        Side::Them => format!("them_{}_", session_prefix),
     }
 }
 
@@ -141,75 +142,155 @@ fn self_segmenting(provider: &str) -> bool {
     matches!(provider, "whisper_cpp" | "soniox")
 }
 
-/// Forward a party's STT results as `transcript_update` / `transcript_final`.
-/// Other engines' results are merged into paragraphs by the SegmentAccumulator
-/// (pause threshold read live). "Them" finals also go to the intelligence engine.
-fn spawn_party_emitter(
-    app: &AppHandle,
-    party: Party,
+/// The id a line straight from an engine goes out under: the side's prefix,
+/// then the engine's own segment id, else a line counter (`counter`: the finals
+/// so far). A swapped provider's ids carry its generation, so they can't reuse
+/// the old one's; Soniox is given the same prefix for its translations
+/// (`create_stt_provider_for_party`, `swap_plan`).
+fn direct_line_id(
+    side: Side,
+    session_prefix: &str,
+    generation: u32,
+    result: &crate::stt::provider::TranscriptResult,
+    counter: &mut u64,
+) -> String {
+    let id_prefix = segment_prefix(side, &side_swap::generation_prefix(session_prefix, generation));
+    match result.segment_id {
+        Some(ref custom_id) => format!("{}{}", id_prefix, custom_id),
+        None if result.is_final => {
+            *counter += 1;
+            format!("{}{}", id_prefix, counter)
+        }
+        None => format!("{}{}", id_prefix, *counter + 1),
+    }
+}
+
+/// Tell the intelligence engine about a line from Them, interim or final: a
+/// new line that reads as a question replaces the question detected before
+/// (`IntelligenceEngine::note_them_line`). `line_id` is the id the line goes
+/// out under. Called before the line's final is ingested.
+fn note_them_line(app: &AppHandle, line_id: &str, text: &str, is_final: bool) {
+    if let Some(intel) = app.state::<AppState>().intelligence.as_ref() {
+        if let Ok(mut engine) = intel.lock() {
+            engine.note_them_line(line_id, text, is_final);
+        }
+    }
+}
+
+/// A transcript line on its way out of `pump_party_lines`.
+struct TranscriptLine {
+    /// The id it goes out under ("them_ab12_acc_3", "them_ab12_sx1_7").
+    id: String,
+    /// The `segment` of its `transcript_update` / `transcript_final` event.
+    segment: serde_json::Value,
+    text: String,
+    timestamp_ms: u64,
+    is_final: bool,
+}
+
+/// Turn a side's STT results into transcript lines until the side's result
+/// channel closes. Engines that cut their own lines go out as they come, under
+/// the engine's segment ids; the others' results are merged into paragraphs by
+/// the SegmentAccumulator (pause threshold read live). When the side's
+/// provider is swapped for a language change (`audio::side_swap`), the line it
+/// left open is ended first and the new provider starts lines of its own.
+async fn pump_party_lines(
+    side: Side,
     provider: &str,
     session_prefix: &str,
-    mut rx: mpsc::Receiver<crate::stt::provider::TranscriptResult>,
-) -> tokio::task::JoinHandle<()> {
-    use std::sync::atomic::Ordering;
+    rx: &mut mpsc::Receiver<Tagged>,
+    signal: &SwapSignal,
+    pause_threshold: &std::sync::atomic::AtomicU64,
+    mut on_line: impl FnMut(TranscriptLine),
+) {
+    let speaker = side_speaker(side);
+    let mut tally = TranscriptTally::new(side_label(side), provider);
 
-    let app = app.clone();
-    let id_prefix = party.segment_prefix(session_prefix);
-    let accumulate = !self_segmenting(provider);
-    let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
-    let mut tally = TranscriptTally::new(party.role(), provider);
-    let detection_app = app.clone();
-    let push_final = move |text: &str, timestamp_ms: u64| {
-        crate::intelligence::ingest_transcript(
-            &detection_app, text.to_string(), party.speaker().to_string(), timestamp_ms, true,
+    if !self_segmenting(provider) {
+        // Accumulator path: merge same-speaker segments
+        let id_prefix = segment_prefix(side, session_prefix);
+        let line = |output: AccumulatorOutput| {
+            let id = format!("{}{}", id_prefix, output.id);
+            TranscriptLine {
+                segment: accumulator_segment_json(&id, speaker, &output),
+                id,
+                is_final: output.is_final,
+                timestamp_ms: output.timestamp_ms,
+                text: output.text,
+            }
+        };
+        let mut accumulator = crate::stt::segment_accumulator::SegmentAccumulator::new(
+            pause_threshold.load(Ordering::Relaxed),
         );
-    };
-    let emit = move |app: &AppHandle, segment: serde_json::Value, is_final: bool| {
-        let event_name = if is_final { "transcript_final" } else { "transcript_update" };
-        let _ = app.emit(event_name, &serde_json::json!({ "segment": segment }));
-    };
+        side_swap::pump_accumulated(
+            rx,
+            signal,
+            &mut accumulator,
+            pause_threshold,
+            |result| tally.record(result.is_final),
+            |output| on_line(line(output)),
+        )
+        .await;
+
+        // Flush remaining accumulated segment on meeting end (a final)
+        if let Some(output) = accumulator.flush() {
+            on_line(line(output));
+        }
+    } else {
+        // Direct path: the engine's own segment ids, else a line counter
+        let mut counter = 0u64;
+        side_swap::pump_direct(
+            rx,
+            signal,
+            |result| tally.record(result.is_final),
+            |generation, result| {
+                let id = direct_line_id(side, session_prefix, generation, &result, &mut counter);
+                on_line(TranscriptLine {
+                    segment: result_segment_json(&id, speaker, &result),
+                    id,
+                    is_final: result.is_final,
+                    timestamp_ms: result.timestamp_ms,
+                    text: result.text,
+                });
+            },
+        )
+        .await;
+    }
+}
+
+/// Forward a side's STT results as `transcript_update` / `transcript_final`
+/// until the side's result channel closes (`pump_party_lines`).
+///
+/// Every line of Them is noted by the intelligence engine, then finals of both
+/// sides go to it and to the question services (`intelligence::ingest_transcript`).
+fn spawn_party_emitter(
+    app: &AppHandle,
+    side: Side,
+    provider: &str,
+    session_prefix: &str,
+    mut rx: mpsc::Receiver<Tagged>,
+    signal: Arc<SwapSignal>,
+) -> tokio::task::JoinHandle<()> {
+    let app = app.clone();
+    let provider = provider.to_string();
+    let session_prefix = session_prefix.to_string();
+    let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
 
     tokio::spawn(async move {
-        if accumulate {
-            // Accumulator path: merge same-speaker segments
-            let mut accumulator =
-                crate::stt::segment_accumulator::SegmentAccumulator::new(pause_threshold.load(Ordering::Relaxed));
-            while let Some(result) = rx.recv().await {
-                tally.record(result.is_final);
-                accumulator.set_pause_threshold(pause_threshold.load(Ordering::Relaxed));
-                for output in accumulator.feed_result(result) {
-                    let seg_id = format!("{}{}", id_prefix, output.id);
-                    emit(&app, accumulator_segment_json(&seg_id, party.speaker(), &output), output.is_final);
-                    if output.is_final {
-                        push_final(&output.text, output.timestamp_ms);
-                    }
-                }
+        pump_party_lines(side, &provider, &session_prefix, &mut rx, &signal, &pause_threshold, |line| {
+            let event_name = if line.is_final { "transcript_final" } else { "transcript_update" };
+            let _ = app.emit(event_name, &serde_json::json!({ "segment": line.segment }));
+            // A new line from Them replaces the old detected question.
+            if side == Side::Them {
+                note_them_line(&app, &line.id, &line.text, line.is_final);
             }
-            // Flush remaining accumulated segment on meeting end
-            if let Some(output) = accumulator.flush() {
-                let seg_id = format!("{}{}", id_prefix, output.id);
-                emit(&app, accumulator_segment_json(&seg_id, party.speaker(), &output), true);
-                push_final(&output.text, output.timestamp_ms);
+            if line.is_final {
+                crate::intelligence::ingest_transcript(
+                    &app, line.text, side_speaker(side).to_string(), line.timestamp_ms, true,
+                );
             }
-        } else {
-            // Direct path: the engine's own segment ids, else a line counter
-            let mut counter = 0u64;
-            while let Some(result) = rx.recv().await {
-                tally.record(result.is_final);
-                let seg_id = match result.segment_id {
-                    Some(ref custom_id) => format!("{}{}", id_prefix, custom_id),
-                    None if result.is_final => {
-                        counter += 1;
-                        format!("{}{}", id_prefix, counter)
-                    }
-                    None => format!("{}{}", id_prefix, counter + 1),
-                };
-                emit(&app, direct_segment_json(&seg_id, party.speaker(), &result), result.is_final);
-                if result.is_final {
-                    push_final(&result.text, result.timestamp_ms);
-                }
-            }
-        }
+        })
+        .await;
     })
 }
 
@@ -229,6 +310,20 @@ pub async fn start_capture(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
+
+    // The legacy single-provider route also uses browser Web Speech for the
+    // microphone and may use providers/models that cannot honor `auto`.
+    // Require per-party configuration before changing capture state.
+    let auto_language_selected = state.stt.as_ref().is_some_and(|stt| {
+        stt.lock()
+            .map(|router| router.language.eq_ignore_ascii_case("auto"))
+            .unwrap_or(false)
+    });
+    if auto_language_selected {
+        return Err(
+            "Auto-detect needs You and Them to be set up separately. Open Audio & Devices, choose a speech-to-text provider for each side, then start again.".to_string(),
+        );
+    }
 
     // Check if already capturing
     {
@@ -253,7 +348,7 @@ pub async fn start_capture(
             .lock()
             .map_err(|_| "Audio state lock poisoned".to_string())?;
         let mgr = guard.get_or_insert_with(AudioCaptureManager::new);
-        mgr.start_capture(&mic_device_id, &system_device_id, false, tx)?;
+        mgr.start_capture(&mic_device_id, &system_device_id, false, tx, capture_status_sink(&app))?;
         for warning in mgr.take_warnings() {
             let _ = app.emit("capture_warning", warning);
         }
@@ -394,6 +489,12 @@ pub async fn start_capture(
                     });
                     let _ = stt_app.emit(event_name, &payload);
 
+                    // A new line from Them replaces the old detected question.
+                    note_them_line(&stt_app, &output.id, &output.text, output.is_final);
+
+                    // Push final segments to the intelligence engine's
+                    // transcript buffer so the AI has access to what "Them" said
+                    // (and to the question services).
                     if output.is_final {
                         crate::intelligence::ingest_transcript(
                             &stt_app, output.text.clone(), "Them".to_string(), output.timestamp_ms, true,
@@ -417,11 +518,30 @@ pub async fn start_capture(
         let mut vad = VoiceActivityDetector::new();
         let mut mic_emit_counter: u32 = 0;
         let mut system_emit_counter: u32 = 0;
-        // Mix buffers for proper two-source recording
-        let mut mix_mic: Vec<i16> = Vec::new();
-        let mut mix_sys: Vec<i16> = Vec::new();
+        // Mixer for proper two-source recording: places mic and system on the
+        // wall clock so a stalled side cannot shift the other.
+        let mut recording_mixer = RecordingMixer::new();
+        // While no audio arrives, time still passes: the mixer pads a side that
+        // went quiet as it happens, not all at once when it comes back.
+        let mut mixer_tick = tokio::time::interval(MIXER_TICK_INTERVAL);
+        mixer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        while let Some(mut chunk) = rx.recv().await {
+        loop {
+            // Audio first: the tick only runs once the queue is empty, so a
+            // backlog is never mistaken for silence.
+            let mut chunk = tokio::select! {
+                biased;
+                received = rx.recv() => match received {
+                    Some(chunk) => chunk,
+                    None => break,
+                },
+                _ = mixer_tick.tick() => {
+                    if let Some(ref rec) = recorder {
+                        recording_mixer.tick(wall_clock_ms(), &mut |b| rec.write_samples(b));
+                    }
+                    continue;
+                }
+            };
             let vad_result = vad.process_chunk(&chunk.pcm_data);
             chunk.is_speech = vad_result.is_speech;
 
@@ -449,29 +569,22 @@ pub async fn start_capture(
 
             // Recording with mic/system mixing
             if let Some(ref rec) = recorder {
+                // Placed by when it was captured, not when it was dequeued.
+                let sink = &mut |b: &[i16]| rec.write_samples(b);
                 match chunk.source {
-                    AudioSource::Mic => mix_mic.extend_from_slice(&chunk.pcm_data),
-                    AudioSource::System => mix_sys.extend_from_slice(&chunk.pcm_data),
+                    AudioSource::Mic => recording_mixer.push(
+                        MixSide::Mic,
+                        &chunk.pcm_data,
+                        chunk.timestamp_ms,
+                        sink,
+                    ),
+                    AudioSource::System => recording_mixer.push(
+                        MixSide::System,
+                        &chunk.pcm_data,
+                        chunk.timestamp_ms,
+                        sink,
+                    ),
                     AudioSource::Room => rec.write_samples(&chunk.pcm_data),
-                }
-                // Mix when both buffers have data
-                let mix_len = mix_mic.len().min(mix_sys.len());
-                if mix_len > 0 {
-                    let mixed: Vec<i16> = mix_mic[..mix_len].iter()
-                        .zip(&mix_sys[..mix_len])
-                        .map(|(&m, &s)| ((m as i32 + s as i32) * 4).clamp(-32768, 32767) as i16)
-                        .collect();
-                    rec.write_samples(&mixed);
-                    mix_mic.drain(..mix_len);
-                    mix_sys.drain(..mix_len);
-                }
-                // Solo flush if one source has >2s buffered with nothing from the other
-                if mix_mic.len() > 32000 && mix_sys.is_empty() {
-                    rec.write_samples(&mix_mic);
-                    mix_mic.clear();
-                } else if mix_sys.len() > 32000 && mix_mic.is_empty() {
-                    rec.write_samples(&mix_sys);
-                    mix_sys.clear();
                 }
             }
 
@@ -485,18 +598,7 @@ pub async fn start_capture(
 
         // Flush remaining mix buffers on loop exit
         if let Some(ref rec) = recorder {
-            let mix_len = mix_mic.len().min(mix_sys.len());
-            if mix_len > 0 {
-                let mixed: Vec<i16> = mix_mic[..mix_len].iter()
-                    .zip(&mix_sys[..mix_len])
-                    .map(|(&m, &s)| ((m as i32 + s as i32) * 4).clamp(-32768, 32767) as i16)
-                    .collect();
-                rec.write_samples(&mixed);
-                mix_mic.drain(..mix_len);
-                mix_sys.drain(..mix_len);
-            }
-            if !mix_mic.is_empty() { rec.write_samples(&mix_mic); }
-            if !mix_sys.is_empty() { rec.write_samples(&mix_sys); }
+            recording_mixer.finish(&mut |b| rec.write_samples(b));
         }
 
         // Clean shutdown
@@ -534,12 +636,14 @@ fn capture_meeting_matches(state: &AppState, expected: Option<&str>) -> Result<b
 
 /// Stop all audio capture. `keep_recording` (a device change mid-meeting)
 /// keeps the meeting's recording open for the capture that follows.
+/// `expected_meeting_id`: stop only while that meeting is still the live one.
 #[command]
 pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>, expected_meeting_id: Option<String>) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
     // An old hot-swap must never stop a newer meeting's capture.
     if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? { return Ok(()); }
+    let keep_recording = keep_recording.unwrap_or(false);
 
     // Restore original default capture device if IPolicyConfig override was active
     restore_default_device_if_overridden(&state, &app);
@@ -552,19 +656,33 @@ pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>, expected
 
         match guard.as_mut() {
             Some(mgr) => {
+                // The recorder stays open for now: the tasks drained below still
+                // write the last audio into it.
                 mgr.stop_capture(true);
                 log::info!("Audio capture stopped via command; draining final results");
+                // `keep_recording` means the meeting goes on (a device change), so the
+                // sides running without speech-to-text stay remembered; a real stop forgets them.
+                if !keep_recording {
+                    if let Ok(mut refusals) = state.auto_refusals.lock() {
+                        *refusals = [None, None];
+                    }
+                }
             }
             None => return Err("No audio manager initialized".to_string()),
         }
     };
+    // No side is left to restart for a language change.
+    set_running_capture(None);
+
+    // Every side's thread has stopped: the windows drop what they showed about reconnecting.
+    let _ = app.emit("audio_capture_stopped", ());
 
     if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
         crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining audio/STT; unfinished tasks were stopped");
     }
     let recording_info = state.audio.lock()
         .map_err(|_| "Audio state lock poisoned".to_string())?
-        .as_mut().and_then(|mgr| mgr.stop_capture(keep_recording.unwrap_or(false)));
+        .as_mut().and_then(|mgr| mgr.stop_capture(keep_recording));
 
     // Store recording info for end_meeting to pick up.
     // The frontend calls stopCapture() then endMeeting() in sequence, so
@@ -1017,6 +1135,34 @@ fn needs_default_mic_override(config: &crate::audio::PartyAudioConfig, stt_skipp
 
 /// How often the audio loop re-checks the mute flags when no audio arrives (200 ms).
 const MUTE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+/// How often the recording mixer is ticked while no audio arrives.
+const MIXER_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Where a capture side's reconnect statuses go: the log, the debug panel and
+/// the `audio_capture_status` event (the toast decides what to show).
+fn capture_status_sink(app: &AppHandle) -> StatusSink {
+    let app = app.clone();
+    Arc::new(move |status: CaptureStatus| {
+        let line = format!(
+            "{:?} capture {:?} on '{}'{}",
+            status.side,
+            status.state,
+            status.device,
+            if status.message.is_empty() { String::new() } else { format!(": {}", status.message) }
+        );
+        let level = match status.state {
+            crate::audio::capture_supervisor::CaptureState::Lost => "warn",
+            _ => "info",
+        };
+        crate::stt::emit_stt_debug(&app, level, "audio", &line);
+        let _ = app.emit("audio_capture_status", &status);
+    })
+}
+
+/// The stats line's xrun and rebuild counts for one side.
+fn capture_counts(counters: &CaptureCounters) -> String {
+    format!(", xruns: {}, rebuilds: {}", counters.xruns(), counters.rebuilds())
+}
 
 /// Pass a party's mute flag on to its provider when it changed.
 fn sync_mute(provider: &mut Option<Box<dyn STTProvider>>, applied: &mut bool, flag: &AtomicBool) {
@@ -1037,6 +1183,7 @@ fn sync_mute(provider: &mut Option<Box<dyn STTProvider>>, applied: &mut bool, fl
 /// `skip_you_stt` (in-person meetings, where the room mic is "Them") starts no
 /// "You" provider at all, so a cloud provider isn't billed for a muted mic.
 /// Audio is still captured for levels, recording, and (optionally) the other party's STT.
+/// `expected_meeting_id`: (re)start only while that meeting is still the live one.
 #[command]
 pub async fn start_capture_per_party(
     app: AppHandle,
@@ -1059,7 +1206,62 @@ pub async fn start_capture_per_party(
         return Err("The meeting ended before capture could restart".to_string());
     }
 
-    // If already capturing, stop first (allows mid-meeting hot-swap)
+    // Unique session prefix to avoid segment ID collisions across mid-meeting restarts.
+    // Each restart of start_capture_per_party gets a distinct prefix, so segment IDs
+    // like "you_a3_1" won't collide with "you_b7_1" from a previous session.
+    // Computed before the providers exist: Soniox tags its translations with
+    // the full id of the line they belong to.
+    let session_prefix = format!("{:x}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() % 0xFFFF);
+
+    // Validate provider/model combinations before stopping an existing meeting,
+    // switching the default microphone, or starting new audio capture.
+    //
+    // A side that can't detect the language goes without STT instead of
+    // blocking a meeting that is just starting, and the user is told once
+    // capture is up. While a capture runs (a swap), a refusal the side already
+    // runs under is tolerated silently; a new one is returned as an error and
+    // the running capture is left alone (see `resolve_sides`).
+    let was_capturing = state
+        .audio
+        .lock()
+        .map(|guard| guard.as_ref().is_some_and(|mgr| mgr.is_capturing()))
+        .unwrap_or(false);
+    let you_result = if skip_you_stt {
+        crate::stt::emit_stt_debug(&app, "info", "stt", "'You' STT skipped (in-person meeting)");
+        Ok(None)
+    } else {
+        create_stt_provider_for_party(&you, &them, &state, &app, Side::You, "You", &session_prefix).await
+    };
+    let them_role = if skip_you_stt { "Room" } else { "Them" };
+    let them_result =
+        create_stt_provider_for_party(&them, &you, &state, &app, Side::Them, them_role, &session_prefix).await;
+    let running_refusals = state
+        .auto_refusals
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    // Web Speech runs in the frontend, which stops it by itself when its language becomes Auto-detect.
+    let frontend_stt = [
+        !skip_you_stt && uses_frontend_stt(&you),
+        uses_frontend_stt(&them),
+    ];
+    let (you_side, them_side) =
+        resolve_sides(you_result, them_result, was_capturing, &running_refusals, frontend_stt)?;
+    let you_refused = you_side.refusal.is_some();
+    let them_refused = them_side.refusal.is_some();
+    let sides_refusals = [you_side.refusal.clone(), them_side.refusal.clone()];
+    let refusals = start_warnings(&[
+        ("You", you_side.announce.then(|| you_side.refusal.clone()).flatten()),
+        (them_role, them_side.announce.then(|| them_side.refusal.clone()).flatten()),
+    ]);
+    let you_stt = you_side.provider;
+    let them_stt = them_side.provider;
+
+    // If already capturing, stop first (allows mid-meeting hot-swap).
+    let mut stopped_existing_capture = false;
     {
         // Restore any previous IPolicyConfig override before hot-swap
         restore_default_device_if_overridden(&state, &app);
@@ -1070,6 +1272,7 @@ pub async fn start_capture_per_party(
             .map_err(|_| "Audio state lock poisoned".to_string())?;
         if let Some(ref mut mgr) = *guard {
             if mgr.is_capturing() {
+                stopped_existing_capture = true;
                 log::info!("start_capture_per_party: stopping existing capture for hot-swap");
                 crate::stt::emit_stt_debug(&app, "info", "stt",
                     "Hot-swap: stopping existing audio capture + STT providers");
@@ -1077,7 +1280,17 @@ pub async fn start_capture_per_party(
             }
         }
     }
+    if stopped_existing_capture {
+        // The old sides can't be restarted for a language change any more.
+        set_running_capture(None);
+        // The old sides have stopped; the new capture starts with a clean slate.
+        let _ = app.emit("audio_capture_stopped", ());
+        // Give WASAPI time to release the previous stream before reopening the devices.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 
+    // The old capture's tasks send their last results and stop their providers
+    // before the new one starts (they share the meeting's transcript and recording).
     if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
         crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining the previous audio/STT session");
     }
@@ -1113,8 +1326,8 @@ pub async fn start_capture_per_party(
     // The override must happen before capture starts so that Web Speech API
     // picks up the correct device when recognition.start() is called.
     {
-        let you_needs_override = needs_default_mic_override(&you, skip_you_stt);
-        let them_needs_override = needs_default_mic_override(&them, false);
+        let you_needs_override = needs_default_mic_override(&you, skip_you_stt || you_refused);
+        let them_needs_override = needs_default_mic_override(&them, them_refused);
         log::info!(
             "IPolicyConfig check: You needs_override={} (provider='{}', stt_skipped={}), Them needs_override={} (provider='{}')",
             you_needs_override, you.stt_provider, skip_you_stt, them_needs_override, them.stt_provider
@@ -1211,58 +1424,19 @@ pub async fn start_capture_per_party(
             "AudioCaptureManager::start_capture mic='{}', system='{}'",
             mic_device, system_device
         );
-        mgr.start_capture(&mic_device, &system_device, system_is_input, tx)?;
+        mgr.start_capture(&mic_device, &system_device, system_is_input, tx, capture_status_sink(&app))?;
         for warning in mgr.take_warnings() {
             let _ = app.emit("capture_warning", warning);
         }
     }
 
-    // Unique session prefix to avoid segment ID collisions across mid-meeting restarts.
-    // Each restart of start_capture_per_party gets a distinct prefix, so segment IDs
-    // like "you_a3_1" won't collide with "you_b7_1" from a previous session.
-    // Computed before the providers exist: Soniox tags its translations with
-    // the full id of the line they belong to.
-    let session_prefix = format!("{:x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() % 0xFFFF);
-
-    // Provider setup can fail after the native devices opened (missing key,
-    // unavailable model, invalid config). No processing task owns them yet.
-    let providers = async {
-        let you_stt = if skip_you_stt {
-            crate::stt::emit_stt_debug(&app, "info", "stt", "'You' STT skipped (in-person meeting)");
-            None
-        } else {
-            create_stt_provider_for_party(&you, &them, &state, &app, Party::You, &session_prefix).await?
-        };
-        let them_stt = create_stt_provider_for_party(&them, &you, &state, &app, Party::Them, &session_prefix).await?;
-        Ok::<_, String>((you_stt, them_stt))
-    }.await;
-    let (you_stt, them_stt) = match providers {
-        Ok(providers) => providers,
-        Err(error) => {
-            // Keep the meeting recorder available for a corrected config or End.
-            if let Ok(mut audio) = state.audio.lock() {
-                if let Some(manager) = audio.as_mut() { manager.stop_capture(true); }
-            }
-            restore_default_device_if_overridden(&state, &app);
-            return Err(error);
-        }
-    };
-
-    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
-        if let Ok(mut audio) = state.audio.lock() {
-            if let Some(manager) = audio.as_mut() { manager.stop_capture(true); }
-        }
-        return Err("The meeting ended while speech recognition was starting".to_string());
-    }
-
     // Start STT streams
-    let (you_stt_tx, you_stt_rx) =
-        mpsc::channel::<crate::stt::provider::TranscriptResult>(256);
-    let (them_stt_tx, them_stt_rx) =
-        mpsc::channel::<crate::stt::provider::TranscriptResult>(256);
+    // Each side's results arrive tagged with the generation of the provider that made
+    // them (a side's provider can be swapped alone, see audio::side_swap).
+    let (you_stt_tx, you_stt_rx) = mpsc::channel::<Tagged>(256);
+    let (them_stt_tx, them_stt_rx) = mpsc::channel::<Tagged>(256);
+    let you_signal = Arc::new(SwapSignal::default());
+    let them_signal = Arc::new(SwapSignal::default());
 
     let mut you_stt_provider = you_stt;
     let mut them_stt_provider = them_stt;
@@ -1276,7 +1450,7 @@ pub async fn start_capture_per_party(
         crate::stt::emit_stt_debug(&app, "info", "stt",
             &format!("Starting 'You' STT ({})", you.stt_provider));
         provider.set_muted(you_muted_at_start);
-        match provider.start_stream(you_stt_tx).await {
+        match provider.start_stream(you_signal.attach(&you_stt_tx)).await {
             Ok(()) => {
                 log::info!("'You' party STT started ({})", you.stt_provider);
                 crate::stt::emit_stt_debug(&app, "info", "stt",
@@ -1301,7 +1475,7 @@ pub async fn start_capture_per_party(
         crate::stt::emit_stt_debug(&app, "info", "stt",
             &format!("Starting 'Them' STT ({})", them.stt_provider));
         provider.set_muted(them_muted_at_start);
-        match provider.start_stream(them_stt_tx).await {
+        match provider.start_stream(them_signal.attach(&them_stt_tx)).await {
             Ok(()) => {
                 log::info!("'Them' party STT started ({})", them.stt_provider);
                 crate::stt::emit_stt_debug(&app, "info", "stt",
@@ -1323,17 +1497,24 @@ pub async fn start_capture_per_party(
     }
 
     // Transcript events: "You" lines are spoken by "User", "Them" lines by "Them".
+    // Each side's task also ends the open line when the side's provider is swapped.
     if you_stt_provider.is_some() {
-        tasks.push(spawn_party_emitter(&app, Party::You, &you.stt_provider, &session_prefix, you_stt_rx));
+        tasks.push(spawn_party_emitter(
+            &app, Side::You, &you.stt_provider, &session_prefix, you_stt_rx, you_signal.clone(),
+        ));
     }
     if them_stt_provider.is_some() {
-        tasks.push(spawn_party_emitter(&app, Party::Them, &them.stt_provider, &session_prefix, them_stt_rx));
+        tasks.push(spawn_party_emitter(
+            &app, Side::Them, &them.stt_provider, &session_prefix, them_stt_rx, them_signal.clone(),
+        ));
     }
 
-    // Grab the recorder handle for WAV recording (with mic/system mixing)
-    let recorder = {
+    // Grab the recorder handle for WAV recording (with mic/system mixing), and
+    // each side's xrun/rebuild counts for the stats line.
+    let (recorder, (you_counters, them_counters)) = {
         let guard = state.audio.lock().map_err(|_| "lock poisoned".to_string())?;
-        guard.as_ref().and_then(|mgr| mgr.get_recorder())
+        let mgr = guard.as_ref().ok_or("No audio manager initialized")?;
+        (mgr.get_recorder(), mgr.capture_counters())
     };
 
     // Grab mute flags so the audio loop can check them lock-free
@@ -1352,6 +1533,24 @@ pub async fn start_capture_per_party(
         );
     }
 
+    // A language change for one side reaches the loop here (set_party_language).
+    let (swap_tx, mut swap_rx) =
+        mpsc::unbounded_channel::<SideSwapMsg<Box<dyn STTProvider>>>();
+    if let Ok(mut slot) = state.side_swap.lock() {
+        *slot = Some(swap_tx);
+    }
+    // The loop keeps each side's result channel for the provider swapped in.
+    let you_stt_tx = Some(you_stt_tx);
+    let them_stt_tx = Some(them_stt_tx);
+    // What a side's replacement engine is built from (set_party_language).
+    let shared_language = get_stt_language(&state);
+    let running = RunningCapture {
+        session_prefix: session_prefix.clone(),
+        languages: [you.effective_language(&shared_language), them.effective_language(&shared_language)],
+        parties: [you.clone(), them.clone()],
+        signals: [you_signal.clone(), them_signal.clone()],
+    };
+
     // Audio processing task: levels + recording + STT feed per party
     let app_handle = app.clone();
     tasks.push(tokio::spawn(async move {
@@ -1369,9 +1568,14 @@ pub async fn start_capture_per_party(
         let mut last_sys_stats = std::time::Instant::now();
         let stats_interval = std::time::Duration::from_secs(120);
 
-        // Mix buffers for proper two-source recording
-        let mut mix_mic: Vec<i16> = Vec::new();
-        let mut mix_sys: Vec<i16> = Vec::new();
+        // Mixer for proper two-source recording: places mic and system on the
+        // wall clock so a stalled side cannot shift the other.
+        let mut recording_mixer = RecordingMixer::new();
+        // Capture times of the mic audio as it passes the echo stage, which
+        // holds some back: the recording places each sample by when it was
+        // captured, not by when the stage let it go.
+        let mut mic_times = CaptureTimes::new();
+        let mut mic_pieces: Vec<(usize, u64)> = Vec::new();
 
         // Track feed_audio errors per provider (emit once, not every chunk)
         let mut you_feed_error_emitted = false;
@@ -1388,7 +1592,10 @@ pub async fn start_capture_per_party(
         mute_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
+            // Audio first: the timer only runs once the queue is empty, so a
+            // backlog is never mistaken for silence by the recording mixer.
             let mut chunk = tokio::select! {
+                biased;
                 received = rx.recv() => match received {
                     Some(chunk) => chunk,
                     None => break,
@@ -1396,6 +1603,26 @@ pub async fn start_capture_per_party(
                 _ = mute_check.tick() => {
                     sync_mute(&mut you_stt_provider, &mut you_muted_applied, &you_muted_flag);
                     sync_mute(&mut them_stt_provider, &mut them_muted_applied, &them_muted_flag);
+                    // Time passes while no audio arrives: the recording pads
+                    // a side that went quiet as it happens.
+                    if let Some(ref rec) = recorder {
+                        recording_mixer.tick(wall_clock_ms(), &mut |b| rec.write_samples(b));
+                    }
+                    continue;
+                }
+                // One side's provider is being swapped for a new language; the other side,
+                // the audio and the recording carry on.
+                Some(msg) = swap_rx.recv() => {
+                    match msg {
+                        SideSwapMsg::Take { side: Side::You, reply } => side_swap::handle_take(
+                            &mut you_stt_provider, you_stt_tx.as_ref(), &you_signal, reply),
+                        SideSwapMsg::Take { side: Side::Them, reply } => side_swap::handle_take(
+                            &mut them_stt_provider, them_stt_tx.as_ref(), &them_signal, reply),
+                        SideSwapMsg::Put { side: Side::You, provider, muted } => side_swap::handle_put(
+                            &mut you_stt_provider, &mut you_muted_applied, provider, muted),
+                        SideSwapMsg::Put { side: Side::Them, provider, muted } => side_swap::handle_put(
+                            &mut them_stt_provider, &mut them_muted_applied, provider, muted),
+                    }
                     continue;
                 }
             };
@@ -1408,7 +1635,9 @@ pub async fn start_capture_per_party(
             match chunk.source {
                 AudioSource::System => echo.reference(cancel_echo, &chunk.pcm_data),
                 AudioSource::Mic => {
+                    mic_times.input(chunk.pcm_data.len(), chunk.timestamp_ms);
                     chunk.pcm_data = echo.mic(cancel_echo, std::mem::take(&mut chunk.pcm_data));
+                    mic_pieces = mic_times.output(chunk.pcm_data.len());
                     if chunk.pcm_data.is_empty() {
                         continue; // held back until the reference catches up
                     }
@@ -1436,8 +1665,17 @@ pub async fn start_capture_per_party(
                     if last_mic_stats.elapsed() >= stats_interval {
                         let rms = calculate_rms(&chunk.pcm_data);
                         let label = if chunk.source == AudioSource::Room { "Room" } else { "Mic" };
+                        let echo_queue = match (chunk.source == AudioSource::Mic, echo.queue_stats()) {
+                            (true, Some((refills, trims))) => {
+                                format!(", echo queue: {} refills, {} trims", refills, trims)
+                            }
+                            _ => String::new(),
+                        };
                         crate::stt::emit_stt_debug_ex(&app_handle, "info", "audio",
-                            &format!("{}: {} chunks, speech={}, rms={:.0}", label, mic_chunk_count, chunk.is_speech, rms),
+                            &format!(
+                                "{}: {} chunks, speech={}, rms={:.0}{}{}",
+                                label, mic_chunk_count, chunk.is_speech, rms, echo_queue, capture_counts(&you_counters)
+                            ),
                             Some("audio_mic_stats"));
                         last_mic_stats = std::time::Instant::now();
                     }
@@ -1452,7 +1690,10 @@ pub async fn start_capture_per_party(
                     if last_sys_stats.elapsed() >= stats_interval {
                         let rms = calculate_rms(&chunk.pcm_data);
                         crate::stt::emit_stt_debug_ex(&app_handle, "info", "audio",
-                            &format!("System: {} chunks, speech={}, rms={:.0}", system_chunk_count, chunk.is_speech, rms),
+                            &format!(
+                                "System: {} chunks, speech={}, rms={:.0}{}",
+                                system_chunk_count, chunk.is_speech, rms, capture_counts(&them_counters)
+                            ),
                             Some("audio_sys_stats"));
                         last_sys_stats = std::time::Instant::now();
                     }
@@ -1483,27 +1724,28 @@ pub async fn start_capture_per_party(
 
             // Recording with mic/system mixing
             if let Some(ref rec) = recorder {
+                // Placed by when it was captured, not when it was dequeued.
+                let sink = &mut |b: &[i16]| rec.write_samples(b);
                 match chunk.source {
-                    AudioSource::Mic => mix_mic.extend_from_slice(&chunk.pcm_data),
-                    AudioSource::System => mix_sys.extend_from_slice(&chunk.pcm_data),
+                    AudioSource::Mic => {
+                        let mut off = 0;
+                        for &(n, end_ms) in &mic_pieces {
+                            recording_mixer.push(
+                                MixSide::Mic,
+                                &chunk.pcm_data[off..off + n],
+                                end_ms,
+                                sink,
+                            );
+                            off += n;
+                        }
+                    }
+                    AudioSource::System => recording_mixer.push(
+                        MixSide::System,
+                        &chunk.pcm_data,
+                        chunk.timestamp_ms,
+                        sink,
+                    ),
                     AudioSource::Room => rec.write_samples(&chunk.pcm_data),
-                }
-                let mix_len = mix_mic.len().min(mix_sys.len());
-                if mix_len > 0 {
-                    let mixed: Vec<i16> = mix_mic[..mix_len].iter()
-                        .zip(&mix_sys[..mix_len])
-                        .map(|(&m, &s)| ((m as i32 + s as i32) * 4).clamp(-32768, 32767) as i16)
-                        .collect();
-                    rec.write_samples(&mixed);
-                    mix_mic.drain(..mix_len);
-                    mix_sys.drain(..mix_len);
-                }
-                if mix_mic.len() > 32000 && mix_sys.is_empty() {
-                    rec.write_samples(&mix_mic);
-                    mix_mic.clear();
-                } else if mix_sys.len() > 32000 && mix_mic.is_empty() {
-                    rec.write_samples(&mix_sys);
-                    mix_sys.clear();
                 }
             }
 
@@ -1557,18 +1799,7 @@ pub async fn start_capture_per_party(
 
         // Flush remaining mix buffers
         if let Some(ref rec) = recorder {
-            let mix_len = mix_mic.len().min(mix_sys.len());
-            if mix_len > 0 {
-                let mixed: Vec<i16> = mix_mic[..mix_len].iter()
-                    .zip(&mix_sys[..mix_len])
-                    .map(|(&m, &s)| ((m as i32 + s as i32) * 4).clamp(-32768, 32767) as i16)
-                    .collect();
-                rec.write_samples(&mixed);
-                mix_mic.drain(..mix_len);
-                mix_sys.drain(..mix_len);
-            }
-            if !mix_mic.is_empty() { rec.write_samples(&mix_mic); }
-            if !mix_sys.is_empty() { rec.write_samples(&mix_sys); }
+            recording_mixer.finish(&mut |b| rec.write_samples(b));
         }
 
         // Clean shutdown, both parties at once: a cloud provider waits for its
@@ -1585,6 +1816,9 @@ pub async fn start_capture_per_party(
                 }
             },
         );
+        // The transcript tasks end (and flush) once no result channel is left open.
+        drop(you_stt_tx);
+        drop(them_stt_tx);
 
         // Restore IPolicyConfig override if active (crash recovery for async task exit)
         {
@@ -1601,6 +1835,14 @@ pub async fn start_capture_per_party(
     }));
 
     log::info!("Per-party audio capture started");
+    set_running_capture(Some(running));
+    // Remember what each side now runs under, so the next swap can tell news from old.
+    if let Ok(mut stored) = state.auto_refusals.lock() {
+        *stored = sides_refusals;
+    }
+    if let Some(warning) = refusals {
+        let _ = app.emit("capture_warning", warning);
+    }
     Ok(())
 }
 
@@ -1611,23 +1853,36 @@ pub async fn start_capture_per_party(
 /// because per-party mode never calls set_stt_provider(), so the router's
 /// cached keys are always None.
 ///
-/// The language is the party's own (`config.language`, possibly "auto"),
-/// else the global STT language; `other` is the other party's config.
+/// `party_role` is what the side is called ("You", "Them", or "Room" for Them
+/// in an in-person meeting). `other` is the other side's config (Soniox takes
+/// its language as a hint) and `session_prefix` the prefix of this provider's
+/// segment ids (Soniox tags its translations with the full id of their line).
 async fn create_stt_provider_for_party(
     config: &crate::audio::PartyAudioConfig,
     other: &crate::audio::PartyAudioConfig,
     state: &AppState,
     app: &AppHandle,
-    party: Party,
+    side: Side,
+    party_role: &str,
     session_prefix: &str,
 ) -> Result<Option<Box<dyn STTProvider>>, String> {
-    use crate::stt::language;
     use crate::stt::provider::STTProviderType;
 
-    let party_role = party.role();
     let stt_type = STTProviderType::from_str(&config.stt_provider)
         .ok_or_else(|| format!("Unknown STT provider: {}", config.stt_provider))?;
-    let stt_language = party_lang(config, state);
+    // This side's own language when it has one, else the shared transcription language.
+    let shared_language = get_stt_language(state);
+    let stt_language = config.effective_language(&shared_language);
+    let deepgram_config = matches!(&stt_type, STTProviderType::Deepgram)
+        .then(|| get_deepgram_config(state));
+
+    check_auto_language(
+        &stt_language,
+        &stt_type,
+        config.local_model_id.as_deref(),
+        deepgram_config.as_ref().map(|dg| dg.model.as_str()),
+        party_role,
+    )?;
 
     crate::stt::emit_stt_debug(app, "info", "stt",
         &format!("[{}] Creating provider: {} (lang: {}, model: {})",
@@ -1643,9 +1898,20 @@ async fn create_stt_provider_for_party(
                 .or_else(|_| find_any_downloaded_model(state, "whisper_cpp"));
             match model_result {
                 Ok(model_path) => {
+                    if stt_language.eq_ignore_ascii_case("auto") {
+                        let resolved_model = model_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default();
+                        if !is_multilingual_whisper_model(resolved_model) {
+                            return Err(whisper_auto_refusal(resolved_model, party_role));
+                        }
+                    }
+                    let lang = stt_language.clone();
                     let whisper_config = state.whisper_config.clone();
                     let mut p = crate::stt::whisper_cpp::WhisperCppSTT::new(model_path, whisper_config);
-                    p.set_language(&language::whisper_cpp_language(&stt_language));
+                    p.set_language(&lang);
+                    // NexQ Plus: on the GPU (Metal on macOS) unless switched off.
                     let use_gpu = app
                         .state::<crate::stt::plus_config::SttPlusState>()
                         .whisper_use_gpu
@@ -1673,7 +1939,7 @@ async fn create_stt_provider_for_party(
         #[cfg(target_os = "windows")]
         STTProviderType::WindowsNative => {
             use crate::stt::windows_native::WindowsNativeSTT;
-            let lang = language::without_auto(&stt_language);
+            let lang = stt_language.clone();
             let mut provider = if config.is_input_device {
                 // IPolicyConfig already overrides system default to the selected device,
                 // so DirectMic mode correctly captures from non-default devices too
@@ -1688,19 +1954,13 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(provider)))
         }
         STTProviderType::Deepgram => {
+            let lang = stt_language.clone();
             let key = get_credential_key(state, "deepgram");
             log::info!("Deepgram key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
-            let dg_config = get_deepgram_config(state);
+            let dg_config = deepgram_config.unwrap_or_default();
             let mut p = match key.as_deref() {
                 Some(k) => crate::stt::deepgram::DeepgramSTT::with_api_key(k),
                 None => crate::stt::deepgram::DeepgramSTT::new(),
-            };
-            // Flux takes the party's language only as a hint (flux-general-multi);
-            // "auto" sends none, so Flux detects the language itself.
-            let lang = if crate::stt::deepgram_flux::is_flux_model(&dg_config.model) {
-                stt_language.clone()
-            } else {
-                language::deepgram_language(&stt_language, &dg_config.model)
             };
             p.set_language(&lang);
             p.set_config(dg_config);
@@ -1720,7 +1980,7 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(p)))
         }
         STTProviderType::AzureSpeech => {
-            let lang = language::without_auto(&stt_language);
+            let lang = stt_language.clone();
             let key = get_credential_key(state, "azure_speech");
             let region = get_credential_key(state, "azure_speech_region");
             log::info!("Azure key for '{}': {}, region: {}", party_role,
@@ -1734,25 +1994,27 @@ async fn create_stt_provider_for_party(
             Ok(Some(Box::new(p)))
         }
         STTProviderType::GroqWhisper => {
+            let lang = stt_language.clone();
             let key = get_credential_key(state, "groq_whisper");
             log::info!("Groq key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
             let mut p = match key.as_deref() {
                 Some(k) => crate::stt::groq_whisper::GroqWhisperSTT::with_api_key(k),
                 None => crate::stt::groq_whisper::GroqWhisperSTT::new(),
             };
+            p.set_language(&lang);
+            if let Some(own) = config.own_language() {
+                p.pin_language(own);
+            }
             // Use shared config Arc — provider reads latest config on each API call,
             // so settings changes take effect immediately without restarting.
-            // The party's language overrides the shared config's (per instance).
+            // A side with its own language keeps it (pinned above); the others follow the shared one.
             p.set_shared_config(state.shared_groq_config.clone());
-            p.set_language(&stt_language);
             p.set_app_handle(app.clone());
             p.set_party(party_role);
             Ok(Some(Box::new(p)))
         }
         STTProviderType::Cartesia => {
-            // ink-2 detects the language itself; the party's language only
-            // warns when ink-2 can't transcribe it.
-            let lang = language::without_auto(&stt_language);
+            let lang = stt_language.clone();
             let key = get_credential_key(state, "cartesia");
             log::info!("Cartesia key for '{}': {}", party_role, if key.is_some() { "present" } else { "MISSING" });
             let mut p = match key.as_deref() {
@@ -1856,68 +2118,47 @@ async fn create_stt_provider_for_party(
         }
         STTProviderType::ParakeetTdt => {
             // Guard: ignore model_id from a different engine (e.g., sense-voice-small from sherpa_onnx)
-            let raw_model_id = config.local_model_id.as_deref();
-            let model_id = match raw_model_id {
-                Some(id) if id.contains("parakeet") || id.contains("nemo") => id,
-                Some(id) => {
-                    log::warn!("ParakeetTdt: ignoring cross-engine model_id '{}', using default", id);
-                    "parakeet-tdt-0.6b-v3-int8"
-                }
-                None => "parakeet-tdt-0.6b-v3-int8",
-            };
+            let model_id = config
+                .local_model_id
+                .as_deref()
+                .map(resolve_parakeet_model_id)
+                .unwrap_or_else(|| "parakeet-tdt-0.6b-v3-int8".to_string());
+            if config
+                .local_model_id
+                .as_deref()
+                .is_some_and(|id| id != model_id && !id.contains("parakeet") && !id.contains("nemo"))
+            {
+                log::warn!(
+                    "ParakeetTdt: ignoring cross-engine model_id, using default '{}'",
+                    model_id
+                );
+            }
             crate::stt::emit_stt_debug(app, "info", "stt",
                 &format!("[{}] Parakeet TDT: looking for model '{}' (local_model_id={:?})",
                     party_role, model_id, config.local_model_id));
-            let model_result = get_local_model_path(state, "parakeet_tdt", model_id)
+            let model_result = get_local_model_path(state, "parakeet_tdt", &model_id)
                 .or_else(|_| find_any_downloaded_model(state, "parakeet_tdt"));
             match model_result {
                 Ok(model_dir) => {
+                    // OrtStreamingSTT discovers the layout itself at start_stream
+                    // time: transducer (encoder/decoder/joiner, e.g. 0.6B v3) or
+                    // a single-file CTC encoder (e.g. 110M) — both run natively,
+                    // no external sherpa-onnx-offline program needed.
                     let lang = stt_language.clone();
-                    // Auto-detect model type: transducer (encoder/decoder/joiner) vs CTC (model.onnx)
-                    let transducer = crate::stt::local_engines::model_discovery::discover_model_files(&model_dir);
-                    if transducer.is_ok() {
-                        // Transducer model (e.g., 0.6B v3) → use in-process ORT streaming
-                        crate::stt::emit_stt_debug(app, "info", "stt",
-                            &format!("[{}] Parakeet transducer model from {} (lang={})",
-                                party_role, model_dir.display(), lang));
-                        let mut p = crate::stt::ort_streaming::OrtStreamingSTT::new(model_dir);
-                        p.set_language(&lang);
-                        p.set_app_handle(app.clone());
-                        Ok(Some(Box::new(p)))
-                    } else {
-                        // CTC model (e.g., 110M) → use offline sidecar
-                        let offline_files = crate::stt::local_engines::model_discovery::discover_offline_model_files(&model_dir);
-                        match offline_files {
-                            Ok(offline) => {
-                                let binary = find_offline_binary_for_state(state);
-                                match binary {
-                                    Some(binary_path) => {
-                                        crate::stt::emit_stt_debug(app, "info", "stt",
-                                            &format!("[{}] Parakeet CTC offline model from {} (lang={})",
-                                                party_role, model_dir.display(), lang));
-                                        let mut p = crate::stt::sherpa_offline::SherpaOfflineSTT::new(
-                                            binary_path, offline.model, offline.tokens,
-                                            crate::stt::sherpa_offline::OfflineModelType::NemoCtc,
-                                            STTProviderType::ParakeetTdt,
-                                        );
-                                        p.set_language(&lang);
-                                        p.set_app_handle(app.clone());
-                                        Ok(Some(Box::new(p)))
-                                    }
-                                    None => {
-                                        crate::stt::emit_stt_debug(app, "error", "stt",
-                                            &format!("[{}] {}", party_role, missing_offline_binary(state)));
-                                        Ok(None)
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                crate::stt::emit_stt_debug(app, "error", "stt",
-                                    &format!("[{}] Parakeet model discovery failed: {}", party_role, e));
-                                Ok(None)
-                            }
-                        }
+                    // Auto-detect needs the multilingual transducer: a CTC folder can't do it,
+                    // even when TDT v3 was asked for but only CTC is downloaded.
+                    if stt_language.eq_ignore_ascii_case("auto")
+                        && crate::stt::local_engines::model_discovery::discover_model_files(&model_dir).is_err()
+                    {
+                        return Err(parakeet_ctc_auto_refusal(party_role));
                     }
+                    crate::stt::emit_stt_debug(app, "info", "stt",
+                        &format!("[{}] Parakeet model from {} (lang={})",
+                            party_role, model_dir.display(), lang));
+                    let mut p = crate::stt::ort_streaming::OrtStreamingSTT::new(model_dir);
+                    p.set_language(&lang);
+                    p.set_app_handle(app.clone());
+                    Ok(Some(Box::new(p)))
                 }
                 Err(e) => {
                     crate::stt::emit_stt_debug(app, "error", "stt",
@@ -1927,20 +2168,24 @@ async fn create_stt_provider_for_party(
                 }
             }
         }
+        // NexQ Plus engines. Their status events name the side "You" or "Them"
+        // (never "Room"): the fork's status and region displays are keyed by that.
         STTProviderType::OpenAICompat => {
             use crate::stt::plus_config::{SttPlusState, OPENAI_COMPAT_STT_KEY_SLOT};
             let key = get_credential_key(state, OPENAI_COMPAT_STT_KEY_SLOT);
             let shared = app.state::<SttPlusState>().openai_compat.clone();
             let mut p = crate::stt::openai_compat::OpenAICompatSTT::new(shared, key);
+            // "auto" leaves the request's language out: the server detects it.
             p.set_language(&stt_language);
             p.set_app_handle(app.clone());
-            p.set_party(party_role);
+            p.set_party(side_label(side));
             Ok(Some(Box::new(p)))
         }
         STTProviderType::Soniox => {
             use crate::stt::plus_config::{SttPlusState, SONIOX_KEY_SLOT};
             let key = get_credential_key(state, SONIOX_KEY_SLOT);
             let cfg = app.state::<SttPlusState>().soniox_snapshot();
+            let party_label = side_label(side);
             let meeting_ref = state
                 .live_meeting
                 .lock()
@@ -1948,13 +2193,15 @@ async fn create_stt_provider_for_party(
                 .and_then(|m| m.as_ref().map(|m| m.id.clone()))
                 .unwrap_or_else(|| session_prefix.to_string());
             let options = crate::stt::soniox::SonioxSessionOptions {
-                party: party_role.to_string(),
+                party: party_label.to_string(),
+                // The side's language, or "auto": its language hints, with the
+                // other side's language when this one detects.
                 language: stt_language.clone(),
-                other_language: Some(party_lang(other, state)),
+                other_language: Some(other.effective_language(&shared_language)),
                 translation: soniox_translation(config, state),
-                segment_id_prefix: party.segment_prefix(session_prefix),
-                client_reference_id: Some(format!("nexq:{}:{}", meeting_ref, party_role.to_lowercase())),
-                diarize: party == Party::Them && cfg.enable_speaker_diarization,
+                segment_id_prefix: segment_prefix(side, session_prefix),
+                client_reference_id: Some(format!("nexq:{}:{}", meeting_ref, party_label.to_lowercase())),
+                diarize: side == Side::Them && cfg.enable_speaker_diarization,
             };
             crate::stt::emit_stt_debug(app, "info", "soniox",
                 &format!("[{}] model={}, region={}, translation={}", party_role, cfg.model, cfg.region,
@@ -2040,12 +2287,6 @@ fn get_stt_language(state: &AppState) -> String {
         .unwrap_or_else(|| "en-US".to_string())
 }
 
-/// A party's recognition language: its own setting ("auto" included), else
-/// the global STT language.
-fn party_lang(config: &crate::audio::PartyAudioConfig, state: &AppState) -> String {
-    crate::stt::language::party_language(config.language.as_deref(), &get_stt_language(state))
-}
-
 /// What Soniox translates a party into, per its `native_translation`:
 /// one-way into its own target, else the translation settings'; two-way
 /// between its languages A and B (both set, two different two-letter codes;
@@ -2092,6 +2333,259 @@ fn soniox_translation(
         _ => None,
     };
     chosen.unwrap_or_default()
+}
+
+/// The Auto-detect check of one side: nothing unless `language` is Auto-detect,
+/// else a refusal when the side's provider and model can't detect the language.
+/// `local_model_id` is the side's own model, `deepgram_model` the shared Deepgram one.
+fn check_auto_language(
+    language: &str,
+    provider: &crate::stt::provider::STTProviderType,
+    local_model_id: Option<&str>,
+    deepgram_model: Option<&str>,
+    party_role: &str,
+) -> Result<(), String> {
+    use crate::stt::provider::STTProviderType;
+
+    if !language.eq_ignore_ascii_case("auto") {
+        return Ok(());
+    }
+    let model = match provider {
+        STTProviderType::Deepgram => deepgram_model.unwrap_or_default().to_string(),
+        STTProviderType::WhisperCpp => local_model_id.unwrap_or("base").to_string(),
+        STTProviderType::ParakeetTdt => local_model_id
+            .map(resolve_parakeet_model_id)
+            .unwrap_or_else(|| "parakeet-tdt-0.6b-v3-int8".to_string()),
+        // NexQ Plus: among the Sherpa-ONNX models, SenseVoice detects the language.
+        STTProviderType::SherpaOnnx => local_model_id.unwrap_or_default().to_string(),
+        // The other providers don't depend on a model for Auto-detect.
+        _ => String::new(),
+    };
+    validate_auto_language_provider(provider, &model, party_role)
+}
+
+/// Whether `provider` + `model` can detect the spoken language on its own.
+/// Mirrors `supportsSTTAutoDetection` in `src/lib/sttLanguages.ts`; both sides
+/// check the same table (`src/lib/autoDetectCases.json`, tested on both sides).
+///
+/// NexQ Plus adds what that table doesn't list: its own engines (Soniox, the
+/// remote OpenAI-compatible Whisper) and SenseVoice among the Sherpa-ONNX models.
+fn supports_auto_language(provider: &crate::stt::provider::STTProviderType, model: &str) -> bool {
+    use crate::stt::provider::STTProviderType;
+
+    match provider {
+        STTProviderType::Deepgram => {
+            matches!(model, "nova-3" | "nova-3-general" | "flux-general-multi")
+        }
+        STTProviderType::WhisperCpp => is_multilingual_whisper_model(model),
+        STTProviderType::GroqWhisper | STTProviderType::WhisperApi | STTProviderType::Cartesia => true,
+        STTProviderType::ParakeetTdt => model.starts_with("parakeet-tdt-0.6b-v3"),
+        // SenseVoice is told "auto" (`stt::language::sense_voice_language`); the
+        // streaming transducers can't detect.
+        STTProviderType::SherpaOnnx => model.contains("sense-voice"),
+        // Soniox detects (the languages it is given are only hints); a remote
+        // Whisper detects when the request leaves the language out.
+        STTProviderType::Soniox | STTProviderType::OpenAICompat => true,
+        _ => false,
+    }
+}
+
+/// Refuse Auto-detect for a side whose provider or model can't do it, in words
+/// a user can act on. `party_role` is "You", "Them" or "Room" (Them in an in-person meeting).
+fn validate_auto_language_provider(
+    provider: &crate::stt::provider::STTProviderType,
+    model: &str,
+    party_role: &str,
+) -> Result<(), String> {
+    use crate::stt::provider::STTProviderType;
+
+    if supports_auto_language(provider, model) {
+        return Ok(());
+    }
+
+    Err(match provider {
+        STTProviderType::WhisperCpp => whisper_auto_refusal(model, party_role),
+        STTProviderType::ParakeetTdt => parakeet_ctc_auto_refusal(party_role),
+        STTProviderType::Deepgram => {
+            auto_refusal(&format!("Deepgram {}", deepgram_model_label(model)), party_role, AUTO_DETECT_ADVICE)
+        }
+        STTProviderType::WebSpeech => auto_refusal("Web Speech", party_role, AUTO_DETECT_ADVICE),
+        STTProviderType::WindowsNative => auto_refusal("Windows Speech", party_role, AUTO_DETECT_ADVICE),
+        STTProviderType::AzureSpeech => auto_refusal("Azure Speech", party_role, AUTO_DETECT_ADVICE),
+        STTProviderType::SherpaOnnx => auto_refusal("Sherpa-ONNX", party_role, AUTO_DETECT_ADVICE),
+        STTProviderType::OrtStreaming => auto_refusal("ORT Streaming", party_role, AUTO_DETECT_ADVICE),
+        _ => auto_refusal("this speech-to-text provider", party_role, AUTO_DETECT_ADVICE),
+    })
+}
+
+/// Start of every message that refuses Auto-detect for one side. The frontend
+/// recognises it (`AUTO_DETECT_REFUSAL_PREFIX` in sttLanguages.ts).
+const AUTO_DETECT_REFUSAL: &str = "Auto-detect doesn't work with";
+const AUTO_DETECT_ADVICE: &str =
+    "Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language.";
+const AUTO_DETECT_WHISPER_ADVICE: &str =
+    "Choose a multilingual Whisper model (Tiny, Base, Small, Medium or Large v3 Turbo), or pick a language.";
+
+fn auto_refusal(name: &str, party_role: &str, advice: &str) -> String {
+    format!("{AUTO_DETECT_REFUSAL} {name}, used for {party_role}. {advice}")
+}
+
+/// A Whisper.cpp model that can't detect the language ("ggml-base.en.bin", "distil-large-v3").
+fn whisper_auto_refusal(model: &str, party_role: &str) -> String {
+    let id = model.trim_start_matches("ggml-").trim_end_matches(".bin");
+    auto_refusal(&format!("the {} Whisper model", whisper_model_label(id)), party_role, AUTO_DETECT_WHISPER_ADVICE)
+}
+
+fn parakeet_ctc_auto_refusal(party_role: &str) -> String {
+    auto_refusal("Parakeet CTC 110M", party_role, AUTO_DETECT_ADVICE)
+}
+
+/// The Deepgram model's name as the STT Providers picker shows it.
+fn deepgram_model_label(model: &str) -> &str {
+    match model {
+        "nova-3" | "nova-3-general" => "Nova 3",
+        "flux-general-en" => "Flux",
+        "flux-general-multi" => "Flux Multilingual",
+        "nova-2" => "Nova 2",
+        "nova" => "Nova",
+        "enhanced" => "Enhanced",
+        "base" => "Base",
+        other => other,
+    }
+}
+
+/// A Whisper.cpp model's name as people know it; other models show their id.
+fn whisper_model_label(model: &str) -> &str {
+    match model {
+        "distil-large-v3" => "Distil Large v3",
+        other => other,
+    }
+}
+
+/// What becomes of one side when its STT provider is created.
+struct SideOutcome<T> {
+    provider: Option<T>,
+    /// Set when the side goes without STT because it can't detect the language.
+    refusal: Option<String>,
+    /// Whether the user hasn't been told about `refusal` yet.
+    announce: bool,
+}
+
+/// Whether the frontend, not Rust, transcribes this side (Web Speech on a microphone).
+fn uses_frontend_stt(config: &crate::audio::PartyAudioConfig) -> bool {
+    config.stt_provider == "web_speech" && config.is_input_device
+}
+
+/// A side that can't detect the language goes without speech-to-text instead
+/// of blocking the meeting:
+/// - at a start, the refusal is announced;
+/// - during a swap, the refusal the side already runs under (`running_refusal`)
+///   is tolerated silently, and so is one for a `frontend_stt` side: the
+///   frontend has already stopped it and told the user, and refusing here
+///   would block every later swap. Any other new refusal is an error that
+///   keeps the running capture untouched.
+///
+/// Any other error is an error.
+fn resolve_side<T>(
+    result: Result<Option<T>, String>,
+    was_capturing: bool,
+    running_refusal: Option<&str>,
+    frontend_stt: bool,
+) -> Result<SideOutcome<T>, String> {
+    match result {
+        Ok(provider) => Ok(SideOutcome { provider, refusal: None, announce: false }),
+        Err(message) if message.starts_with(AUTO_DETECT_REFUSAL) => {
+            if !was_capturing {
+                Ok(SideOutcome { provider: None, refusal: Some(message), announce: true })
+            } else if frontend_stt || running_refusal == Some(message.as_str()) {
+                Ok(SideOutcome { provider: None, refusal: Some(message), announce: false })
+            } else {
+                Err(message)
+            }
+        }
+        Err(message) => Err(message),
+    }
+}
+
+/// Both sides at once. A swap refused for both says so for both (the side the
+/// user just changed may not be the one named first); a real error wins over a refusal.
+fn resolve_sides<T, U>(
+    you: Result<Option<T>, String>,
+    them: Result<Option<U>, String>,
+    was_capturing: bool,
+    running_refusals: &[Option<String>; 2],
+    frontend_stt: [bool; 2],
+) -> Result<(SideOutcome<T>, SideOutcome<U>), String> {
+    match (
+        resolve_side(you, was_capturing, running_refusals[0].as_deref(), frontend_stt[0]),
+        resolve_side(them, was_capturing, running_refusals[1].as_deref(), frontend_stt[1]),
+    ) {
+        (Ok(you), Ok(them)) => Ok((you, them)),
+        (Err(a), Err(b)) => {
+            let (a_refusal, b_refusal) = (a.starts_with(AUTO_DETECT_REFUSAL), b.starts_with(AUTO_DETECT_REFUSAL));
+            Err(match (a_refusal, b_refusal) {
+                (true, true) => format!("{a} {b}"),
+                (true, false) => b,
+                _ => a,
+            })
+        }
+        (Err(message), _) | (_, Err(message)) => Err(message),
+    }
+}
+
+/// What a language change for one running side comes to, by the same rules as a
+/// full swap (`resolve_side`, while capturing):
+/// - `Ok(Some(provider))`: restart that side's speech-to-text with it;
+/// - `Ok(None)`: the side has no provider of its own (Web Speech, a refusal it already
+///   runs under, no model): nothing for Rust to restart, so the caller falls back to a full swap;
+/// - `Err`: a new Auto-detect refusal or another error, before anything was stopped.
+fn resolve_language_swap<T>(
+    result: Result<Option<T>, String>,
+    running_refusal: Option<&str>,
+    frontend_stt: bool,
+) -> Result<Option<T>, String> {
+    resolve_side(result, true, running_refusal, frontend_stt).map(|side| side.provider)
+}
+
+/// The provider a refusal names: "Auto-detect doesn't work with <name>, used for <side>. ..."
+fn refusal_provider_name(refusal: &str) -> Option<&str> {
+    refusal
+        .strip_prefix(AUTO_DETECT_REFUSAL)?
+        .trim_start()
+        .split_once(", used for ")
+        .map(|(name, _)| name)
+}
+
+/// The one toast for sides that start without speech-to-text, a sentence per
+/// side. `sides` is (label, refusal to announce); None when there is nothing to say.
+fn start_warnings(sides: &[(&str, Option<String>)]) -> Option<String> {
+    let sentences: Vec<String> = sides
+        .iter()
+        .filter_map(|(label, refusal)| {
+            let name = refusal_provider_name(refusal.as_deref()?)?;
+            Some(format!(
+                "{label} won't be transcribed: {name} can't detect the language. Change it in Audio & Devices or pick a language."
+            ))
+        })
+        .collect();
+    (!sentences.is_empty()).then(|| sentences.join(" "))
+}
+
+fn resolve_parakeet_model_id(model: &str) -> String {
+    if model.contains("parakeet") || model.contains("nemo") {
+        model.to_string()
+    } else {
+        "parakeet-tdt-0.6b-v3-int8".to_string()
+    }
+}
+
+fn is_multilingual_whisper_model(model: &str) -> bool {
+    matches!(
+        model,
+        "tiny" | "base" | "small" | "medium" | "large-v3-turbo"
+            | "ggml-tiny.bin" | "ggml-base.bin" | "ggml-small.bin" | "ggml-medium.bin"
+            | "ggml-large-v3-turbo.bin"
+    )
 }
 
 /// Read an API key directly from the credential store (Windows Credential Manager).
@@ -2279,6 +2773,222 @@ pub async fn set_source_muted(
     Ok(())
 }
 
+// ── NexQ Plus: what a one-side restart takes from the running capture ──
+
+/// The per-party capture that runs now, as `start_capture_per_party` set it
+/// up. `set_party_language` builds one side's replacement engine from it, the
+/// way the first one was built.
+struct RunningCapture {
+    /// Prefix of the capture's segment ids ("ab12").
+    session_prefix: String,
+    /// Each side's config as it runs now (You, Them).
+    parties: [crate::audio::PartyAudioConfig; 2],
+    /// The language each side's engine was started with (its own, else the shared one).
+    languages: [String; 2],
+    /// Each side's swap signal: how many times its provider was replaced.
+    signals: [Arc<SwapSignal>; 2],
+}
+
+/// Set once a per-party capture is up, cleared when it stops. Capture changes
+/// run one at a time (they hold `AppState::audio_tasks`), so what a change
+/// reads here stays true until it is done.
+static RUNNING_CAPTURE: std::sync::Mutex<Option<RunningCapture>> = std::sync::Mutex::new(None);
+
+fn set_running_capture(capture: Option<RunningCapture>) {
+    if let Ok(mut slot) = RUNNING_CAPTURE.lock() {
+        *slot = capture;
+    }
+}
+
+/// What a language change for one side takes from the running capture.
+struct SwapPlan {
+    /// The other side's config (Soniox takes its language as a hint).
+    other: crate::audio::PartyAudioConfig,
+    /// Prefix of the replacement's segment ids: the capture's, with the
+    /// generation the replacement will have ("ab12s1"). The side's transcript
+    /// task forwards its lines under the same prefix.
+    session_prefix: String,
+}
+
+/// How a language change for `side` goes about it, or None when only a restart
+/// of the whole capture will do:
+/// - `config` differs from the running side in more than its language (another
+///   engine or device: the side's transcript task and its capture were set up
+///   for the running ones);
+/// - the other side's engine was started with this side's language and now
+///   gets another one (`hints_other_side`): both sides restart.
+///
+/// `other_transcribed`: whether the other side runs an engine at all (in an
+/// in-person meeting "You" doesn't).
+fn swap_plan(
+    running: &RunningCapture,
+    side: Side,
+    config: &crate::audio::PartyAudioConfig,
+    shared_language: &str,
+    other_transcribed: bool,
+) -> Option<SwapPlan> {
+    let here = side.index();
+    let there = 1 - here;
+    let current = &running.parties[here];
+    let other = &running.parties[there];
+    if current.stt_provider != config.stt_provider
+        || current.device_id != config.device_id
+        || current.is_input_device != config.is_input_device
+    {
+        return None;
+    }
+    let language = config.effective_language(shared_language);
+    if other_transcribed
+        && hints_other_side(&other.stt_provider, &running.languages[there], &running.languages[here], &language)
+    {
+        return None;
+    }
+    // The replacement is the side's next provider.
+    let generation = running.signals[here].generation() + 1;
+    Some(SwapPlan {
+        other: other.clone(),
+        session_prefix: side_swap::generation_prefix(&running.session_prefix, generation),
+    })
+}
+
+/// Whether the other side's engine (`other_provider`, started with
+/// `other_language`) was given this side's language, and a change of it from
+/// `was` to `now` gives it another one. That is Soniox on Auto-detect: the
+/// language it is hinted is then the other party's
+/// (`stt::language::soniox_language_hints`).
+fn hints_other_side(other_provider: &str, other_language: &str, was: &str, now: &str) -> bool {
+    use crate::stt::language::{base_code, is_auto};
+    other_provider == "soniox" && is_auto(other_language) && base_code(was) != base_code(now)
+}
+
+/// A side's engine was replaced: the capture now runs with `config` on it.
+fn note_swapped_side(side: Side, config: &crate::audio::PartyAudioConfig, shared_language: &str) {
+    if let Ok(mut slot) = RUNNING_CAPTURE.lock() {
+        if let Some(running) = slot.as_mut() {
+            running.languages[side.index()] = config.effective_language(shared_language);
+            running.parties[side.index()] = config.clone();
+        }
+    }
+}
+
+/// Change one side's transcription language mid-meeting by restarting only that
+/// side's speech-to-text. The other side's capture and STT, the audio levels and
+/// the recording keep running (see `audio::side_swap`).
+///
+/// `config` is the side's whole `PartyAudioConfig` with the new language;
+/// `party` is "you" or "them" ("Room" in an in-person meeting is "them").
+/// Returns `true` when the side was restarted, `false` when nothing was done and
+/// the caller has to do a full `start_capture_per_party` (no capture running, the
+/// side has no Rust provider, the loop is gone, or more than this side's engine
+/// has to restart, see `swap_plan`). A new Auto-detect refusal is
+/// an error that starts with "Auto-detect doesn't work with", before anything is stopped;
+/// a new provider that fails to start is another error, after the side's old one has
+/// stopped, and the caller restarts the whole capture.
+#[command]
+pub async fn set_party_language(
+    app: AppHandle,
+    party: String,
+    config: String,
+    skip_you_stt: Option<bool>,
+) -> Result<bool, String> {
+    let side = Side::parse(&party)
+        .ok_or_else(|| format!("Unknown party: '{}' (expected 'you' or 'them')", party))?;
+    let config: crate::audio::PartyAudioConfig =
+        serde_json::from_str(&config).map_err(|e| format!("Invalid party config: {}", e))?;
+    let skip_you_stt = skip_you_stt.unwrap_or(false);
+    let state = app.state::<AppState>();
+    // NexQ Plus: capture changes run one at a time. A restart or a stop of the
+    // capture waits for this swap, so the capture it belongs to stays the running one.
+    let _capture_change = state.audio_tasks.lock().await;
+
+    let capturing = state
+        .audio
+        .lock()
+        .map(|guard| guard.as_ref().is_some_and(|mgr| mgr.is_capturing()))
+        .unwrap_or(false);
+    // An in-person meeting runs no "You" provider; Web Speech runs in the frontend.
+    if !capturing || (side == Side::You && skip_you_stt) || uses_frontend_stt(&config) {
+        return Ok(false);
+    }
+    let (role, label) = match side {
+        Side::You => ("You", "You"),
+        Side::Them => (if skip_you_stt { "Room" } else { "Them" }, "Them"),
+    };
+
+    // NexQ Plus: the replacement is built from what the capture runs with (the
+    // other side's language, the ids its lines continue under).
+    let shared_language = get_stt_language(&state);
+    let other_transcribed = !(side == Side::Them && skip_you_stt);
+    let plan = RUNNING_CAPTURE.lock().ok().and_then(|running| {
+        swap_plan(running.as_ref()?, side, &config, &shared_language, other_transcribed)
+    });
+    let Some(plan) = plan else {
+        return Ok(false);
+    };
+
+    let created = create_stt_provider_for_party(
+        &config, &plan.other, &state, &app, side, role, &plan.session_prefix,
+    )
+    .await;
+    let running_refusal = state
+        .auto_refusals
+        .lock()
+        .ok()
+        .and_then(|refusals| refusals[side.index()].clone());
+    let Some(provider) = resolve_language_swap(created, running_refusal.as_deref(), false)? else {
+        return Ok(false);
+    };
+    let Some(sender) = state.side_swap.lock().ok().and_then(|slot| slot.clone()) else {
+        return Ok(false);
+    };
+    let muted_flag = match side {
+        Side::You => state.you_muted.clone(),
+        Side::Them => state.them_muted.clone(),
+    };
+
+    crate::stt::emit_stt_debug(&app, "info", "stt", &format!(
+        "[{}] Language change: restarting only this side's STT ({})",
+        role, config.stt_provider
+    ));
+    let answer = side_swap::swap_side_provider(&sender, side, provider, &muted_flag)
+        .await
+        .into_answer();
+    match &answer {
+        Ok(true) => {
+            log::info!("'{}' STT restarted for a language change", label);
+            crate::stt::emit_stt_debug(&app, "info", "stt",
+                &format!("'{}' STT restarted: {}", label, config.stt_provider));
+            note_swapped_side(side, &config, &shared_language);
+            // The overlay's language picker waits for a status of this side. Not every
+            // provider reports one when it starts (the batch ones don't), so say it here.
+            let _ = app.emit(
+                "stt_connection_status",
+                swap_status_event(&config.stt_provider, label, muted_flag.load(Ordering::Relaxed)),
+            );
+        }
+        // The side has no STT now: the caller restarts the whole capture.
+        Err(e) => {
+            log::warn!("Failed to restart '{}' STT: {}", label, e);
+            crate::stt::emit_stt_debug(&app, "error", "stt",
+                &format!("'{}' STT failed to restart ({}): restarting the capture", label, e));
+        }
+        Ok(false) => {}
+    }
+    answer
+}
+
+/// The `stt_connection_status` event for a side whose provider was just swapped:
+/// connected, or paused while the side is muted (a muted provider holds no stream).
+/// `label` is "You" or "Them" ("Them" is the room in an in-person meeting).
+fn swap_status_event(provider: &str, label: &str, muted: bool) -> serde_json::Value {
+    serde_json::json!({
+        "provider": provider,
+        "party": label,
+        "status": if muted { "paused" } else { "connected" },
+        "message": "Restarted for a language change",
+    })
+}
+
 /// Get the current mute status for both sources.
 #[command]
 pub async fn get_mute_status(app: AppHandle) -> Result<String, String> {
@@ -2299,7 +3009,8 @@ mod tests {
     use crate::stt::soniox::SonioxTranslation;
     use std::sync::{Arc, Mutex};
 
-    fn party(provider: &str, language: Option<&str>) -> PartyAudioConfig {
+    /// "Them" on `provider`, with its own language or none.
+    fn speaking(provider: &str, language: Option<&str>) -> PartyAudioConfig {
         PartyAudioConfig {
             role: PartyRole::Them,
             device_id: "default".into(),
@@ -2368,9 +3079,12 @@ mod tests {
     #[test]
     fn a_party_uses_its_own_language_else_the_global_one() {
         let state = state("ja-JP", None);
-        assert_eq!(party_lang(&party("deepgram", Some("zh-CN")), &state), "zh-CN");
-        assert_eq!(party_lang(&party("deepgram", Some("auto")), &state), "auto");
-        assert_eq!(party_lang(&party("deepgram", None), &state), "ja-JP");
+        let shared = get_stt_language(&state);
+        assert_eq!(speaking("deepgram", Some("zh-CN")).effective_language(&shared), "zh-CN");
+        assert_eq!(speaking("deepgram", Some("auto")).effective_language(&shared), "auto");
+        assert_eq!(speaking("deepgram", None).effective_language(&shared), "ja-JP");
+        // An empty pick is no pick.
+        assert_eq!(speaking("deepgram", Some("  ")).effective_language(&shared), "ja-JP");
     }
 
     #[test]
@@ -2393,7 +3107,7 @@ mod tests {
     #[test]
     fn soniox_translates_only_when_on_and_follows_the_translation_target() {
         let state = state("en-US", Some("zh-CN"));
-        let mut them = party("soniox", Some("en-US"));
+        let mut them = speaking("soniox", Some("en-US"));
         assert_eq!(soniox_translation(&them, &state), SonioxTranslation::Off);
 
         them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
@@ -2418,7 +3132,7 @@ mod tests {
     #[test]
     fn soniox_two_way_needs_two_different_languages() {
         let state = state("en-US", Some("ja"));
-        let mut them = party("soniox", Some("auto"));
+        let mut them = speaking("soniox", Some("auto"));
         let pair = |a: Option<&str>, b: Option<&str>| {
             Some(NativeTranslationConfig {
                 mode: "two_way".into(),
@@ -2453,26 +3167,31 @@ mod tests {
         assert!(self_segmenting("whisper_cpp"));
         assert!(!self_segmenting("deepgram"));
         assert!(!self_segmenting("openai_compat"));
-        assert_eq!(Party::Them.segment_prefix("ab12"), "them_ab12_");
-        assert_eq!(Party::You.segment_prefix("ab12"), "you_ab12_");
-        assert_eq!((Party::You.speaker(), Party::Them.speaker()), ("User", "Them"));
+        assert_eq!(segment_prefix(Side::Them, "ab12"), "them_ab12_");
+        assert_eq!(segment_prefix(Side::You, "ab12"), "you_ab12_");
+        assert_eq!((side_speaker(Side::You), side_speaker(Side::Them)), ("User", "Them"));
+        assert_eq!((side_label(Side::You), side_label(Side::Them)), ("You", "Them"));
     }
 
-    #[test]
-    fn direct_lines_carry_the_diarization_tag() {
-        let result = crate::stt::provider::TranscriptResult {
+    /// A line as Soniox sends it: its own sentence id, maybe a diarization tag.
+    fn engine_line(segment_id: Option<&str>, is_final: bool) -> TranscriptResult {
+        TranscriptResult {
             text: "Hi".into(),
-            is_final: true,
+            is_final,
             confidence: 0.9,
             timestamp_ms: 42,
             speaker: None,
             language: Some("en".into()),
-            segment_id: Some("sx1_1".into()),
+            segment_id: segment_id.map(str::to_string),
             duration_ms: Some(300),
             speaker_tag: Some("S2".into()),
             turn: None,
-        };
-        let seg = direct_segment_json("them_ab12_sx1_1", "Them", &result);
+        }
+    }
+
+    #[test]
+    fn direct_lines_carry_the_diarization_tag() {
+        let seg = result_segment_json("them_ab12_sx1_1", "Them", &engine_line(Some("sx1_1"), true));
         assert_eq!(seg["id"], "them_ab12_sx1_1");
         assert_eq!(seg["speaker"], "Them");
         assert_eq!(seg["speaker_tag"], "S2");
@@ -2480,6 +3199,231 @@ mod tests {
         assert_eq!(seg["is_final"], true);
     }
 
+    /// The id a Soniox line is forwarded under is the prefix its provider was
+    /// given plus the sentence id, so a translation finds its line: for the
+    /// first provider of a side and for one swapped in for a language change.
+    #[test]
+    fn an_engines_own_ids_are_forwarded_under_the_prefix_its_provider_was_given() {
+        let mut counter = 0;
+        let line = engine_line(Some("sx1_1"), false);
+        assert_eq!(direct_line_id(Side::Them, "ab12", 0, &line, &mut counter), "them_ab12_sx1_1");
+        assert_eq!(
+            direct_line_id(Side::Them, "ab12", 0, &line, &mut counter),
+            format!("{}sx1_1", segment_prefix(Side::Them, "ab12"))
+        );
+
+        // The replacement numbers its sentences from 1 again: its generation keeps the ids apart.
+        let running = running(speaking("deepgram", None), speaking("soniox", Some("en-US")), "en-US");
+        let mut japanese = speaking("soniox", Some("ja-JP"));
+        let plan = swap_plan(&running, Side::Them, &japanese, "en-US", true).unwrap();
+        assert_eq!(plan.session_prefix, "ab12s1");
+        assert_eq!(
+            direct_line_id(Side::Them, "ab12", 1, &line, &mut counter),
+            format!("{}sx1_1", segment_prefix(Side::Them, &plan.session_prefix))
+        );
+        assert_eq!(direct_line_id(Side::Them, "ab12", 1, &line, &mut counter), "them_ab12s1_sx1_1");
+        // The next swap of that side is the next generation.
+        running.signals[Side::Them.index()].swapped();
+        japanese.language = Some("ko-KR".into());
+        assert_eq!(swap_plan(&running, Side::Them, &japanese, "en-US", true).unwrap().session_prefix, "ab12s2");
+        // The other side's generation is its own.
+        let you = speaking("deepgram", Some("fr-FR"));
+        assert_eq!(swap_plan(&running, Side::You, &you, "en-US", true).unwrap().session_prefix, "ab12s1");
+        assert_eq!(counter, 0, "an engine with its own ids never uses the counter");
+    }
+
+    fn tagged(generation: u32, segment_id: Option<&str>, text: &str, is_final: bool, at: u64) -> Tagged {
+        Tagged {
+            generation,
+            result: TranscriptResult {
+                text: text.into(),
+                is_final,
+                confidence: 0.9,
+                timestamp_ms: 1_800_000_000_000 + at,
+                speaker: Some("Them".into()),
+                language: None,
+                segment_id: segment_id.map(str::to_string),
+                duration_ms: Some(400),
+                speaker_tag: None,
+                turn: None,
+            },
+        }
+    }
+
+    /// Everything `provider` sends on one side, as the lines that go out: (id, text, final).
+    async fn lines_of(provider: &str, sent: Vec<Tagged>, swap_before: Option<usize>) -> Vec<(String, String, bool)> {
+        let (tx, mut rx) = mpsc::channel::<Tagged>(64);
+        let signal = SwapSignal::default();
+        let threshold = std::sync::atomic::AtomicU64::new(3_000);
+        for (i, result) in sent.into_iter().enumerate() {
+            if swap_before == Some(i) {
+                signal.swapped();
+            }
+            tx.send(result).await.unwrap();
+        }
+        drop(tx);
+        let mut lines = Vec::new();
+        pump_party_lines(Side::Them, provider, "ab12", &mut rx, &signal, &threshold, |line| {
+            assert_eq!(line.segment["id"], line.id.as_str());
+            assert_eq!(line.segment["speaker"], "Them");
+            assert_eq!(line.segment["is_final"], line.is_final);
+            lines.push((line.id, line.text, line.is_final));
+        })
+        .await;
+        lines
+    }
+
+    fn line(id: &str, text: &str, is_final: bool) -> (String, String, bool) {
+        (id.to_string(), text.to_string(), is_final)
+    }
+
+    /// Soniox cuts its own lines: they go out one for one under its sentence
+    /// ids, and a provider swapped in for a language change gets its own ids.
+    #[tokio::test]
+    async fn a_self_segmenting_engines_lines_go_out_as_they_come() {
+        let sent = vec![
+            tagged(0, Some("sx1_1"), "How are", false, 0),
+            tagged(0, Some("sx1_1"), "How are you?", true, 0),
+            tagged(0, Some("sx1_2"), "And the", false, 5_000),
+            // The language changed here: the open line ends, the new engine counts from 1.
+            tagged(1, Some("sx1_1"), "お元気ですか", false, 9_000),
+            tagged(1, Some("sx1_1"), "お元気ですか。", true, 9_000),
+        ];
+        assert_eq!(
+            lines_of("soniox", sent, Some(3)).await,
+            vec![
+                line("them_ab12_sx1_1", "How are", false),
+                line("them_ab12_sx1_1", "How are you?", true),
+                line("them_ab12_sx1_2", "And the", false),
+                line("them_ab12_sx1_2", "And the", true),
+                line("them_ab12s1_sx1_1", "お元気ですか", false),
+                line("them_ab12s1_sx1_1", "お元気ですか。", true),
+            ]
+        );
+    }
+
+    /// The other engines' finals are merged into paragraphs; speech after a
+    /// pause is a new line, and what is left at the end is flushed.
+    #[tokio::test]
+    async fn other_engines_lines_are_merged_into_paragraphs() {
+        let sent = vec![
+            tagged(0, None, "我们今天", true, 0),
+            tagged(0, None, "讨论预算。", true, 600),
+            tagged(0, None, "Next point", false, 9_000),
+        ];
+        assert_eq!(
+            lines_of("openai_compat", sent, None).await,
+            vec![
+                line("them_ab12_acc_1", "我们今天", true),
+                line("them_ab12_acc_1", "我们今天讨论预算。", true),
+                line("them_ab12_acc_2", "Next point", false),
+                // Meeting end: the paragraph the accumulator still holds.
+                line("them_ab12_acc_1", "我们今天讨论预算。", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_without_an_engine_id_is_numbered() {
+        let mut counter = 0;
+        let interim = engine_line(None, false);
+        let fin = engine_line(None, true);
+        assert_eq!(direct_line_id(Side::You, "ab12", 0, &interim, &mut counter), "you_ab12_1");
+        assert_eq!(direct_line_id(Side::You, "ab12", 0, &fin, &mut counter), "you_ab12_1");
+        assert_eq!(direct_line_id(Side::You, "ab12", 0, &interim, &mut counter), "you_ab12_2");
+    }
+
+    /// The capture `start_capture_per_party` leaves running, session "ab12".
+    fn running(you: PartyAudioConfig, them: PartyAudioConfig, shared: &str) -> RunningCapture {
+        RunningCapture {
+            session_prefix: "ab12".into(),
+            languages: [you.effective_language(shared), them.effective_language(shared)],
+            parties: [you, them],
+            signals: [Arc::new(SwapSignal::default()), Arc::new(SwapSignal::default())],
+        }
+    }
+
+    #[test]
+    fn a_language_change_restarts_one_side_only_when_nothing_else_changed() {
+        let running = running(speaking("deepgram", Some("en-US")), speaking("openai_compat", None), "zh-CN");
+        let mut them = speaking("openai_compat", Some("ja-JP"));
+        let plan = swap_plan(&running, Side::Them, &them, "zh-CN", true).unwrap();
+        // The replacement is told about the other side as it runs.
+        assert_eq!(plan.other.stt_provider, "deepgram");
+        assert_eq!(plan.other.language.as_deref(), Some("en-US"));
+        // Another engine or device is more than a language: the whole capture restarts.
+        them.stt_provider = "soniox".into();
+        assert!(swap_plan(&running, Side::Them, &them, "zh-CN", true).is_none());
+        them.stt_provider = "openai_compat".into();
+        them.device_id = "Speakers (USB)".into();
+        assert!(swap_plan(&running, Side::Them, &them, "zh-CN", true).is_none());
+        them.device_id = "default".into();
+        them.is_input_device = true;
+        assert!(swap_plan(&running, Side::Them, &them, "zh-CN", true).is_none());
+        // A model or the engine's own translation may change with the language.
+        them.is_input_device = false;
+        them.local_model_id = Some("small".into());
+        them.native_translation = Some(NativeTranslationConfig { mode: "one_way".into(), ..Default::default() });
+        assert!(swap_plan(&running, Side::Them, &them, "zh-CN", true).is_some());
+    }
+
+    /// Soniox on Auto-detect is hinted the other side's language: when that
+    /// changes, its session has to restart too, so the whole capture does.
+    #[test]
+    fn a_language_change_that_soniox_on_the_other_side_was_hinted_restarts_both() {
+        let running = running(speaking("soniox", Some("auto")), speaking("deepgram", Some("en-US")), "en-US");
+        let japanese = speaking("deepgram", Some("ja-JP"));
+        assert!(swap_plan(&running, Side::Them, &japanese, "en-US", true).is_none());
+        // Same language, another region: the hint ("en") stays.
+        let british = speaking("deepgram", Some("en-GB"));
+        assert!(swap_plan(&running, Side::Them, &british, "en-US", true).is_some());
+        // Back to the shared language it started in: no change either.
+        assert!(swap_plan(&running, Side::Them, &speaking("deepgram", None), "en-US", true).is_some());
+        // An in-person meeting runs no engine for "You": nothing there to restart.
+        assert!(swap_plan(&running, Side::Them, &japanese, "en-US", false).is_some());
+
+        // Soniox with a language of its own, or another engine on Auto-detect, isn't hinted.
+        for you in [speaking("soniox", Some("zh-CN")), speaking("groq_whisper", Some("auto"))] {
+            let fixed = super::tests::running(you, speaking("deepgram", Some("en-US")), "en-US");
+            assert!(swap_plan(&fixed, Side::Them, &japanese, "en-US", true).is_some());
+        }
+        // Soniox follows the shared language when that is Auto-detect.
+        let shared_auto = super::tests::running(speaking("soniox", None), speaking("deepgram", Some("en-US")), "auto");
+        assert!(swap_plan(&shared_auto, Side::Them, &japanese, "auto", true).is_none());
+        // Soniox's own language change is its own restart, whatever it is hinted.
+        let soniox = speaking("soniox", Some("ko-KR"));
+        assert!(swap_plan(&running, Side::You, &soniox, "en-US", true).is_some());
+    }
+
+    #[test]
+    fn a_swapped_side_is_remembered_with_its_new_language() {
+        // `note_swapped_side` writes the same fields of the shared record.
+        let mut running = running(speaking("soniox", Some("auto")), speaking("deepgram", None), "en-US");
+        assert_eq!(running.languages, ["auto".to_string(), "en-US".to_string()]);
+        let japanese = speaking("deepgram", Some("ja-JP"));
+        running.languages[Side::Them.index()] = japanese.effective_language("en-US");
+        running.parties[Side::Them.index()] = japanese;
+        // Going back to English now changes what Soniox was hinted.
+        assert!(swap_plan(&running, Side::Them, &speaking("deepgram", None), "en-US", true).is_none());
+    }
+
+    /// NexQ Plus engines and Auto-detect: beyond the shared table.
+    #[test]
+    fn the_forks_engines_detect_the_language_and_sense_voice_does_too() {
+        use crate::stt::provider::STTProviderType as P;
+        assert!(supports_auto_language(&P::Soniox, ""));
+        assert!(supports_auto_language(&P::OpenAICompat, ""));
+        assert!(check_auto_language("auto", &P::Soniox, None, None, "Them").is_ok());
+        assert!(check_auto_language("auto", &P::OpenAICompat, None, None, "You").is_ok());
+        // Among the Sherpa-ONNX models only SenseVoice detects.
+        assert!(check_auto_language("auto", &P::SherpaOnnx, Some("sense-voice-small"), None, "Them").is_ok());
+        for model in [None, Some("streaming-zipformer-en-20M"), Some("streaming-zipformer-multi")] {
+            let refusal = check_auto_language("auto", &P::SherpaOnnx, model, None, "Them").unwrap_err();
+            assert!(refusal.starts_with(&format!("{AUTO_DETECT_REFUSAL} Sherpa-ONNX, used for Them.")), "{refusal}");
+        }
+        // With a language picked, none of them is asked.
+        assert!(check_auto_language("zh-CN", &P::SherpaOnnx, None, None, "Them").is_ok());
+    }
 
     fn output(turn: Option<TurnSignal>) -> AccumulatorOutput {
         AccumulatorOutput {
@@ -2504,6 +3448,286 @@ mod tests {
     }
 
     #[test]
+    fn automatic_language_detection_is_limited_to_compatible_providers_and_models() {
+        use crate::stt::provider::STTProviderType;
+
+        // The same table src/lib/sttLanguages.test.ts reads.
+        let table: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src/lib/autoDetectCases.json")).unwrap();
+        // The refusal wording is the same table's too.
+        assert_eq!(AUTO_DETECT_REFUSAL, table["refusalPrefix"].as_str().unwrap());
+        assert_eq!(AUTO_DETECT_ADVICE, table["advice"].as_str().unwrap());
+        assert_eq!(AUTO_DETECT_WHISPER_ADVICE, table["whisperAdvice"].as_str().unwrap());
+        for (model, label) in table["deepgramLabels"].as_object().unwrap() {
+            assert_eq!(deepgram_model_label(model), label.as_str().unwrap(), "{model}");
+        }
+        for (model, label) in table["whisperLabels"].as_object().unwrap() {
+            assert_eq!(whisper_model_label(model), label.as_str().unwrap(), "{model}");
+        }
+        let cases = table["cases"].as_array().unwrap();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let provider = case["provider"].as_str().unwrap();
+            let model = case["model"].as_str().unwrap();
+            let expected = case["supported"].as_bool().unwrap();
+            let kind = STTProviderType::from_str(provider).expect(provider);
+            assert_eq!(supports_auto_language(&kind, model), expected, "{provider} / {model}");
+            let result = validate_auto_language_provider(&kind, model, "You");
+            assert_eq!(result.is_ok(), expected, "{provider} / {model}");
+            if let Err(message) = result {
+                let name = case["name"].as_str().unwrap();
+                assert!(
+                    message.starts_with(&format!("{AUTO_DETECT_REFUSAL} {name}, used for You. ")),
+                    "{message}"
+                );
+            }
+        }
+
+        // Advice never points a failing Whisper model at "Whisper" in general.
+        let whisper = validate_auto_language_provider(&STTProviderType::WhisperCpp, "distil-large-v3", "Them")
+            .unwrap_err();
+        assert!(whisper.ends_with("Choose a multilingual Whisper model (Tiny, Base, Small, Medium or Large v3 Turbo), or pick a language."), "{whisper}");
+        let web = validate_auto_language_provider(&STTProviderType::WebSpeech, "", "You").unwrap_err();
+        assert!(web.ends_with("Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language."), "{web}");
+        assert_eq!(resolve_parakeet_model_id("small"), "parakeet-tdt-0.6b-v3-int8");
+        assert_eq!(
+            resolve_parakeet_model_id("parakeet-tdt-ctc-110m-int8"),
+            "parakeet-tdt-ctc-110m-int8"
+        );
+    }
+
+    #[test]
+    fn every_auto_detect_refusal_starts_with_the_shared_prefix() {
+        for message in [
+            validate_auto_language_provider(&crate::stt::provider::STTProviderType::AzureSpeech, "", "You")
+                .unwrap_err(),
+            whisper_auto_refusal("ggml-base.en.bin", "Them"),
+            parakeet_ctc_auto_refusal("You"),
+        ] {
+            assert!(message.starts_with(AUTO_DETECT_REFUSAL), "{message}");
+        }
+        assert!(whisper_auto_refusal("ggml-base.en.bin", "Them").contains("the base.en Whisper model, used for Them"));
+    }
+
+    /// What `create_stt_provider_for_party` checks for a side before it creates the provider.
+    fn auto_check(side: &PartyAudioConfig, shared: &str, role: &str) -> Result<(), String> {
+        let provider = crate::stt::provider::STTProviderType::from_str(&side.stt_provider).unwrap();
+        check_auto_language(
+            &side.effective_language(shared),
+            &provider,
+            side.local_model_id.as_deref(),
+            Some("nova-3"),
+            role,
+        )
+    }
+
+    #[test]
+    fn auto_detect_is_checked_with_each_sides_own_language() {
+        let mut you = party("web_speech", "default", true);
+        let mut them = party("web_speech", "default", false);
+        // Shared language is Auto-detect, no side has its own: both are refused.
+        assert!(auto_check(&you, "auto", "You").unwrap_err().ends_with(AUTO_DETECT_ADVICE));
+        assert!(auto_check(&them, "auto", "Them").is_err());
+        // "You" speaks English: no Auto-detect, so no refusal for You; Them still is.
+        you.language = Some("en-US".into());
+        assert!(auto_check(&you, "auto", "You").is_ok());
+        assert!(auto_check(&them, "auto", "Them").unwrap_err().contains("used for Them."));
+        // A fixed shared language with Auto-detect on one side only refuses that side.
+        them.language = Some("auto".into());
+        assert!(auto_check(&you, "es-ES", "You").is_ok());
+        assert!(auto_check(&them, "es-ES", "Room").unwrap_err().contains("used for Room."));
+        // A provider that can detect the language passes with Auto-detect on its side.
+        them.stt_provider = "groq_whisper".into();
+        assert!(auto_check(&them, "es-ES", "Them").is_ok());
+        // The refusal for one side is the kind a swap tolerates or reports, per side.
+        let refusal = auto_check(&party("web_speech", "d", true), "auto", "You").unwrap_err();
+        let side = resolve_side::<u8>(Err(refusal), false, None, false).unwrap();
+        assert!(side.provider.is_none() && side.announce);
+    }
+
+    #[test]
+    fn each_side_resolves_its_own_language() {
+        let mut you = party("deepgram", "default", true);
+        let mut them = party("deepgram", "default", false);
+        you.language = Some("en-US".into());
+        them.language = Some("es-ES".into());
+        assert_eq!(you.effective_language("fr-FR"), "en-US");
+        assert_eq!(them.effective_language("fr-FR"), "es-ES");
+        // A saved config from before this setting has none: both follow the shared language.
+        you.language = None;
+        assert_eq!(you.effective_language("fr-FR"), "fr-FR");
+    }
+
+    #[test]
+    fn a_provider_that_works_passes_through() {
+        let side = resolve_side(Ok(Some(1)), false, None, false).unwrap();
+        assert_eq!((side.provider, side.refusal, side.announce), (Some(1), None, false));
+    }
+
+    #[test]
+    fn a_refusal_at_a_start_goes_without_stt_and_is_announced() {
+        let refusal = parakeet_ctc_auto_refusal("You");
+        let side = resolve_side::<u8>(Err(refusal.clone()), false, None, false).unwrap();
+        assert_eq!((side.provider, side.refusal, side.announce), (None, Some(refusal), true));
+    }
+
+    #[test]
+    fn a_swap_tolerates_the_refusal_a_side_already_runs_under_without_a_word() {
+        let refusal = parakeet_ctc_auto_refusal("You");
+        let side = resolve_side::<u8>(Err(refusal.clone()), true, Some(&refusal), false).unwrap();
+        assert_eq!((side.provider, side.refusal.as_deref(), side.announce), (None, Some(refusal.as_str()), false));
+    }
+
+    #[test]
+    fn a_swap_with_a_new_refusal_is_an_error() {
+        let old = parakeet_ctc_auto_refusal("You");
+        let new = whisper_auto_refusal("distil-large-v3", "You");
+        assert_eq!(resolve_side::<u8>(Err(new.clone()), true, Some(&old), false).err(), Some(new.clone()));
+        assert_eq!(resolve_side::<u8>(Err(new.clone()), true, None, false).err(), Some(new));
+    }
+
+    #[test]
+    fn a_swapped_side_reports_a_status_the_overlay_picker_clears_on() {
+        let event = swap_status_event("deepgram", "Them", false);
+        assert_eq!(event["party"], "Them");
+        assert_eq!(event["status"], "connected");
+        assert_eq!(event["provider"], "deepgram");
+        assert_eq!(swap_status_event("deepgram", "You", true)["status"], "paused");
+    }
+
+    #[test]
+    fn a_language_change_restarts_a_side_that_still_has_a_provider() {
+        assert_eq!(resolve_language_swap(Ok(Some(7u8)), None, false), Ok(Some(7)));
+        // Provider and model are the same, only the language changed: Auto-detect on a
+        // provider that can't do it is refused with that side's own words.
+        let mut them = party("azure_speech", "default", false);
+        them.language = Some("auto".into());
+        let refusal = auto_check(&them, "en-US", "Them").unwrap_err();
+        assert!(refusal.starts_with(AUTO_DETECT_REFUSAL));
+        assert_eq!(resolve_language_swap::<u8>(Err(refusal.clone()), None, false), Err(refusal.clone()));
+        // The side's own language wins over a shared Auto-detect it was not on.
+        them.language = Some("es-ES".into());
+        assert!(auto_check(&them, "auto", "Them").is_ok());
+    }
+
+    #[test]
+    fn a_language_change_goes_on_to_a_full_swap_when_the_side_has_no_provider() {
+        // No model, Web Speech: nothing for Rust to restart.
+        assert_eq!(resolve_language_swap::<u8>(Ok(None), None, false), Ok(None));
+        // The refusal the side already runs under is tolerated silently, like in a full swap.
+        let refusal = parakeet_ctc_auto_refusal("Them");
+        assert_eq!(resolve_language_swap::<u8>(Err(refusal.clone()), Some(&refusal), false), Ok(None));
+        // Any other error stays an error.
+        assert!(resolve_language_swap::<u8>(Err("Deepgram key missing".into()), None, false).is_err());
+    }
+
+    #[test]
+    fn a_language_change_into_a_new_refusal_is_an_error_before_anything_stops() {
+        let old = parakeet_ctc_auto_refusal("You");
+        let new = whisper_auto_refusal("distil-large-v3", "You");
+        assert_eq!(resolve_language_swap::<u8>(Err(new.clone()), Some(&old), false), Err(new.clone()));
+        assert_eq!(resolve_language_swap::<u8>(Err(new.clone()), None, false), Err(new));
+    }
+
+    #[test]
+    fn a_swap_tolerates_a_refusal_for_a_web_speech_side_the_frontend_already_stopped() {
+        let refusal = auto_refusal("Web Speech", "You", AUTO_DETECT_ADVICE);
+        // Not the side's running refusal, but its frontend told the user: not an error.
+        let side = resolve_side::<u8>(Err(refusal.clone()), true, None, true).unwrap();
+        assert_eq!((side.provider, side.refusal.as_deref(), side.announce), (None, Some(refusal.as_str()), false));
+        // At a start it is still announced.
+        let started = resolve_side::<u8>(Err(refusal.clone()), false, None, true).unwrap();
+        assert!(started.announce);
+        // Other errors stay errors.
+        assert!(resolve_side::<u8>(Err("Deepgram key missing".into()), true, None, true).is_err());
+
+        // A later swap changing the other side still goes through, with the same refusal remembered.
+        let you = Err(refusal.clone());
+        let them: Result<Option<u8>, String> = Ok(None);
+        let (you_side, them_side) =
+            resolve_sides::<u8, u8>(you, them, true, &[Some(refusal.clone()), None], [true, false]).unwrap();
+        assert_eq!(you_side.refusal.as_deref(), Some(refusal.as_str()));
+        assert!(!you_side.announce && them_side.refusal.is_none());
+
+        // Another provider's refusal on a swap is still an error.
+        let azure = auto_refusal("Azure Speech", "You", AUTO_DETECT_ADVICE);
+        assert!(resolve_side::<u8>(Err(azure), true, None, false).is_err());
+    }
+
+    #[test]
+    fn only_web_speech_on_a_microphone_is_frontend_stt() {
+        assert!(uses_frontend_stt(&party("web_speech", "default", true)));
+        assert!(!uses_frontend_stt(&party("web_speech", "Speakers", false)));
+        assert!(!uses_frontend_stt(&party("windows_native", "default", true)));
+    }
+
+    #[test]
+    fn the_auto_detect_check_looks_at_the_sides_model() {
+        use crate::stt::provider::STTProviderType as P;
+        // Not Auto-detect: never a refusal, whatever the provider.
+        assert!(check_auto_language("es-ES", &P::WebSpeech, None, None, "You").is_ok());
+        // Deepgram depends on the shared model, Whisper and Parakeet on the side's own.
+        assert!(check_auto_language("auto", &P::Deepgram, None, Some("nova-3"), "Them").is_ok());
+        assert!(check_auto_language("AUTO", &P::Deepgram, None, Some("flux-general-en"), "Them").is_err());
+        assert!(check_auto_language("auto", &P::WhisperCpp, Some("base.en"), None, "You").is_err());
+        assert!(check_auto_language("auto", &P::WhisperCpp, Some("small"), None, "You").is_ok());
+        assert!(check_auto_language("auto", &P::ParakeetTdt, None, None, "Room").is_ok());
+        assert!(check_auto_language("auto", &P::ParakeetTdt, Some("parakeet-tdt-ctc-110m-int8"), None, "Room")
+            .unwrap_err()
+            .contains("used for Room."));
+    }
+
+    #[test]
+    fn other_errors_stay_errors_at_a_start_and_in_a_swap() {
+        for was_capturing in [false, true] {
+            assert!(resolve_side::<u8>(Err("Deepgram key missing".into()), was_capturing, None, false).is_err());
+        }
+    }
+
+    #[test]
+    fn a_swap_refused_for_both_sides_names_both_and_a_real_error_wins() {
+        let you = parakeet_ctc_auto_refusal("You");
+        let them = auto_refusal("Azure Speech", "Them", AUTO_DETECT_ADVICE);
+        let none = [None, None];
+        let both = resolve_sides::<u8, u8>(Err(you.clone()), Err(them.clone()), true, &none, [false; 2]).err().unwrap();
+        assert_eq!(both, format!("{you} {them}"));
+        // The side already running without STT isn't part of it: only the new refusal is reported.
+        let known = [Some(you.clone()), None];
+        assert_eq!(resolve_sides::<u8, u8>(Err(you.clone()), Err(them.clone()), true, &known, [false; 2]).err(), Some(them.clone()));
+        // A real error is reported rather than a refusal.
+        assert_eq!(
+            resolve_sides::<u8, u8>(Err(you), Err("Deepgram key missing".into()), true, &none, [false; 2]).err(),
+            Some("Deepgram key missing".to_string())
+        );
+    }
+
+    #[test]
+    fn the_start_toast_is_one_short_sentence_per_announced_side() {
+        let you = auto_refusal("Web Speech", "You", AUTO_DETECT_ADVICE);
+        let room = whisper_auto_refusal("ggml-base.en.bin", "Room");
+        assert_eq!(
+            start_warnings(&[("You", Some(you.clone())), ("Room", None)]).unwrap(),
+            "You won't be transcribed: Web Speech can't detect the language. Change it in Audio & Devices or pick a language."
+        );
+        let both = start_warnings(&[("You", Some(you)), ("Room", Some(room))]).unwrap();
+        assert!(both.contains("Room won't be transcribed: the base.en Whisper model can't detect the language."), "{both}");
+        assert!(start_warnings(&[("You", None), ("Them", None)]).is_none());
+        for sentence in both.split(". ") {
+            assert!(sentence.split_whitespace().count() <= 22, "{sentence}");
+        }
+    }
+
+    #[test]
+    fn whisper_auto_support_includes_multilingual_models_only() {
+        assert!(is_multilingual_whisper_model("tiny"));
+        assert!(is_multilingual_whisper_model("ggml-small.bin"));
+        assert!(is_multilingual_whisper_model("large-v3-turbo"));
+        assert!(!is_multilingual_whisper_model("distil-large-v3"));
+        assert!(!is_multilingual_whisper_model("ggml-distil-large-v3.bin"));
+        assert!(!is_multilingual_whisper_model("ggml-base.en.bin"));
+    }
+
+    #[test]
     fn a_line_straight_from_a_provider_carries_its_turn_signal() {
         let result = TranscriptResult {
             text: "Hello".into(),
@@ -2517,13 +3741,13 @@ mod tests {
             speaker_tag: None,
             turn: Some(TurnSignal::EagerEnd),
         };
-        let seg = direct_segment_json("you_x_1", "User", &result);
+        let seg = result_segment_json("you_x_1", "User", &result);
         assert_eq!((seg["turn"].as_str(), seg["speaker"].as_str()), (Some("eager_end"), Some("User")));
-        let plain = direct_segment_json("you_x_1", "User", &TranscriptResult { turn: None, ..result });
+        let plain = result_segment_json("you_x_1", "User", &TranscriptResult { turn: None, ..result });
         assert!(plain.get("turn").is_none());
     }
 
-    fn party_on(stt_provider: &str, device_id: &str, is_input_device: bool) -> PartyAudioConfig {
+    fn party(stt_provider: &str, device_id: &str, is_input_device: bool) -> PartyAudioConfig {
         PartyAudioConfig {
             role: PartyRole::You,
             device_id: device_id.to_string(),
@@ -2540,14 +3764,14 @@ mod tests {
     #[test]
     fn default_mic_override_only_for_speech_engines_on_a_chosen_mic() {
         let headset = "Microphone (Logi USB Headset H340)";
-        assert!(needs_default_mic_override(&party_on("web_speech", headset, true), false));
-        assert!(needs_default_mic_override(&party_on("windows_native", headset, true), false));
+        assert!(needs_default_mic_override(&party("web_speech", headset, true), false));
+        assert!(needs_default_mic_override(&party("windows_native", headset, true), false));
         // Every other provider reads NexQ's own capture of the chosen device.
-        assert!(!needs_default_mic_override(&party_on("cartesia", headset, true), false));
-        assert!(!needs_default_mic_override(&party_on("parakeet_tdt", headset, true), false));
+        assert!(!needs_default_mic_override(&party("cartesia", headset, true), false));
+        assert!(!needs_default_mic_override(&party("parakeet_tdt", headset, true), false));
         // Already the default, or an output device: nothing to switch.
-        assert!(!needs_default_mic_override(&party_on("web_speech", "default", true), false));
-        assert!(!needs_default_mic_override(&party_on("web_speech", "Speakers (Realtek)", false), false));
+        assert!(!needs_default_mic_override(&party("web_speech", "default", true), false));
+        assert!(!needs_default_mic_override(&party("web_speech", "Speakers (Realtek)", false), false));
     }
 
     /// In an in-person meeting "You" isn't transcribed, so its engine choice
@@ -2555,7 +3779,7 @@ mod tests {
     #[test]
     fn a_skipped_party_never_switches_the_default_mic() {
         let headset = "Microphone (Logi USB Headset H340)";
-        assert!(!needs_default_mic_override(&party_on("web_speech", headset, true), true));
-        assert!(!needs_default_mic_override(&party_on("windows_native", headset, true), true));
+        assert!(!needs_default_mic_override(&party("web_speech", headset, true), true));
+        assert!(!needs_default_mic_override(&party("windows_native", headset, true), true));
     }
 }

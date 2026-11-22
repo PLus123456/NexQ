@@ -28,6 +28,7 @@
     "translation": "Translation",
     "aiActions": "AI Actions",
     "contextStrategy": "Context Strategy",
+    "personalSources": "Personal Sources",
     "scenarios": "AI Scenarios",
     "noisePresets": "Noise Presets",
     "confidence": "Confidence",
@@ -441,6 +442,11 @@
     "assist": {
       "label": "Assist from any app",
       "hint": "During a meeting, asks for an answer without switching to {{appName}}. Space works only in the overlay."
+    },
+    "capture": {
+      "label": "Capture screen into Ask",
+      "hint": "During a meeting, attaches the screen your mouse is on to the Ask box. You send it yourself.",
+      "noImages": "Off: this AI can't read images. Use Claude (subscription)."
     },
     "notes": {
       "windows": "Requires Windows 10 version 2004 or later.",

@@ -18,6 +18,7 @@ use crate::llm::gemini_cache::CachedContent;
 use crate::llm::openrouter_models::OpenRouterModelCache;
 use crate::llm::LLMRouter;
 use crate::rag::RagManager;
+use crate::sources::config::{McpServer, PersonalSourcesConfig};
 use crate::translation::TranslationRouter;
 use crate::translation::opus_mt_manager::OpusMtManager;
 use crate::stt::groq_whisper::GroqConfig;
@@ -109,6 +110,13 @@ pub struct AppState {
     /// in sequence; by the time end_meeting runs the recorder is stopped and
     /// the WAV path + start time are waiting here.
     pub pending_recording: Arc<Mutex<Option<PendingRecording>>>,
+    /// The Auto-detect refusal each side (You, Them) is running under, if any:
+    /// a side that couldn't detect the language started without speech-to-text.
+    /// A swap that gets the same refusal again isn't news. Cleared when capture stops.
+    pub auto_refusals: Mutex<[Option<String>; 2]>,
+    /// Where a language change for one side reaches the running audio loop
+    /// (audio::side_swap). Replaced at every capture start; None before the first.
+    pub side_swap: Mutex<Option<crate::audio::side_swap::SideSwapSender>>,
     /// In-memory cache for OpenRouter model catalog (TTL: 4 hours).
     pub openrouter_cache: Arc<Mutex<Option<OpenRouterModelCache>>>,
     /// Tray icon manager — initialized after the tray handle is available.
@@ -140,6 +148,24 @@ pub struct AppState {
     pub live_meeting: Arc<Mutex<Option<LiveMeeting>>>,
     /// The fallback provider client last built (reused while unchanged).
     pub claude_fallback: Arc<Mutex<Option<CachedFallback>>>,
+    /// Notes folders and MCP servers the user set up (`set_personal_sources`).
+    pub personal_sources: Arc<RwLock<PersonalSourcesConfig>>,
+    /// Bumped when the saved secrets of an enabled MCP server change (they
+    /// are not in `personal_sources`, so its fingerprint can't see them).
+    pub sources_secrets_rev: Arc<AtomicU64>,
+    /// Servers an import or the form returned that the webview has not saved
+    /// yet (newest last, at most `PENDING_SERVERS_MAX`), with when each was
+    /// handed over. A Check or an edit finds them here by id. Each reserves its
+    /// key for `PENDING_KEY_HOLD` (so two servers added together get different
+    /// keys); one the webview never saves stops reserving it then, so a
+    /// discarded server doesn't push the real one to `name-2`.
+    pub pending_servers: Arc<Mutex<Vec<(McpServer, std::time::Instant)>>>,
+    /// The sources (and secrets revision) the with-sources sessions were last
+    /// started or restarted for.
+    pub sources_applied: Arc<Mutex<(PersonalSourcesConfig, u64)>>,
+    /// A with-sources session that just failed to start: answers skip it for
+    /// a while instead of waiting on it again.
+    pub sources_cooldown: Arc<crate::llm::cli_agent::routing::SourcesCooldown>,
 }
 
 /// The meeting between `start_meeting` and `end_meeting`.
@@ -178,6 +204,8 @@ impl AppState {
             ipolicy_target_endpoint: Arc::new(Mutex::new(None)),
             active_scenario: Arc::new(RwLock::new(ActiveScenario::default())),
             pending_recording: Arc::new(Mutex::new(None)),
+            auto_refusals: Mutex::new([None, None]),
+            side_swap: Mutex::new(None),
             openrouter_cache: Arc::new(Mutex::new(None)),
             tray_manager: Arc::new(Mutex::new(None)),
             gemini_cache: Arc::new(Mutex::new(None)),
@@ -197,6 +225,11 @@ impl AppState {
             meeting_sessions: Arc::new(MeetingSessions::default()),
             live_meeting: Arc::new(Mutex::new(None)),
             claude_fallback: Arc::new(Mutex::new(None)),
+            personal_sources: Arc::new(RwLock::new(PersonalSourcesConfig::default())),
+            sources_secrets_rev: Arc::new(AtomicU64::new(0)),
+            sources_applied: Arc::new(Mutex::new((PersonalSourcesConfig::default(), 0))),
+            sources_cooldown: Arc::new(Default::default()),
+            pending_servers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

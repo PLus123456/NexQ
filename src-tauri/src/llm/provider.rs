@@ -7,6 +7,8 @@ use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::sync::Notify;
 
+pub use super::thinking::ThinkingSetting;
+
 /// Per-request generation parameters.
 /// `None` fields mean "use provider default" — they won't be sent in the HTTP body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,17 @@ pub struct GenerationParams {
     /// `stream` are never overridden.
     #[serde(default)]
     pub extra_body: Option<serde_json::Value>,
+    /// An explicit thinking choice for this request. `Auto` (the default) means
+    /// "the provider's own setting"; anything else overrides it. A task
+    /// route's thinking setting arrives here too (`registry::RoutedProvider`),
+    /// unless the request already carries a choice of its own.
+    #[serde(default)]
+    pub thinking: ThinkingSetting,
+    /// Background JSON tasks (action items, bookmarks, question detection)
+    /// want no thinking: with no explicit setting anywhere (Auto), they send
+    /// "off". A user's own setting still wins.
+    #[serde(default)]
+    pub thinking_auto_off: bool,
 }
 
 impl Default for GenerationParams {
@@ -54,6 +67,8 @@ impl Default for GenerationParams {
             silent: false,
             cancel: None,
             extra_body: None,
+            thinking: ThinkingSetting::Auto,
+            thinking_auto_off: false,
         }
     }
 }
@@ -166,6 +181,21 @@ pub fn emit_token(app: &AppHandle, params: &GenerationParams, token: &str, sink:
             },
         );
     }
+}
+
+/// Event carrying one [`StreamActivityPayload`].
+pub const STREAM_ACTIVITY_EVENT: &str = "llm_stream_activity";
+
+/// Emits `llm_stream_activity`: a line about the sources an answer is using
+/// (nothing for silent streams).
+pub fn emit_activity(app: &AppHandle, params: &GenerationParams, activity: crate::sources::activity::SourceActivity) {
+    if params.silent {
+        return;
+    }
+    let _ = app.emit(
+        STREAM_ACTIVITY_EVENT,
+        StreamActivityPayload { request_id: params.request_id.clone(), activity },
+    );
 }
 
 /// Emits `llm_stream_end` for this request (nothing for silent streams).
@@ -358,6 +388,14 @@ pub struct RagChunkInfo {
 pub struct StreamTokenPayload {
     pub token: String,
     pub request_id: Option<String>,
+}
+
+/// Payload of `llm_stream_activity`: one activity line (and its chip) of an
+/// answer that uses personal sources. Mirrors `StreamActivityEvent` in types.ts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamActivityPayload {
+    pub request_id: Option<String>,
+    pub activity: crate::sources::activity::SourceActivity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

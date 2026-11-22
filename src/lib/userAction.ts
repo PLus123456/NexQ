@@ -8,10 +8,11 @@ import { generateAssist } from "./ipc";
 import { resolveScope, DEFAULT_CONTEXT_SCOPE } from "./contextScope";
 import { actionDisplayName } from "./actionNames";
 import { getModeLabel } from "./utils";
-import type { IntelligenceMode } from "./types";
+import type { ImageAttachment, IntelligenceMode, SourceToggles } from "./types";
 import { useConfigStore } from "../stores/configStore";
 import { useStreamStore } from "../stores/streamStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
+import { t } from "../i18n";
 
 /** The name the action row shows for `mode` ("F/U", a custom action's name...). */
 export function actionLabel(mode: string): string {
@@ -30,9 +31,24 @@ export function actionLabel(mode: string): string {
 export async function runUserAction(
   mode: string,
   customQuestion?: string,
-  opts: { requestId?: string; preparedOnly?: boolean } | boolean = {},
+  opts: {
+    requestId?: string;
+    preparedOnly?: boolean;
+    images?: ImageAttachment[];
+    /**
+     * The Notes / Tools pills when the user asks. Only an answer the user asked
+     * for passes this; an automatic answer (Auto-Answer) never does.
+     */
+    sources?: SourceToggles;
+  } | boolean = {},
 ): Promise<void> {
-  const { requestId: givenRequestId, preparedOnly = false } = typeof opts === "boolean" ? { preparedOnly: opts } : opts;
+  const {
+    requestId: givenRequestId,
+    preparedOnly = false,
+    images,
+    sources,
+  }: { requestId?: string; preparedOnly?: boolean; images?: ImageAttachment[]; sources?: SourceToggles } =
+    typeof opts === "boolean" ? { preparedOnly: opts } : opts;
   const config = useConfigStore.getState();
   const setting = config.contextScope ?? DEFAULT_CONTEXT_SCOPE;
   const stream = useStreamStore.getState();
@@ -43,7 +59,7 @@ export async function runUserAction(
 
   // Cache replay has no provider wait. A stale hit should leave the current
   // answer visible; its accepted start event replaces it on success.
-  if (!preparedOnly) stream.setPending(mode, requestId);
+  if (!preparedOnly) stream.setPending(mode, requestId, sources);
   // A one-off scope is used up by this action (not by a click the running
   // stream will refuse).
   if (!preparedOnly && !config.contextScopeSticky && setting.kind !== "default" && !busy) {
@@ -51,9 +67,23 @@ export async function runUserAction(
   }
 
   try {
-    await generateAssist(mode, customQuestion, { requestId, scope, ...(preparedOnly ? { preparedOnly: true } : {}) });
+    await generateAssist(mode, customQuestion, {
+      requestId,
+      scope,
+      images,
+      ...(sources ? { sources } : {}),
+      ...(preparedOnly ? { preparedOnly: true } : {}),
+    });
   } catch (err) {
-    useStreamStore.getState().clearPending(requestId);
+    const store = useStreamStore.getState();
+    store.clearPending(requestId);
+    // The request failed after its stream started, and the backend's error event
+    // didn't end it: don't leave the answer panel streaming forever.
+    if (store.isStreaming && store.streamRequestId === requestId) {
+      store.setError(
+        typeof err === "string" ? err : err instanceof Error ? err.message : t("overlay:modes.errors.generateFailed"),
+      );
+    }
     throw err;
   }
 }

@@ -28,7 +28,15 @@ import { ModelCombobox } from "../../components/ModelCombobox";
 import { cn } from "../../lib/utils";
 import { errorMessage } from "../../lib/llm/ipc";
 import { isEmbeddingModel, modelOptions } from "../../lib/llm/connection";
-import { effectiveRoute, isLlmTaskKey, LLM_TASKS, taskDef, type LlmTaskKey } from "../../lib/llm/tasks";
+import {
+  effectiveRoute,
+  inheritedParams,
+  isLlmTaskKey,
+  LLM_TASKS,
+  resolveRoute,
+  taskDef,
+  type LlmTaskKey,
+} from "../../lib/llm/tasks";
 import type { EffectiveRoute, LlmConfigView, LlmParams, RouteError, TaskRoute } from "../../lib/llm/types";
 import { useAIActionsStore } from "../../stores/aiActionsStore";
 import { useConfigStore } from "../../stores/configStore";
@@ -314,6 +322,9 @@ function TaskRow({ row, view, nested = false }: { row: Row; view: LlmConfigView;
                 ? t("routing.params.defaultTemperature", { value: def.defaultTemperature })
                 : undefined
             }
+            inherited={inheritedParams(view, key)}
+            // The Claude subscription keeps its own Fast / Deep thinking switches: the setting has no effect on it.
+            thinkingUnusedHint={resolveRoute(view, key).kind === "claude_cli" ? t("params.thinking.claudeHint") : undefined}
             disableThinking={template?.disableThinking}
           />
         </div>

@@ -1,5 +1,5 @@
-// NexQ Plus: upstream's sttLanguages.ts is gone (languages come from lib/languages.ts);
-// Cartesia's language check lives with the engine metadata.
+// NexQ Plus: Cartesia's language check lives with the engine metadata
+// (upstream's lib/sttLanguages.ts re-exports it), over the catalog in lib/languages.ts.
 import { describe, expect, it } from "vitest";
 import { LANGUAGES, STT_COMMON } from "../languages";
 import { cartesiaSupportsLanguage } from "./providerMeta";

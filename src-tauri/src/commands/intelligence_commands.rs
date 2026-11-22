@@ -7,13 +7,16 @@ use crate::intelligence::context_scope::{self, ResolvedScope, TranscriptWindow};
 use crate::intelligence::{GenerationLane, IntelligenceEngine};
 use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
-use crate::llm::cli_agent::protocol::{AgentErrorKind, TurnResult};
+use crate::llm::cli_agent::session::{decode_activity, decode_tool_result, AgentError};
+use crate::sources::activity::{describe_tool_use, notice, SourceActivity};
+use crate::sources::config::SourceToggles;
+use crate::llm::cli_agent::protocol::{AgentErrorKind, ImageAttachment, TurnResult};
 use crate::llm::cli_agent::routing::{
     self, choose_route, AgentFallbackPayload, AskFailure, Route,
 };
 use crate::llm::api::{self, LlmKind, LlmTask, ResolvedLlm};
 use crate::llm::provider::{
-    emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, RagChunkInfo,
+    emit_activity, emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, RagChunkInfo,
     StreamEndPayload, StreamStartPayload,
 };
 use crate::llm::registry::{self as llm_registry, LlmRegistry};
@@ -277,11 +280,16 @@ fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> (SessionSco
 }
 
 /// Where this request goes (see `choose_route`): by the connection kind the
-/// request's task is routed to.
-pub(crate) fn request_route(app: &AppHandle, state: &AppState, mode: &str, scope: &SessionScope) -> Route {
-    let kind = app
-        .try_state::<LlmRegistry>()
-        .and_then(|registry| registry.route_kind(&LlmTask::from_mode(mode).key()));
+/// request's task is routed to. `with_sources`: it may use the user's
+/// personal sources (see `routing::wants_sources`).
+pub(crate) fn request_route(
+    app: &AppHandle,
+    state: &AppState,
+    mode: &str,
+    scope: &SessionScope,
+    with_sources: bool,
+) -> Route {
+    let kind = route_kind(app, mode);
     let Some(kind) = kind else {
         return Route::Stateless;
     };
@@ -290,7 +298,86 @@ pub(crate) fn request_route(app: &AppHandle, state: &AppState, mode: &str, scope
         .read()
         .map(|c| c.clone())
         .unwrap_or_default();
-    choose_route(kind, state.claude_health.get(), scope, mode, &cfg)
+    choose_route(kind, state.claude_health.get(), scope, mode, &cfg, with_sources)
+}
+
+/// The connection kind `mode`'s task is routed to (no fallback applied);
+/// `None` while nothing is set up for it.
+pub(crate) fn route_kind(app: &AppHandle, mode: &str) -> Option<LlmKind> {
+    app.try_state::<LlmRegistry>()
+        .and_then(|registry| registry.route_kind(&LlmTask::from_mode(mode).key()))
+}
+
+/// Whether a request that asked for sources gets them: the pills (or the
+/// follow-up rule) say yes and something is enabled to use.
+pub(crate) fn request_with_sources(
+    state: &AppState,
+    mode: &str,
+    scope: &SessionScope,
+    toggles: Option<SourceToggles>,
+) -> bool {
+    let last = state.meeting_sessions.last_answer_with_sources(scope);
+    routing::wants_sources(mode, toggles, last)
+        && state.personal_sources.read().map(|c| c.has_enabled()).unwrap_or(false)
+}
+
+/// The chips of tool calls still running, by tool use id: a call leaves its
+/// chip only when its result says it worked.
+#[derive(Default)]
+pub(crate) struct ToolChips(std::sync::Mutex<std::collections::HashMap<String, crate::sources::activity::SourceChip>>);
+
+impl ToolChips {
+    pub(crate) fn hold(&self, id: &str, chip: Option<crate::sources::activity::SourceChip>) {
+        if let (false, Some(chip)) = (id.is_empty(), chip) {
+            self.0.lock().unwrap().insert(id.to_string(), chip);
+        }
+    }
+
+    /// The chip of the call `done` ends, if it worked.
+    pub(crate) fn settle(&self, done: &crate::llm::cli_agent::protocol::ToolResult) -> Option<crate::sources::activity::SourceChip> {
+        let chip = self.0.lock().unwrap().remove(&done.tool_use_id);
+        if done.is_error { None } else { chip }
+    }
+}
+
+/// The activity line shown when a with-sources attempt fell back to the plain
+/// session.
+pub(crate) fn sources_failure_notice(reason: &str) -> SourceActivity {
+    notice(format!("Your sources couldn't be loaded, so this answer didn't use them. {reason}"))
+}
+
+/// The activity line shown when an answer that asked for sources was written
+/// somewhere that has none: another provider, Claude out for now, or no
+/// meeting open to hold a Claude session. It names no cause because this path
+/// can't tell which one it was.
+pub(crate) fn sources_unavailable_notice() -> SourceActivity {
+    notice("Your sources weren't used for this answer. They only work in a Claude subscription session for a meeting.")
+}
+
+/// Does `err`, from a with-sources session, mean its sources could not start
+/// (a bad server, a missing folder, a timeout) rather than Claude itself being
+/// out (not installed, signed out, rate limited)? Those go to the plain
+/// session with a notice; the others are real outages.
+pub(crate) fn is_sources_start_failure(err: &AgentError) -> bool {
+    matches!(
+        err,
+        AgentError::Spawn(_) | AgentError::NoUsableSources { .. } | AgentError::Timeout | AgentError::Crashed(_)
+    ) && !matches!(
+        err.kind(),
+        AgentErrorKind::NotInstalled | AgentErrorKind::NotLoggedIn | AgentErrorKind::RateLimited
+    )
+}
+
+/// Why a request with images can't be answered statelessly: its task is
+/// routed to another connection (none of them takes images yet), or to Claude
+/// but its session isn't available for this request (outage, fallback, no
+/// meeting open, meeting too long).
+pub(crate) fn images_refusal(kind: Option<LlmKind>) -> &'static str {
+    if kind == Some(LlmKind::ClaudeCli) {
+        "Claude can't read images right now. Try again in a moment, or remove the image and ask again."
+    } else {
+        "Images work only with Claude (subscription). Choose it for this action in Settings → AI Models, or remove the image and ask again."
+    }
 }
 
 /// Everything the Claude session path needs from a request.
@@ -312,11 +399,18 @@ pub(crate) struct SessionAssist<'a> {
     pub temperature: f64,
     pub params: GenerationParams,
     pub cancel: Arc<CancelToken>,
+    /// Images pasted into Ask, sent with the question.
+    pub images: &'a [ImageAttachment],
+    /// What the sources note tells a with-sources session this answer may use
+    /// (all off when the pills are not known, as for Shorten and FollowUp).
+    pub sources: Option<SourceToggles>,
 }
 
 /// A request a Claude session answered: what was sent, which model
 /// answered, and the turn's result (text and tokens).
 pub(crate) struct SessionAnswer {
+    /// The session that answered (the plain one after a sources fallback).
+    pub key: SessionKey,
     pub prompt: String,
     pub model: String,
     pub turn: TurnResult,
@@ -331,6 +425,44 @@ pub(crate) enum SessionOutcome {
     Stateless,
     /// Claude is unavailable (after one restart where it applies).
     Unavailable(AgentErrorKind, String),
+    /// The with-sources session could not start (nothing was sent or shown):
+    /// answer on the plain session instead and say why.
+    SourcesFailed(String),
+}
+
+/// [`session_assist`], and when the with-sources session can't start, once
+/// more on the plain session after a notice saying why. Never returns
+/// `SourcesFailed`. `make` builds the request for the session key it is given.
+pub(crate) async fn run_session_assist<'a>(
+    state: &AppState,
+    app: &AppHandle,
+    key: SessionKey,
+    make: impl Fn(SessionKey) -> SessionAssist<'a>,
+) -> SessionOutcome {
+    let mut key = key;
+    loop {
+        let req = make(key.clone());
+        let params = req.params.clone();
+        // A with-sources session that just failed is not tried again at once:
+        // the plain session answers, with the reason and when it retries.
+        if key.with_sources {
+            if let Some((plain, text)) = state.sources_cooldown.plain_instead(&key, std::time::Instant::now()) {
+                emit_activity(app, &params, notice(text));
+                key = plain;
+                continue;
+            }
+        }
+        match session_assist(state, app, req).await {
+            SessionOutcome::SourcesFailed(reason) if key.with_sources => {
+                log::warn!("with-sources session failed ({reason}); answering on the plain session");
+                emit_activity(app, &params, sources_failure_notice(&reason));
+                crate::commands::meeting_commands::note_sources_failure(app, &key, &reason);
+                key = key.sibling();
+            }
+            SessionOutcome::SourcesFailed(reason) => return SessionOutcome::Done(Err(reason)),
+            other => return other,
+        }
+    }
 }
 
 /// Answer one request on the meeting's warm Claude session: only the
@@ -356,14 +488,20 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
     let interim_text = crate::llm::cli_agent::context::transcript_lines(&interim, false);
 
     let ready = state.meeting_sessions.ensure_current(key, req.epoch, || match &key.scope {
-        SessionScope::Live(_) => Ok(crate::commands::meeting_commands::live_session_record(state, key.tier, &finals)),
-        SessionScope::Past(id) => crate::commands::meeting_commands::past_session_record(state, id),
+        SessionScope::Live(_) => {
+            crate::commands::meeting_commands::live_session_record(state, key.tier, &finals, key.with_sources)
+        }
+        SessionScope::Past(id) => {
+            crate::commands::meeting_commands::past_session_record(state, id, key.with_sources)
+        }
         SessionScope::Utility => Err("Utility requests have no meeting session".to_string()),
     });
     match ready {
         Ok(true) => {}
         // The meeting ended / its view was left since the request chose it.
         Ok(false) => return end_closed(app, params, start),
+        // No usable source to start with: the caller answers on the plain session.
+        Err(e) if key.with_sources => return SessionOutcome::SourcesFailed(e),
         Err(e) => {
             emit_error(app, params, &e);
             return SessionOutcome::Done(Err(e));
@@ -398,6 +536,13 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
     // The user's scope rides along as a short note (no section for the default).
     let scope_note = context_scope::session_scope_note(req.scope, live_start_ms).unwrap_or_default();
     let scope_label = ResolvedScope::label_of(req.scope);
+    // Which sources this answer may use, for a with-sources session only.
+    let sources_body = if key.with_sources {
+        routing::sources_note_body(req.sources.unwrap_or_default())
+    } else {
+        String::new()
+    };
+    let server_labels = record.sources.as_ref().map(|s| s.server_labels.clone()).unwrap_or_default();
     let compose = |new: &[Seg]| {
         routing::compose_delta(
             new,
@@ -405,6 +550,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
                 ("## Still being transcribed (may change)", interim_text.as_str()),
                 ("## Relevant document excerpts", rag_context.as_str()),
                 (context_scope::SCOPE_HEADER, scope_note.as_str()),
+                (routing::SOURCES_NOTE_HEADER, sources_body.as_str()),
             ],
             &req.task_instructions,
             req.custom_question,
@@ -443,6 +589,12 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
                 prepared: false,
             },
         );
+        // Servers that did not start and sources left out: said once per answer.
+        if key.with_sources {
+            if let Some(text) = state.agent_sessions.sources_notice(key) {
+                emit_activity(app, params, notice(text));
+            }
+        }
     };
     // First words (from `start`, like the end's latency) and a once-per-request
     // thinking signal, across a restart's second attempt too.
@@ -451,7 +603,28 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         let app = app.clone();
         let params = params.clone();
         let timing = timing.clone();
+        let server_labels = server_labels.clone();
+        // The chip of each tool call, held until the call ends well.
+        let chips = ToolChips::default();
         Box::new(move |token: &str| {
+            // A tool use is an activity line, never answer text; its chip waits
+            // for the result, so a denied or failed call leaves none.
+            if let Some(tool) = decode_activity(token) {
+                if !is_cancelled(&params) {
+                    let mut line = describe_tool_use(&tool, &server_labels);
+                    chips.hold(&tool.id, line.chip.take());
+                    emit_activity(&app, &params, line);
+                }
+                return;
+            }
+            if let Some(done) = decode_tool_result(token) {
+                if !is_cancelled(&params) {
+                    if let Some(chip) = chips.settle(&done) {
+                        emit_activity(&app, &params, SourceActivity::chip_only(chip));
+                    }
+                }
+                return;
+            }
             let thinking = timing.on_delta(token);
             if is_cancelled(&params) {
                 return;
@@ -473,6 +646,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         on_sent,
         make_on_delta,
         cancel.clone(),
+        req.images,
     )
     .await;
 
@@ -495,7 +669,19 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
                 Some(usage),
             );
             let (prompt, model) = sent.lock().ok().and_then(|mut s| s.take()).unwrap_or_default();
-            SessionOutcome::Done(Ok(Some(SessionAnswer { prompt, model, turn })))
+            // Shorten and FollowUp follow the session that produced this answer,
+            // and the other Fast/Deep session is told it so either can follow up.
+            state.meeting_sessions.note_answer(mode, &key.scope, key.with_sources);
+            if !turn.text.trim().is_empty() && !routing::BACKGROUND_MODES.contains(mode) {
+                let message = routing::shared_answer(mode, req.custom_question, &turn.text);
+                let manager = state.agent_sessions.clone();
+                let sessions = state.meeting_sessions.clone();
+                let target = key.sibling();
+                tauri::async_runtime::spawn(async move {
+                    routing::share_answer(&manager, &sessions, &target, message).await;
+                });
+            }
+            SessionOutcome::Done(Ok(Some(SessionAnswer { key: key.clone(), prompt, model, turn })))
         }
         Err(AskFailure::Cancelled) => SessionOutcome::Done(Ok(None)),
         // The meeting ended / its view was left mid-request: just end the
@@ -510,6 +696,11 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         Err(AskFailure::ContextFull(e)) => {
             log::warn!("Claude session context full ({e}); answering this request statelessly");
             SessionOutcome::Stateless
+        }
+        // A with-sources session whose sources could not start is not a Claude
+        // outage: the plain session answers instead.
+        Err(AskFailure::Unavailable(_, e)) if key.with_sources && is_sources_start_failure(&e) => {
+            SessionOutcome::SourcesFailed(e.to_string())
         }
         Err(AskFailure::Unavailable(kind, e)) => SessionOutcome::Unavailable(kind, e.to_string()),
     }
@@ -837,15 +1028,23 @@ pub async fn generate_assist(
     past_meeting_id: Option<String>,
     scope: Option<ResolvedScope>,
     prepared_only: Option<bool>,
+    images: Option<Vec<ImageAttachment>>,
+    sources: Option<SourceToggles>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // The user's transcript scope (`scope` names the session scope below).
     let user_scope = scope;
+    let images = images.unwrap_or_default();
+    // The frontend checks these too; the backend doesn't rely on it.
+    crate::llm::cli_agent::protocol::validate_images(&images)?;
     // Every stream carries a request id so listeners can tell streams apart.
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let (scope, epoch) = request_scope(&state, past_meeting_id.as_deref());
+    // Only an answer the user asked for, with a pill on, may use sources (no
+    // `sources` at all means automatic: Auto-Answer, summaries, background tasks).
+    let with_sources = request_with_sources(&state, &mode, &scope, sources);
 
     // Extract what we need from the intelligence engine under its lock
     let (generation_guard, last_question, cancel_token, action_config_snapshot, composed_instructions, presets) = {
@@ -910,9 +1109,16 @@ pub async fn generate_assist(
         None
     };
 
+    // ── Route: warm Claude session, fallback provider, or stateless ──
+    let mut route = request_route(&app_handle, &state, &mode, &scope, with_sources);
+    // The request goes to a Claude session that has the user's sources.
+    let uses_sources = matches!(&route, Route::ClaudeSession(key) if key.with_sources);
+
     // Only a live, default-scope Assist may consume a confirmed preparation.
-    // A user-selected transcript scope must always be honored by a fresh call.
-    if mode == "Assist" && past_meeting_id.is_none() && user_scope.is_none() {
+    // A user-selected transcript scope must always be honored by a fresh call,
+    // and so must attached images and sources the answer can use: the
+    // preparation saw neither.
+    if mode == "Assist" && past_meeting_id.is_none() && user_scope.is_none() && images.is_empty() && !uses_sources {
         if let Some(answer) = effective_question.as_ref().and_then(|q| {
             app_handle.state::<crate::intelligence::question_prediction::QuestionPredictionService>().consume(&q.text)
         }) {
@@ -921,6 +1127,10 @@ pub async fn generate_assist(
             start.request_id = Some(request_id.clone());
             let _ = app_handle.emit("llm_stream_start", start);
             let params = GenerationParams { request_id: Some(request_id), cancel: Some(cancel_token), ..Default::default() };
+            // Asked for sources, but this answer has none: say so, as the stateless path does.
+            if with_sources {
+                emit_activity(&app_handle, &params, sources_unavailable_notice());
+            }
             emit_token(&app_handle, &params, &answer.text, None);
             crate::llm::provider::emit_end(&app_handle, &params, 0, 0);
             return Ok(());
@@ -950,9 +1160,6 @@ pub async fn generate_assist(
         .and_then(|c| c.temperature)
         .unwrap_or(global_defaults.temperature);
 
-    // ── Route: warm Claude session, fallback provider, or stateless ──
-    let mut route = request_route(&app_handle, &state, &mode, &scope);
-
     if let Route::ClaudeSession(key) = &route {
         // The action's own prompt (or the mode template) and presets travel in
         // the user message; the scenario prompt is the session's system prompt.
@@ -966,8 +1173,8 @@ pub async fn generate_assist(
             action_prompt
         };
         let task_instructions = api::with_answer_language(&task_instructions, &app_handle);
-        let req = SessionAssist {
-            key: key.clone(),
+        let make_req = |key: SessionKey| SessionAssist {
+            key,
             epoch,
             mode: &mode,
             custom_question: custom_question.as_deref(),
@@ -978,7 +1185,7 @@ pub async fn generate_assist(
             },
             transcript_segments: transcript_segments.as_deref(),
             scope: user_scope.as_ref(),
-            task_instructions,
+            task_instructions: task_instructions.clone(),
             include_rag,
             include_instructions,
             include_question,
@@ -990,14 +1197,17 @@ pub async fn generate_assist(
                 ..GenerationParams::default()
             },
             cancel: cancel_token.clone(),
+            images: &images,
+            sources: Some(sources.unwrap_or_default()),
         };
-        match session_assist(&state, &app_handle, req).await {
+        match run_session_assist(&state, &app_handle, key.clone(), make_req).await {
             SessionOutcome::Done(result) => {
                 // Release the engine only now that the stream has fully stopped.
                 drop(generation_guard);
                 return result.map(|_| ());
             }
-            SessionOutcome::Stateless => route = Route::Stateless,
+            // `run_session_assist` already fell back; kept for completeness.
+            SessionOutcome::Stateless | SessionOutcome::SourcesFailed(_) => route = Route::Stateless,
             SessionOutcome::Unavailable(kind, reason) => {
                 let params = GenerationParams {
                     request_id: Some(request_id.clone()),
@@ -1010,6 +1220,36 @@ pub async fn generate_assist(
     }
 
     // ── Today's stateless full-prompt path (active or fallback provider) ──
+
+    // Asked for sources, but this path has none: say so rather than let the pills look on.
+    if with_sources {
+        let params = GenerationParams {
+            request_id: Some(request_id.clone()),
+            cancel: Some(cancel_token.clone()),
+            ..GenerationParams::default()
+        };
+        emit_activity(&app_handle, &params, sources_unavailable_notice());
+    }
+
+    // Only a Claude session carries images; no other route can send them, and
+    // answering without the image would silently ignore what the user attached.
+    if !images.is_empty() {
+        let message = images_refusal(route_kind(&app_handle, &mode)).to_string();
+        // End the stream too: a session attempt above may already have started
+        // it, and the frontend ignores errors for streams it never started, so
+        // this is harmless otherwise (the rejection below reports it then).
+        emit_error(
+            &app_handle,
+            &GenerationParams {
+                request_id: Some(request_id.clone()),
+                cancel: Some(cancel_token.clone()),
+                ..GenerationParams::default()
+            },
+            &message,
+        );
+        drop(generation_guard);
+        return Err(message);
+    }
 
     // Determine transcript window: per-action override or global default,
     // unless the user picked a scope for this request.
@@ -1110,6 +1350,9 @@ pub async fn generate_assist(
         enable_web_search,
         request_id: Some(request_id),
         cancel: Some(cancel_token.clone()),
+        // The background JSON tasks want no thinking unless the user chose
+        // otherwise (for the task's route or its connection).
+        thinking_auto_off: matches!(mode.as_str(), "ActionItemsExtraction" | "BookmarkSuggestions"),
         ..GenerationParams::default()
     };
 
@@ -1407,6 +1650,14 @@ mod tests {
     }
 
     #[test]
+    fn images_refusal_names_the_provider_problem() {
+        assert!(images_refusal(Some(LlmKind::OpenAiCompat)).starts_with("Images work only with Claude"));
+        assert!(images_refusal(Some(LlmKind::Gemini)).starts_with("Images work only with Claude"));
+        assert!(images_refusal(None).starts_with("Images work only with Claude"));
+        assert!(images_refusal(Some(LlmKind::ClaudeCli)).starts_with("Claude can't read images right now"));
+    }
+
+    #[test]
     fn document_fallback_is_capped() {
         assert_eq!(cap_document_text("  
 ", 10), None);
@@ -1465,5 +1716,92 @@ mod tests {
 [You]: Mine
 [Them]: Late");
         assert_eq!(window, 80);
+    }
+
+    #[test]
+    fn sources_failure_notice_names_the_reason() {
+        let n = sources_failure_notice("MCP server Mira failed to start");
+        assert_eq!(n.kind, crate::sources::activity::SourceKind::Notice);
+        assert_eq!(
+            n.label,
+            "Your sources couldn't be loaded, so this answer didn't use them. MCP server Mira failed to start"
+        );
+        assert!(n.chip.is_none());
+    }
+
+    #[test]
+    fn the_unavailable_notice_does_not_blame_the_provider() {
+        let text = sources_unavailable_notice().label;
+        assert!(text.starts_with("Your sources weren't used"), "{text}");
+        assert!(!text.contains("didn't come from"), "{text}");
+    }
+
+    #[test]
+    fn a_chip_appears_only_after_its_tool_call_worked() {
+        use crate::llm::cli_agent::protocol::ToolResult;
+        use crate::sources::activity::{SourceChip, SourceKind};
+        let chip = |l: &str| SourceChip { kind: SourceKind::Tool, label: l.into(), path: None };
+        let done = |id: &str, is_error: bool| ToolResult { tool_use_id: id.into(), is_error };
+        let chips = ToolChips::default();
+        chips.hold("a", Some(chip("Mira: person_brief")));
+        chips.hold("b", Some(chip("Mira: add_task")));
+        chips.hold("c", Some(chip("Mira: tasks")));
+        chips.hold("", Some(chip("no id")));
+        chips.hold("d", None);
+        assert_eq!(chips.settle(&done("a", false)), Some(chip("Mira: person_brief")));
+        assert_eq!(chips.settle(&done("b", true)), None, "denied or failed: no chip");
+        assert_eq!(chips.settle(&done("a", false)), None, "settled once");
+        assert_eq!(chips.settle(&done("zzz", false)), None);
+        // Still running: nothing yet.
+        assert_eq!(chips.settle(&done("c", false)), Some(chip("Mira: tasks")));
+        assert_eq!(chips.settle(&done("", false)), None);
+        assert_eq!(chips.settle(&done("d", false)), None);
+    }
+
+    #[test]
+    fn is_sources_start_failure_classifies() {
+        use crate::llm::cli_agent::session::InitInfo;
+        assert!(is_sources_start_failure(&AgentError::Spawn("MCP server mira failed to start".into())));
+        assert!(is_sources_start_failure(&AgentError::Timeout));
+        assert!(is_sources_start_failure(&AgentError::NoUsableSources {
+            message: "MCP server mira failed to start".into(),
+            info: InitInfo::default(),
+        }));
+        assert!(is_sources_start_failure(&AgentError::Crashed("exit code 1".into())));
+        // Claude itself being out is not a sources problem.
+        assert!(!is_sources_start_failure(&AgentError::Cli(AgentErrorKind::RateLimited, "limit".into())));
+        assert!(!is_sources_start_failure(&AgentError::Spawn("Claude CLI not installed: claude.exe not found".into())));
+        assert!(!is_sources_start_failure(&AgentError::Crashed("Not logged in. Please run /login".into())));
+        assert!(!is_sources_start_failure(&AgentError::Cancelled));
+    }
+
+    #[test]
+    fn request_with_sources_needs_a_pill_an_enabled_source_and_a_user_request() {
+        use crate::sources::config::NotesFolder;
+        let state = AppState::new();
+        let live = SessionScope::Live("m".into());
+        let on = Some(SourceToggles { notes: true, tools: false });
+        // Nothing enabled: never.
+        assert!(!request_with_sources(&state, "Assist", &live, on));
+        state.personal_sources.write().unwrap().notes_folders =
+            vec![NotesFolder { id: "f".into(), label: "V".into(), path: "D:/v".into(), enabled: true }];
+        assert!(request_with_sources(&state, "Assist", &live, on));
+        // Automatic answers (no `sources` param) and background modes: never.
+        assert!(!request_with_sources(&state, "Assist", &live, None));
+        assert!(!request_with_sources(&state, "MeetingSummary", &live, on));
+        // Shorten follows the answer it works on, whatever the pills say now.
+        let off = Some(SourceToggles::default());
+        assert!(!request_with_sources(&state, "Shorten", &live, off));
+        state.meeting_sessions.set_last_answer(&live, true);
+        assert!(request_with_sources(&state, "Shorten", &live, off));
+        // ... and its note uses the current pills, all off when there are none.
+        assert_eq!(
+            routing::sources_note_body(None.unwrap_or_default()),
+            "Notes: off. Tools: off. Use only the sources marked on."
+        );
+        assert_eq!(
+            routing::sources_note_body(on.unwrap_or_default()),
+            "Notes: on. Tools: off. Use only the sources marked on."
+        );
     }
 }

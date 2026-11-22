@@ -62,7 +62,8 @@
       "visible": "Visible in screen share",
       "failed": "Couldn't change screen-share visibility: {{detail}}"
     },
-    "registrationFailed": "Could not register {{shortcut}}. Another app may be using it. Change the binding in Settings → Shortcuts, or release it in the other app."
+    "registrationFailed": "Could not register {{shortcut}}. Another app may be using it. Change the binding in Settings → Shortcuts, or release it in the other app.",
+    "captureRegistrationFailed": "{{shortcut}} is in use by another app, so Capture screen into Ask is off. Choose another key in Settings > General."
   },
   "audioPlayer": {
     "playButton": {
@@ -141,6 +142,9 @@
     "writing": "Writing {{seconds}} s",
     "answering": "Answering…"
   },
+  "configStore": {
+    "aiSettingNotApplied": "Couldn't apply the AI setting: {{detail}}"
+  },
   "toast": {
     "dismiss": {
       "label": "Dismiss notification"
@@ -173,6 +177,16 @@
     }
   },
   "hooks": {
+    "webSpeech": {
+      "autoDetect": {
+        "stopped": "Stopped transcribing {{side}}: Web Speech can't detect the language. Pick a language (it applies right away) or choose another provider for {{side}}.",
+        "notTranscribed": "{{side}} won't be transcribed: Web Speech can't detect the language. Pick a language (it applies right away) or choose another provider for {{side}}."
+      }
+    },
+    "audioConfigSync": {
+      "autoDetectRefused": "{{detail}} Your meeting keeps its current setup.",
+      "switchFailed": "Couldn't switch speech-to-text: {{detail}}"
+    },
     "meetingStats": {
       "duration": {
         "hoursMinutes": "{{hours}}h {{minutes}}m",

@@ -59,7 +59,9 @@ const TIER_KEY = {
 } as const satisfies Record<"fast" | "deep", ParseKeys<"llm">>;
 
 function sessionState(sessions: AgentSessionStatus[], t: T): { state: AgentChipState; label: string } {
-  const errors = sessions.filter((s) => s.state === "error");
+  // A with-sources session that failed to start is reported on the sources
+  // pills; the plain session still answers, so the chip stays as it was.
+  const errors = sessions.filter((s) => s.state === "error" && !s.with_sources);
   if (errors.length > 0) {
     // A real fault outranks a limit on the other tier.
     return errors.every(isRateLimited)
@@ -115,7 +117,7 @@ interface TierRow {
 
 function tierRows(sessions: AgentSessionStatus[], cfg: ClaudeCliConfig, models?: ClaudeModelInfo[]): TierRow[] {
   return (["fast", "deep"] as const).map((tier) => {
-    const s = sessions.find((x) => x.tier === tier);
+    const s = sessions.find((x) => x.tier === tier && !x.with_sources) ?? sessions.find((x) => x.tier === tier);
     const effort = tier === "fast" ? cfg.fast_effort : cfg.deep_effort;
     const model = s?.model ?? (tier === "fast" ? cfg.fast_model : cfg.deep_model);
     return {

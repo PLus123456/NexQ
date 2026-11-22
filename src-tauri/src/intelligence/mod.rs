@@ -76,6 +76,17 @@ pub struct IntelligenceEngine {
     /// Request-specific lanes and cancellation; held until the provider exits.
     in_flight: Arc<Mutex<InFlight>>,
     last_detected_question: Option<DetectedQuestion>,
+    /// Start time of the paragraph from Them whose questions Assist stopped
+    /// using because a newer question started. A final that re-sends that
+    /// paragraph must not bring any of them back.
+    dismissed_paragraph: Option<u64>,
+    /// Id of the last final line from Them, to tell a line that continues from
+    /// one that starts.
+    them_final_line: Option<String>,
+    /// Start time of the last final paragraph from Them. Its question is
+    /// decided by the detection service after a short wait, so it may not be
+    /// in `last_detected_question` yet when a newer question starts.
+    them_final_started: Option<u64>,
     action_configs: AllActionConfigs,
 }
 
@@ -86,6 +97,9 @@ impl IntelligenceEngine {
             auto_trigger: AtomicBool::new(true),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             last_detected_question: None,
+            dismissed_paragraph: None,
+            them_final_line: None,
+            them_final_started: None,
             action_configs: AllActionConfigs::default(),
         }
     }
@@ -99,8 +113,56 @@ impl IntelligenceEngine {
         timestamp_ms: u64,
         is_final: bool,
     ) {
+        // The detection service decides about this paragraph a moment later;
+        // `note_them_line` needs its start time to refuse that decision when a
+        // newer question starts first.
+        if is_final && from_them(&speaker) {
+            self.them_final_started = Some(timestamp_ms);
+        }
         self.transcript_buffer
             .push_segment(text, speaker, timestamp_ms, is_final);
+    }
+
+    /// Tell the engine about a line from Them (interim or final) with the
+    /// accumulator's line id and text. When an interim starts a new line that
+    /// reads as a question, the question detected from the earlier line of
+    /// Them is stale: Assist stops using it until a final detects a new one.
+    /// Other talk ("Mm-hmm", an answer) keeps it. Interims grow, so each one
+    /// is checked; a final that starts a line is checked too. Call this before
+    /// `push_transcript` (`ingest_transcript`) so a question in that final
+    /// becomes the new one. Without a question Assist works from the recent
+    /// transcript.
+    pub fn note_them_line(&mut self, line_id: &str, text: &str, is_final: bool) {
+        // A line that continues the last final one (also the old paragraph a
+        // new final re-sends) changes nothing. Providers that only send
+        // placeholder interims reach a new line through its final.
+        let continues = self.them_final_line.as_deref() == Some(line_id);
+        if is_final {
+            self.them_final_line = Some(line_id.to_string());
+        }
+        if continues {
+            return;
+        }
+        if !question_detector::looks_like_new_question(text) {
+            return;
+        }
+        match self.last_detected_question.as_ref().map(|q| from_them(&q.source)) {
+            Some(true) => {
+                if let Some(q) = self.last_detected_question.take() {
+                    self.dismissed_paragraph = Some(q.timestamp_ms);
+                }
+            }
+            // A question of yours stays.
+            Some(false) => {}
+            // No decision about the earlier paragraph has arrived yet (the
+            // detection service waits, then asks its model): refuse it when
+            // it does.
+            None => {
+                if let Some(started) = self.them_final_started {
+                    self.dismissed_paragraph = Some(started);
+                }
+            }
+        }
     }
 
     /// Main entry point: generate AI assistance in the given mode.
@@ -279,8 +341,14 @@ impl IntelligenceEngine {
         self.last_detected_question.as_ref()
     }
 
+    /// The detection service's decision about the latest line (`None`: no
+    /// question). A question of a paragraph Assist already dropped does not
+    /// come back: the final that re-sends that paragraph, or a decision that
+    /// arrives after the newer question started, changes nothing.
     pub fn set_detected_question(&mut self, question: Option<DetectedQuestion>) {
-        self.last_detected_question = question;
+        let dismissed = self.dismissed_paragraph;
+        self.last_detected_question =
+            question.filter(|q| !(from_them(&q.source) && dismissed == Some(q.timestamp_ms)));
     }
 
     /// Get recent transcript text within the configured window.
@@ -314,8 +382,17 @@ impl IntelligenceEngine {
     pub fn clear_session(&mut self) {
         self.transcript_buffer.clear();
         self.last_detected_question = None;
+        self.dismissed_paragraph = None;
+        self.them_final_line = None;
+        self.them_final_started = None;
         log::info!("[intelligence] session cleared for new meeting");
     }
+}
+
+/// Whether a speaker label names the other party (the detection service
+/// reports their questions as "Them" or "Interviewer").
+fn from_them(speaker: &str) -> bool {
+    speaker.eq_ignore_ascii_case("them") || speaker.eq_ignore_ascii_case("interviewer")
 }
 
 /// One ingestion path for native STT and Web Speech. Do not hold the engine
@@ -402,6 +479,191 @@ mod tests {
         drop(first);
         let second = engine.begin_generation("req-2", GenerationLane::LiveAnswer).unwrap();
         assert!(!second.cancel_token().is_cancelled());
+    }
+
+    // Questions reach the engine from the detection service
+    // (`set_detected_question`), a moment after the final they are about. In
+    // these tests the local rules stand in for the service's model.
+
+    fn rule_questions(text: &str, ts: u64) -> Vec<DetectedQuestion> {
+        question_detector::QuestionDetector::new().detect_questions(text, ts, "Them")
+    }
+
+    /// The detection service's decision about a final line of Them.
+    fn decide(engine: &mut IntelligenceEngine, text: &str, ts: u64) {
+        engine.set_detected_question(rule_questions(text, ts).pop());
+    }
+
+    /// A final line of Them as the capture loop reports it, with its decision.
+    fn them_final(engine: &mut IntelligenceEngine, id: &str, text: &str, ts: u64) {
+        engine.note_them_line(id, text, true);
+        engine.push_transcript(text.to_string(), "Them".to_string(), ts, true);
+        decide(engine, text, ts);
+    }
+
+    #[test]
+    fn a_new_question_from_them_drops_the_old_detected_question() {
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_some());
+        // An interim that extends the same line keeps it.
+        engine.note_them_line("acc_1", "Why do you want this job? and", false);
+        assert!(engine.last_detected_question().is_some());
+        // A new line that is a question has started after a pause.
+        engine.note_them_line("acc_2", "So how did you handle that", false);
+        assert!(engine.last_detected_question().is_none());
+        // The final that starts that line re-sends the old line first: it must
+        // not bring the question back.
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_none());
+        them_final(&mut engine, "acc_2", "So how did you handle that?", 62_000);
+        assert_eq!(
+            engine.last_detected_question().map(|q| q.text.as_str()),
+            Some("So how did you handle that?")
+        );
+    }
+
+    #[test]
+    fn talk_that_is_not_a_question_keeps_the_detected_question() {
+        for text in ["Mm-hmm.", "Take your time with that.", "Yeah, that makes sense.", "Okay"] {
+            let mut engine = IntelligenceEngine::new();
+            them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+            engine.note_them_line("acc_2", text, false);
+            assert!(engine.last_detected_question().is_some(), "{text}");
+            // The final of that line does not drop it either. (What the
+            // detection service then decides about that final is its own.)
+            engine.note_them_line("acc_1", "Why do you want this job?", true);
+            engine.note_them_line("acc_2", text, true);
+            assert_eq!(
+                engine.last_detected_question().map(|q| q.text.as_str()),
+                Some("Why do you want this job?"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_question_drops_it_and_so_does_a_line_that_grows_into_one() {
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        engine.note_them_line("acc_2", "Why?", false);
+        assert!(engine.last_detected_question().is_none());
+
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        engine.note_them_line("acc_2", "Okay", false);
+        assert!(engine.last_detected_question().is_some());
+        engine.note_them_line("acc_2", "Okay, and what about the budget", false);
+        assert!(engine.last_detected_question().is_none());
+    }
+
+    #[test]
+    fn every_question_of_the_dropped_paragraph_stays_dropped() {
+        let mut engine = IntelligenceEngine::new();
+        let old = "Why this company? And why now?";
+        them_final(&mut engine, "acc_1", old, 1_000);
+        assert!(engine.last_detected_question().is_some());
+        engine.note_them_line("acc_2", "How would you start", false);
+        assert!(engine.last_detected_question().is_none());
+        // The final re-sends the old paragraph: neither of its questions returns.
+        let questions = rule_questions(old, 1_000);
+        assert_eq!(questions.len(), 2);
+        for question in questions {
+            engine.set_detected_question(Some(question));
+            assert!(engine.last_detected_question().is_none());
+        }
+    }
+
+    #[test]
+    fn a_final_only_line_drops_the_question_only_when_it_is_a_question() {
+        // Providers with placeholder interims reach a new line only through its final.
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_some(), "a re-send changes nothing");
+        engine.note_them_line("acc_2", "So why did you choose Rust.", true);
+        assert!(engine.last_detected_question().is_none());
+        engine.push_transcript("So why did you choose Rust.".to_string(), "Them".to_string(), 62_000, true);
+        decide(&mut engine, "So why did you choose Rust.", 62_000);
+        assert!(engine.last_detected_question().is_none(), "no detected question in a plain sentence");
+        // The old paragraph re-sent by the next final stays dropped.
+        them_final(&mut engine, "acc_2", "So why did you choose Rust.", 62_000);
+        assert!(engine.last_detected_question().is_none());
+        // So does a late decision about the paragraph before it.
+        decide(&mut engine, "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_none());
+
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        engine.note_them_line("acc_2", "Take your time with that.", true);
+        assert!(engine.last_detected_question().is_some());
+    }
+
+    #[test]
+    fn a_final_that_starts_a_line_with_a_question_becomes_the_new_question() {
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        them_final(&mut engine, "acc_2", "What is your salary expectation?", 62_000);
+        assert_eq!(
+            engine.last_detected_question().map(|q| q.text.as_str()),
+            Some("What is your salary expectation?")
+        );
+    }
+
+    #[test]
+    fn a_question_from_you_is_kept_when_them_starts_a_question() {
+        let mut engine = IntelligenceEngine::new();
+        engine.set_detected_question(Some(DetectedQuestion {
+            text: "Can I ask about the team?".to_string(),
+            confidence: 0.95,
+            timestamp_ms: 1_000,
+            source: "You".to_string(),
+        }));
+        engine.note_them_line("acc_1", "Why?", false);
+        assert!(engine.last_detected_question().is_some());
+    }
+
+    #[test]
+    fn clearing_the_session_forgets_the_dropped_question() {
+        let mut engine = IntelligenceEngine::new();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        engine.note_them_line("acc_2", "Why?", false);
+        engine.clear_session();
+        them_final(&mut engine, "acc_1", "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_some());
+    }
+
+    #[test]
+    fn a_decision_that_arrives_after_a_newer_question_started_is_dropped() {
+        let mut engine = IntelligenceEngine::new();
+        // The final is stored; the detection service has not decided yet.
+        engine.note_them_line("acc_1", "Why do you want this job?", true);
+        engine.push_transcript("Why do you want this job?".to_string(), "Them".to_string(), 1_000, true);
+        assert!(engine.last_detected_question().is_none());
+        engine.note_them_line("acc_2", "So how did you handle that", false);
+        // Its decision arrives while the newer question is still being asked.
+        decide(&mut engine, "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_none());
+        them_final(&mut engine, "acc_2", "So how did you handle that?", 62_000);
+        assert_eq!(
+            engine.last_detected_question().map(|q| q.text.as_str()),
+            Some("So how did you handle that?")
+        );
+    }
+
+    #[test]
+    fn a_decision_about_the_line_still_being_spoken_is_kept() {
+        let mut engine = IntelligenceEngine::new();
+        // No newer question started: a late decision is taken as it is.
+        engine.note_them_line("acc_1", "Why do you want this job?", true);
+        engine.push_transcript("Why do you want this job?".to_string(), "Them".to_string(), 1_000, true);
+        engine.note_them_line("acc_1", "Why do you want this job? I mean", false);
+        engine.note_them_line("acc_2", "Take your time.", false);
+        decide(&mut engine, "Why do you want this job?", 1_000);
+        assert!(engine.last_detected_question().is_some());
+        // A decision without a question clears it, as before.
+        engine.set_detected_question(None);
+        assert!(engine.last_detected_question().is_none());
     }
 }
 

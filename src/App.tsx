@@ -1,7 +1,8 @@
 import { useEffect, useCallback, useState } from "react";
 import { useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
-import { useAIActionsStore } from "./stores/aiActionsStore";
+import { useAIActionsStore, watchSavedActionConfigs } from "./stores/aiActionsStore";
+import { useSourcesStore } from "./stores/sourcesStore";
 import { useScenarioStore, watchSavedScenarios } from "./stores/scenarioStore";
 import { LauncherView } from "./launcher/LauncherView";
 import { OverlayView } from "./overlay/OverlayView";
@@ -35,10 +36,12 @@ import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
+import { SCREENSHOT_EVENT, leaveSettingsForAsk } from "./lib/screenCapture";
 import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
 import { logToFile } from "./lib/logger";
 import { onWebSpeechStopRequest } from "./lib/webSpeechLifecycle";
-import { emitOverlayMeetingReady, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
+import { emitOverlayMeetingReady, onAudioCaptureStatus, onAudioCaptureStopped, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
+import { createCaptureStatusHandler } from "./lib/captureStatus";
 
 function App() {
   const { t } = useT("onboarding");
@@ -82,6 +85,7 @@ function App() {
     // First-run setup progress; also follows setup being started again in another window
     initOnboarding();
     useAIActionsStore.getState().loadConfigs();
+    useSourcesStore.getState().load();
     // Restore the translation provider and its settings in the backend (the
     // Microsoft region comes from the keychain there). A provider that isn't
     // ready — e.g. no key yet — is kept in backendStatus, which the overlay's
@@ -91,10 +95,20 @@ function App() {
     useScenarioStore.getState().loadScenarioConfig();
   }, [loadConfig]);
 
+  // Settings the other window saves reach this one (scenarios, AI actions).
   useEffect(() => {
-    const watching = watchSavedScenarios().catch(() => undefined);
+    const watching = [
+      watchSavedScenarios().catch((e) => {
+        console.warn("[App] Could not start watching scenarios saved by the other window:", e);
+        return undefined;
+      }),
+      watchSavedActionConfigs().catch((e) => {
+        console.warn("[App] Could not start watching AI settings saved by the other window:", e);
+        return undefined;
+      }),
+    ];
     return () => {
-      watching.then((stop) => stop?.());
+      watching.forEach((w) => w.then((stop) => stop?.()));
     };
   }, []);
 
@@ -166,6 +180,17 @@ function App() {
       else unlisten = remove;
     }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
+  }, [windowLabel]);
+
+  // OVERLAY window: a captured screenshot goes to the Ask box, which Settings
+  // covers: go back to the meeting view first.
+  useEffect(() => {
+    if (windowLabel !== "overlay") return;
+    const onScreenshot = (e: Event) => {
+      if (leaveSettingsForAsk()) e.preventDefault();
+    };
+    window.addEventListener(SCREENSHOT_EVENT, onScreenshot);
+    return () => window.removeEventListener(SCREENSHOT_EVENT, onScreenshot);
   }, [windowLabel]);
 
   // LAUNCHER window: listen for nexq:meeting_ended from overlay, show self + reset state
@@ -353,8 +378,13 @@ function App() {
     }).then((unlisten) => unlisteners.push(unlisten));
 
     onCaptureWarning((message) => {
-      showToast(message, "error");
+      showToast(message, "warning");
     }).then((unlisten) => unlisteners.push(unlisten));
+
+    const captureStatus = createCaptureStatusHandler();
+    onAudioCaptureStatus(captureStatus.handle).then((unlisten) => unlisteners.push(unlisten));
+    onAudioCaptureStopped(captureStatus.reset).then((unlisten) => unlisteners.push(unlisten));
+    unlisteners.push(captureStatus.reset);
 
     onStealthModeChanged((enabled) => {
       useConfigStore.getState().stealthModeApplied(enabled);

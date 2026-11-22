@@ -139,7 +139,7 @@ pub fn chat_body(model: &str, messages: &[LLMMessage], params: &EffectiveParams,
     if let Some(t) = compat::temperature_to_send(compat, params.temperature) {
         body["temperature"] = json!(t);
     }
-    compat::apply_extra_body(&mut body, params.extra_body.as_ref());
+    compat::finish_body(&mut body, params);
     body
 }
 

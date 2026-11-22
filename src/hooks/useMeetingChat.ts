@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { askMeeting, cancelGeneration, getAgentSessions, listMeetingChat } from "../lib/ipc";
+import { dedupeChips } from "../lib/sourceChips";
 import {
   onAgentSessionStatus,
+  onStreamActivity,
   onStreamEnd,
   onStreamError,
   onStreamStart,
   onStreamToken,
 } from "../lib/events";
-import type { AgentSessionStatus, MeetingChatMessage } from "../lib/types";
+import type { AgentSessionStatus, MeetingChatMessage, SourceChip } from "../lib/types";
+import { requestToggles } from "../stores/sourcesStore";
 
 /**
  * - `saved`: loaded from the database
@@ -29,6 +32,14 @@ export interface ChatItem {
   error?: string;
   model?: string | null;
   createdAt: number;
+  /** What the answer did with your sources while it streamed, oldest first (this view only; not saved). */
+  activity?: string[];
+  /** Notes and tools the answer used (this view only; not saved). */
+  chips?: SourceChip[];
+  /** Sources were not used, or only partly (this view only; not saved). */
+  notice?: string | null;
+  /** This question asked for notes or tools (a pill was on), so it may wait for the sources session. */
+  askedSources?: boolean;
 }
 
 export interface MeetingChatState {
@@ -131,7 +142,8 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
     setSession(null);
     if (!enabled || !trackSession) return;
     let alive = true;
-    const ours = (s: AgentSessionStatus) => s.scope === "past" && s.meeting_id === meetingId;
+    // The plain session only: the with-sources one has its own status on the pills.
+    const ours = (s: AgentSessionStatus) => s.scope === "past" && s.meeting_id === meetingId && !s.with_sources;
     const unlisten = onAgentSessionStatus((status) => {
       if (alive && ours(status)) setSession(status);
     });
@@ -172,18 +184,30 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
       const requestId = crypto.randomUUID();
       const viewEpoch = viewEpochRef.current;
       requestIdRef.current = requestId;
+      // The pills as they are when you ask; a question you type always may use them.
+      const sources = requestToggles();
       const questionId = `local-q-${requestId}`;
       const answerId = `local-a-${requestId}`;
       const now = Date.now();
       setItems((prev) => [
         ...prev,
         { id: questionId, role: "user", content: question, status: "pending", createdAt: now },
-        { id: answerId, role: "assistant", content: "", status: "streaming", createdAt: now },
+        {
+          id: answerId,
+          role: "assistant",
+          content: "",
+          status: "streaming",
+          createdAt: now,
+          ...(sources && (sources.notes || sources.tools) ? { askedSources: true } : {}),
+        },
       ]);
 
       let answer = "";
       let finished = false;
       let completed = false;
+      let activity: string[] = [];
+      let chips: SourceChip[] = [];
+      let notice: string | null = null;
       const cleanups: UnlistenFn[] = [];
       const cleanup = () => {
         cleanups.splice(0).forEach((unlisten) => unlisten());
@@ -230,6 +254,17 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
             answer += event.token;
             update(answerId, { content: answer });
           }))) return;
+        if (!await subscribe(onStreamActivity((event) => {
+            if (!ours(event.request_id)) return;
+            const a = event.activity;
+            if (a.kind === "notice") {
+              notice = notice ? `${notice} ${a.label}` : a.label;
+            } else {
+              if (!a.chip_only) activity = [...activity, a.label];
+              if (a.chip) chips = dedupeChips([...chips, a.chip]);
+            }
+            update(answerId, { activity, chips, notice });
+          }))) return;
         if (!await subscribe(onStreamEnd((event) => {
             if (ours(event.request_id)) finish(event.cancelled ? "stopped" : "done");
           }))) return;
@@ -239,7 +274,7 @@ export function useMeetingChat(meetingId: string, { enabled = true, trackSession
         if (requestIdRef.current !== requestId) {
           return;
         }
-        await askMeeting(meetingId, question, requestId);
+        await (sources ? askMeeting(meetingId, question, requestId, sources) : askMeeting(meetingId, question, requestId));
       } catch (err) {
         cleanup();
         if (viewEpochRef.current !== viewEpoch) return;

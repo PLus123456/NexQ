@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { normalizeView } from "./connection";
+import { layeredThinking, normalizeView } from "./connection";
 import { emptyView, mockConnection } from "./testing/mockLlmBackend";
-import { computeEffective, resolveRoute, tasksUsing } from "./tasks";
+import { computeEffective, inheritedParams, resolveRoute, tasksUsing } from "./tasks";
 import type { LlmConfigView, RouteTarget, TaskRoute } from "./types";
 
 const deepseek = mockConnection({ id: "c_ds", name: "DeepSeek", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-chat" });
@@ -100,5 +100,52 @@ describe("tasksUsing", () => {
     expect(tasksUsing(v, "c_ds")).toEqual(["default", "meeting_summary"]);
     expect(tasksUsing(v, "c_ol")).toEqual(["translation"]);
     expect(tasksUsing(v, "c_cl")).toEqual([]);
+  });
+});
+
+describe("inheritedParams", () => {
+  const quiet = { ...deepseek, params: { thinking: "off" as const, extra_body: { seed: 7 } } };
+  const withQuiet = (defaultRoute: TaskRoute, tasks: Record<string, TaskRoute> = {}) =>
+    emptyView({ connections: [quiet, ollama, claude], routing: { default: defaultRoute, tasks } });
+  /** The thinking setting a task follows while its own is Auto. */
+  const follows = (v: LlmConfigView, key: string) => layeredThinking(inheritedParams(v, key));
+
+  it("starts with the answering connection's defaults, also for the route that names the connection", () => {
+    const v = withQuiet(route({ connection_id: "c_ds", model: null }));
+    expect(inheritedParams(v, "assist")).toEqual([quiet.params, {}]);
+    expect(follows(v, "assist")).toBe("off");
+    expect(follows(v, "assist:Recap")).toBe("off");
+    // The default route's own parameters are what its row edits, so they aren't under it.
+    const own = withQuiet(route({ connection_id: "c_ds", model: null }, { thinking: "high" }));
+    expect(inheritedParams(own, "default")).toEqual([quiet.params]);
+    expect(follows(own, "default")).toBe("off");
+  });
+
+  it("puts the parent routes on top, nearest last; the task's own parameters aren't inherited", () => {
+    const v = withQuiet(route({ connection_id: "c_ds", model: null }, { max_tokens: 900 }), {
+      translation: route(null, { thinking: "low" }),
+      translation_batch: route(null, { thinking: "high" }),
+    });
+    expect(inheritedParams(v, "translation_batch")).toEqual([quiet.params, { max_tokens: 900 }, { thinking: "low" }]);
+    expect(follows(v, "translation_batch")).toBe("low");
+    expect(follows(v, "translation")).toBe("off");
+  });
+
+  it("stops at the route that names the connection", () => {
+    const v = withQuiet(route({ connection_id: "c_ds", model: null }, { thinking: "high" }), {
+      assist: route({ connection_id: "c_ol", model: "qwen3:8b" }),
+    });
+    // Assist answers with Ollama, which sets nothing; the default route isn't on its way.
+    expect(inheritedParams(v, "assist")).toEqual([{}]);
+    expect(inheritedParams(v, "assist:Recap")).toEqual([{}, {}]);
+    expect(follows(v, "assist:Recap")).toBe("auto");
+    // Tasks that follow the default take its setting.
+    expect(follows(v, "meeting_summary")).toBe("high");
+  });
+
+  it("is empty when nothing answers the task", () => {
+    expect(inheritedParams(withQuiet(route(null)), "assist")).toEqual([]);
+    expect(inheritedParams(withQuiet(route({ connection_id: "c_ds", model: null })), "question_detect")).toEqual([]);
+    expect(follows(withQuiet(route(null)), "assist")).toBe("auto");
   });
 });

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { mdGuards } from "../components/markdownGuards";
+import { noRemoteImages } from "../lib/answerMarkdown";
 import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { getModeLabel } from "../lib/utils";
@@ -22,6 +22,8 @@ import { ColorPickerButton } from "../components/ColorPickerButton";
 import { ResponseProgress } from "./ResponseProgress";
 import { ResponseHistoryList } from "./ResponseHistoryList";
 import { formatDuration } from "./responseFormat";
+import { SourceChips } from "../sources/SourceChips";
+import { SourceActivityLines, SourceNotices } from "../sources/SourceActivityLines";
 
 /** "current", "resp-<id>" (a history answer) or "pinned-<id>". */
 type TabId = "current" | `resp-${string}` | `pinned-${string}`;
@@ -45,6 +47,8 @@ export function AIResponsePanel() {
   const currentId = useStreamStore((s) => s.currentId);
   const error = useStreamStore((s) => s.error);
   const currentSources = useStreamStore((s) => s.currentSources);
+  const currentActivity = useStreamStore((s) => s.currentActivity);
+  const currentNotices = useStreamStore((s) => s.currentNotices);
   const responseHistory = useStreamStore((s) => s.responseHistory);
   const pinnedResponses = useStreamStore((s) => s.pinnedResponses);
   const pinResponse = useStreamStore((s) => s.pinResponse);
@@ -227,9 +231,11 @@ export function AIResponsePanel() {
         {activeTab === "current" && inFlight && (
           <div className="space-y-2.5" aria-atomic="false">
             <ResponseProgress />
+            <SourceActivityLines lines={currentActivity.map((a) => a.label)} />
+            <SourceNotices notices={currentNotices} />
             {currentContent && (
               <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
                   {currentContent}
                 </ReactMarkdown>
                 <span className="inline-block h-3 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
@@ -251,12 +257,14 @@ export function AIResponsePanel() {
                 onPin={currentResponse ? () => handlePin(currentResponse.id) : undefined}
               />
             )}
+            <SourceNotices notices={currentResponse?.source_notices ?? []} />
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
                 {currentContent}
               </ReactMarkdown>
             </div>
             <SourcesList sources={currentSources} />
+            <SourceChips chips={currentResponse?.source_chips ?? []} />
           </div>
         )}
 
@@ -271,12 +279,14 @@ export function AIResponsePanel() {
               onCopy={() => handleCopy(displayContent, displayResponse!.id)}
               onPin={() => handlePin(displayResponse!.id)}
             />
+            <SourceNotices notices={displayResponse.source_notices ?? []} />
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdGuards}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
                 {displayContent}
               </ReactMarkdown>
             </div>
             <SourcesList sources={displayResponse.sources} />
+            <SourceChips chips={displayResponse.source_chips ?? []} />
           </div>
         )}
 

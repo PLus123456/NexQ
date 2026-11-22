@@ -480,6 +480,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         {activeTab === "ask" && showAsk && (
           <AskMeetingTab
             chat={meetingChat}
+            meetingId={meetingId}
             unavailableReason={
               meeting.transcript.length === 0 && !meeting.summary
                 ? t("container.ask.noTranscript")

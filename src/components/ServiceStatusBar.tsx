@@ -29,6 +29,7 @@ import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { sonioxRegionName } from "../settings/stt/sonioxRegions";
 import { openUpdateDialog } from "../hooks/useUpdater";
+import { SideLanguagePicker } from "../overlay/SideLanguagePicker";
 import { Trans, useT } from "../i18n";
 import { useLlmConfig } from "../stores/llmConnectionsStore";
 import { LlmQuickPicker } from "./llm/LlmQuickPicker";
@@ -284,6 +285,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
               />
             )}
           </div>
+          {isRecording && compact && <SideLanguagePicker side="them" />}
           <span className="text-xs text-muted-foreground/60">
             {speakerOrder.length > 0
               ? t("statusBar.sttChip.speakersDetected", { count: speakerOrder.length })
@@ -324,6 +326,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             {isRecording && (
               <MuteButton type="mic" muted={mutedYou} onToggle={toggleMuteYou} party="you" />
             )}
+            {isRecording && compact && <SideLanguagePicker side="you" />}
           </div>
 
           <Divider />
@@ -360,6 +363,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             {isRecording && (
               <MuteButton type="speaker" muted={mutedThem} onToggle={toggleMuteThem} party="them" />
             )}
+            {isRecording && compact && <SideLanguagePicker side="them" />}
           </div>
         </>
       )}

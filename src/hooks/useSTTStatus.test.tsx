@@ -34,7 +34,7 @@ vi.mock("./useCallLogCapture", () => ({ useCallLogCapture: () => {} }));
 vi.mock("./useDevLog", () => ({ useDevLog: () => {} }));
 
 import { ActiveMeetingProvider } from "../components/ActiveMeetingProvider";
-import { regionSwitchMessage } from "./useSTTStatus";
+import { partyName, regionSwitchMessage } from "./useSTTStatus";
 import { changeUiLanguage } from "../i18n";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useSttRegionStore } from "../stores/sttRegionStore";
@@ -115,6 +115,20 @@ describe("Soniox region switches in a meeting", () => {
     expect(
       regionSwitchMessage({ party: "Them", from: "jp", to: "custom", reason: "something_new" as SonioxSwitchReason }),
     ).toBe("Them: switching from the Japan region to the custom URL");
+  });
+
+  it("names the room of an in-person meeting in the UI language", async () => {
+    // Upstream's engines report the other side of an in-person meeting as "Room".
+    await mountBothWindows();
+    await emit("stt_connection_status", { provider: "deepgram", party: "Room", status: "connected" });
+    expect(toast).toHaveBeenCalledWith("STT: Deepgram connected (Room)", "info");
+    await changeUiLanguage("zh-CN");
+    expect(partyName("Room")).toBe("现场");
+    expect(partyName("Them")).toBe("对方");
+    await emit("stt_connection_status", { provider: "deepgram", party: "Room", status: "error", message: "boom" });
+    const errors = toast.mock.calls.filter(([, type]) => type === "error").map(([text]) => String(text));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.every((text) => text.includes("现场") && !text.includes("Room"))).toBe(true);
   });
 
   it("keeps the region each party is connected to until the meeting ends", async () => {

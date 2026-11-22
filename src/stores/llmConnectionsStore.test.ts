@@ -104,6 +104,37 @@ describe("llmConnectionsStore", () => {
     });
   });
 
+  it("carries the thinking setting of a connection and of a task route", async () => {
+    await act(() => useLlmConnectionsStore.getState().load());
+    await act(async () => {
+      await useLlmConnectionsStore.getState().upsertConnection({ ...deepseek, params: { thinking: "off" } });
+    });
+    const upsert = backend.current!.calls.find((c) => c.cmd === "llm_upsert_connection");
+    expect(upsert?.args).toMatchObject({ connection: { id: deepseek.id, params: { thinking: "off" } } });
+    expect(useLlmConnectionsStore.getState().view!.connections[0].params).toEqual({ thinking: "off" });
+
+    await act(async () => {
+      await useLlmConnectionsStore.getState().setRoute("meeting_summary", { target: null, params: { thinking: "high" } });
+    });
+    expect(useLlmConnectionsStore.getState().view!.routing.tasks.meeting_summary.params).toEqual({ thinking: "high" });
+
+    // The default route keeps its setting when it is pointed elsewhere.
+    await act(async () => {
+      await useLlmConnectionsStore.getState().setRoute("default", {
+        target: { connection_id: deepseek.id, model: "deepseek-chat" },
+        params: { thinking: "low" },
+      });
+      await useLlmConnectionsStore.getState().setDefaultRoute({ connection_id: deepseek.id, model: "deepseek-reasoner" });
+    });
+    expect(backend.current!.view().routing.default.params).toEqual({ thinking: "low" });
+
+    // "auto" from the backend is the same as not set.
+    act(() => {
+      backend.current!.externalChange({ connections: [{ ...deepseek, params: { thinking: "auto" } }] });
+    });
+    expect(useLlmConnectionsStore.getState().view!.connections[0].params).toEqual({});
+  });
+
   it("marks the store unavailable when the build has no LLM commands", async () => {
     backend.current!.missing.add("llm_get_config");
     await act(() => useLlmConnectionsStore.getState().load());

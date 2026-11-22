@@ -59,6 +59,9 @@
     "sources": {
       "title": "Sources ({{total}})"
     },
+    "personalSources": {
+      "title": "Personal sources"
+    },
     "deleteAll": {
       "ariaLabel": "Delete all meetings",
       "dialogAriaLabel": "Delete all meetings confirmation",
@@ -414,6 +417,7 @@
       "hint": "Questions and answers are saved with the meeting."
     },
     "thinking": "Thinking…",
+    "loadingSources": "Loading your sources…",
     "stopped": "Stopped · not saved",
     "session": {
       "starting": "Session starting…",

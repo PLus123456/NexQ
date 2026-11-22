@@ -3,6 +3,7 @@
 
 import type { ModelOption } from "../../components/ModelCombobox";
 import type { AuthConfig } from "../endpoint";
+import { normalizeThinking } from "../llmRequestOptions";
 import { computeEffective, KNOWN_TASKS } from "./tasks";
 import type {
   EffectiveRoute,
@@ -16,6 +17,7 @@ import type {
   ModelsEndpointMode,
   TaskInfo,
   TaskRoute,
+  ThinkingSetting,
   WebSearchMode,
 } from "./types";
 import { LLM_KINDS } from "./types";
@@ -127,6 +129,68 @@ function oneOf<T extends string>(value: unknown, options: readonly T[], fallback
   return options.find((option) => option === value) ?? fallback;
 }
 
+/** The thinking setting of a connection's or a route's parameters ("auto" when not set). */
+export function thinkingOf(params: LlmParams | null | undefined): ThinkingSetting {
+  return normalizeThinking(params?.thinking);
+}
+
+/**
+ * The thinking setting that parameter layers add up to (lowest priority
+ * first: a connection's defaults, then its routes'): the last one that isn't
+ * "auto". Mirrors Rust (`RoutedProvider::apply`, then `thinking::resolve`).
+ */
+export function layeredThinking(layers: readonly (LlmParams | null | undefined)[]): ThinkingSetting {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const thinking = thinkingOf(layers[i]);
+    if (thinking !== "auto") return thinking;
+  }
+  return "auto";
+}
+
+/** RFC 7396 JSON Merge Patch, as Rust applies `extra_body`: objects merge, null deletes, anything else replaces. */
+function mergePatch(target: unknown, patch: unknown): unknown {
+  if (!isRecord(patch)) return patch;
+  const merged: Record<string, unknown> = isRecord(target) ? { ...target } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete merged[key];
+    else merged[key] = mergePatch(merged[key], value);
+  }
+  return merged;
+}
+
+/** The extra request body that parameter layers (lowest priority first) add up to, merged as Rust does (`merge_params`). */
+export function mergedExtraBody(layers: readonly (LlmParams | null | undefined)[]): Record<string, unknown> {
+  let merged: unknown = {};
+  for (const layer of layers) {
+    if (isRecord(layer?.extra_body)) merged = mergePatch(merged, layer.extra_body);
+  }
+  return isRecord(merged) ? merged : {};
+}
+
+/** Top-level body keys that set a model's thinking (`THINKING_BODY_KEYS` in src-tauri/src/llm/compat.rs). */
+const THINKING_BODY_KEYS = ["thinking", "think", "reasoning", "reasoning_effort", "enable_thinking", "thinking_budget"] as const;
+
+/**
+ * The key with which an extra request body sets the model's thinking by hand
+ * ("reasoning_effort", "chat_template_kwargs.enable_thinking", …), or null.
+ * The backend then adds no thinking parameter of its own, so the Thinking
+ * setting isn't applied. Mirrors `sets_thinking` in src-tauri/src/llm/compat.rs.
+ */
+export function extraBodyThinkingKey(extra: Record<string, unknown> | null | undefined): string | null {
+  if (!extra) return null;
+  const top = THINKING_BODY_KEYS.find((key) => key in extra);
+  if (top) return top;
+  const template = extra.chat_template_kwargs;
+  if (isRecord(template) && "enable_thinking" in template) return "chat_template_kwargs.enable_thinking";
+  for (const config of ["generationConfig", "generation_config"]) {
+    const generation = extra[config];
+    if (!isRecord(generation)) continue;
+    const nested = ["thinkingConfig", "thinking_config"].find((key) => key in generation);
+    if (nested) return `${config}.${nested}`;
+  }
+  return null;
+}
+
 function normalizeParams(raw: unknown): LlmParams {
   if (!isRecord(raw)) return {};
   const params: LlmParams = {};
@@ -134,6 +198,9 @@ function normalizeParams(raw: unknown): LlmParams {
   if (temperature !== null) params.temperature = temperature;
   const maxTokens = numOrNull(raw.max_tokens);
   if (maxTokens !== null) params.max_tokens = maxTokens;
+  // "auto" means not set, so it is left out like every other unset parameter.
+  const thinking = normalizeThinking(raw.thinking);
+  if (thinking !== "auto") params.thinking = thinking;
   if (isRecord(raw.extra_body)) params.extra_body = raw.extra_body;
   return params;
 }

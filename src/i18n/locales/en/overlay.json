@@ -58,7 +58,8 @@
       "sending": "Sending…",
       "waiting": "Waiting for the first words…",
       "thinking": "Thinking…",
-      "writing": "Writing…"
+      "writing": "Writing…",
+      "loadingSources": "Loading your sources"
     },
     "answer": "Answer",
     "ariaLabel": "{{label}}: {{phase}}",
@@ -163,6 +164,7 @@
   "ask": {
     "input": {
       "placeholder": "Ask about the meeting...",
+      "placeholderWithScreenshot": "Ask or paste a screenshot",
       "ariaLabel": "Ask a question"
     },
     "send": {
@@ -175,6 +177,9 @@
     },
     "errors": {
       "sendFailed": "Failed to send question"
+    },
+    "screenshot": {
+      "waiting": "Screenshot added. Ask opens when this answer finishes."
     }
   },
   "speakerStats": {

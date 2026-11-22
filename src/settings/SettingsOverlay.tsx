@@ -31,9 +31,10 @@ import {
 import { ContextStrategySettings } from "./ContextStrategySettings";
 import { AIActionsSettings } from "./AIActionsSettings";
 import { TranslationSettings } from "./TranslationSettings";
-import { Sparkles } from "lucide-react";
+import { Sparkles, BookOpen } from "lucide-react";
+import { PersonalSourcesEditor } from "../sources/PersonalSourcesEditor";
 
-type SettingsTab = "meeting_audio" | "llm" | "stt" | "translation" | "ai_actions" | "context_strategy" | "scenarios" | "noise_presets" | "confidence" | "hotkeys" | "general" | "about";
+type SettingsTab = "meeting_audio" | "llm" | "stt" | "translation" | "ai_actions" | "context_strategy" | "scenarios" | "noise_presets" | "confidence" | "personal_sources" | "hotkeys" | "general" | "about";
 
 /** A key in the settings namespace. Tables store keys; labels are translated at render time. */
 type SettingsKey = ParseKeys<"settings">;
@@ -70,6 +71,7 @@ const TAB_GROUPS: TabGroup[] = [
     items: [
       { id: "ai_actions", labelKey: "tabs.aiActions", icon: <Sparkles className="h-4 w-4" /> },
       { id: "context_strategy", labelKey: "tabs.contextStrategy", icon: <Database className="h-4 w-4" /> },
+      { id: "personal_sources", labelKey: "tabs.personalSources", icon: <BookOpen className="h-4 w-4" /> },
       { id: "scenarios", labelKey: "tabs.scenarios", icon: <Theater className="h-4 w-4" /> },
       { id: "noise_presets", labelKey: "tabs.noisePresets", icon: <Volume2 className="h-4 w-4" /> },
       { id: "confidence", labelKey: "tabs.confidence", icon: <BarChart2 className="h-4 w-4" /> },
@@ -167,6 +169,8 @@ export function SettingsOverlay({ isModal = false }: SettingsOverlayProps) {
         return <AIActionsSettings />;
       case "context_strategy":
         return <ContextStrategySettings />;
+      case "personal_sources":
+        return <PersonalSourcesEditor variant="full" />;
       case "scenarios":
         return <ScenarioSettings />;
       case "noise_presets":

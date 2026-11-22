@@ -230,6 +230,12 @@ pub trait STTProvider: Send + Sync {
     fn set_muted(&mut self, _muted: bool) {}
 }
 
+/// The language to put on a transcript line: the one the user picked, or
+/// `None` while Auto-detect is on (the provider didn't report one).
+pub fn reported_language(language: &str) -> Option<String> {
+    (!language.eq_ignore_ascii_case("auto")).then(|| language.to_string())
+}
+
 /// Record a party's mute flag: true when it differs from the state last
 /// passed to its provider (`applied`), which is then updated.
 pub fn mute_changed(applied: &mut bool, muted: bool) -> bool {
@@ -291,6 +297,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "nl-NL".to_string(),
                 "hi-IN".to_string(),
                 "ru-RU".to_string(),
+                "uk-UA".to_string(),
                 "ar-SA".to_string(),
                 "tr-TR".to_string(),
                 "pl-PL".to_string(),
@@ -320,6 +327,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "hi".to_string(),
                 "cs".to_string(),
                 "ru".to_string(),
+                "uk".to_string(),
                 "vi".to_string(),
             ],
         },
@@ -341,6 +349,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "nl".to_string(),
                 "hi".to_string(),
                 "ru".to_string(),
+                "uk".to_string(),
                 "ar".to_string(),
                 "tr".to_string(),
                 "pl".to_string(),
@@ -368,6 +377,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "nl-NL".to_string(),
                 "hi-IN".to_string(),
                 "ru-RU".to_string(),
+                "uk-UA".to_string(),
                 "ar-SA".to_string(),
                 "tr-TR".to_string(),
                 "pl-PL".to_string(),
@@ -394,6 +404,7 @@ pub fn list_available_providers() -> Vec<STTProviderInfo> {
                 "nl".to_string(),
                 "hi".to_string(),
                 "ru".to_string(),
+                "uk".to_string(),
                 "ar".to_string(),
                 "tr".to_string(),
                 "pl".to_string(),

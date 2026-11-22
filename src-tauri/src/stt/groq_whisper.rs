@@ -133,8 +133,8 @@ pub struct GroqWhisperSTT {
     /// Shared config Arc for live updates from settings UI.
     /// When present, the provider reads the latest config before each API call.
     shared_config: Option<Arc<RwLock<GroqConfig>>>,
-    /// This instance's language ("auto" = detect). Wins over the shared
-    /// config's language, so each party keeps its own.
+    /// A language pinned on this provider (one side of a meeting, "auto"
+    /// included) beats the shared config's, which every side reads.
     language_override: Option<String>,
     is_streaming: bool,
     result_tx: Option<mpsc::Sender<TranscriptResult>>,
@@ -209,7 +209,18 @@ impl GroqWhisperSTT {
         if let Ok(cfg) = config.read() {
             self.config = cfg.clone();
         }
+        if let Some(language) = &self.language_override {
+            self.config.language = language.clone();
+        }
         self.shared_config = Some(config);
+    }
+
+    /// Pin the language of this side of a meeting. The shared config carries
+    /// one language for every side and is read on each call, so without this a
+    /// side with its own language would transcribe in the shared one.
+    pub fn pin_language(&mut self, language: &str) {
+        self.language_override = Some(language.to_string());
+        self.config.language = language.to_string();
     }
 
     /// Apply a GroqConfig directly (used in legacy single-provider path).
@@ -218,14 +229,16 @@ impl GroqWhisperSTT {
     }
 
     /// Get the current config, preferring shared (live) over local, with this
-    /// instance's language.
+    /// side's pinned language.
     fn current_config(&self) -> GroqConfig {
-        let mut config = self
-            .shared_config
-            .as_ref()
-            .and_then(|arc| arc.read().ok().map(|cfg| cfg.clone()))
-            .unwrap_or_else(|| self.config.clone());
-        if let Some(ref language) = self.language_override {
+        let mut config = self.config.clone();
+        if let Some(ref arc) = self.shared_config {
+            if let Ok(cfg) = arc.read() {
+                config = cfg.clone();
+            }
+        }
+        // The shared config carries one language for every side; this side's own wins.
+        if let Some(language) = &self.language_override {
             config.language = language.clone();
         }
         config
@@ -827,8 +840,7 @@ impl STTProvider for GroqWhisperSTT {
 
     fn set_language(&mut self, language: &str) {
         self.config.language = language.to_string();
-        self.language_override = Some(language.to_string());
-        log::info!("GroqWhisperSTT: Language set to {}", language);
+        log::info!("GroqWhisperSTT: Language set to {}", self.config.language);
     }
 }
 
@@ -847,25 +859,29 @@ fn preview(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    /// NexQ Plus: a pinned language holds whichever comes first, the pin or
+    /// the shared config, and a side that only got the shared language
+    /// (`set_language`, no pin) keeps following it.
     #[test]
-    fn the_instance_language_wins_over_the_shared_config() {
+    fn a_pinned_language_wins_over_the_shared_config_in_either_order() {
         let shared = Arc::new(RwLock::new(GroqConfig { language: "en-US".into(), ..GroqConfig::default() }));
         let mut you = GroqWhisperSTT::new();
         you.set_shared_config(shared.clone());
-        you.set_language("zh-CN");
+        you.pin_language("zh-CN");
         let mut them = GroqWhisperSTT::new();
-        them.set_language("auto");
+        them.pin_language("auto");
         them.set_shared_config(shared.clone());
-        // set_stt_language rewrites the shared language later: parties keep theirs.
+        // What the meeting does for a side without its own language.
+        let mut follower = GroqWhisperSTT::new();
+        follower.set_language("en-US");
+        follower.set_shared_config(shared.clone());
+        // set_stt_language rewrites the shared language later: pinned sides keep theirs.
         shared.write().unwrap().language = "fr-FR".into();
         shared.write().unwrap().model = "whisper-large-v3".into();
         assert_eq!(you.current_config().language, "zh-CN");
         assert_eq!(them.current_config().language, "auto");
         assert_eq!(you.current_config().model, "whisper-large-v3");
-        // Without a party language the shared one applies.
-        let mut legacy = GroqWhisperSTT::new();
-        legacy.set_shared_config(shared);
-        assert_eq!(legacy.current_config().language, "fr-FR");
+        assert_eq!(follower.current_config().language, "fr-FR");
     }
 
     #[test]
@@ -877,5 +893,33 @@ mod tests {
         assert!(cut.ends_with("..."));
         assert_eq!(preview("short", 80), "short");
         assert_eq!(preview(&"é".repeat(80), 80), "é".repeat(80));
+    }
+
+    fn shared(language: &str) -> Arc<RwLock<GroqConfig>> {
+        Arc::new(RwLock::new(GroqConfig { language: language.to_string(), ..GroqConfig::default() }))
+    }
+
+    #[test]
+    fn a_side_language_beats_the_shared_config_on_every_call() {
+        let shared = shared("en-US");
+        // The order the meeting uses: language first, then the shared config.
+        let mut spanish = GroqWhisperSTT::new();
+        spanish.pin_language("es-ES");
+        spanish.set_shared_config(shared.clone());
+        assert_eq!(spanish.current_config().language, "es-ES");
+        // A change to the shared language reaches a side without its own language only.
+        let mut same = GroqWhisperSTT::new();
+        same.set_shared_config(shared.clone());
+        shared.write().unwrap().language = "fr-FR".to_string();
+        assert_eq!(spanish.current_config().language, "es-ES");
+        assert_eq!(same.current_config().language, "fr-FR");
+        // The other settings stay live.
+        shared.write().unwrap().temperature = 0.4;
+        assert_eq!(spanish.current_config().temperature, 0.4);
+        // Auto-detect is a per-side choice too.
+        let mut auto = GroqWhisperSTT::new();
+        auto.pin_language("auto");
+        auto.set_shared_config(shared.clone());
+        assert_eq!(auto.current_config().language, "auto");
     }
 }

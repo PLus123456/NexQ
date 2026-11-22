@@ -58,6 +58,9 @@
     "sources": {
       "title": "来源（{{total}}）"
     },
+    "personalSources": {
+      "title": "个人资料来源"
+    },
     "deleteAll": {
       "ariaLabel": "删除所有会议",
       "dialogAriaLabel": "确认删除所有会议",
@@ -412,6 +415,7 @@
       "hint": "提问和回答会随会议一起保存。"
     },
     "thinking": "思考中…",
+    "loadingSources": "正在加载资料来源…",
     "stopped": "已停止 · 未保存",
     "session": {
       "starting": "会话启动中…",

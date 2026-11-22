@@ -5,7 +5,7 @@ import type { MeetingAudioConfig } from "../lib/types";
 import type * as IPC from "../lib/ipc";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({ set: async () => {}, get: async () => undefined, onKeyChange: async () => () => {} }),
 }));
@@ -29,6 +29,7 @@ import { PartyLanguageField } from "./stt/PartyLanguageField";
 import { AudioSetupStep } from "../components/wizard/AudioSetupStep";
 import { changeUiLanguage } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import { DEFAULT_OPENAI_COMPAT_STT_CONFIG } from "../lib/stt/types";
 
 const initialConfig: MeetingAudioConfig = {
@@ -38,11 +39,26 @@ const initialConfig: MeetingAudioConfig = {
   preset_name: null,
 };
 
+const { deepgramConfig: initialDeepgramConfig, activeModelPerEngine: initialModels } = useConfigStore.getState();
 beforeEach(() => useConfigStore.setState({ meetingAudioConfig: initialConfig, sttLanguage: "en-US" }));
 afterEach(async () => {
   cleanup();
+  // A test's models (Flux, Parakeet CTC, say) and meeting mode must not reach the next test.
+  useConfigStore.setState({ deepgramConfig: initialDeepgramConfig, activeModelPerEngine: initialModels });
+  useMeetingStore.setState({ audioMode: "online" });
   await act(() => changeUiLanguage("en"));
 });
+
+/** A side's language picker (NexQ Plus: one combobox per side; "Room" is Them in an in-person meeting). */
+const side = (name: "You" | "Them" | "Room") =>
+  screen.getByRole<HTMLInputElement>("combobox", { name: `Recognition language for ${name}` });
+
+/** Types a language code (or "auto") into a side's picker and commits it. */
+async function pick(user: ReturnType<typeof userEvent.setup>, name: "You" | "Them" | "Room", code: string) {
+  await user.click(side(name));
+  await user.keyboard(code);
+  await user.keyboard("{Enter}");
+}
 
 describe.each([
   { surface: "Audio & Devices", Component: MeetingAudioSettings },
@@ -72,7 +88,8 @@ describe.each(["vi", "vi-VN"])("Vietnamese model guidance for %s", (language) =>
     useConfigStore.setState({ activeModelPerEngine: { parakeet_tdt: "parakeet-ctc-110m" } });
     render(<PartyLanguageField party={{ ...initialConfig.you, stt_provider: "parakeet_tdt", language }} onChange={() => {}} />);
     expect(screen.getByText(/The included Parakeet models do not support Vietnamese/)).toBeInTheDocument();
-    expect(screen.queryByText(/Use Parakeet TDT 0.6B v3 for Russian/)).toBeNull();
+    expect(screen.queryByText(/Parakeet TDT 0.6B v3/)).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     await act(() => changeUiLanguage("zh-CN"));
     expect(screen.getByRole("combobox")).toHaveValue("越南语");
     expect(screen.getByText(/内置的 Parakeet 模型不支持越南语/)).toBeInTheDocument();
@@ -105,6 +122,143 @@ describe("Cartesia language guidance", () => {
     await act(() => changeUiLanguage("zh-CN"));
     expect(screen.getByText("Cartesia 只能识别英语、法语、印地语、日语和西班牙语。这种语言请换用其他识别引擎。")).toBeInTheDocument();
   });
+});
+
+describe("what an engine can't do with a side's language, in the UI language", () => {
+  // The hints of lib/sttLanguages (upstream's wording): each has wording of its own in Chinese.
+  it.each([
+    ["parakeet_tdt", undefined, "zh-CN", "Parakeet TDT 0.6B v3 transcribes 25 European languages only. Choose a multilingual Whisper model, Deepgram Nova-3, or Azure Speech for this language.", "Parakeet TDT 0.6B v3 只能识别 25 种欧洲语言。这种语言请选择多语言 Whisper 模型、Deepgram Nova-3 或 Azure Speech。"],
+    ["parakeet_tdt", "parakeet-ctc-110m", "de-DE", "Parakeet CTC 110M is English-only. Choose Parakeet TDT 0.6B v3 for multilingual transcription.", "Parakeet CTC 110M 只支持英语。需要识别其他语言时请选择 Parakeet TDT 0.6B v3。"],
+    ["deepgram", "flux-general-en", "es-ES", "Flux transcribes English only. Switch to Flux Multilingual or Nova-3 for this language.", "Flux 只能识别英语。这种语言请改用 Flux Multilingual 或 Nova-3。"],
+    ["deepgram", "flux-general-en", "zh-CN", "Flux transcribes English only. Switch to Nova-3 for this language.", "Flux 只能识别英语。这种语言请改用 Nova-3。"],
+    ["deepgram", "flux-general-multi", "uk-UA", "Switch from Flux to Nova-3 for Ukrainian transcription.", "识别乌克兰语请从 Flux 改用 Nova-3。"],
+    ["deepgram", "flux-general-multi", "zh-CN", "Flux Multilingual doesn't cover this language. Switch to Nova-3.", "Flux Multilingual 不支持这种语言，请改用 Nova-3。"],
+    ["ort_streaming", undefined, "zh-CN", "ORT Streaming models are English-only. Choose another provider for this language.", "ORT Streaming 的模型只支持英语。这种语言请换用其他识别引擎。"],
+    ["sherpa_onnx", undefined, "zh-CN", "This Sherpa-ONNX model doesn't cover this language. Choose SenseVoice Small, or another provider for this language.", "这个 Sherpa-ONNX 模型不支持这种语言。请选择 SenseVoice Small，或换用其他识别引擎。"],
+    ["sherpa_onnx", undefined, "de-DE", "This Sherpa-ONNX model doesn't cover this language. Choose another provider for this language.", "这个 Sherpa-ONNX 模型不支持这种语言，请换用其他识别引擎。"],
+    ["whisper_cpp", "ggml-base.en.bin", "zh-CN", "The base.en Whisper model is English-only. Choose a multilingual Whisper model (Tiny, Base, Small, Medium or Large v3 Turbo) for this language.", "Whisper 模型 base.en 只支持英语。这种语言请选择多语言 Whisper 模型（Tiny、Base、Small、Medium 或 Large v3 Turbo）。"],
+  ] as const)("%s (%s) with %s", async (stt_provider, model, language, english, chinese) => {
+    // Deepgram's model is a setting of its own; a local engine's is the side's.
+    if (stt_provider === "deepgram") {
+      useConfigStore.setState({ deepgramConfig: { ...useConfigStore.getState().deepgramConfig, model: model! } });
+    }
+    const local_model_id = stt_provider === "deepgram" ? undefined : model;
+    render(<PartyLanguageField party={{ ...initialConfig.them, stt_provider, local_model_id, language }} onChange={() => {}} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(english);
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByRole("alert")).toHaveTextContent(chinese);
+    expect(screen.queryByText(english)).toBeNull();
+  });
+
+  // The Auto-detect problem is Rust's refusal, word for word, in English; in Chinese it has wording of its own.
+  it.each([
+    [
+      "azure_speech", undefined, "You",
+      "Auto-detect doesn't work with Azure Speech, used for You. Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language.",
+      "“我”使用的 Azure Speech 不支持自动检测。请为这一侧选择 Deepgram Nova-3、Parakeet TDT 0.6B v3、Groq Whisper 或 Whisper API，或者指定一种语言。",
+    ],
+    [
+      "deepgram", "nova-2", "Them",
+      "Auto-detect doesn't work with Deepgram Nova 2, used for Them. Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language.",
+      "“对方”使用的 Deepgram Nova 2 不支持自动检测。请为这一侧选择 Deepgram Nova-3、Parakeet TDT 0.6B v3、Groq Whisper 或 Whisper API，或者指定一种语言。",
+    ],
+    [
+      "whisper_cpp", "ggml-base.en.bin", "Them",
+      "Auto-detect doesn't work with the base.en Whisper model, used for Them. Choose a multilingual Whisper model (Tiny, Base, Small, Medium or Large v3 Turbo), or pick a language.",
+      "“对方”使用的 Whisper 模型 base.en 不支持自动检测。请选择多语言 Whisper 模型（Tiny、Base、Small、Medium 或 Large v3 Turbo），或者指定一种语言。",
+    ],
+    [
+      "parakeet_tdt", "parakeet-ctc-110m", "Them",
+      "Auto-detect doesn't work with Parakeet CTC 110M, used for Them. Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language.",
+      "“对方”使用的 Parakeet CTC 110M 不支持自动检测。请为这一侧选择 Deepgram Nova-3、Parakeet TDT 0.6B v3、Groq Whisper 或 Whisper API，或者指定一种语言。",
+    ],
+  ] as const)("Auto-detect on %s (%s) for %s", async (stt_provider, model, role, english, chinese) => {
+    if (stt_provider === "deepgram") {
+      useConfigStore.setState({ deepgramConfig: { ...useConfigStore.getState().deepgramConfig, model: model! } });
+    }
+    const local_model_id = stt_provider === "deepgram" ? undefined : model;
+    render(
+      <PartyLanguageField
+        party={{ ...initialConfig.you, role, stt_provider, local_model_id, language: "auto" }}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(english);
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByRole("alert")).toHaveTextContent(chinese);
+  });
+
+  it("names the room in the Auto-detect problem of an in-person meeting, in Chinese too", async () => {
+    useMeetingStore.setState({ audioMode: "in_person" });
+    await act(() => changeUiLanguage("zh-CN"));
+    render(
+      <PartyLanguageField party={{ ...initialConfig.them, stt_provider: "azure_speech", language: "auto" }} onChange={() => {}} />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/^“现场”使用的 Azure Speech 不支持自动检测。/);
+  });
+});
+
+describe("mixed-language speech with Auto-detect", () => {
+  it("says what Nova-3 does, and points other engines to it, in the UI language", async () => {
+    const view = render(<PartyLanguageField party={{ ...initialConfig.you, language: "auto" }} onChange={() => {}} />);
+    expect(screen.getByText("Nova-3 can transcribe multiple languages within the same sentence.")).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("Nova-3 可以识别同一句话里夹杂的多种语言。")).toBeInTheDocument();
+    await act(() => changeUiLanguage("en"));
+    view.unmount();
+
+    render(
+      <PartyLanguageField party={{ ...initialConfig.you, stt_provider: "groq_whisper", language: "auto" }} onChange={() => {}} />,
+    );
+    expect(screen.getByText("For speech that switches languages mid-sentence, use Deepgram Nova-3.")).toBeInTheDocument();
+    await act(() => changeUiLanguage("zh-CN"));
+    expect(screen.getByText("如果说话时会在一句话里切换语言，请使用 Deepgram Nova-3。")).toBeInTheDocument();
+  });
+
+  it("leaves the tip out for the fork's own engines and for a side with a language", () => {
+    for (const party of [
+      { ...initialConfig.them, stt_provider: "soniox" as const, language: "auto" },
+      { ...initialConfig.them, stt_provider: "openai_compat" as const, language: "auto" },
+      { ...initialConfig.them, stt_provider: "groq_whisper" as const, language: "en-US" },
+    ]) {
+      const view = render(<PartyLanguageField party={party} onChange={() => {}} />);
+      expect(screen.queryByText(/Nova-3/)).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      view.unmount();
+    }
+  });
+});
+
+it("names the side whose engine can't detect the language, on that side's card only", async () => {
+  // Both sides follow the shared language, which is Auto-detect.
+  useConfigStore.setState({
+    sttLanguage: "auto",
+    meetingAudioConfig: {
+      ...initialConfig,
+      you: { ...initialConfig.you, stt_provider: "web_speech" },
+      them: { ...initialConfig.them, stt_provider: "groq_whisper" },
+    },
+  });
+  const user = userEvent.setup();
+  render(<MeetingAudioSettings />);
+  expect(side("You")).toHaveValue("Auto-detect");
+  // Only the affected side's card carries the explanation.
+  const alerts = screen.getAllByRole("alert");
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]).toHaveTextContent(
+    "Auto-detect doesn't work with Web Speech, used for You. " +
+    "Choose Deepgram Nova-3, Parakeet TDT 0.6B v3, Groq Whisper or Whisper API for that side, or pick a language."
+  );
+  // Web Speech can never detect the language, so its picker doesn't offer Auto-detect.
+  await user.click(side("You"));
+  expect(screen.getByRole("option", { name: /Auto-detect/ })).toHaveAttribute("aria-disabled", "true");
+  await user.keyboard("{Escape}");
+
+  await pick(user, "You", "en-US");
+  expect(useConfigStore.getState().meetingAudioConfig?.you.language).toBe("en-US");
+  // The shared language is not what the picker changes.
+  expect(useConfigStore.getState().sttLanguage).toBe("auto");
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 describe.each([
@@ -302,5 +456,154 @@ describe("meeting audio preset prerequisites", () => {
       type: "warning",
       message: expect.stringContaining("setup still needed: Set the Remote Whisper server URL"),
     });
+  });
+});
+
+describe("a language for each side", () => {
+  it("starts each side on the shared language for a config saved by an older version, and saves nothing", () => {
+    // initialConfig has no `language`, like every config saved before this setting.
+    render(<MeetingAudioSettings />);
+    for (const name of ["You", "Them"] as const) expect(side(name)).toHaveValue("English (US)");
+    // Showing the pickers saved nothing.
+    expect(useConfigStore.getState().meetingAudioConfig).toEqual(initialConfig);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a side without a language of its own follows the shared one", async () => {
+    useConfigStore.setState({ sttLanguage: "es-ES" });
+    render(<MeetingAudioSettings />);
+    expect(side("You")).toHaveValue("Spanish");
+    await act(async () => useConfigStore.setState({ sttLanguage: "auto" }));
+    expect(side("Them")).toHaveValue("Auto-detect");
+  });
+
+  it("saves a side's language into meetingAudioConfig and leaves the shared language and the other side alone", async () => {
+    const user = userEvent.setup();
+    render(<MeetingAudioSettings />);
+
+    await pick(user, "Them", "es-ES");
+    const saved = useConfigStore.getState().meetingAudioConfig!;
+    expect(saved.them.language).toBe("es-ES");
+    expect("language" in saved.you).toBe(false);
+    expect(useConfigStore.getState().sttLanguage).toBe("en-US");
+    expect(side("Them")).toHaveValue("Spanish");
+
+    // Auto-detect is one of the choices of a side whose engine can detect the language.
+    await pick(user, "You", "auto");
+    expect(useConfigStore.getState().meetingAudioConfig!.you.language).toBe("auto");
+    expect(side("You")).toHaveValue("Auto-detect");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers Ukrainian among the common recognition languages", async () => {
+    const user = userEvent.setup();
+    render(<MeetingAudioSettings />);
+    await user.click(side("Them"));
+    await user.click(within(screen.getByRole("group", { name: "Common languages" })).getByRole("option", { name: /Ukrainian/ }));
+    expect(useConfigStore.getState().meetingAudioConfig?.them.language).toBe("uk-UA");
+    expect(side("Them")).toHaveValue("Ukrainian");
+  });
+
+  it("names the room side Room in in-person meetings and has no picker for You", () => {
+    useMeetingStore.setState({ audioMode: "in_person" });
+    render(<MeetingAudioSettings />);
+    expect(side("Room")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Recognition language for You" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Recognition language for Them" })).toBeNull();
+  });
+
+  it("names the room in the Auto-detect warning of an in-person meeting, and doesn't judge You", () => {
+    useMeetingStore.setState({ audioMode: "in_person" });
+    useConfigStore.setState({
+      sttLanguage: "auto",
+      meetingAudioConfig: {
+        ...initialConfig,
+        you: { ...initialConfig.you, stt_provider: "web_speech" },
+        them: { ...initialConfig.them, stt_provider: "azure_speech" },
+      },
+    });
+    render(<MeetingAudioSettings />);
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("Auto-detect doesn't work with Azure Speech, used for Room.");
+  });
+
+  it("checks Auto-detect with each side's own language", async () => {
+    // Shared Auto-detect, but You speaks English: only Them is judged.
+    const config: MeetingAudioConfig = {
+      ...initialConfig,
+      you: { ...initialConfig.you, stt_provider: "web_speech", language: "en-US" },
+      them: { ...initialConfig.them, stt_provider: "azure_speech" },
+    };
+    useConfigStore.setState({ sttLanguage: "auto", meetingAudioConfig: config });
+    const user = userEvent.setup();
+    render(<MeetingAudioSettings />);
+    let alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("Auto-detect doesn't work with Azure Speech, used for Them.");
+
+    // Them picks a language: nothing left to refuse.
+    await pick(user, "Them", "es-ES");
+    expect(useConfigStore.getState().meetingAudioConfig?.them.language).toBe("es-ES");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // A fixed shared language, but You is on Auto-detect with an engine that can't
+    // (set elsewhere: this picker doesn't offer Auto-detect for Web Speech).
+    await act(async () =>
+      useConfigStore.setState({
+        sttLanguage: "en-US",
+        meetingAudioConfig: { ...config, you: { ...config.you, language: "auto" }, them: { ...config.them, language: "es-ES" } },
+      }),
+    );
+    alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("Auto-detect doesn't work with Web Speech, used for You.");
+  });
+
+  it("uses the side's language for the provider hints", async () => {
+    useConfigStore.setState({
+      deepgramConfig: { ...useConfigStore.getState().deepgramConfig, model: "flux-general-multi" },
+      meetingAudioConfig: {
+        ...initialConfig,
+        you: { ...initialConfig.you, stt_provider: "cartesia" },
+        them: { ...initialConfig.them, stt_provider: "deepgram" },
+      },
+    });
+    const user = userEvent.setup();
+    render(<MeetingAudioSettings />);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Ukrainian is a problem for Flux on Them only.
+    await pick(user, "Them", "uk-UA");
+    expect(screen.getByRole("alert")).toHaveTextContent("Switch from Flux to Nova-3 for Ukrainian transcription.");
+    await pick(user, "You", "ru-RU");
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    // Said once, in the fork's own wording (it names the languages in the UI language).
+    expect(
+      screen.getAllByText(/Cartesia transcribes only English, French, Hindi, Japanese,? and Spanish/),
+    ).toHaveLength(1);
+
+    // Sides with a language of their own ignore the shared one.
+    await pick(user, "You", "es-ES");
+    await pick(user, "Them", "en-US");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => useConfigStore.setState({ sttLanguage: "uk-UA" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the chosen languages when a preset is applied", async () => {
+    useConfigStore.setState({
+      meetingAudioConfig: {
+        ...initialConfig,
+        you: { ...initialConfig.you, language: "en-US" },
+        them: { ...initialConfig.them, language: "es-ES" },
+      },
+    });
+    const user = userEvent.setup();
+    render(<MeetingAudioSettings />);
+    await user.click(screen.getByRole("button", { name: "All Cloud" }));
+    const saved = useConfigStore.getState().meetingAudioConfig!;
+    expect(saved.preset_name).toBe("All Cloud");
+    expect([saved.you.language, saved.them.language]).toEqual(["en-US", "es-ES"]);
   });
 });

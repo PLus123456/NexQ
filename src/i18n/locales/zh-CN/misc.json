@@ -62,7 +62,8 @@
       "visible": "共享屏幕时可见",
       "failed": "无法切换“共享屏幕时隐藏”：{{detail}}"
     },
-    "registrationFailed": "无法注册快捷键 {{shortcut}}，可能已被其他应用占用。请在“设置 → 快捷键”更换组合，或在其他应用中释放它。"
+    "registrationFailed": "无法注册快捷键 {{shortcut}}，可能已被其他应用占用。请在“设置 → 快捷键”更换组合，或在其他应用中释放它。",
+    "captureRegistrationFailed": "{{shortcut}} 已被其他应用占用，“截取屏幕到提问框”已停用。请在“设置 → 通用”更换快捷键。"
   },
   "audioPlayer": {
     "playButton": {
@@ -141,6 +142,9 @@
     "writing": "生成中 {{seconds}} 秒",
     "answering": "回答中…"
   },
+  "configStore": {
+    "aiSettingNotApplied": "无法应用 AI 设置：{{detail}}"
+  },
   "toast": {
     "dismiss": {
       "label": "关闭通知"
@@ -173,6 +177,16 @@
     }
   },
   "hooks": {
+    "webSpeech": {
+      "autoDetect": {
+        "stopped": "已停止转写“{{side}}”：Web Speech 无法自动检测语言。请选择一种语言（立即生效），或为“{{side}}”换一个识别引擎。",
+        "notTranscribed": "“{{side}}”不会被转写：Web Speech 无法自动检测语言。请选择一种语言（立即生效），或为“{{side}}”换一个识别引擎。"
+      }
+    },
+    "audioConfigSync": {
+      "autoDetectRefused": "{{detail}} 会议继续使用当前的设置。",
+      "switchFailed": "无法切换语音识别：{{detail}}"
+    },
     "meetingStats": {
       "duration": {
         "hoursMinutes": "{{hours}} 小时 {{minutes}} 分",

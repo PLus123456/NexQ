@@ -57,7 +57,8 @@
       "sending": "发送中…",
       "waiting": "等待 AI 开始回答…",
       "thinking": "思考中…",
-      "writing": "生成中…"
+      "writing": "生成中…",
+      "loadingSources": "正在加载资料来源…"
     },
     "answer": "回答",
     "ariaLabel": "{{label}}：{{phase}}",
@@ -160,6 +161,7 @@
   "ask": {
     "input": {
       "placeholder": "就这场会议提问…",
+      "placeholderWithScreenshot": "提问，或粘贴截图",
       "ariaLabel": "提出问题"
     },
     "send": {
@@ -172,6 +174,9 @@
     },
     "errors": {
       "sendFailed": "发送问题失败"
+    },
+    "screenshot": {
+      "waiting": "截图已添加，当前回答结束后会打开提问框。"
     }
   },
   "speakerStats": {

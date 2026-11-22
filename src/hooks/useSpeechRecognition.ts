@@ -15,8 +15,12 @@ import { emit } from "@tauri-apps/api/event";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useConfigStore } from "../stores/configStore";
+import { AUTO_STT_LANGUAGE, sideLanguage } from "../lib/sttLanguages";
 import { pushTranscript, ensureIpolicyOverride } from "../lib/ipc";
 import { registerWebSpeechStop } from "../lib/webSpeechLifecycle";
+import { overrideKey } from "../lib/audioConfigKeys";
+import { useCaptureSyncStore } from "../stores/captureSyncStore";
+import { t } from "../i18n";
 
 // Web Speech API types (not in all TS libs)
 interface SpeechRecognitionEvent extends Event {
@@ -73,19 +77,13 @@ function getSpeakerLabel(cfg: ReturnType<typeof useConfigStore.getState>["meetin
 }
 
 /**
- * The language Web Speech recognizes: that of the party using it, else the
- * global STT language. It can't detect, so "auto" uses the system language.
+ * The language Web Speech recognises: that of the side it transcribes, else the shared one.
+ * Web Speech can't detect the language: on Auto-detect it stays silent (see the hook).
  */
-export function webSpeechLanguage(
-  cfg: ReturnType<typeof useConfigStore.getState>["meetingAudioConfig"],
-  sttLanguage: string,
-): string {
-  const party = cfg && getSpeakerLabel(cfg) === "Them" ? cfg.them : cfg?.you;
-  const language = party?.language || sttLanguage;
-  if (!language || language.toLowerCase() === "auto") {
-    return (typeof navigator !== "undefined" && navigator.language) || "en-US";
-  }
-  return language;
+function webSpeechLanguage(state: ReturnType<typeof useConfigStore.getState>): string {
+  const cfg = state.meetingAudioConfig;
+  const side = cfg ? (getSpeakerLabel(cfg) === "Them" ? cfg.them : cfg.you) : null;
+  return sideLanguage(side, state.sttLanguage);
 }
 
 /**
@@ -96,8 +94,9 @@ export function webSpeechLanguage(
 export function useSpeechRecognition() {
   const isRecording = useMeetingStore((s) => s.isRecording);
   const isEndingMeeting = useMeetingStore((s) => s.isEndingMeeting);
-  // The Web Speech party's language: a change restarts recognition.
-  const sttLanguage = useConfigStore((s) => webSpeechLanguage(s.meetingAudioConfig, s.sttLanguage));
+  // This side's own language when it has one, else the shared transcription language.
+  // A change restarts recognition.
+  const sttLanguage = useConfigStore(webSpeechLanguage);
 
   const audioMode = useMeetingStore((s) => s.audioMode);
 
@@ -116,6 +115,13 @@ export function useSpeechRecognition() {
     return youIsWebSpeech || themIsWebSpeech;
   });
 
+  // Web Speech listens to the OS default microphone, which Rust switches to the chosen one
+  // when the capture starts. Wait for the capture to settle on the config that applies to
+  // this side (leaving Auto-detect, say, which skipped the override), then listen.
+  const wantedOverride = useConfigStore((s) => overrideKey(s.meetingAudioConfig, s.sttLanguage, audioMode === "in_person"));
+  const settledOverride = useCaptureSyncStore((s) => s.settledOverrideKey);
+  const captureReady = settledOverride === null || settledOverride === wantedOverride;
+
   // Ref for store action — always fresh without being a dep.
   const updateInterimRef = useRef(useTranscriptStore.getState().updateInterimSegment);
   useEffect(() => {
@@ -132,8 +138,49 @@ export function useSpeechRecognition() {
   // Track consecutive restart failures for backoff
   const restartFailCountRef = useRef(0);
 
+  // True from the moment an instance starts until the next run of the effect below
+  // (whose cleanup has already stopped it by then).
+  const instanceStartedRef = useRef(false);
+  // Auto-detect has silenced Web Speech and the user has been told (reset when it speaks again).
+  const silencedRef = useRef(false);
+  // This meeting's first run of the effect below is over: Rust announces what is silenced at a start.
+  const ranOnceRef = useRef(false);
+
   useEffect(() => {
-    if (!isRecording || isEndingMeeting || !usesWebSpeech) return;
+    const hadInstance = instanceStartedRef.current;
+    instanceStartedRef.current = false;
+    const firstRun = isRecording && !ranOnceRef.current;
+    ranOnceRef.current = isRecording;
+
+    // The previous run's cleanup has already asked its instance to stop (and
+    // lets its last result drain), so there is nothing to clean up here.
+    if (!isRecording || isEndingMeeting || !usesWebSpeech) {
+      silencedRef.current = false;
+      return;
+    }
+    if (sttLanguage === AUTO_STT_LANGUAGE) {
+      // Web Speech can't detect the language, so Auto-detect silences it. Say so once,
+      // however it came about (a language picked, or Web Speech chosen while Auto-detect
+      // was on), except at a meeting's start, where Rust already told the user.
+      const alreadyTold = silencedRef.current;
+      silencedRef.current = true;
+      if (!firstRun && !alreadyTold) {
+        const side = getSpeakerLabel(useConfigStore.getState().meetingAudioConfig) === "Them"
+          ? (useMeetingStore.getState().audioMode === "in_person" ? t("common:labels.room") : t("common:labels.them"))
+          : t("common:labels.you");
+        emit(
+          "capture_warning",
+          hadInstance
+            ? t("misc:hooks.webSpeech.autoDetect.stopped", { side })
+            : t("misc:hooks.webSpeech.autoDetect.notTranscribed", { side }),
+        ).catch(() => {});
+      }
+      return;
+    }
+    silencedRef.current = false;
+
+    // The capture is still being restarted for this config: the mic isn't switched yet.
+    if (!captureReady) return;
 
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -163,6 +210,7 @@ export function useSpeechRecognition() {
     recognition.lang = currentLanguage;
 
     recognitionRef.current = recognition;
+    instanceStartedRef.current = true;
     shouldRestartRef.current = true;
     sessionPrefixRef.current = Date.now().toString(36).slice(-4);
     restartFailCountRef.current = 0;
@@ -323,14 +371,16 @@ export function useSpeechRecognition() {
               } catch {
                 // proceed anyway
               }
+              const language = webSpeechLanguage(useConfigStore.getState());
+              if (language === AUTO_STT_LANGUAGE) return;
               if (instanceIdRef.current !== myInstanceId || !shouldRestartRef.current ||
                   !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
+
               const fresh = new SpeechRecognition();
               fresh.continuous = true;
               fresh.interimResults = true;
               fresh.maxAlternatives = 1;
-              const latest = useConfigStore.getState();
-              fresh.lang = webSpeechLanguage(latest.meetingAudioConfig, latest.sttLanguage) || currentLanguage;
+              fresh.lang = language || currentLanguage;
               // Copy handlers from old instance
               fresh.onresult = recognitionRef.current!.onresult;
               fresh.onerror = recognitionRef.current!.onerror;
@@ -359,5 +409,5 @@ export function useSpeechRecognition() {
       // including when ending triggered this effect's cleanup.
       void stop().finally(unregisterStop);
     };
-  }, [isRecording, isEndingMeeting, usesWebSpeech, sttLanguage]);
+  }, [isRecording, isEndingMeeting, usesWebSpeech, sttLanguage, captureReady]);
 }

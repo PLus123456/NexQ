@@ -124,12 +124,7 @@
     "title": "Subscription (local CLI)",
     "beta": "Beta",
     "credentialsNote": "Uses your own Claude login on this PC. {{appName}} never sees your credentials.",
-    "active": "Active",
     "comingSoon": "Coming soon",
-    "providerRow": {
-      "ariaLabel": "Claude, {{state}}",
-      "ariaLabelActive": "Claude, {{state}}, active"
-    },
     "effort": {
       "low": "Low",
       "medium": "Medium",
@@ -141,7 +136,7 @@
       "checking": "Checking…",
       "failed": "Couldn't check",
       "apiBilled": "API account",
-      "loggedOut": "Not logged in",
+      "loggedOut": "Logged out",
       "unknown": "Login state unknown",
       "notInstalled": "Not installed",
       "npmOnly": "Needs native install"
@@ -171,7 +166,8 @@
       "checkedAgo": "checked {{ago}}"
     },
     "inactive": {
-      "hint": "Not in use — answers come from your current provider until you switch.",
+      "viewing": "Viewing Claude. {{appName}} is using {{provider}}.",
+      "anotherProvider": "another provider",
       "useClaude": "Use Claude"
     },
     "install": {
@@ -229,6 +225,13 @@
       "providerLabel": "Fallback provider",
       "modelLabel": "Fallback model",
       "modelPlaceholder": "Provider's first model"
+    }
+  },
+  "providerCard": {
+    "inUse": "In use",
+    "ariaLabel": {
+      "inUse": "{{name}}, {{status}}, in use",
+      "notInUse": "{{name}}, {{status}}, not in use"
     }
   },
   "agentChip": {
@@ -335,6 +338,12 @@
       "untested": "Not tested yet",
       "error": "Needs attention",
       "disabled": "Turned off"
+    },
+    "statusShort": {
+      "ready": "Ready",
+      "untested": "Not tested",
+      "error": "Needs attention",
+      "disabled": "Off"
     }
   },
   "tasks": {
@@ -608,6 +617,19 @@
     },
     "maxTokens": {
       "label": "Max output tokens"
+    },
+    "thinking": {
+      "label": "Thinking",
+      "hint": "Off answers faster. Not every model supports it; {{appName}} falls back automatically.",
+      "options": {
+        "auto": "Auto",
+        "off": "Off",
+        "low": "Low",
+        "high": "High"
+      },
+      "inherited": "Inherited: {{value}}",
+      "overridden": "An extra request body already sets “{{key}}”, so this setting isn't applied.",
+      "claudeHint": "Not used with Claude (subscription): its Fast and Deep models have their own thinking switches."
     },
     "extraBody": {
       "label": "Extra request body (JSON)",
@@ -934,22 +956,25 @@
         "description": "Your own Claude login (beta)"
       }
     },
-    "badges": {
+    "status": {
+      "checking": "Checking…",
       "ready": "Ready",
-      "hasKey": "Has Key",
-      "noKey": "No Key",
-      "local": "Local",
-      "notConfigured": "Configure"
+      "notRunning": "Not running",
+      "noKey": "No key",
+      "notSetUp": "Not set up"
     },
-    "active": {
-      "title": "Active: {{provider}}",
-      "noModel": " — no model selected",
-      "claudeTiers": "Fast: {{fast}} — Deep: {{deep}}",
-      "hint": "This provider and model will be used for AI responses",
+    "inUse": {
+      "title": "In use: {{provider}} · {{detail}}",
+      "noModel": "no model selected",
+      "claudeTiers": "Fast: {{fast}} · Deep: {{deep}}",
+      "hint": "{{appName}} answers with this provider",
       "setupHint": "Select a provider, test connection, and load models below",
-      "badge": "Active — {{status}}",
-      "activate": "Set {{provider}} as Active Provider",
+      "activate": "Use {{provider}} for AI responses",
       "failed": "Couldn't switch the AI provider: {{detail}}"
+    },
+    "viewing": {
+      "notice": "Viewing {{viewing}}. {{appName}} is using {{inUse}}.",
+      "use": "Use {{provider}}"
     },
     "apiKey": {
       "placeholder": "Enter {{provider}} API key",

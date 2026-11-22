@@ -8,12 +8,14 @@ import type {
   MeetingPromptInfo,
   AgentSessionStatus,
   AgentFallbackEvent,
+  AudioCaptureStatus,
   AudioLevelEvent,
   BatchTranslationProgress,
   ModelDownloadProgress,
   OllamaPullProgressEvent,
   QuestionDetectedEvent,
   RagIndexProgressEvent,
+  StreamActivityEvent,
   StreamEndEvent,
   StreamErrorEvent,
   StreamSourcesEvent,
@@ -78,6 +80,15 @@ export function onStreamThinking(
   handler: (event: StreamThinkingEvent) => void
 ): Promise<UnlistenFn> {
   return listen<StreamThinkingEvent>("llm_stream_thinking", (e) =>
+    handler(e.payload)
+  );
+}
+
+/** A line about the sources an answer is using, or why they were not (`llm_stream_activity`). */
+export function onStreamActivity(
+  handler: (event: StreamActivityEvent) => void
+): Promise<UnlistenFn> {
+  return listen<StreamActivityEvent>("llm_stream_activity", (e) =>
     handler(e.payload)
   );
 }
@@ -358,6 +369,16 @@ export function onAgentFallback(
 /** Audio capture started with the mic only: the other party couldn't be captured. */
 export function onCaptureWarning(handler: (message: string) => void): Promise<UnlistenFn> {
   return listen<string>("capture_warning", (e) => handler(e.payload));
+}
+
+/** A capture side is reconnecting its device, got it back, or gave up. */
+export function onAudioCaptureStatus(handler: (status: AudioCaptureStatus) => void): Promise<UnlistenFn> {
+  return listen<AudioCaptureStatus>("audio_capture_status", (e) => handler(e.payload));
+}
+
+/** Every capture side has stopped (End, or a device change restarting capture): drop what was shown about reconnecting. */
+export function onAudioCaptureStopped(handler: () => void): Promise<UnlistenFn> {
+  return listen("audio_capture_stopped", () => handler());
 }
 
 /** Another app started a call (the meeting prompt shows it). */

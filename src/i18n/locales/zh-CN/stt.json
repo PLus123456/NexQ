@@ -102,20 +102,34 @@
     "label": "识别语言",
     "partyAriaLabel": "{{party}}的识别语言",
     "autoUnavailable": {
-      "webSpeech": "Web Speech 不能自动检测语言（会改用系统语言）。",
+      "webSpeech": "Web Speech 不能自动检测语言。",
       "needsLanguage": "{{engine}} 需要指定一种语言。"
     },
+    "autoProblem": {
+      "message": "“{{side}}”使用的 {{name}} 不支持自动检测。{{advice}}",
+      "whisperModel": "Whisper 模型 {{model}}",
+      "advice": "请为这一侧选择 Deepgram Nova-3、Parakeet TDT 0.6B v3、Groq Whisper 或 Whisper API，或者指定一种语言。",
+      "whisperAdvice": "请选择多语言 Whisper 模型（Tiny、Base、Small、Medium 或 Large v3 Turbo），或者指定一种语言。"
+    },
     "hints": {
-      "autoUsesSystemLanguage": "Web Speech 不能自动检测语言，会使用系统语言。请选择一种语言。",
-      "autoFallsBackToEnglish": "{{engine}} 不能自动检测语言，会按英语识别。请选择一种语言。",
       "ignored": "{{engine}} 忽略语言设置，由模型决定。",
       "whisperCppAuto": "Whisper.cpp 对每个短片段单独检测语言，可能来回切换。知道语言时最好明确选择。",
-      "deepgramAuto": "自动检测需要 Nova 2 或 Nova 3 模型，{{model}} 会按英语识别。",
+      "novaMixedLanguages": "Nova-3 可以识别同一句话里夹杂的多种语言。",
+      "mixedLanguagesTip": "如果说话时会在一句话里切换语言，请使用 Deepgram Nova-3。",
       "cartesiaAuto": "Cartesia 会自动识别{{languages}}。",
       "cartesiaUnsupported": "Cartesia 只能识别{{languages}}。这种语言请换用其他识别引擎。",
       "parakeetVietnameseUnsupported": "内置的 Parakeet 模型不支持越南语。请选择多语言 Whisper 模型、Deepgram Nova-3 或 Azure Speech。",
       "deepgramVietnamese": "请选择支持越南语的 Deepgram 模型，例如 Nova-3。",
-      "parakeetCtcEnglishOnly": "Parakeet CTC 110M 只支持英语。俄语等其他语言请使用 Parakeet TDT 0.6B v3。"
+      "parakeetCtcEnglishOnly": "Parakeet CTC 110M 只支持英语。需要识别其他语言时请选择 Parakeet TDT 0.6B v3。",
+      "parakeetEuropeanOnly": "Parakeet TDT 0.6B v3 只能识别 25 种欧洲语言。这种语言请选择多语言 Whisper 模型、Deepgram Nova-3 或 Azure Speech。",
+      "fluxEnglishOnlyOrMultilingual": "Flux 只能识别英语。这种语言请改用 Flux Multilingual 或 Nova-3。",
+      "fluxEnglishOnly": "Flux 只能识别英语。这种语言请改用 Nova-3。",
+      "fluxUkrainian": "识别乌克兰语请从 Flux 改用 Nova-3。",
+      "fluxMultilingualUnsupported": "Flux Multilingual 不支持这种语言，请改用 Nova-3。",
+      "ortStreamingEnglishOnly": "ORT Streaming 的模型只支持英语。这种语言请换用其他识别引擎。",
+      "sherpaUnsupportedTrySenseVoice": "这个 Sherpa-ONNX 模型不支持这种语言。请选择 SenseVoice Small，或换用其他识别引擎。",
+      "sherpaUnsupported": "这个 Sherpa-ONNX 模型不支持这种语言，请换用其他识别引擎。",
+      "whisperEnglishOnly": "Whisper 模型 {{model}} 只支持英语。这种语言请选择多语言 Whisper 模型（Tiny、Base、Small、Medium 或 Large v3 Turbo）。"
     }
   },
   "picker": {

@@ -22,6 +22,7 @@ use super::provider::{
     emit_token, is_cancelled, CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider,
     ModelInfo, StreamSource, TokenSink,
 };
+use super::thinking::{self, Sent, ThinkingSetting};
 use super::{anthropic, gemini, ollama, openai_compat};
 use crate::net::endpoint::{self, AuthConfig, CustomHeader};
 
@@ -356,6 +357,46 @@ impl Protocol {
             LlmKind::ClaudeCli => None,
         }
     }
+
+    /// The name under which `thinking` remembers, with the address called and
+    /// the model, that a server refused the thinking parameter.
+    fn label(self) -> &'static str {
+        match self {
+            Self::OpenAi => "openai_compat",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Ollama => "ollama",
+        }
+    }
+}
+
+/// What `setting` adds to a request body of `protocol` for `model`, as fields
+/// to merge into it. The mapping itself is `llm::thinking`'s, one function
+/// per API. `None`: Auto, or a model whose API has no parameter for it.
+/// `openrouter` selects OpenRouter's own `reasoning` object.
+pub fn thinking_fields(protocol: Protocol, openrouter: bool, model: &str, setting: ThinkingSetting) -> Option<Value> {
+    let mut fields = serde_json::json!({});
+    let added = match protocol {
+        Protocol::OpenAi => {
+            let provider = if openrouter { "openrouter" } else { protocol.label() };
+            thinking::apply_openai_compat(&mut fields, provider, model, setting)
+        }
+        Protocol::Anthropic => thinking::apply_anthropic(&mut fields, model, setting),
+        Protocol::Gemini => {
+            let mut generation_config = serde_json::json!({});
+            let added = thinking::apply_gemini(&mut generation_config, model, setting);
+            fields["generationConfig"] = generation_config;
+            added
+        }
+        Protocol::Ollama => match thinking::ollama_think(model, setting) {
+            Some(think) => {
+                fields["think"] = think;
+                true
+            }
+            None => false,
+        },
+    };
+    added.then_some(fields)
 }
 
 /// One answered stream.
@@ -441,6 +482,7 @@ impl HttpLlmClient {
             temperature: params.temperature,
             max_tokens: params.max_tokens,
             extra_body: params.extra_body.as_ref().and_then(|v| v.as_object().cloned()),
+            ..Default::default()
         };
         EffectiveParams {
             json_mode: params.json_mode,
@@ -448,14 +490,38 @@ impl HttpLlmClient {
         }
     }
 
-    /// Chat address and body for one request.
-    fn chat_request(&self, messages: &[LLMMessage], model: &str, params: &GenerationParams) -> Result<(String, Value), Failure> {
-        let chat_url = self.chat_url.as_ref().map_err(|e| Failure::config(e.clone()))?;
-        let url = connections::chat_url_for(chat_url, model);
-        let eff = self.effective_params(params);
+    /// How much the model thinks on one request (`thinking::resolve`): the
+    /// request's own choice (made in code, or by the task's route), then
+    /// this connection's setting, then Off for a background JSON task, else
+    /// Auto. Auto too when `extra_body` sets thinking by hand: that JSON has
+    /// the last word, and NexQ adds nothing next to it.
+    fn thinking_setting(&self, params: &GenerationParams, eff: &EffectiveParams) -> ThinkingSetting {
+        if compat::sets_thinking(eff.extra_body.as_ref()) {
+            return ThinkingSetting::Auto;
+        }
+        thinking::resolve(params, self.conn.params.thinking)
+    }
+
+    /// The thinking parameter `setting` adds to a body of `protocol`.
+    fn thinking_fields(&self, protocol: Protocol, model: &str, setting: ThinkingSetting) -> Option<Value> {
+        thinking_fields(protocol, self.conn.is_openrouter(), model, setting)
+    }
+
+    /// Body of one chat request of `protocol`, with its thinking parameter
+    /// (`thinking`, from [`Self::thinking_fields`]).
+    fn chat_body(
+        &self,
+        protocol: Protocol,
+        messages: &[LLMMessage],
+        model: &str,
+        params: &GenerationParams,
+        eff: &EffectiveParams,
+        thinking: Option<Value>,
+    ) -> Value {
+        let eff = &EffectiveParams { thinking, ..eff.clone() };
         let compat = &self.conn.compat;
         let web_search = params.enable_web_search.then(|| self.conn.web_search()).unwrap_or(WebSearch::None);
-        let body = match self.protocol {
+        match protocol {
             Protocol::OpenAi => {
                 // OpenRouter: ":online" enables web search grounding for any model.
                 let model_id = if web_search == WebSearch::OpenrouterOnline && !model.ends_with(":online") {
@@ -463,19 +529,110 @@ impl HttpLlmClient {
                 } else {
                     model.to_string()
                 };
-                compat::openai_chat_body(&model_id, messages, &eff, compat)
+                compat::openai_chat_body(&model_id, messages, eff, compat)
             }
-            Protocol::Anthropic => anthropic::chat_body(model, messages, &eff, compat),
+            Protocol::Anthropic => anthropic::chat_body(model, messages, eff, compat),
             Protocol::Gemini => gemini::chat_body(
                 messages,
-                &eff,
+                eff,
                 compat,
                 params.cache_name.as_deref(),
                 web_search == WebSearch::GeminiGoogleSearch,
             ),
-            Protocol::Ollama => compat::ollama_chat_body(model, messages, &eff, compat),
-        };
-        Ok((url, body))
+            Protocol::Ollama => compat::ollama_chat_body(model, messages, eff, compat),
+        }
+    }
+
+    /// `messages` as sent: with thinking Off, a Qwen3 hybrid model behind an
+    /// OpenAI-compatible server or Ollama also gets Qwen's `/no_think` switch
+    /// in the prompt (`thinking::apply_prompt_hint`).
+    fn with_prompt_hint<'m>(
+        &self,
+        messages: &'m [LLMMessage],
+        model: &str,
+        setting: ThinkingSetting,
+    ) -> std::borrow::Cow<'m, [LLMMessage]> {
+        let hinted = matches!(self.protocol, Protocol::OpenAi | Protocol::Ollama)
+            && setting == ThinkingSetting::Off
+            && thinking::is_qwen3_hybrid(model);
+        if !hinted {
+            return std::borrow::Cow::Borrowed(messages);
+        }
+        let mut messages = messages.to_vec();
+        thinking::apply_prompt_hint(&mut messages, model, setting);
+        std::borrow::Cow::Owned(messages)
+    }
+
+    /// Chat address and body of one request as first sent (`with_thinking`
+    /// false: as sent again after the server refused the thinking parameter).
+    #[cfg(test)]
+    fn chat_request(
+        &self,
+        messages: &[LLMMessage],
+        model: &str,
+        params: &GenerationParams,
+        with_thinking: bool,
+    ) -> Result<(String, Value), Failure> {
+        let chat_url = self.chat_url.as_ref().map_err(|e| Failure::config(e.clone()))?;
+        let url = connections::chat_url_for(chat_url, model);
+        let eff = self.effective_params(params);
+        let setting = self.thinking_setting(params, &eff);
+        let messages = self.with_prompt_hint(messages, model, setting);
+        let thinking = with_thinking.then(|| self.thinking_fields(self.protocol, model, setting)).flatten();
+        Ok((url, self.chat_body(self.protocol, &messages, model, params, &eff, thinking)))
+    }
+
+    /// Sends one chat request of `protocol` to `url`. The thinking parameter
+    /// goes along unless this address already refused it for `model`; a 400
+    /// that refuses it is answered by one more request without it and
+    /// remembered for the session (`thinking::send_with_fallback`).
+    /// `Ok(Err(_))` is the server's error answer, `Err(_)` a request that got
+    /// none.
+    #[allow(clippy::too_many_arguments)]
+    async fn post_chat(
+        &self,
+        protocol: Protocol,
+        url: &str,
+        what: &str,
+        messages: &[LLMMessage],
+        model: &str,
+        params: &GenerationParams,
+        eff: &EffectiveParams,
+        setting: ThinkingSetting,
+    ) -> Result<Result<reqwest::Response, Failure>, Failure> {
+        let label = protocol.label();
+        let thinking = thinking::should_send(label, url, model, setting)
+            .then(|| self.thinking_fields(protocol, model, setting))
+            .flatten();
+        // Why a request got no answer, as `send` tells it (the address, the
+        // cause): `send_with_fallback` passes errors on as `LLMError`, which
+        // keeps less.
+        let unanswered: std::sync::Mutex<Option<Failure>> = std::sync::Mutex::new(None);
+        let sent = thinking::send_with_fallback(label, url, model, thinking.is_some(), params, |with_thinking| {
+            let fields = if with_thinking { thinking.clone() } else { None };
+            let body = self.chat_body(protocol, messages, model, params, eff, fields);
+            let request = self.with_headers(self.client.post(url)).json(&body);
+            let unanswered = &unanswered;
+            async move {
+                send(request, params, url, what).await.map_err(|failure| {
+                    let error = LLMError::from(failure.clone());
+                    if let Ok(mut slot) = unanswered.lock() {
+                        *slot = Some(failure);
+                    }
+                    error
+                })
+            }
+        })
+        .await;
+        match sent {
+            Ok(Sent::Ok(response)) => Ok(Ok(response)),
+            Ok(Sent::Failed { status, body }) => Ok(Err(status_failure(status, url, &body, what))),
+            Err(error) => Err(unanswered
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .unwrap_or_else(|| Failure::from(error))),
+        }
     }
 
     fn decoder(&self, protocol: Protocol, collect_sources: bool) -> Box<dyn EventDecoder> {
@@ -518,47 +675,51 @@ impl HttpLlmClient {
         out: &dyn StreamOutput,
         start: Instant,
     ) -> Result<StreamResult, Failure> {
-        let (url, body) = self.chat_request(messages, model, params)?;
-        let request = self.with_headers(self.client.post(&url)).json(&body);
-        let response = send(request, params, &url, "Chat request").await?;
-        let mut protocol = self.protocol;
-        let mut used_url = url.clone();
-        let response = if response.status().is_success() {
-            response
-        } else {
-            let failure = response_failure(response, &url, "Chat request").await;
-            check_cancelled(params)?;
-            if !(self.protocol == Protocol::OpenAi
-                && self.conn.compat.ollama_fallback_on_404
-                && matches!(failure.status, Some(404) | Some(405)))
-            {
-                return Err(failure);
-            }
-            // The old custom endpoint also spoke Ollama's API: try it, and
-            // show both errors if that fails too.
-            let fallback_url = endpoint::join_endpoint(&self.conn.base_url, "/api/chat")
-                .map(String::from)
-                .map_err(|_| failure.clone())?;
-            let eff = self.effective_params(params);
-            let body = compat::ollama_chat_body(model, messages, &eff, &self.conn.compat);
-            let request = self.with_headers(self.client.post(&fallback_url)).json(&body);
-            let second = match send(request, params, &fallback_url, "Ollama chat request").await {
-                Ok(response) if response.status().is_success() => Ok(response),
-                Ok(response) => Err(response_failure(response, &fallback_url, "Ollama chat request").await),
-                Err(e) => Err(e),
-            };
-            match second {
-                Ok(response) => {
-                    protocol = Protocol::Ollama;
-                    used_url = fallback_url;
-                    response
+        let chat_url = self.chat_url.as_ref().map_err(|e| Failure::config(e.clone()))?;
+        let url = connections::chat_url_for(chat_url, model);
+        let eff = self.effective_params(params);
+        let setting = self.thinking_setting(params, &eff);
+        let messages = self.with_prompt_hint(messages, model, setting);
+        let messages: &[LLMMessage] = &messages;
+        let first = self
+            .post_chat(self.protocol, &url, "Chat request", messages, model, params, &eff, setting)
+            .await?;
+        let (response, protocol, used_url) = match first {
+            Ok(response) => (response, self.protocol, url),
+            Err(failure) => {
+                check_cancelled(params)?;
+                if !(self.protocol == Protocol::OpenAi
+                    && self.conn.compat.ollama_fallback_on_404
+                    && matches!(failure.status, Some(404) | Some(405)))
+                {
+                    return Err(failure);
                 }
-                Err(second) if second.kind == FailureKind::Cancelled => return Err(second),
-                Err(second) => {
-                    return Err(Failure {
-                        message: format!("{}; the Ollama fallback failed too: {}", failure.message, second.message),
-                        ..failure
-                    })
+                // The old custom endpoint also spoke Ollama's API: try it, and
+                // show both errors if that fails too.
+                let fallback_url = endpoint::join_endpoint(&self.conn.base_url, "/api/chat")
+                    .map(String::from)
+                    .map_err(|_| failure.clone())?;
+                let second = self
+                    .post_chat(
+                        Protocol::Ollama,
+                        &fallback_url,
+                        "Ollama chat request",
+                        messages,
+                        model,
+                        params,
+                        &eff,
+                        setting,
+                    )
+                    .await;
+                match second {
+                    Ok(Ok(response)) => (response, Protocol::Ollama, fallback_url),
+                    Ok(Err(second)) | Err(second) if second.kind == FailureKind::Cancelled => return Err(second),
+                    Ok(Err(second)) | Err(second) => {
+                        return Err(Failure {
+                            message: format!("{}; the Ollama fallback failed too: {}", failure.message, second.message),
+                            ..failure
+                        })
+                    }
                 }
             }
         };
@@ -900,7 +1061,7 @@ mod tests {
                 let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
                 for requested in [false, true] {
                     let params = GenerationParams { json_mode: requested, ..Default::default() };
-                    let (_, body) = client.chat_request(&messages(), "small-model", &params).unwrap();
+                    let (_, body) = client.chat_request(&messages(), "small-model", &params, true).unwrap();
                     assert_eq!(body.pointer(field), (supported && requested).then_some(&value), "{kind:?}, supported={supported}, requested={requested}");
                 }
             }
@@ -914,12 +1075,258 @@ mod tests {
         conn.params.extra_body = Some(json!({"response_format": {"type": "json_schema", "json_schema": {"name": "answer"}}}).as_object().unwrap().clone());
         let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
         let params = GenerationParams { json_mode: true, ..Default::default() };
-        let (url, body) = client.chat_request(&messages(), "m", &params).unwrap();
+        let (url, body) = client.chat_request(&messages(), "m", &params, true).unwrap();
         assert_eq!(url, "http://localhost:8000/my/llm/chat/completions");
         assert_eq!(body["response_format"]["type"], "json_schema");
         let params = GenerationParams { extra_body: Some(json!({"response_format": {"type": "text"}})), ..params };
-        let (_, body) = client.chat_request(&messages(), "m", &params).unwrap();
+        let (_, body) = client.chat_request(&messages(), "m", &params, true).unwrap();
         assert_eq!(body["response_format"]["type"], "text");
+    }
+
+    // ── Thinking (upstream #126 on connections) ─────────────────────────────
+
+    use crate::llm::thinking::ThinkingSetting::{Auto, High, Low, Off};
+
+    fn conn_of(kind: LlmKind, base: &str, thinking: ThinkingSetting) -> LlmConnection {
+        let mut conn = compat_conn(base);
+        conn.kind = kind;
+        conn.auth = AuthConfig { mode: AuthMode::None, ..Default::default() };
+        conn.params.thinking = thinking;
+        conn
+    }
+
+    /// The first body a connection of `kind` with `thinking` sends for `model`.
+    fn first_body(kind: LlmKind, model: &str, thinking: ThinkingSetting, params: &GenerationParams) -> Value {
+        let base = if kind == LlmKind::Ollama { "http://localhost:11434" } else { "http://localhost:8000/v1" };
+        let client = HttpLlmClient::new(&conn_of(kind, base, thinking), None, &HashMap::new()).unwrap();
+        client.chat_request(&messages(), model, params, true).unwrap().1
+    }
+
+    #[test]
+    fn auto_sends_no_thinking_parameter_on_any_protocol() {
+        let params = GenerationParams { temperature: Some(0.3), max_tokens: Some(50), ..Default::default() };
+        for kind in [LlmKind::OpenAiCompat, LlmKind::Anthropic, LlmKind::Gemini, LlmKind::Ollama] {
+            let body = first_body(kind, "claude-sonnet-5-5", Auto, &params);
+            for key in ["reasoning_effort", "reasoning", "thinking", "output_config", "think"] {
+                assert!(body.get(key).is_none(), "{kind:?} {key}");
+            }
+            assert!(body.pointer("/generationConfig/thinkingConfig").is_none(), "{kind:?}");
+        }
+        // Everything else is what it always was.
+        let body = first_body(LlmKind::OpenAiCompat, "m", Auto, &params);
+        assert_eq!(body, json!({"model": "m", "messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "你好"}], "stream": true, "temperature": 0.3, "max_tokens": 50}));
+    }
+
+    #[test]
+    fn off_low_high_use_each_apis_own_parameter() {
+        let plain = GenerationParams::default();
+        // OpenAI-compatible: reasoning_effort.
+        assert_eq!(first_body(LlmKind::OpenAiCompat, "gpt-5.1", Off, &plain)["reasoning_effort"], "none");
+        assert_eq!(first_body(LlmKind::OpenAiCompat, "gpt-5-mini", Off, &plain)["reasoning_effort"], "minimal");
+        assert_eq!(first_body(LlmKind::OpenAiCompat, "doubao-seed-1-6", Low, &plain)["reasoning_effort"], "low");
+        assert_eq!(first_body(LlmKind::OpenAiCompat, "gpt-5", High, &plain)["reasoning_effort"], "high");
+        // Anthropic: adaptive thinking and effort, only on the models that take them.
+        assert_eq!(first_body(LlmKind::Anthropic, "claude-opus-4-8", Off, &plain)["thinking"], json!({"type": "disabled"}));
+        let high = first_body(LlmKind::Anthropic, "claude-sonnet-5-5", High, &plain);
+        assert_eq!((&high["thinking"], &high["output_config"]), (&json!({"type": "adaptive"}), &json!({"effort": "high"})));
+        assert!(first_body(LlmKind::Anthropic, "claude-haiku-4-5", High, &plain).get("thinking").is_none());
+        // Gemini: thinkingConfig inside generationConfig, next to what was there.
+        let flash = first_body(LlmKind::Gemini, "gemini-2.5-flash", Off, &plain);
+        assert_eq!(flash["generationConfig"], json!({"maxOutputTokens": 4096, "thinkingConfig": {"thinkingBudget": 0}}));
+        let pro = first_body(LlmKind::Gemini, "gemini-3-pro-preview", High, &plain);
+        assert_eq!(pro["generationConfig"]["thinkingConfig"], json!({"thinkingLevel": "high"}));
+        let cached = GenerationParams { cache_name: Some("cachedContents/abc".into()), ..Default::default() };
+        let with_cache = first_body(LlmKind::Gemini, "gemini-2.5-flash", Off, &cached);
+        assert_eq!(with_cache["cachedContent"], "cachedContents/abc");
+        assert_eq!(with_cache["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
+        // Ollama: think.
+        assert_eq!(first_body(LlmKind::Ollama, "llama3.2", Off, &plain)["think"], false);
+        assert_eq!(first_body(LlmKind::Ollama, "llama3.2", High, &plain)["think"], true);
+        assert_eq!(first_body(LlmKind::Ollama, "gpt-oss:20b", High, &plain)["think"], "high");
+    }
+
+    #[test]
+    fn openrouter_uses_its_reasoning_object_and_keeps_the_online_suffix() {
+        let mut conn = conn_of(LlmKind::OpenAiCompat, "https://openrouter.ai/api/v1", Off);
+        conn.template = Some("openrouter".into());
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let params = GenerationParams { enable_web_search: true, ..Default::default() };
+        let (_, body) = client.chat_request(&messages(), "m", &params, true).unwrap();
+        assert_eq!(body["reasoning"], json!({"enabled": false}));
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["model"], "m:online");
+    }
+
+    #[test]
+    fn the_retry_body_has_no_thinking_parameter() {
+        for (kind, model) in [
+            (LlmKind::OpenAiCompat, "gpt-5.1"),
+            (LlmKind::Anthropic, "claude-sonnet-5-5"),
+            (LlmKind::Gemini, "gemini-2.5-flash"),
+            (LlmKind::Ollama, "llama3.2"),
+        ] {
+            let client = HttpLlmClient::new(&conn_of(kind, "http://localhost:8000/v1", High), None, &HashMap::new()).unwrap();
+            let (_, with) = client.chat_request(&messages(), model, &GenerationParams::default(), true).unwrap();
+            let (_, without) = client.chat_request(&messages(), model, &GenerationParams::default(), false).unwrap();
+            assert_ne!(with, without, "{kind:?}");
+            let auto = HttpLlmClient::new(&conn_of(kind, "http://localhost:8000/v1", Auto), None, &HashMap::new()).unwrap();
+            let (_, plain) = auto.chat_request(&messages(), model, &GenerationParams::default(), true).unwrap();
+            assert_eq!(without, plain, "{kind:?}: the retry is the Auto body");
+        }
+    }
+
+    #[test]
+    fn the_request_beats_the_connection_and_background_tasks_default_to_off() {
+        let effort = |connection, params: &GenerationParams| {
+            first_body(LlmKind::OpenAiCompat, "gpt-5.1", connection, params).get("reasoning_effort").cloned()
+        };
+        let plain = GenerationParams::default();
+        let background = GenerationParams { thinking_auto_off: true, ..Default::default() };
+        let explicit = GenerationParams { thinking: Low, thinking_auto_off: true, ..Default::default() };
+        assert_eq!(effort(Auto, &plain), None);
+        assert_eq!(effort(High, &plain), Some(json!("high")));
+        // A background JSON task: Off, unless the user set something.
+        assert_eq!(effort(Auto, &background), Some(json!("none")));
+        assert_eq!(effort(High, &background), Some(json!("high")));
+        // The request's own choice (code, or the task's route) wins.
+        assert_eq!(effort(High, &explicit), Some(json!("low")));
+    }
+
+    #[test]
+    fn a_thinking_key_in_extra_body_has_the_last_word() {
+        // The connection says High; its extra_body sets thinking by hand.
+        let mut conn = conn_of(LlmKind::Anthropic, "https://api.anthropic.com", High);
+        conn.params.extra_body = Some(json!({"thinking": {"type": "disabled"}}).as_object().unwrap().clone());
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let (_, body) = client.chat_request(&messages(), "claude-sonnet-5-5", &GenerationParams::default(), true).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert!(body.get("output_config").is_none(), "nothing of NexQ's own next to it");
+
+        // A route's extra_body counts the same (a provider that takes `thinking`, not `reasoning_effort`).
+        let conn = conn_of(LlmKind::OpenAiCompat, "https://ark.example.com/api/v3", Off);
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let routed = GenerationParams { extra_body: Some(json!({"thinking": {"type": "enabled"}})), ..Default::default() };
+        let (_, body) = client.chat_request(&messages(), "doubao-seed-1-6", &routed, true).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert!(body.get("reasoning_effort").is_none());
+
+        // Gemini's nested thinkingConfig is replaced, not mixed.
+        let mut conn = conn_of(LlmKind::Gemini, "https://generativelanguage.googleapis.com", Off);
+        conn.params.extra_body = Some(json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}}).as_object().unwrap().clone());
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let (_, body) = client.chat_request(&messages(), "gemini-3-pro-preview", &GenerationParams::default(), true).unwrap();
+        assert_eq!(body["generationConfig"]["thinkingConfig"], json!({"thinkingLevel": "high"}));
+
+        // Other extra_body keys leave the setting alone.
+        let mut conn = conn_of(LlmKind::Ollama, "http://localhost:11434", Off);
+        conn.params.extra_body = Some(json!({"options": {"num_ctx": 8192}}).as_object().unwrap().clone());
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let params = GenerationParams { temperature: Some(0.3), ..Default::default() };
+        let (_, body) = client.chat_request(&messages(), "llama3.2", &params, true).unwrap();
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"], json!({"temperature": 0.3, "num_ctx": 8192}));
+    }
+
+    #[test]
+    fn qwen3_gets_the_no_think_switch_only_when_off_and_only_where_it_works() {
+        let system = |kind, model: &str, thinking| {
+            let body = first_body(kind, model, thinking, &GenerationParams::default());
+            body["messages"][0]["content"].as_str().unwrap_or_default().to_string()
+        };
+        assert_eq!(system(LlmKind::OpenAiCompat, "Qwen/Qwen3-32B", Off), "Be brief.\n/no_think");
+        assert_eq!(system(LlmKind::Ollama, "qwen3:8b", Off), "Be brief.\n/no_think");
+        assert_eq!(system(LlmKind::Ollama, "qwen3:8b", High), "Be brief.");
+        assert_eq!(system(LlmKind::Ollama, "qwen3:8b", Auto), "Be brief.");
+        assert_eq!(system(LlmKind::Ollama, "llama3.2", Off), "Be brief.");
+        // The caller's own messages are never changed.
+        let body = first_body(LlmKind::Anthropic, "qwen3-coder", Off, &GenerationParams::default());
+        assert_eq!(body["system"], "Be brief.");
+    }
+
+    #[tokio::test]
+    async fn a_refused_thinking_parameter_is_retried_once_then_remembered() {
+        let refusal = r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#;
+        let answer = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+        let (base, seen) = serve(vec![Canned::json(400, refusal), Canned::sse(&[answer])]).await;
+        let client = HttpLlmClient::new(&conn_of(LlmKind::OpenAiCompat, &format!("{base}/v1"), Off), None, &HashMap::new()).unwrap();
+        let url = format!("{base}/v1/chat/completions");
+
+        let out = RecordingOutput::default();
+        client.stream_with(&messages(), "retry-model", &GenerationParams::default(), &out).await.unwrap();
+        assert_eq!(out.text(), "ok");
+        assert!(out.errors.lock().unwrap().is_empty(), "the refusal is not shown");
+        let bodies: Vec<Value> = seen.lock().unwrap().iter().map(|r| r.json()).collect();
+        assert_eq!(bodies.len(), 2, "one try with the parameter, one without");
+        assert_eq!(bodies[0]["reasoning_effort"], "none");
+        assert!(bodies[1].get("reasoning_effort").is_none());
+        assert!(thinking::is_known_unsupported("openai_compat", &url, "retry-model"));
+
+        // The next request does not try the parameter again.
+        client.stream_with(&messages(), "retry-model", &GenerationParams::default(), &RecordingOutput::default()).await.unwrap();
+        let bodies: Vec<Value> = seen.lock().unwrap().iter().map(|r| r.json()).collect();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[2].get("reasoning_effort").is_none());
+        // Another model on the same server still gets it.
+        assert!(thinking::should_send("openai_compat", &url, "another-model", Off));
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_400_and_an_auto_request_are_not_retried() {
+        let (base, seen) = serve(vec![Canned::json(400, r#"{"error":"context length exceeded"}"#)]).await;
+        let client = HttpLlmClient::new(&conn_of(LlmKind::OpenAiCompat, &format!("{base}/v1"), Off), None, &HashMap::new()).unwrap();
+        let failure = client.stream_with(&messages(), "strict-model", &GenerationParams::default(), &RecordingOutput::default()).await.unwrap_err();
+        assert_eq!(failure.status, Some(400));
+        assert!(failure.message.contains("context length exceeded"));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(!thinking::is_known_unsupported("openai_compat", &format!("{base}/v1/chat/completions"), "strict-model"));
+
+        // Auto sent no parameter, so a 400 that names one is the server's own business.
+        let (base, seen) = serve(vec![Canned::json(400, r#"{"error":"reasoning_effort bad"}"#)]).await;
+        let client = HttpLlmClient::new(&conn_of(LlmKind::OpenAiCompat, &format!("{base}/v1"), Auto), None, &HashMap::new()).unwrap();
+        let failure = client.stream_with(&messages(), "auto-model", &GenerationParams::default(), &RecordingOutput::default()).await.unwrap_err();
+        assert_eq!(failure.status, Some(400));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_ollama_fallback_retries_without_a_refused_think_parameter() {
+        // /chat/completions is missing (404); Ollama's /api/chat refuses `think`, then answers.
+        let ollama = "{\"message\":{\"content\":\"from ollama\"}}\n{\"done\":true}\n";
+        let (base, seen) = serve(vec![
+            Canned::json(404, "nope"),
+            Canned::json(400, r#"{"error":"\"m\" does not support thinking"}"#),
+            Canned::new(200, "application/x-ndjson", vec![ollama.as_bytes().to_vec()]),
+        ])
+        .await;
+        let mut conn = conn_of(LlmKind::OpenAiCompat, &base, Off);
+        conn.compat.ollama_fallback_on_404 = true;
+        let client = HttpLlmClient::new(&conn, None, &HashMap::new()).unwrap();
+        let out = RecordingOutput::default();
+        client.stream_with(&messages(), "native-retry-model", &GenerationParams::default(), &out).await.unwrap();
+        assert_eq!(out.text(), "from ollama");
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), ["/chat/completions", "/api/chat", "/api/chat"]);
+        assert_eq!(requests[0].json()["reasoning_effort"], "none");
+        assert_eq!(requests[1].json()["think"], false);
+        assert!(requests[2].json().get("think").is_none());
+        // Each address has its own memory: /chat/completions never refused the parameter.
+        assert!(thinking::is_known_unsupported("ollama", &format!("{base}/api/chat"), "native-retry-model"));
+        assert!(!thinking::is_known_unsupported("openai_compat", &format!("{base}/chat/completions"), "native-retry-model"));
+    }
+
+    #[tokio::test]
+    async fn a_new_base_url_is_not_treated_as_refusing() {
+        let (old_base, _) = serve(vec![Canned::json(400, r#"{"error":"unknown field reasoning_effort"}"#)]).await;
+        let client = HttpLlmClient::new(&conn_of(LlmKind::OpenAiCompat, &format!("{old_base}/v1"), Off), None, &HashMap::new()).unwrap();
+        let _ = client.stream_with(&messages(), "shared-model", &GenerationParams::default(), &RecordingOutput::default()).await;
+        assert!(thinking::is_known_unsupported("openai_compat", &format!("{old_base}/v1/chat/completions"), "shared-model"));
+
+        let (new_base, seen) = serve(vec![Canned::sse(&["data: [DONE]\n\n"])]).await;
+        let client = HttpLlmClient::new(&conn_of(LlmKind::OpenAiCompat, &format!("{new_base}/v1"), Off), None, &HashMap::new()).unwrap();
+        client.stream_with(&messages(), "shared-model", &GenerationParams::default(), &RecordingOutput::default()).await.unwrap();
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].json()["reasoning_effort"], "none");
     }
 
     #[tokio::test]

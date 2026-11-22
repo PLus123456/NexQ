@@ -17,7 +17,13 @@ import type {
   ClaudeCliConfig,
   ClaudeModelInfo,
   ContextScopeSetting,
+  ThinkingSetting,
 } from "../lib/types";
+import {
+  normalizeExtraJsonMap,
+  normalizeThinkingMap,
+  requestOptionFields,
+} from "../lib/llmRequestOptions";
 import { clampMinutes, DEFAULT_CONTEXT_SCOPE, SCOPE_KINDS } from "../lib/contextScope";
 import {
   DEFAULT_OPENAI_COMPAT_STT_CONFIG,
@@ -134,6 +140,8 @@ function normalizeContextScope(value: Partial<ContextScopeSetting> | null | unde
 async function storedProviderConfig(provider: LLMProviderType): Promise<string> {
   const { getApiKey } = await import("../lib/ipc");
   const config: Record<string, unknown> = { provider_type: provider };
+  const { llmThinking, llmExtraRequestJson } = useConfigStore.getState();
+  Object.assign(config, requestOptionFields(provider, llmThinking[provider], llmExtraRequestJson[provider]));
   if (provider === "custom") {
     const { customLlmBaseUrl, customLlmAuthType } = useConfigStore.getState();
     if (customLlmBaseUrl) config.base_url = customLlmBaseUrl;
@@ -147,6 +155,42 @@ async function storedProviderConfig(provider: LLMProviderType): Promise<string> 
     if (key) config.api_key = key;
   }
   return JSON.stringify(config);
+}
+
+/**
+ * Changes of the backend's provider run one after another, in the order they
+ * were asked for: both activating a provider and re-applying its options load
+ * credentials first, so a slow one must not land after a later switch and put
+ * the old provider back.
+ */
+let providerChanges: Promise<unknown> = Promise.resolve();
+function enqueueProviderChange<T>(task: () => Promise<T>): Promise<T> {
+  const run = providerChanges.then(task, task);
+  providerChanges = run.catch(() => {});
+  return run;
+}
+
+/**
+ * A request option of the provider in use changed: the backend gets the whole
+ * config again (it keeps the model). A provider not in use gets it on activation.
+ * The check of which provider is in use runs when its turn comes, after any
+ * switch asked for earlier, so a stale update is dropped.
+ */
+function reapplyIfActive(provider: LLMProviderType): void {
+  if (provider === "claude_cli") return;
+  enqueueProviderChange(async () => {
+    if (useConfigStore.getState().llmProvider !== provider) return;
+    const config = await storedProviderConfig(provider);
+    if (useConfigStore.getState().llmProvider !== provider) return;
+    const ipc = await import("../lib/ipc");
+    await ipc.setLLMProvider(config);
+  })
+    .catch((e) => {
+      console.warn("[configStore] Failed to apply the request options:", e);
+      Promise.all([import("./toastStore"), import("../i18n")]).then(([{ showToast }, { t }]) =>
+        showToast(t("misc:configStore.aiSettingNotApplied", { detail: e instanceof Error ? e.message : String(e) }), "error"),
+      );
+    });
 }
 
 /** Meeting detection defaults: on for the main meeting apps. */
@@ -200,6 +244,8 @@ function pushMeetingDetection(config: MeetingDetectionConfig): void {
 export const DEFAULT_STEALTH_SHORTCUT = "CmdOrCtrl+Shift+H";
 /** Assist from any app during a meeting (Space only works in the overlay). */
 export const DEFAULT_ASSIST_SHORTCUT = "CmdOrCtrl+Shift+Space";
+/** Capture the screen under the mouse into the Ask box (Claude subscription, during a meeting). */
+export const DEFAULT_CAPTURE_SHORTCUT = "CmdOrCtrl+Shift+S";
 
 export async function persistValue(key: string, value: unknown): Promise<void> {
   try {
@@ -221,6 +267,10 @@ interface ConfigState {
   llmModel: string;
   /** Last model used with each provider (default model of the Claude fallback). */
   lastModelByProvider: Record<string, string>;
+  /** How much each provider's model thinks; a provider not listed is "auto". */
+  llmThinking: Record<string, ThinkingSetting>;
+  /** Advanced: extra JSON merged into each provider's request (only valid JSON is kept). */
+  llmExtraRequestJson: Record<string, string>;
 
   // Claude CLI (subscription) settings; the backend gets a copy on load and on change.
   claudeCliConfig: ClaudeCliConfig;
@@ -345,6 +395,8 @@ interface ConfigState {
   /** Global shortcut that toggles stealth mode. */
   stealthShortcut: string;
   assistShortcut: string;
+  /** Global shortcut that captures the screen under the pointer into Ask. */
+  captureShortcut: string;
   /** Offer to start NexQ when Zoom, Teams, Meet… start a call. */
   meetingDetection: MeetingDetectionConfig;
 
@@ -383,6 +435,10 @@ interface ConfigState {
   ) => Promise<void>;
   /** Remember `model` as the last one used with `provider` (no activation). */
   rememberModel: (provider: string, model: string) => void;
+  /** Set how much `provider`'s model thinks (persisted, synced, applied at once when it is active). */
+  setLlmThinking: (provider: LLMProviderType, value: ThinkingSetting) => void;
+  /** Set `provider`'s extra request JSON; the caller passes valid JSON or "". */
+  setLlmExtraRequestJson: (provider: LLMProviderType, json: string) => void;
   /** Replace the Claude CLI config (persisted + pushed to the backend). */
   setClaudeCliConfig: (config: ClaudeCliConfig) => void;
   /** The user's fallback choice: pins it so it no longer follows the active provider. */
@@ -448,6 +504,7 @@ interface ConfigState {
   stealthModeApplied: (enabled: boolean) => void;
   setStealthShortcut: (shortcut: string) => void;
   setAssistShortcut: (shortcut: string) => void;
+  setCaptureShortcut: (shortcut: string) => void;
   /** Replace the meeting detection settings (persisted + pushed to the backend). */
   setMeetingDetection: (config: MeetingDetectionConfig) => void;
   loadConfig: () => Promise<void>;
@@ -473,6 +530,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   llmProvider: "ollama",
   llmModel: "",
   lastModelByProvider: {},
+  llmThinking: {},
+  llmExtraRequestJson: {},
   claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
   claudeCliFallbackPinned: false,
   claudeModels: null,
@@ -530,6 +589,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
   stealthMode: false,
   stealthShortcut: DEFAULT_STEALTH_SHORTCUT,
   assistShortcut: DEFAULT_ASSIST_SHORTCUT,
+  captureShortcut: DEFAULT_CAPTURE_SHORTCUT,
   meetingDetection: DEFAULT_MEETING_DETECTION,
   _loaded: false,
   mutedYou: false,
@@ -582,7 +642,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
     persistValue("llmModel", model);
     useConfigStore.getState().rememberModel(provider ?? useConfigStore.getState().llmProvider, model);
   },
-  activateLLMProvider: async (provider, options = {}) => {
+  activateLLMProvider: (provider, options = {}) => enqueueProviderChange(async () => {
     const ipc = await import("../lib/ipc");
     const before = useConfigStore.getState();
     let providerConfig = options.providerConfig;
@@ -608,7 +668,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       }
       useConfigStore.getState().setLLMModel(model, provider);
     }
-  },
+  }),
   rememberModel: (provider, model) => {
     if (!model || provider === "claude_cli") return;
     const { lastModelByProvider } = useConfigStore.getState();
@@ -622,6 +682,20 @@ export const useConfigStore = create<ConfigState>((set) => ({
     if (!claudeCliFallbackPinned && cfg.fallback_provider === provider && cfg.fallback_model !== model) {
       useConfigStore.getState().setClaudeCliConfig({ ...cfg, fallback_model: model });
     }
+  },
+  setLlmThinking: (provider, value) => {
+    const { [provider]: _previous, ...others } = useConfigStore.getState().llmThinking;
+    const next = value === "auto" ? others : { ...others, [provider]: value };
+    set({ llmThinking: next });
+    persistValue("llmThinking", next);
+    reapplyIfActive(provider);
+  },
+  setLlmExtraRequestJson: (provider, json) => {
+    const { [provider]: _previous, ...others } = useConfigStore.getState().llmExtraRequestJson;
+    const next = json.trim() ? { ...others, [provider]: json } : others;
+    set({ llmExtraRequestJson: next });
+    persistValue("llmExtraRequestJson", next);
+    reapplyIfActive(provider);
   },
   setClaudeCliConfig: (config) => {
     const { llmProvider, llmModel } = useConfigStore.getState();
@@ -997,6 +1071,10 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ assistShortcut: shortcut });
     persistValue("assistShortcut", shortcut);
   },
+  setCaptureShortcut: (shortcut) => {
+    set({ captureShortcut: shortcut });
+    persistValue("captureShortcut", shortcut);
+  },
   setMeetingDetection: (config) => {
     set({ meetingDetection: config });
     persistValue("meetingDetection", config);
@@ -1077,6 +1155,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const trayStealthEnabled = await store.get<boolean>("trayStealthEnabled");
       const stealthShortcut = await store.get<string>("stealthShortcut");
       const assistShortcut = await store.get<string>("assistShortcut");
+      const captureShortcut = await store.get<string>("captureShortcut");
       const stealthMode = await store.get<boolean>("stealthMode");
       const savedMeetingDetection = await store.get<Partial<MeetingDetectionConfig>>("meetingDetection");
       const meetingDetection = { ...DEFAULT_MEETING_DETECTION, ...(savedMeetingDetection ?? {}) };
@@ -1084,6 +1163,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
       const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
       const claudeModels = await store.get<ClaudeModelInfo[]>("claudeModels");
+      // Absent in configs saved before these settings: every provider is Auto, no extra JSON.
+      const llmThinking = normalizeThinkingMap(await store.get<unknown>("llmThinking"));
+      const llmExtraRequestJson = normalizeExtraJsonMap(await store.get<unknown>("llmExtraRequestJson"));
 
       // Last model per provider; seeded from the saved active provider on upgrade.
       const lastModelByProvider: Record<string, string> = { ...(storedLastModels ?? {}) };
@@ -1131,6 +1213,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(llmProvider != null && { llmProvider }),
         ...(llmModel != null && { llmModel }),
         lastModelByProvider,
+        llmThinking,
+        llmExtraRequestJson,
         claudeCliConfig,
         claudeCliFallbackPinned,
         ...(Array.isArray(claudeModels) && claudeModels.length > 0 && { claudeModels }),
@@ -1188,6 +1272,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(trayStealthEnabled != null && { trayStealthEnabled }),
         ...(stealthShortcut != null && { stealthShortcut }),
         ...(assistShortcut != null && { assistShortcut }),
+        ...(captureShortcut != null && { captureShortcut }),
         ...(stealthMode != null && { stealthMode }),
         meetingDetection,
       }));
@@ -1220,6 +1305,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<string>("activeWhisperModel", (val) => {
         if (val !== undefined) set({ activeWhisperModel: val ?? null });
       });
+      store.onKeyChange<Record<string, string>>("activeModelPerEngine", (val) => {
+        if (val != null) set({ activeModelPerEngine: val });
+      });
+      store.onKeyChange<DeepgramConfig>("deepgramConfig", (val) => {
+        if (val != null) set({ deepgramConfig: { ...DEFAULT_DEEPGRAM_CONFIG, ...val } });
+      });
       store.onKeyChange<STTProviderType>("sttProvider", (val) => {
         if (val != null) set({ sttProvider: val });
       });
@@ -1243,6 +1334,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<Record<string, string>>("lastModelByProvider", (val) => {
         if (val != null) set({ lastModelByProvider: val });
+      });
+      store.onKeyChange<Record<string, ThinkingSetting>>("llmThinking", (val) => {
+        set({ llmThinking: normalizeThinkingMap(val) });
+      });
+      store.onKeyChange<Record<string, string>>("llmExtraRequestJson", (val) => {
+        set({ llmExtraRequestJson: normalizeExtraJsonMap(val) });
       });
       store.onKeyChange<ContextStrategy>("contextStrategy", (val) => {
         if (val != null) set({ contextStrategy: val });
@@ -1280,6 +1377,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<string>("assistShortcut", (val) => {
         if (val != null) set({ assistShortcut: val });
+      });
+      store.onKeyChange<string>("captureShortcut", (val) => {
+        if (val != null) set({ captureShortcut: val });
       });
       store.onKeyChange<MeetingDetectionConfig>("meetingDetection", (val) => {
         if (val != null) set({ meetingDetection: { ...DEFAULT_MEETING_DETECTION, ...val } });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useScenarioStore } from "../stores/scenarioStore";
 import { useCallLogStore } from "../stores/callLogStore";
@@ -16,7 +16,6 @@ import { QuestionPanel } from "./QuestionDetector";
 import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { AIResponsePanel } from "./AIResponsePanel";
 import { ModeButtons } from "./ModeButtons";
-import { AskInput } from "./AskInput";
 import { ServiceStatusBar } from "../components/ServiceStatusBar";
 import { DevLogPanel } from "../components/DevLogPanel";
 import { SpeakerStatsPanel } from "./SpeakerStatsPanel";
@@ -29,6 +28,7 @@ import { useSpeakerDetection } from "../hooks/useSpeakerDetection";
 import { useTopicDetection } from "../hooks/useTopicDetection";
 import { MODE_COLORS } from "../lib/speakerColors";
 import { showLauncherWindow } from "../lib/windows";
+import { SCREENSHOT_EVENT } from "../lib/screenCapture";
 import {
   GripHorizontal,
   Minus,
@@ -65,22 +65,33 @@ export function OverlayView() {
   const endMeetingFlow = useMeetingStore((s) => s.endMeetingFlow);
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
   const scenarioName = useScenarioStore((s) => s.getActiveTemplate().name);
-  const [askInputVisible, setAskInputVisible] = useState(false);
   const [devLogOpen, setDevLogOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<"split" | "ai" | "transcript">("split");
 
   // The overlay window stays mounted between meetings, so reset its local UI
-  // state whenever a new meeting starts (panels, layout, ask input).
+  // state whenever a new meeting starts (panels, layout).
   const activeMeetingId = activeMeeting?.id ?? "";
   useEffect(() => {
-    setAskInputVisible(false);
     setDevLogOpen(false);
     setStatsOpen(false);
     setBookmarksOpen(false);
     setLayoutMode("split");
   }, [activeMeetingId]);
+  // A captured screenshot needs the Ask box, which the "transcript" layout hides:
+  // switch to the split view (the Ask box takes the picture when it mounts).
+  const layoutRef = useRef(layoutMode);
+  layoutRef.current = layoutMode;
+  useEffect(() => {
+    const onScreenshot = (e: Event) => {
+      if (layoutRef.current !== "transcript") return;
+      setLayoutMode("split");
+      e.preventDefault();
+    };
+    window.addEventListener(SCREENSHOT_EVENT, onScreenshot);
+    return () => window.removeEventListener(SCREENSHOT_EVENT, onScreenshot);
+  }, []);
   const cycleLayout = () => setLayoutMode((m) => m === "split" ? "ai" : m === "ai" ? "transcript" : "split");
   const toggleLog = useCallLogStore((s) => s.toggleOpen);
   const logOpen = useCallLogStore((s) => s.isOpen);
@@ -450,13 +461,6 @@ export function OverlayView() {
         )}
       </div>
       </div>
-
-      {/* Ask input */}
-      {askInputVisible && (
-        <div className="border-t border-border/20 px-3 py-1.5 slide-down-enter">
-          <AskInput visible={askInputVisible} onClose={() => setAskInputVisible(false)} />
-        </div>
-      )}
 
       {/* DevLog panel */}
       <DevLogPanel open={devLogOpen} onClose={() => setDevLogOpen(false)} />

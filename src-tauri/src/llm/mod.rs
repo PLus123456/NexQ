@@ -14,6 +14,7 @@ pub mod persist;
 pub mod provider;
 pub mod registry;
 pub mod stream_parser;
+pub mod thinking;
 
 use provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo, TokenSink,
@@ -123,6 +124,29 @@ pub struct ProviderConfig {
     pub auth_type: Option<String>,
     pub auth_value: Option<String>,
     pub auth_header: Option<String>,
+    /// How much the model thinks. Saved configs from before this setting lack
+    /// it and load as `Auto`: nothing is sent, exactly as before.
+    #[serde(default)]
+    pub thinking: thinking::ThinkingSetting,
+    /// Optional JSON object merged into the request body (Ollama, LM Studio,
+    /// custom endpoints and OpenRouter only; ignored elsewhere).
+    #[serde(default)]
+    pub extra_request_json: Option<String>,
+}
+
+impl ProviderConfig {
+    /// The request options this config asks for. The extra JSON only applies
+    /// to the providers that offer it.
+    pub fn request_options(&self) -> thinking::RequestOptions {
+        let offers_extra = matches!(
+            ProviderType::from_str(&self.provider_type),
+            Ok(ProviderType::Ollama | ProviderType::LmStudio | ProviderType::Openrouter | ProviderType::Custom)
+        );
+        thinking::RequestOptions {
+            thinking: self.thinking,
+            extra_json: if offers_extra { self.extra_request_json.clone() } else { None },
+        }
+    }
 }
 
 /// Provider info returned to the frontend
@@ -188,6 +212,17 @@ pub fn legacy_from_config_lenient(
         }
     }
     conn.base_url = connections::normalize_base_for_kind(conn.kind, &conn.base_url);
+    // The old settings' thinking choice and extra request JSON are the
+    // connection's `params.thinking` and `params.extra_body`.
+    let options = config.request_options();
+    conn.params.thinking = options.thinking;
+    conn.params.extra_body = options
+        .extra_request()
+        .map(|mut extra| {
+            extra.retain(|key, _| !connections::PROTECTED_BODY_KEYS.contains(&key.as_str()));
+            extra
+        })
+        .filter(|extra| !extra.is_empty());
     let secret = if provider_type == ProviderType::Custom {
         config.auth_value.clone()
     } else {
@@ -365,6 +400,8 @@ mod tests {
             auth_type: None,
             auth_value: None,
             auth_header: None,
+            thinking: thinking::ThinkingSetting::Auto,
+            extra_request_json: None,
         }
     }
 
@@ -434,5 +471,70 @@ mod tests {
         // OpenAI ignored a base URL before; it still does.
         let (_, conn, _) = legacy_from_config(&cfg("openai", Some("k"), Some("http://evil"))).unwrap();
         assert_eq!(conn.base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn an_old_saved_config_loads_as_auto_with_no_extra_json() {
+        // What every config saved before the thinking setting looks like.
+        let old = r#"{"provider_type":"ollama","api_key":null,"base_url":"http://localhost:11434","auth_type":null,"auth_value":null,"auth_header":null}"#;
+        let config: ProviderConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(config.thinking, thinking::ThinkingSetting::Auto);
+        assert!(config.extra_request_json.is_none());
+        let options = config.request_options();
+        assert!(options.thinking.is_auto());
+        assert!(options.extra_request().is_none());
+        assert!(create_provider(&config).is_ok());
+
+        // The frontend sends only the fields it has: provider type alone works.
+        let bare: ProviderConfig = serde_json::from_str(r#"{"provider_type":"claude_cli"}"#).unwrap();
+        assert!(bare.thinking.is_auto());
+        assert!(create_provider(&bare).is_ok());
+    }
+
+    #[test]
+    fn a_new_config_carries_thinking_and_extra_json_only_where_offered() {
+        let json = r#"{"provider_type":"ollama","thinking":"off","extra_request_json":"{\"options\":{\"num_ctx\":8192}}"}"#;
+        let config: ProviderConfig = serde_json::from_str(json).unwrap();
+        let o = config.request_options();
+        assert_eq!(o.thinking, thinking::ThinkingSetting::Off);
+        assert_eq!(o.extra_request().unwrap()["options"]["num_ctx"], 8192);
+
+        // OpenAI offers no extra JSON: it is dropped, thinking stays.
+        let openai: ProviderConfig = serde_json::from_str(
+            r#"{"provider_type":"openai","api_key":"k","thinking":"high","extra_request_json":"{\"a\":1}"}"#,
+        )
+        .unwrap();
+        let o = openai.request_options();
+        assert_eq!(o.thinking, thinking::ThinkingSetting::High);
+        assert!(o.extra_request().is_none());
+
+        // A damaged value never breaks loading.
+        let bad: ProviderConfig = serde_json::from_str(r#"{"provider_type":"ollama","thinking":"nonsense"}"#).unwrap();
+        assert!(bad.thinking.is_auto());
+    }
+
+    #[test]
+    fn a_legacy_config_carries_its_thinking_and_extra_json_onto_the_connection() {
+        let json = r#"{"provider_type":"ollama","thinking":"off","extra_request_json":"{\"options\":{\"num_ctx\":8192},\"model\":\"evil\"}"}"#;
+        let config: ProviderConfig = serde_json::from_str(json).unwrap();
+        let (_, conn, _) = legacy_from_config(&config).unwrap();
+        assert_eq!(conn.params.thinking, thinking::ThinkingSetting::Off);
+        let extra = conn.params.extra_body.clone().unwrap();
+        assert_eq!(extra["options"]["num_ctx"], 8192);
+        assert!(!extra.contains_key("model"), "protected keys never reach extra_body");
+        assert!(connections::validate_connection(&conn).is_ok());
+
+        // OpenAI offers no extra JSON: it is dropped, thinking stays.
+        let openai: ProviderConfig = serde_json::from_str(
+            r#"{"provider_type":"openai","api_key":"k","thinking":"high","extra_request_json":"{\"a\":1}"}"#,
+        )
+        .unwrap();
+        let (_, conn, _) = legacy_from_config(&openai).unwrap();
+        assert_eq!(conn.params.thinking, thinking::ThinkingSetting::High);
+        assert!(conn.params.extra_body.is_none());
+
+        // An old config changes nothing about the connection it always described.
+        let (_, conn, _) = legacy_from_config(&cfg("ollama", None, None)).unwrap();
+        assert!(conn.params.is_empty());
     }
 }

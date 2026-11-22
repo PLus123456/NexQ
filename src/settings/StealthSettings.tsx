@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ParseKeys } from "i18next";
 import { ScreenShareOff } from "lucide-react";
-import { DEFAULT_ASSIST_SHORTCUT, DEFAULT_STEALTH_SHORTCUT, useConfigStore } from "../stores/configStore";
+import { DEFAULT_ASSIST_SHORTCUT, DEFAULT_CAPTURE_SHORTCUT, DEFAULT_STEALTH_SHORTCUT, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import { getStealthSupport } from "../lib/ipc";
 import { actionDisplayName } from "../lib/actionNames";
+import { providerReadsImages } from "../lib/imageAttachments";
+import { screenCaptureSupported } from "../lib/shortcutLabel";
 import { useT } from "../i18n";
 import { ShortcutButton } from "./ShortcutButton";
 import type { StealthSupport } from "../lib/types";
@@ -22,7 +24,8 @@ const SUPPORT_NOTE_KEYS = new Map<string, ParseKeys<"settings">>([
 
 /**
  * Settings → General: stealth mode ("Hide from screen share"), its shortcut,
- * and the Assist shortcut that works without switching to NexQ.
+ * the Assist shortcut that works without switching to NexQ, and the shortcut
+ * that captures the screen into Ask.
  */
 export function StealthSettings() {
   const { t } = useT(["settings", "misc"]);
@@ -32,9 +35,27 @@ export function StealthSettings() {
   const setShortcut = useConfigStore((s) => s.setStealthShortcut);
   const assistShortcut = useConfigStore((s) => s.assistShortcut);
   const setAssistShortcut = useConfigStore((s) => s.setAssistShortcut);
+  const captureShortcut = useConfigStore((s) => s.captureShortcut);
+  const setCaptureShortcut = useConfigStore((s) => s.setCaptureShortcut);
+  const canReadImages = useConfigStore((s) => providerReadsImages(s.llmProvider));
+  // The capture shortcut doesn't exist where capturing isn't supported: its key stays free there.
+  const captureSupported = screenCaptureSupported();
+  // The actions' names in the UI language, as the "already used by" message shows them.
   const assistName = actionDisplayName({ id: "Assist", name: "Assist", isBuiltIn: true });
-  const stealthTaken = useMemo(() => ({ [assistShortcut]: assistName }), [assistShortcut, assistName]);
-  const assistTaken = useMemo(() => ({ [shortcut]: t("stealth.label") }), [shortcut, t]);
+  const stealthName = t("stealth.label");
+  const captureName = t("stealth.capture.label");
+  const stealthTaken = useMemo(
+    () => ({ [assistShortcut]: assistName, ...(captureSupported ? { [captureShortcut]: captureName } : {}) }),
+    [assistShortcut, assistName, captureShortcut, captureSupported, captureName],
+  );
+  const assistTaken = useMemo(
+    () => ({ [shortcut]: stealthName, ...(captureSupported ? { [captureShortcut]: captureName } : {}) }),
+    [shortcut, stealthName, captureShortcut, captureSupported, captureName],
+  );
+  const captureTaken = useMemo(
+    () => ({ [shortcut]: stealthName, [assistShortcut]: assistName }),
+    [shortcut, stealthName, assistShortcut, assistName],
+  );
 
   const [support, setSupport] = useState<StealthSupport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -113,6 +134,23 @@ export function StealthSettings() {
         </div>
         <ShortcutButton value={assistShortcut} defaultValue={DEFAULT_ASSIST_SHORTCUT} onChange={setAssistShortcut} others={assistTaken} />
       </div>
+
+      {captureSupported && (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-xs font-medium text-foreground/80">{captureName}</span>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {t("stealth.capture.hint")}
+            </p>
+            {!canReadImages && (
+              <p className="mt-0.5 text-xs text-warning">
+                {t("stealth.capture.noImages")}
+              </p>
+            )}
+          </div>
+          <ShortcutButton value={captureShortcut} defaultValue={DEFAULT_CAPTURE_SHORTCUT} onChange={setCaptureShortcut} others={captureTaken} />
+        </div>
+      )}
 
       {support?.note && <p className="text-meta text-muted-foreground/70">{noteKey ? t(noteKey) : support.note}</p>}
     </div>

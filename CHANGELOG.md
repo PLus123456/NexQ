@@ -1,3 +1,70 @@
+## [2.41.3](https://github.com/naxhq/NexQ/compare/v2.41.2...v2.41.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **stt:** speech after a pause shows on its own line right away, and Assist drops the old question ([#134](https://github.com/naxhq/NexQ/issues/134)) ([6607899](https://github.com/naxhq/NexQ/commit/66078996969300be972e1f4d8da78c28f5915b9e)), closes [#36](https://github.com/naxhq/NexQ/issues/36)
+## [2.41.2](https://github.com/naxhq/NexQ/compare/v2.41.1...v2.41.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **sources:** wait for the backend at startup before sending the sources ([#131](https://github.com/naxhq/NexQ/issues/131)) ([0b3b366](https://github.com/naxhq/NexQ/commit/0b3b36628a91309e3696514c2da087b53f024e7c))
+## [2.41.1](https://github.com/naxhq/NexQ/compare/v2.41.0...v2.41.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **sources:** a Check's answer is kept after a restart ([#130](https://github.com/naxhq/NexQ/issues/130)) ([521bc51](https://github.com/naxhq/NexQ/commit/521bc515e3e0977f69622bae518fc319f1e70ea3))
+# [2.41.0](https://github.com/naxhq/NexQ/compare/v2.40.0...v2.41.0) (2026-11-20)
+
+
+### Bug Fixes
+
+* **settings:** show which LLM provider is in use, which one you're viewing, and which are ready ([#127](https://github.com/naxhq/NexQ/issues/127)) ([bff1fc6](https://github.com/naxhq/NexQ/commit/bff1fc65355d7c4ecf49d95ae5bd75421e70c2ca))
+
+
+### Features
+
+* **sources:** notes folders and MCP servers for Claude answers ([#129](https://github.com/naxhq/NexQ/issues/129)) ([6adb9c2](https://github.com/naxhq/NexQ/commit/6adb9c2b843808dd01258a994f9ab7bd9abdb979))
+# [2.40.0](https://github.com/naxhq/NexQ/compare/v2.39.0...v2.40.0) (2026-11-20)
+
+
+### Features
+
+* **llm:** choose how much each provider's model thinks ([#126](https://github.com/naxhq/NexQ/issues/126)) ([e8db163](https://github.com/naxhq/NexQ/commit/e8db1632ee88293b24688dc9904addee6639beba)), closes [#125](https://github.com/naxhq/NexQ/issues/125)
+# [2.39.0](https://github.com/naxhq/NexQ/compare/v2.38.0...v2.39.0) (2026-11-20)
+
+
+### Bug Fixes
+
+* **audio:** report a side's late start reliably after a slow first open ([#122](https://github.com/naxhq/NexQ/issues/122)) ([0bfb26b](https://github.com/naxhq/NexQ/commit/0bfb26b27425454f46eb0bc8cf1526130f327289)), closes [#118](https://github.com/naxhq/NexQ/issues/118)
+* **recording:** keep mic and system audio aligned after a gap ([#121](https://github.com/naxhq/NexQ/issues/121)) ([08a207a](https://github.com/naxhq/NexQ/commit/08a207a0744a97ebdf9b444c9ad0f0869504c593)), closes [#116](https://github.com/naxhq/NexQ/issues/116)
+
+
+### Features
+
+* **overlay:** switch each side's transcription language from the meeting overlay ([#123](https://github.com/naxhq/NexQ/issues/123)) ([8a8db9c](https://github.com/naxhq/NexQ/commit/8a8db9c21a167bb3f6fb3a8071242fffb379ef22)), closes [#108](https://github.com/naxhq/NexQ/issues/108)
+* **stt:** a language change restarts only that side's transcription ([#124](https://github.com/naxhq/NexQ/issues/124)) ([5a476ef](https://github.com/naxhq/NexQ/commit/5a476ef1937d3dd14018812386254b919e9cc129))
+# [2.38.0](https://github.com/naxhq/NexQ/compare/v2.37.0...v2.38.0) (2026-11-20)
+
+
+### Bug Fixes
+
+* **audio:** echo cancellation keeps working for the whole meeting ([#104](https://github.com/naxhq/NexQ/issues/104)) ([a6891c7](https://github.com/naxhq/NexQ/commit/a6891c77b4ba0a9ccc6c2ee0e64a6e3e9d08c582))
+* **audio:** reconnect a side whose device goes away mid-meeting ([#115](https://github.com/naxhq/NexQ/issues/115)) ([5f7f2ec](https://github.com/naxhq/NexQ/commit/5f7f2ec5c0fc3e9b867146ef1a03babdbfe1ef76)), closes [#113](https://github.com/naxhq/NexQ/issues/113)
+* **deps:** move cpal, the audio capture library, to 0.18.2 ([#98](https://github.com/naxhq/NexQ/issues/98)) ([91d18ca](https://github.com/naxhq/NexQ/commit/91d18cac855f850965607dddab6641292664c1e6))
+* **overlay:** Auto-Answer turned on in Settings works without restarting NexQ ([#101](https://github.com/naxhq/NexQ/issues/101)) ([7198775](https://github.com/naxhq/NexQ/commit/719877556cd3c209b26121c76d9f9d8fce123126))
+* **stt:** Parakeet CTC 110M works out of the box, nothing extra to download ([#102](https://github.com/naxhq/NexQ/issues/102)) ([30ce050](https://github.com/naxhq/NexQ/commit/30ce050c718045b4cde9f4e767bb94c1a9a82d0f))
+
+
+### Features
+
+* **overlay:** paste screenshots into Ask with Claude (subscription) ([#107](https://github.com/naxhq/NexQ/issues/107)) ([15fce8d](https://github.com/naxhq/NexQ/commit/15fce8d962320c5960df2859add93ca08bd5d13c)), closes [#105](https://github.com/naxhq/NexQ/issues/105)
+* **shortcuts:** capture the screen into Ask with Ctrl+Shift+S ([#120](https://github.com/naxhq/NexQ/issues/120)) ([e1a3c59](https://github.com/naxhq/NexQ/commit/e1a3c597df2b97a9c32acf0221d5b3534e3dcd88)), closes [#106](https://github.com/naxhq/NexQ/issues/106)
+* **stt:** add Ukrainian transcription language ([#109](https://github.com/naxhq/NexQ/issues/109)) ([288db16](https://github.com/naxhq/NexQ/commit/288db16824b5e266a98791698e717cbf6941b590))
+* **stt:** Auto-detect the spoken language ([#110](https://github.com/naxhq/NexQ/issues/110)) ([9480917](https://github.com/naxhq/NexQ/commit/94809178a60e1584d52f0700b6dc14f8a417f303)), closes [#108](https://github.com/naxhq/NexQ/issues/108)
+* **stt:** each side of a meeting can be transcribed in its own language ([#119](https://github.com/naxhq/NexQ/issues/119)) ([d57d3a9](https://github.com/naxhq/NexQ/commit/d57d3a987e5e6a769b994c5e9d7d95402e0797cc)), closes [#108](https://github.com/naxhq/NexQ/issues/108)
 # [2.37.0](https://github.com/naxhq/NexQ/compare/v2.36.1...v2.37.0) (2026-11-10)
 
 

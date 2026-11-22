@@ -1192,7 +1192,10 @@ impl LLMProvider for LazyConnectionProvider {
 }
 
 /// A provider with a route's parameter overrides: they beat the caller's
-/// values; `extra_body` patches are applied after the connection's own.
+/// values; `extra_body` patches are applied after the connection's own. The
+/// route's thinking setting (anything but Auto; the task's own route last)
+/// becomes the request's, unless the code that made the request already
+/// chose one. The connection's setting comes after both (`thinking::resolve`).
 pub struct RoutedProvider {
     pub inner: Arc<dyn LLMProvider>,
     pub overrides: Vec<RouteParams>,
@@ -1200,6 +1203,7 @@ pub struct RoutedProvider {
 
 impl RoutedProvider {
     fn apply(&self, mut params: GenerationParams) -> GenerationParams {
+        let chosen_in_code = !params.thinking.is_auto();
         for layer in &self.overrides {
             if layer.temperature.is_some() {
                 params.temperature = layer.temperature;
@@ -1210,6 +1214,9 @@ impl RoutedProvider {
             if let Some(extra) = &layer.extra_body {
                 let target = params.extra_body.get_or_insert_with(|| Value::Object(Default::default()));
                 super::compat::merge_patch(target, &Value::Object(extra.clone()));
+            }
+            if !chosen_in_code && !layer.thinking.is_auto() {
+                params.thinking = layer.thinking;
             }
         }
         params
@@ -1559,7 +1566,16 @@ mod tests {
         deepseek.template = Some("deepseek".into());
         let ollama = legacy_connection(&ProviderType::Ollama, None, None, None);
         let (registry, _) = registry_with(with_default(vec![deepseek, ollama], "c_ds"));
-        let push = |t: &str| ProviderConfig { provider_type: t.into(), api_key: None, base_url: None, auth_type: None, auth_value: None, auth_header: None };
+        let push = |t: &str| ProviderConfig {
+            provider_type: t.into(),
+            api_key: None,
+            base_url: None,
+            auth_type: None,
+            auth_value: None,
+            auth_header: None,
+            thinking: Default::default(),
+            extra_request_json: None,
+        };
 
         // The default (a new connection) stands for "custom": the startup push changes nothing.
         let custom = ProviderConfig { base_url: Some("http://old-custom/v1".into()), ..push("custom") };
@@ -1603,6 +1619,8 @@ mod tests {
             auth_type: Some("bearer".into()),
             auth_value: None,
             auth_header: None,
+            thinking: Default::default(),
+            extra_request_json: None,
         };
         assert!(registry.apply_legacy_provider(&push).unwrap());
         let cfg = registry.config();
@@ -1710,6 +1728,55 @@ mod tests {
         let params = routed.apply(GenerationParams { temperature: Some(0.7), max_tokens: Some(100), ..Default::default() });
         assert_eq!((params.temperature, params.max_tokens), (Some(0.2), Some(9)));
         assert_eq!(params.extra_body, Some(json!({"a": 1, "n": {"x": 1, "y": 2}})));
+        assert!(params.thinking.is_auto(), "routes without a thinking setting leave it alone");
+    }
+
+    #[test]
+    fn a_route_sets_thinking_unless_the_request_chose_it_in_code() {
+        use crate::llm::thinking::{resolve, ThinkingSetting::*};
+        let routed = |layers: &[crate::llm::thinking::ThinkingSetting]| RoutedProvider {
+            inner: Arc::from(super::super::build_provider(&compat("c", "https://h/v1"), None, &HashMap::new()).unwrap()),
+            overrides: layers.iter().map(|t| RouteParams { thinking: *t, ..Default::default() }).collect(),
+        };
+        // The task's own route (last) beats the parent route it follows; Auto on a route says nothing.
+        assert_eq!(routed(&[High, Off]).apply(GenerationParams::default()).thinking, Off);
+        assert_eq!(routed(&[High, Auto]).apply(GenerationParams::default()).thinking, High);
+        assert_eq!(routed(&[Auto]).apply(GenerationParams::default()).thinking, Auto);
+        // A choice made in code for this request wins over the route.
+        let explicit = GenerationParams { thinking: Low, ..Default::default() };
+        assert_eq!(routed(&[High]).apply(explicit).thinking, Low);
+
+        // The whole order, as the connection's client resolves it:
+        // request > route > connection > Off for background JSON tasks > Auto.
+        let background = || GenerationParams { thinking_auto_off: true, ..Default::default() };
+        assert_eq!(resolve(&routed(&[Low]).apply(background()), High), Low, "route over connection");
+        assert_eq!(resolve(&routed(&[Auto]).apply(background()), High), High, "connection over the background default");
+        assert_eq!(resolve(&routed(&[Auto]).apply(background()), Auto), Off, "background JSON task");
+        assert_eq!(resolve(&routed(&[Auto]).apply(GenerationParams::default()), Auto), Auto);
+    }
+
+    #[test]
+    fn a_route_with_only_a_thinking_setting_is_kept_and_reaches_the_resolution() {
+        let (registry, _) = registry_with(with_default(vec![compat("c_a", "https://a/v1")], "c_a"));
+        let thinking_only = TaskRoute {
+            params: RouteParams { thinking: crate::llm::thinking::ThinkingSetting::Off, ..Default::default() },
+            ..Default::default()
+        };
+        let cfg = registry.set_route("meeting_summary", Some(thinking_only)).unwrap();
+        assert!(cfg.routing.tasks.contains_key("meeting_summary"), "not dropped as an empty route");
+        let resolved = resolve_task(&cfg, "meeting_summary", &ClaudeContext::default()).unwrap();
+        assert_eq!(resolved.connection.id, "c_a");
+        assert_eq!(resolved.overrides.len(), 1);
+        assert_eq!(resolved.overrides[0].thinking, crate::llm::thinking::ThinkingSetting::Off);
+        // Saved as the frontend writes it, and old files without the field load as Auto.
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["routing"]["tasks"]["meeting_summary"]["params"]["thinking"], "off");
+        assert_eq!(json["connections"][0]["params"]["thinking"], "auto");
+        let old: RouteParams = serde_json::from_value(json!({"temperature": 0.5})).unwrap();
+        assert!(old.thinking.is_auto());
+        // Back to Auto with nothing else: the route goes away again.
+        let cfg = registry.set_route("meeting_summary", Some(TaskRoute::default())).unwrap();
+        assert!(!cfg.routing.tasks.contains_key("meeting_summary"));
     }
 
     #[test]

@@ -28,6 +28,7 @@
     "translation": "翻译",
     "aiActions": "AI 动作",
     "contextStrategy": "上下文策略",
+    "personalSources": "个人资料来源",
     "scenarios": "AI 场景",
     "noisePresets": "降噪预设",
     "confidence": "置信度",
@@ -437,6 +438,11 @@
     "assist": {
       "label": "在任意应用中调用 AI 助手",
       "hint": "会议进行中，无需切换到 {{appName}} 就能让 AI 给出回答。Space 键仅在悬浮窗中有效。"
+    },
+    "capture": {
+      "label": "截取屏幕到提问框",
+      "hint": "会议进行中，把鼠标所在的屏幕截图附到提问框里，由你自己发送。",
+      "noImages": "未启用：当前的 AI 模型无法读取图片，请改用 Claude（订阅）。"
     },
     "notes": {
       "windows": "需要 Windows 10 版本 2004 或更高版本。",

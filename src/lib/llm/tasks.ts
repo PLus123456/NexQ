@@ -3,7 +3,7 @@
 // mirrors its rules and fills in `effective` when a view comes without it
 // (older backend, tests).
 
-import type { EffectiveRoute, LlmConfigView, RouteError, RouteTarget, TaskInfo } from "./types";
+import type { EffectiveRoute, LlmConfigView, LlmParams, RouteError, RouteTarget, TaskInfo } from "./types";
 
 export type LlmTaskKey =
   | "default"
@@ -147,6 +147,30 @@ export function effectiveRoute(view: LlmConfigView, key: string): EffectiveRoute
     if (local.error) return local;
   }
   return view.effective[key] ?? resolveRoute(view, key);
+}
+
+/**
+ * The parameter layers under a task's own route, lowest priority first: the
+ * answering connection's defaults, then the routes up its parent chain, from
+ * the one that names the connection down to the task's parent. A task's own
+ * parameters go on top of these. Empty when nothing answers the task. Mirrors
+ * how Rust layers parameters (`resolve_route`, the connection's defaults
+ * underneath).
+ */
+export function inheritedParams(view: RoutingSource, key: string): LlmParams[] {
+  const routes: LlmParams[] = [];
+  let current: string | null = key;
+  for (let depth = 0; current !== null && depth < 8; depth++) {
+    const route = current === "default" ? view.routing.default : view.routing.tasks[current];
+    if (depth > 0 && route) routes.unshift(route.params);
+    const target = ownTarget(view, current);
+    if (target) {
+      const connection = view.connections.find((c) => c.id === target.connection_id);
+      return [connection?.params ?? {}, ...routes];
+    }
+    current = parentOf(view, current);
+  }
+  return [];
 }
 
 /** Tasks that name `connectionId` themselves (default included), in table order. */

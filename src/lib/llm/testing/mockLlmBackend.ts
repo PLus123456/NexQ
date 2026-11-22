@@ -17,6 +17,7 @@ import type {
   FetchModelsResult,
   LlmConfigView,
   LlmConnection,
+  LlmParams,
   SecretStatus,
   TaskRoute,
   TestConnectionResult,
@@ -30,7 +31,11 @@ export type MockState = Partial<Omit<LlmConfigView, "effective" | "known_tasks">
 export interface MockLlmBackend {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen: (event: string, cb: Listener) => Promise<() => void>;
-  /** The current view (a copy). */
+  /**
+   * The current view (a copy), as stored. What the frontend receives (command
+   * answers and `llm_config_changed`) also names every parameter set's
+   * thinking setting, "auto" when none is set, as the backend's views do.
+   */
   view: () => LlmConfigView;
   /** Replace part of the state as if another window changed it, and broadcast. */
   externalChange: (patch: MockState) => LlmConfigView;
@@ -70,6 +75,22 @@ export function emptyView(patch: MockState = {}): LlmConfigView {
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+/** A view as the backend sends it: `params.thinking` is always there ("auto" when not set). */
+function asSent(view: LlmConfigView): LlmConfigView {
+  const sent = (params: LlmParams): LlmParams => ({ ...params, thinking: params.thinking ?? "auto" });
+  const copy = clone(view);
+  return {
+    ...copy,
+    connections: copy.connections.map((c) => ({ ...c, params: sent(c.params) })),
+    routing: {
+      default: { ...copy.routing.default, params: sent(copy.routing.default.params) },
+      tasks: Object.fromEntries(
+        Object.entries(copy.routing.tasks).map(([key, route]) => [key, { ...route, params: sent(route.params) }]),
+      ),
+    },
+  };
+}
+
 const hint = (secret: string) => `…${secret.slice(-4)}`;
 
 const OK_TEST: TestConnectionResult = {
@@ -107,7 +128,7 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
     externalChange: (patch) => {
       const next = { ...state, ...clone(patch), revision: state.revision + 1 };
       state = { ...next, effective: computeEffective(next) };
-      backend.emit(state);
+      backend.emit(asSent(state));
       return clone(state);
     },
 
@@ -126,8 +147,8 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
       const commit = () => {
         const next = { ...state, revision: state.revision + 1 };
         state = { ...next, effective: computeEffective(next) };
-        backend.emit(state);
-        return clone(state);
+        backend.emit(asSent(state));
+        return asSent(state);
       };
       const status = (id: string): SecretStatus => {
         const secret = backend.secrets.get(id);
@@ -150,7 +171,7 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
 
       switch (cmd) {
         case "llm_get_config":
-          return clone(state);
+          return asSent(state);
 
         case "llm_upsert_connection": {
           const input = normalizeConnection(a.connection);

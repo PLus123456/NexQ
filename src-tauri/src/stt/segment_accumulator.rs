@@ -2,7 +2,13 @@
 // into one paragraph until a pause, a speaker change or the paragraph cap.
 //
 // Sits between the STT provider output and IPC event emission.
-// Interim results pass through immediately (same segment ID for in-place replacement).
+// Interim results pass through immediately. One that continues the current
+// paragraph reuses its ID and extends its text (in-place replacement); one that
+// would start a new paragraph (pause, speaker change, paragraph cap) shows on
+// its own line under the ID the next final will take, so speech after a pause
+// never appears at the end of the previous line. That is decided once per
+// utterance, on its first interim, because some providers stamp interims with
+// a moving time; the tag is only checked on finals (interim tags are unsettled).
 // Final results are merged into the current paragraph (re-emitted under the
 // same ID with the longer text) until one of these starts a new paragraph:
 // - the silence between the END of the previous final and the START of the
@@ -19,7 +25,7 @@ pub const MAX_PARAGRAPH_MS: u64 = 60_000;
 
 /// Timestamps at or above this are epoch ms (2001+); smaller ones are
 /// relative to the STT stream's start.
-const EPOCH_MS_FLOOR: u64 = 1_000_000_000_000;
+pub const EPOCH_MS_FLOOR: u64 = 1_000_000_000_000;
 
 /// Rough speaking time: ~150 space-delimited words or ~300 Han characters
 /// per minute. Chinese punctuation must not turn a whole utterance into one word.
@@ -83,6 +89,12 @@ pub struct SegmentAccumulator {
     segment_counter: u64,
     /// Whether we have an active accumulated segment
     has_active: bool,
+    /// The interim line last shown, until a final replaces it: words the
+    /// provider hasn't confirmed, which `close_line` still turns into a line.
+    last_interim: Option<AccumulatorOutput>,
+    /// Whether the interims since the last final show on a new line, decided
+    /// by the first of them. None until an interim arrives after a final.
+    interim_new_line: Option<bool>,
     clock: Clock,
 }
 
@@ -102,6 +114,8 @@ impl SegmentAccumulator {
             last_end_ms: 0,
             segment_counter: 0,
             has_active: false,
+            last_interim: None,
+            interim_new_line: None,
             clock,
         }
     }
@@ -133,26 +147,45 @@ impl SegmentAccumulator {
 
         // Interim results: pass through with accumulated prefix for display
         if !result.is_final {
-            if self.has_active {
+            let continues_line = self.has_active && {
+                let new_line = match self.interim_new_line {
+                    Some(decided) => decided,
+                    None => {
+                        let decided = self.starts_new_paragraph(&result, &speaker, false);
+                        self.interim_new_line = Some(decided);
+                        decided
+                    }
+                };
+                !new_line
+            };
+            let out = if continues_line {
                 // Shown as the end of the current line (same id, speaker and
                 // tag), so the interim replaces it in place instead of
                 // adding a duplicate line in the UI.
                 let mut out = self.output(false, result.confidence);
                 crate::stt::push_joined(&mut out.text, &result.text);
                 out.turn = result.turn;
-                return vec![out];
-            }
-            return vec![AccumulatorOutput {
-                id: format!("acc_{}", self.segment_counter + 1),
-                text: result.text.clone(),
-                speaker,
-                speaker_tag: result.speaker_tag.clone(),
-                timestamp_ms: result.timestamp_ms,
-                is_final: false,
-                confidence: result.confidence,
-                turn: result.turn,
-            }];
+                out
+            } else {
+                AccumulatorOutput {
+                    id: format!("acc_{}", self.segment_counter + 1),
+                    text: result.text.clone(),
+                    speaker,
+                    speaker_tag: result.speaker_tag.clone(),
+                    timestamp_ms: result.timestamp_ms,
+                    is_final: false,
+                    confidence: result.confidence,
+                    turn: result.turn,
+                }
+            };
+            self.last_interim = Some(out.clone());
+            return vec![out];
         }
+        self.last_interim = None;
+        // An interim already showed this utterance on a new line: its final
+        // starts that paragraph too, even if the threshold changed since.
+        let interim_split = self.interim_new_line == Some(true);
+        self.interim_new_line = None;
 
         let end_ms = match result.duration_ms {
             Some(duration) => result.timestamp_ms + duration,
@@ -165,7 +198,7 @@ impl SegmentAccumulator {
         };
 
         let mut outputs = Vec::new();
-        if self.has_active && !self.starts_new_paragraph(&result, &speaker) {
+        if self.has_active && !interim_split && !self.starts_new_paragraph(&result, &speaker, true) {
             crate::stt::push_joined(&mut self.current_text, &result.text);
             self.last_end_ms = self.last_end_ms.max(end_ms);
             // Updated paragraph as a final (replaces the previous one with the same ID)
@@ -188,11 +221,12 @@ impl SegmentAccumulator {
         outputs
     }
 
-    /// Whether the final `result` (from `speaker`) ends the current paragraph.
-    fn starts_new_paragraph(&self, result: &TranscriptResult, speaker: &str) -> bool {
+    /// Whether `result` (from `speaker`) ends the current paragraph. Finals
+    /// also check the diarization tag; interims do not (theirs is unsettled).
+    fn starts_new_paragraph(&self, result: &TranscriptResult, speaker: &str, check_tag: bool) -> bool {
         let speaker_changed = speaker != self.current_speaker;
         // A final without a tag (diarization off, or no word data) keeps the current one.
-        let tag_changed = result.speaker_tag.is_some() && result.speaker_tag != self.current_tag;
+        let tag_changed = check_tag && result.speaker_tag.is_some() && result.speaker_tag != self.current_tag;
         let pause = result.timestamp_ms.saturating_sub(self.last_end_ms) >= self.pause_threshold_ms;
         let long = self.last_end_ms.saturating_sub(self.current_start_ms) >= MAX_PARAGRAPH_MS;
         speaker_changed || tag_changed || pause || long
@@ -204,10 +238,31 @@ impl SegmentAccumulator {
             let output = self.output(true, 1.0);
             self.current_text.clear();
             self.has_active = false;
+            self.interim_new_line = None;
             Some(output)
         } else {
             None
         }
+    }
+
+    /// End the line being shown, interim words included, as a final line, and
+    /// leave the next result a new id (the provider behind this accumulator is
+    /// being replaced). Nothing when no line is showing.
+    pub fn close_line(&mut self) -> Option<AccumulatorOutput> {
+        let Some(mut shown) = self.last_interim.take() else {
+            return self.flush();
+        };
+        if shown.id == format!("acc_{}", self.segment_counter + 1) {
+            // Interim words on a line of their own (no final yet, or speech
+            // after a pause): they own the next id.
+            self.segment_counter += 1;
+        }
+        shown.is_final = true;
+        shown.turn = None;
+        self.interim_new_line = None;
+        self.current_text.clear();
+        self.has_active = false;
+        Some(shown)
     }
 
     /// Update the pause threshold at runtime.
@@ -434,5 +489,177 @@ mod tests {
         let out = a.flush().unwrap();
         assert_eq!((out.id.as_str(), out.text.as_str(), out.is_final), ("acc_1", "Bye.", true));
         assert!(a.flush().is_none());
+    }
+
+    #[test]
+    fn closing_a_line_with_only_interim_words_makes_them_a_final_and_moves_on() {
+        let mut a = acc();
+        let shown = a.feed_result(interim("good mor", T0));
+        assert_eq!((shown[0].id.as_str(), shown[0].is_final), ("acc_1", false));
+
+        let closed = a.close_line().unwrap();
+        assert_eq!((closed.id.as_str(), closed.text.as_str(), closed.is_final), ("acc_1", "good mor", true));
+        assert!(a.close_line().is_none(), "closed once");
+
+        // The next provider's first final is a line of its own, not a rewrite of the old one.
+        let next = a.feed_result(fin("buenos dias", T0 + 5_000, Some(500), None));
+        assert_eq!((next[0].id.as_str(), next[0].text.as_str()), ("acc_2", "buenos dias"));
+    }
+
+    #[test]
+    fn closing_a_line_keeps_the_interim_words_after_its_finals() {
+        let mut a = acc();
+        a.feed_result(fin("Hello there.", T0, Some(500), None));
+        a.feed_result(interim("how ar", T0 + 700));
+
+        let closed = a.close_line().unwrap();
+        assert_eq!((closed.id.as_str(), closed.text.as_str(), closed.is_final), ("acc_1", "Hello there. how ar", true));
+        let next = a.feed_result(fin("Hola.", T0 + 900, Some(300), None));
+        assert_eq!(next[0].id, "acc_2");
+    }
+
+    #[test]
+    fn closing_a_line_whose_interim_was_confirmed_adds_nothing_twice() {
+        let mut a = acc();
+        a.feed_result(interim("Hello", T0));
+        a.feed_result(fin("Hello there.", T0, Some(500), None));
+        let closed = a.close_line().unwrap();
+        assert_eq!((closed.id.as_str(), closed.text.as_str()), ("acc_1", "Hello there."));
+        assert!(a.close_line().is_none());
+    }
+
+    #[test]
+    fn interim_after_a_pause_gets_its_own_line_and_the_final_takes_its_place() {
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(2_000), None));
+        // 60 s of silence, then the speaker resumes.
+        let resumed = T0 + 62_000;
+        let outs = a.feed_result(interim("so about the", resumed));
+        assert_eq!(outs.len(), 1);
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str(), outs[0].is_final), ("acc_2", "so about the", false));
+        assert_eq!(outs[0].timestamp_ms, resumed);
+        // A longer interim keeps the same new id and its own text only.
+        let outs = a.feed_result(interim("so about the budget", resumed));
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_2", "so about the budget"));
+        // The final lands on that id; the old paragraph is not re-emitted or changed.
+        let outs = a.feed_result(fin("So about the budget.", resumed, Some(2_500), None));
+        assert_eq!(outs.len(), 2);
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_1", "Is that okay?"));
+        assert_eq!((outs[1].id.as_str(), outs[1].text.as_str(), outs[1].is_final), ("acc_2", "So about the budget.", true));
+        assert_eq!(outs[1].timestamp_ms, resumed);
+    }
+
+    #[test]
+    fn interim_within_the_threshold_still_extends_the_current_line() {
+        let mut a = acc();
+        a.feed_result(fin("Hello there.", T0, Some(2_000), None));
+        // 1 s after the final ended: below the 3 s threshold.
+        let outs = a.feed_result(interim("how are", T0 + 3_000));
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_1", "Hello there. how are"));
+        assert_eq!(outs[0].timestamp_ms, T0);
+    }
+
+    #[test]
+    fn interim_from_another_speaker_gets_its_own_line() {
+        let mut a = acc();
+        a.feed_result(fin("Hello there.", T0, Some(2_000), None));
+        let you = TranscriptResult { speaker: Some("You".into()), ..interim("hi", T0 + 2_100) };
+        let outs = a.feed_result(you);
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str(), outs[0].speaker.as_str()), ("acc_2", "hi", "You"));
+    }
+
+    #[test]
+    fn a_tag_change_on_an_interim_continues_the_line_but_splits_on_the_final() {
+        let mut a = acc();
+        a.feed_result(fin("Hello there.", T0, Some(2_000), Some("S1")));
+        let tagged = TranscriptResult { speaker_tag: Some("S2".into()), ..interim("yes", T0 + 2_100) };
+        let outs = a.feed_result(tagged);
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_1", "Hello there. yes"));
+        let outs = a.feed_result(fin("Yes.", T0 + 2_100, Some(500), Some("S2")));
+        assert_eq!(outs.len(), 2);
+        assert_eq!((outs[1].id.as_str(), outs[1].text.as_str()), ("acc_2", "Yes."));
+    }
+
+    #[test]
+    fn interims_that_cross_the_threshold_mid_utterance_keep_one_line() {
+        // Moving interim stamps: the first is inside the threshold, later ones pass it.
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(2_000), None));
+        let mut ids = Vec::new();
+        for (text, at) in [("so", T0 + 2_500), ("so about", T0 + 4_000), ("so about the budget", T0 + 9_000)] {
+            let outs = a.feed_result(interim(text, at));
+            assert_eq!(outs.len(), 1);
+            ids.push((outs[0].id.clone(), outs[0].text.clone()));
+        }
+        assert_eq!(ids[2], ("acc_1".to_string(), "Is that okay? so about the budget".to_string()));
+        assert!(ids.iter().all(|(id, _)| id == "acc_1"), "{ids:?}");
+    }
+
+    #[test]
+    fn interims_after_a_pause_stay_on_the_new_line_even_if_a_stamp_moves_back() {
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(2_000), None));
+        let first = a.feed_result(interim("so", T0 + 62_000));
+        assert_eq!(first[0].id, "acc_2");
+        // A later interim stamped inside the threshold of the old line still stays on acc_2.
+        let later = a.feed_result(interim("so about", T0 + 2_500));
+        assert_eq!((later[0].id.as_str(), later[0].text.as_str()), ("acc_2", "so about"));
+        // After the final, the next utterance is decided afresh.
+        a.feed_result(fin("So about it.", T0 + 62_000, Some(1_000), None));
+        let next = a.feed_result(interim("and", T0 + 63_500));
+        assert_eq!((next[0].id.as_str(), next[0].text.as_str()), ("acc_2", "So about it. and"));
+    }
+
+    #[test]
+    fn closing_a_line_after_a_new_line_interim_keeps_the_old_paragraph_untouched() {
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(2_000), None));
+        a.feed_result(interim("so about the", T0 + 62_000));
+
+        let closed = a.close_line().unwrap();
+        assert_eq!((closed.id.as_str(), closed.text.as_str(), closed.is_final), ("acc_2", "so about the", true));
+        assert_eq!(closed.timestamp_ms, T0 + 62_000);
+        assert!(a.close_line().is_none(), "closed once");
+
+        // The next result is a fresh line, neither the old one nor the closed one.
+        let next = a.feed_result(fin("Hola.", T0 + 63_000, Some(300), None));
+        assert_eq!(next.len(), 1);
+        assert_eq!((next[0].id.as_str(), next[0].text.as_str()), ("acc_3", "Hola."));
+    }
+
+    #[test]
+    fn an_interim_after_close_line_or_flush_gets_a_fresh_line_decision() {
+        // Decided "new line" before the line was closed...
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(2_000), None));
+        a.feed_result(interim("so", T0 + 62_000));
+        a.close_line();
+        a.feed_result(fin("Fine.", T0 + 63_000, Some(500), None));
+        // ...and a new utterance right after the next final is decided again.
+        let outs = a.feed_result(interim("and", T0 + 64_000));
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_3", "Fine. and"));
+
+        // Decided "continue", then flush: the next interim is its own line, not stuck on continue.
+        let mut a = acc();
+        a.feed_result(fin("Hello.", T0, Some(500), None));
+        let outs = a.feed_result(interim("how", T0 + 700));
+        assert_eq!(outs[0].id, "acc_1");
+        a.flush();
+        let outs = a.feed_result(interim("again", T0 + 800));
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_2", "again"));
+    }
+
+    #[test]
+    fn the_final_follows_its_interim_when_the_threshold_changes_in_between() {
+        let mut a = acc();
+        a.feed_result(fin("Is that okay?", T0, Some(1_000), None));
+        // 4 s of silence with a 3 s threshold: the interim gets its own line.
+        let outs = a.feed_result(interim("so", T0 + 5_000));
+        assert_eq!(outs[0].id, "acc_2");
+        a.set_pause_threshold(10_000);
+        let outs = a.feed_result(fin("So about it.", T0 + 5_000, Some(1_000), None));
+        assert_eq!(outs.len(), 2);
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_1", "Is that okay?"));
+        assert_eq!((outs[1].id.as_str(), outs[1].text.as_str()), ("acc_2", "So about it."));
     }
 }

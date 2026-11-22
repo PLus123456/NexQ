@@ -7,7 +7,10 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
+import { skipYouStt } from "../lib/audioMode";
+import { updatePartyConfig } from "../lib/sideLanguage";
 import {
   setSTTProvider,
   testSTTConnection,
@@ -199,6 +202,8 @@ export function STTSettings() {
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
   const hasBaseUrl = useConfigStore((s) => s.openaiCompatSttConfig.base_url.trim() !== "");
+  // In an in-person meeting only the room microphone ("Them") is transcribed.
+  const inPerson = useMeetingStore((s) => skipYouStt(s.audioMode));
 
   // This platform's engines (Windows Speech only on Windows), in picker order.
   const offered = useMemo(() => sttProvidersFor(currentPlatform()), []);
@@ -363,8 +368,9 @@ export function STTSettings() {
     (party: Party, code: string) => {
       const state = useConfigStore.getState();
       const base = state.meetingAudioConfig ?? defaultMeetingAudioConfig(state);
-      // The language isn't part of a preset: keep preset_name.
-      setMeetingAudioConfig({ ...base, [party]: { ...base[party], language: code } });
+      // Stored the same way as by the meeting overlay's language picker. The
+      // language isn't part of a preset: keep preset_name.
+      setMeetingAudioConfig({ ...updatePartyConfig(base, party, { language: code }), preset_name: base.preset_name });
     },
     [setMeetingAudioConfig]
   );
@@ -771,19 +777,21 @@ export function STTSettings() {
         </h3>
         <p className="mb-3 text-xs text-muted-foreground">{t("stt:settings.languages.hint")}</p>
         <div className="grid grid-cols-2 gap-4">
-          {PARTIES.map((party) => {
+          {/* In-person meetings don't transcribe "You", and "Them" is the room. */}
+          {PARTIES.filter((party) => !(inPerson && party === "you")).map((party) => {
             const id = `stt-settings-${party}-language`;
+            const name = inPerson ? t("common:labels.room") : partyLabel(party);
             return (
               <div key={party}>
                 <label htmlFor={id} className="mb-1.5 flex items-baseline gap-1.5 text-xs font-medium text-foreground">
-                  {partyLabel(party)}
+                  {name}
                   <span className="truncate text-meta font-normal text-muted-foreground/70">
                     {sttEngineLabel(partyConfig[party].stt_provider)}
                   </span>
                 </label>
                 <PartyLanguageField
                   id={id}
-                  aria-label={t("stt:language.partyAriaLabel", { party: partyLabel(party) })}
+                  aria-label={t("stt:language.partyAriaLabel", { party: name })}
                   party={partyConfig[party]}
                   onChange={(code) => setPartyLanguage(party, code)}
                 />

@@ -124,8 +124,9 @@ impl WhisperApiSTT {
             .text("response_format", "json")
             .part("file", file_part);
 
-        // Whisper API uses ISO 639-1 codes (e.g., "en", "es", "fr"); auto-detect
-        // leaves the field out ("auto" is rejected with HTTP 400).
+        // Whisper API uses ISO 639-1 codes (e.g., "en", "es", "fr"); Auto-detect
+        // (and an empty language) leaves the field out ("auto" is rejected with
+        // HTTP 400). One mapping for every Whisper-style API: stt::language.
         if let Some(lang_code) = crate::stt::language::whisper_api_language(language) {
             form = form.text("language", lang_code);
         }
@@ -151,7 +152,7 @@ impl WhisperApiSTT {
                                         confidence: 0.95, // Whisper doesn't return confidence
                                         timestamp_ms,
                                         speaker: None,
-                                        language: Some(language.to_string()),
+                                        language: crate::stt::provider::reported_language(language),
                                         segment_id: None,
                                         duration_ms: None,
                                         speaker_tag: None,
@@ -260,7 +261,7 @@ impl STTProvider for WhisperApiSTT {
                     confidence: 0.0,
                     timestamp_ms,
                     speaker: None,
-                    language: Some(self.language.clone()),
+                    language: crate::stt::provider::reported_language(&self.language),
                     segment_id: None,
                     duration_ms: None,
                     speaker_tag: None,

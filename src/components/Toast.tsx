@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useToastStore } from "../stores/toastStore";
+import { TOAST_EXIT_MS, toastDurationMs, useToastStore } from "../stores/toastStore";
 import type { Toast as ToastData } from "../stores/toastStore";
 import { CheckCircle, XCircle, Info, AlertTriangle, X } from "lucide-react";
 import { useT } from "../i18n";
@@ -48,21 +48,39 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
   const Icon = iconMap[toast.type];
   const [exiting, setExiting] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const duration = toastDurationMs(toast.message);
+  // Hovering or focusing the toast stops the countdown (WCAG 2.2.1): it resumes with what was left.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused;
+  const remainingRef = useRef(duration);
+
+  // A pointer or focus left behind when the window loses focus must not freeze the toast.
+  useEffect(() => {
+    const release = () => { setHovered(false); setFocused(false); };
+    window.addEventListener("blur", release);
+    return () => window.removeEventListener("blur", release);
+  }, []);
 
   // Auto-dismiss with exit animation (component-driven)
   useEffect(() => {
+    if (paused || toast.sticky || toast.leaving) return;
+    const startedAt = Date.now();
     timerRef.current = setTimeout(() => {
       setExiting(true);
-      setTimeout(onDismiss, 280);
-    }, 4000);
-    return () => clearTimeout(timerRef.current);
-  }, [onDismiss]);
+      setTimeout(onDismiss, TOAST_EXIT_MS);
+    }, Math.max(0, remainingRef.current));
+    return () => {
+      clearTimeout(timerRef.current);
+      remainingRef.current -= Date.now() - startedAt;
+    };
+  }, [onDismiss, paused, toast.sticky, toast.leaving]);
 
   const handleDismiss = useCallback(() => {
     if (exiting) return;
     clearTimeout(timerRef.current);
     setExiting(true);
-    setTimeout(onDismiss, 280);
+    setTimeout(onDismiss, TOAST_EXIT_MS);
   }, [exiting, onDismiss]);
 
   return (
@@ -76,9 +94,15 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
         bg-card/90 backdrop-blur-md
         px-4 py-3
         shadow-xl shadow-black/10
-        ${exiting ? "toast-exit" : "toast-enter"}
+        ${exiting || toast.leaving ? "toast-exit" : "toast-enter"}
       `}
       style={{ maxWidth: 400, minWidth: 280 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
     >
       {/* Icon with colored circle background */}
       <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${iconBgMap[toast.type]} ${iconAnimMap[toast.type]}`}>
@@ -93,16 +117,25 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
       {/* Dismiss button — visible on hover or always on touch */}
       <button
         onClick={handleDismiss}
-        className="shrink-0 rounded-lg p-1 text-muted-foreground/30 transition-all duration-150 hover:bg-accent hover:text-foreground/70 group-hover:text-muted-foreground/60"
+        className={`shrink-0 rounded-lg p-1 transition-all duration-150 hover:bg-accent ${
+          toast.sticky
+            ? "text-foreground/70 hover:text-foreground"
+            : "text-muted-foreground/80 hover:text-foreground/70 group-hover:text-muted-foreground"
+        }`}
         aria-label={t("toast.dismiss.label")}
       >
         <X className="h-3.5 w-3.5" />
       </button>
 
-      {/* Progress bar — visual countdown to auto-dismiss */}
-      <div className="absolute bottom-0 left-0 right-0 h-[2px] overflow-hidden">
-        <div className={`h-full ${progressMap[toast.type]} toast-progress-bar`} />
-      </div>
+      {/* Progress bar — visual countdown to auto-dismiss (a sticky toast has none) */}
+      {!toast.sticky && (
+        <div className="absolute bottom-0 left-0 right-0 h-[2px] overflow-hidden">
+          <div
+            className={`h-full ${progressMap[toast.type]} toast-progress-bar`}
+            style={{ animationDuration: `${duration}ms`, animationPlayState: paused ? "paused" : "running" }}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -7,15 +7,17 @@ use std::sync::{Arc, Mutex};
 use tauri::{command, AppHandle, Emitter, State};
 
 use crate::commands::intelligence_commands::{
-    compose_instructions, request_route, route_after_outage, session_assist, stateless_provider,
-    SessionAssist, SessionOutcome,
+    compose_instructions, request_route, request_with_sources, route_after_outage, run_session_assist,
+    sources_unavailable_notice, stateless_provider, SessionAssist, SessionOutcome,
 };
 use crate::commands::meeting_commands::{past_meeting_context, PastMeetingContext};
 use crate::db::meeting_chat::{self, MeetingChatMessage};
 use crate::intelligence::prompt_templates::MEETING_ASK_PROMPT;
 use crate::llm::cli_agent::context::{build_preload_messages, pack_messages};
-use crate::llm::cli_agent::manager::SessionScope;
+use crate::llm::cli_agent::manager::{SessionKey, SessionScope};
 use crate::llm::api;
+use crate::llm::provider::emit_activity;
+use crate::sources::config::SourceToggles;
 use crate::llm::cli_agent::routing::{earlier_exchange, Route, PRELOAD_MESSAGE_CHARS, REPLAY_TAIL_CHARS};
 use crate::llm::provider::{GenerationParams, LLMError, LLMMessage, StreamStartPayload, TokenSink};
 use crate::state::AppState;
@@ -169,6 +171,7 @@ pub async fn ask_meeting(
     meeting_id: String,
     question: String,
     request_id: String,
+    sources: Option<SourceToggles>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -204,11 +207,13 @@ pub async fn ask_meeting(
     };
 
     let epoch = state.meeting_sessions.epoch(&scope);
-    let mut route = request_route(&app_handle, &state, MEETING_ASK_MODE, &scope);
+    // Asking about a past meeting is the user's own question: the pills decide.
+    let with_sources = request_with_sources(&state, MEETING_ASK_MODE, &scope, sources);
+    let mut route = request_route(&app_handle, &state, MEETING_ASK_MODE, &scope, with_sources);
 
     if let Route::ClaudeSession(key) = &route {
-        let req = SessionAssist {
-            key: key.clone(),
+        let make_req = |key: SessionKey| SessionAssist {
+            key,
             epoch,
             mode: MEETING_ASK_MODE,
             custom_question: Some(&question),
@@ -223,11 +228,14 @@ pub async fn ask_meeting(
             temperature,
             params: params.clone(),
             cancel: cancel.clone(),
+            images: &[],
+            sources: Some(sources.unwrap_or_default()),
         };
-        match session_assist(&state, &app_handle, req).await {
+        match run_session_assist(&state, &app_handle, key.clone(), make_req).await {
             SessionOutcome::Done(Ok(Some(answer))) => {
-                // A restarted session replays the answer with its question.
-                state.meeting_sessions.record_reply(key, &answer.prompt, &answer.turn.text);
+                // A restarted session replays the answer with its question; the
+                // session that answered (the plain one after a sources fallback).
+                state.meeting_sessions.record_reply(&answer.key, &answer.prompt, &answer.turn.text);
                 let saved = save_exchange(
                     &state,
                     &meeting_id,
@@ -247,7 +255,7 @@ pub async fn ask_meeting(
                 drop(generation_guard);
                 return result.map(|_| ());
             }
-            SessionOutcome::Stateless => route = Route::Stateless,
+            SessionOutcome::Stateless | SessionOutcome::SourcesFailed(_) => route = Route::Stateless,
             SessionOutcome::Unavailable(kind, reason) => {
                 route = route_after_outage(&state, &app_handle, MEETING_ASK_MODE, kind, &reason, &params)?;
             }
@@ -256,6 +264,10 @@ pub async fn ask_meeting(
 
     // ── Stateless: the whole meeting in one prompt (the task's connection, or its fallback) ──
     debug_assert!(matches!(route, Route::Stateless));
+    // Asked for sources, but this path has none: say so rather than let the pills look on.
+    if with_sources {
+        emit_activity(&app_handle, &params, sources_unavailable_notice());
+    }
     let resolved = stateless_provider(&app_handle, MEETING_ASK_MODE, &params).await?;
     let (model, provider_name) = (resolved.model.clone(), resolved.display_name.clone());
     let context = past_meeting_context(&state, &meeting_id)?;

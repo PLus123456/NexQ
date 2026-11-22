@@ -96,7 +96,7 @@ pub fn chat_body(
     if google_search {
         body["tools"] = json!([{ "google_search": {} }]);
     }
-    compat::apply_extra_body(&mut body, params.extra_body.as_ref());
+    compat::finish_body(&mut body, params);
     body
 }
 

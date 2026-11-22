@@ -121,12 +121,7 @@
     "title": "订阅（本地 CLI）",
     "beta": "测试版",
     "credentialsNote": "使用这台电脑上你自己的 Claude 登录，{{appName}} 看不到你的登录凭据。",
-    "active": "使用中",
     "comingSoon": "即将推出",
-    "providerRow": {
-      "ariaLabel": "Claude，{{state}}",
-      "ariaLabelActive": "Claude，{{state}}，使用中"
-    },
     "effort": {
       "low": "低",
       "medium": "中",
@@ -168,7 +163,8 @@
       "checkedAgo": "{{ago}}检查"
     },
     "inactive": {
-      "hint": "尚未使用：切换之前，回答仍由当前服务商提供。",
+      "viewing": "正在查看 Claude。{{appName}} 当前使用：{{provider}}。",
+      "anotherProvider": "其他服务商",
       "useClaude": "使用 Claude"
     },
     "install": {
@@ -226,6 +222,13 @@
       "providerLabel": "备用服务商",
       "modelLabel": "备用模型",
       "modelPlaceholder": "服务商的第一个模型"
+    }
+  },
+  "providerCard": {
+    "inUse": "使用中",
+    "ariaLabel": {
+      "inUse": "{{name}}，{{status}}，使用中",
+      "notInUse": "{{name}}，{{status}}，未使用"
     }
   },
   "agentChip": {
@@ -329,6 +332,12 @@
     "status": {
       "ready": "可用：上次测试成功",
       "untested": "还没有测试",
+      "error": "需要处理",
+      "disabled": "已停用"
+    },
+    "statusShort": {
+      "ready": "可用",
+      "untested": "未测试",
       "error": "需要处理",
       "disabled": "已停用"
     }
@@ -601,6 +610,19 @@
     },
     "maxTokens": {
       "label": "最大输出 token 数"
+    },
+    "thinking": {
+      "label": "思考",
+      "hint": "关闭后回答更快。并非所有模型都支持，不支持时 {{appName}} 会自动回退。",
+      "options": {
+        "auto": "自动",
+        "off": "关闭",
+        "low": "低",
+        "high": "高"
+      },
+      "inherited": "继承：{{value}}",
+      "overridden": "额外请求体里已经设置了“{{key}}”，这里的设置不会生效。",
+      "claudeHint": "对 Claude（订阅）不起作用：它的快速和深度模型各有自己的扩展思考开关。"
     },
     "extraBody": {
       "label": "额外请求体（JSON）",
@@ -923,22 +945,25 @@
         "description": "使用你自己的 Claude 登录（测试版）"
       }
     },
-    "badges": {
+    "status": {
+      "checking": "检查中…",
       "ready": "就绪",
-      "hasKey": "已存 Key",
+      "notRunning": "未运行",
       "noKey": "无 Key",
-      "local": "本地",
-      "notConfigured": "待配置"
+      "notSetUp": "未设置"
     },
-    "active": {
-      "title": "正在使用：{{provider}}",
-      "noModel": "（未选择模型）",
-      "claudeTiers": "快速：{{fast}}；深度：{{deep}}",
-      "hint": "AI 回答将使用这个服务商和模型",
+    "inUse": {
+      "title": "正在使用：{{provider}} · {{detail}}",
+      "noModel": "未选择模型",
+      "claudeTiers": "快速：{{fast}} · 深度：{{deep}}",
+      "hint": "{{appName}} 用这个服务商回答",
       "setupHint": "请在下方选择服务商、测试连接并加载模型",
-      "badge": "使用中：{{status}}",
-      "activate": "将 {{provider}} 设为当前服务商",
+      "activate": "用 {{provider}} 回答",
       "failed": "切换 AI 服务商失败：{{detail}}"
+    },
+    "viewing": {
+      "notice": "正在查看 {{viewing}}。{{appName}} 当前使用：{{inUse}}。",
+      "use": "使用 {{provider}}"
     },
     "apiKey": {
       "placeholder": "输入 {{provider}} 的 API Key",
