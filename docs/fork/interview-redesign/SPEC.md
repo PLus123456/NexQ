@@ -56,7 +56,7 @@ interface TranslationResult {
 规则：
 
 - 配对按流顺序：一段连续的译文 token 归给它之前、上一段译文之后的那些原文 final token。译文可能比原文晚到，这时 `src` 会略微超前于 `dst`，可以接受，但顺序不能乱。
-- 每次事件带这一行到目前为止的全部块。所有块的 `dst` 依次拼起来等于 `translated_text`（中文、日文块之间不加空格）；所有块的 `src` 拼起来是 `original_text` 的前缀。
+- 每次事件带这一行到目前为止的全部块。所有块的 `dst` 依次拼起来（中文、日文块之间不加空格）是 `translated_text` 的前缀，这一行的翻译定稿（`is_final`）后两者相等；所有块的 `src` 拼起来是 `original_text` 的前缀。
 - 还没等到译文的原文不放进 `chunks`，前端从转写事件的行文本里取。
 - 顺手修掉：`translated_text` 里中日文块之间不该有空格（现在存进数据库的中文译文带空格）。
 
@@ -67,6 +67,9 @@ interface TranslationResult {
 - 窗口自己订阅 `transcript_update` / `transcript_final` / `translation_result`（这些事件本来就发给所有窗口），只在内存里留最近几行。
 - 会议开始时如果 `captionsEnabled` 就显示，会议结束时隐藏。答案窗标题栏有开关按钮。
 - 锁定（鼠标穿透）：锁定后窗口不接收鼠标事件，只能从答案窗的按钮解锁；会议结束自动解锁。
+- 显示字幕条不能抢走键盘焦点（用户正在会议 App 里）。macOS 上窗口的 `show()` 会把窗口变成当前窗口，所以显示走后端命令 `show_captions_window`（无参数，只把窗口排到最前，不激活）；这个命令不存在或失败时，前端退回 `show()`。
+- 是否可见是各窗口共享的状态，前端统一从 `src/lib/captions/window.ts` 走：`showCaptions()`、`hideCaptions()`、`toggleCaptions()`（返回切换后的可见状态）、`isCaptionsVisible()`，状态变化时发事件 `nexq:captions_visibility`（载荷 `{ visible }`）。按钮用 `useCaptionsVisible()`（`src/lib/captions/useCaptionsVisible.ts`）取按下状态，锁定状态读 `configStore` 的 `captionsLocked`。
+- 字幕窗口不运行整个 App，不能调用 `configStore` 的 `loadConfig()`（它会向后端重推语音识别、模型、会议检测等设置，并重放隐身模式）。它需要一个只读取并订阅字幕相关设置项的轻量加载方式。
 
 设置项（`configStore`，跨窗口同步）：
 
@@ -83,7 +86,7 @@ interface TranslationResult {
 | `captionsCueCount` | number | 2 | 同时显示几条字幕，1–3 |
 | `captionsFadeSeconds` | number | 8 | 没有新内容多久后淡出；0 是不淡出 |
 | `captionsLocked` | boolean | false | 鼠标穿透 |
-| `captionsBounds` | `{x,y,width,height} \| null` | null | 上次的位置和大小；null 时放在当前屏幕底部居中 |
+| `captionsBounds` | `{x,y,width,height} \| null` | null | 上次的位置和大小，单位是逻辑像素；null 时放在当前屏幕底部居中 |
 
 ### 3.3 字幕条的切分（前端纯函数）
 
@@ -146,19 +149,22 @@ type QuestionEvent =
 
 ### 3.5 回答请求的新选项
 
-`runUserAction("Assist", question, opts)` 这条路径增加一个选项：前端 `skipQueryRewrite?: boolean`，后端 `skip_query_rewrite`（serde 默认 false）。为 true 时，知识库检索直接用这个问题，不再走 `rag_query_rewrite`。识别 v2 给出的问题已经补全了指代，自动回答时一律传 true（改写查询超时过多次，每次白等 5 秒）。用户手动点的回答不传。
+`runUserAction("Assist", question, opts)` 这条路径增加一个选项：前端 `skipQueryRewrite?: boolean`，后端是 `generate_assist` 命令的一个可选参数 `skip_query_rewrite: Option<bool>`（不传等于 false）。为 true 时，知识库检索直接用这个问题，不再走 `rag_query_rewrite`。识别 v2 给出的问题已经补全了指代，自动回答时一律传 true（改写查询超时过多次，每次白等 5 秒）。用户手动点的回答不传。
 
-### 3.6 前端内部的接缝（已在底座提交里建好空壳）
+### 3.6 前端内部的接缝
+
+下表里除了标"新建"的，都已经在底座提交里建好（空壳或原样搬过来的代码）。
 
 | 文件 | 负责方 | 说明 |
 |---|---|---|
-| `src/components/AnswerMarkdown.tsx` | Opus | 所有显示模型输出的地方都用它。属性：`content`、`streaming?`、`className?`、`style?`。别处不要再直接用 `ReactMarkdown`。 |
-| `src/overlay/questionFlow.ts` | Opus | 问题列表、自动回答的状态机。对外是 `useQuestionFlow()`。 |
-| `src/overlay/QuestionStrip.tsx` | Antigravity | 问题条的界面，只从 `useQuestionFlow()` 取数据和回调。 |
-| `src/captions/**`、`src/lib/captions/**` | Opus | 字幕窗口和切分函数。 |
-| `src/settings/CaptionSettings.tsx` | Opus | 字幕条设置页。 |
-| `src/overlay/OverlayView.tsx`、`AIResponsePanel.tsx`、`ModeButtons.tsx`、`ResponseProgress.tsx`、`ResponseHistoryList.tsx`、`TranscriptPanel.tsx` | Antigravity | 答案窗的布局。 |
+| `src/components/AnswerMarkdown.tsx` | Opus（渲染） | 所有显示模型输出的地方都用它。属性：`content`、`streaming?`、`className?`、`style?`、`components?`（调用点自己的元素样式）。别处不要再直接用 `ReactMarkdown`。 |
+| `src/overlay/questionFlow.ts`、`questionFlow.test.tsx` | Opus（问题流程） | 问题列表、自动回答的状态机。对外是 `useQuestionFlow()`。 |
+| `src/overlay/QuestionStrip.tsx`、`QuestionStrip.test.tsx` | Antigravity | 问题条的界面（含 `QuestionPanel`），只从 `useQuestionFlow()` 取数据和回调。 |
+| `src/captions/**`、`src/lib/captions/**` | Opus（字幕条） | 字幕窗口、窗口控制、切分函数。 |
+| `src/settings/CaptionSettings.tsx`（新建） | Opus（字幕条） | 字幕条设置页，并在设置导航里加一项。 |
+| `src/overlay/OverlayView.tsx`、`AIResponsePanel.tsx`、`ModeButtons.tsx`、`ResponseProgress.tsx`、`ResponseHistoryList.tsx`、`TranscriptPanel.tsx`、`QuestionPredictions.tsx` | Antigravity | 答案窗的布局。 |
 | `src-tauri/**` | Codex | 全部 Rust 改动。 |
+| `harness/**` | 各管各的部分 | 预览页。`scenes.ts` 里答案窗的场景归 Antigravity，字幕脚本（`playCaptionScript` 及其后面的部分）和 `main.tsx` 里的 `CaptionsPage` 归 Opus（字幕条），`fixtures/*.md` 归 Opus（渲染）。别人的部分不要动。 |
 
 `useQuestionFlow()` 的形状：
 
@@ -283,6 +289,8 @@ i18n：字幕相关的文字放新的命名空间 `captions`（Opus），答案�
 - `must_not`（22 个）：反问、对别人说的话、让用户做动作的请求，不能触发。
 
 每个标注有 `line_id`、`quote`（问题结束处的原话）和 `end_char`（在那一行里的结束位置），`also` 列出重复或接续同一个问题的其他位置。
+
+仓库里有一份格式相同的合成样例：`src-tauri/src/intelligence/testdata/qd_eval_sample.json`。开发、测试和交给外部模型服务的工具（Codex、Antigravity）只用这份样例；真实评测集只由 Claude 在本机读取和运行。
 
 回放评测的指标：
 

@@ -13,6 +13,7 @@ NexQ Plus 是 NexQ（Tauri 2 + React + Rust 的会议/面试助手）的自用�
 - 工作区：`/Users/plus/NexQ/.worktrees/answer-window`，分支 `agy/answer-window`，已经建好，依赖也装好了。只在这个目录里工作。
 - 不要改主检出 `/Users/plus/NexQ`，不要动 `.claude/worktrees/` 和 `.worktrees/` 里别人的工作区。
 - 做完在自己的分支上提交（可以分几次提交，提交信息用英文）。**不要合进 `custom`，不要推送，不要打包安装 App，不要运行 `npx tauri dev`**（会和正在用的正式版抢端口和数据）。
+- 只读写这个工作区里的文件。不要读用户主目录下的应用数据和密钥：`~/Library/Application Support/com.plus.nexq`、`~/.nexq`、钥匙串。预览页里的数据全是合成的，够用了。
 
 ## 你负责的文件
 
@@ -24,10 +25,11 @@ NexQ Plus 是 NexQ（Tauri 2 + React + Rust 的会议/面试助手）的自用�
 - 需要的话可以在 `src/overlay/` 下新建组件文件
 - 对应的测试文件
 - 语言文件里 `overlay` 命名空间的 en 和 zh-CN（只加键，不要整文件重排；别的命名空间不要改）
+- 预览页里答案窗的场景：`harness/scenes.ts` 中 `seedOverlayScene` 及它用到的函数。重构后转写默认关闭，`transcript` 场景要改成打开转写抽屉的状态。同一个文件里的字幕脚本（`playCaptionScript` 及其后面的部分）和 `harness/fixtures/*.md` 不归你，不要动。
 
 ## 不要碰的文件
 
-- `src/overlay/questionFlow.ts`：问题列表和自动回答的逻辑，别人在重写。你只通过 `useQuestionFlow()` 拿数据和回调，接口见 SPEC 3.6。接口不够用就在汇报里提，不要自己改。
+- `src/overlay/questionFlow.ts` 和 `questionFlow.test.tsx`：问题列表和自动回答的逻辑，别人在重写。你只通过 `useQuestionFlow()` 拿数据和回调，接口见 SPEC 3.6。接口不够用就在汇报里提，不要自己改。问题条的测试写在 `QuestionStrip.test.tsx`（已有 16 个用例，用假的 `useQuestionFlow` 驱动）。
 - `src/components/AnswerMarkdown.tsx`：答案的 Markdown 和公式渲染，别人在做。你只管把 `<AnswerMarkdown content={…} streaming={…} style={…} />` 放在对的位置，不要自己处理排版样式和公式，也不要再直接用 `ReactMarkdown`。
 - `src/captions/**`、`src/lib/captions/**`、`src/settings/**`、`src/stores/**`（除非只是读）、`src-tauri/**`。
 - `src/lib/types.ts`、`src/lib/events.ts`、`src/lib/ipc.ts`：需要新字段或新命令时在汇报里提。
@@ -37,7 +39,7 @@ NexQ Plus 是 NexQ（Tauri 2 + React + Rust 的会议/面试助手）的自用�
 按 SPEC 第 5 节实现。逐项说明：
 
 1. **标题栏**压成一行。保留在标题栏上的：拖动区、会议名、计时、录制标记、字幕条开关、转写开关、隐身、透明度、"更多"菜单、结束会议。其余现有按钮全部收进"更多"菜单，一个都不能丢：两侧静音、翻译开关和它的显示方式/全部翻译/目标语言、发言统计、书签、通话记录、开发日志、设置、最小化、模式标记和场景名可以放进菜单顶部。
-   - 字幕条开关调用 `src/lib/captions/window.ts` 里现成的 `toggleCaptions()`，锁定按钮调用 `setCaptionsLocked()`（底座里已有空壳，直接调用即可）。
+   - 字幕条开关调用 `src/lib/captions/window.ts` 里现成的 `toggleCaptions()`，按下状态用 `useCaptionsVisible()`（`src/lib/captions/useCaptionsVisible.ts`）。锁定按钮调用 `setCaptionsLocked()`，状态读 `configStore` 的 `captionsLocked`。这几个函数已经能用，直接调用，不要改它们。
 2. **问题条**（`QuestionStrip.tsx`）：
    - 默认一行，最多两行，超出截断；总高度不超过 72px。
    - 悬停或点击时用浮层显示全文，浮层不能把答案区往下推。

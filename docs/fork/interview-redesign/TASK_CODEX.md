@@ -9,7 +9,8 @@
 - 做完在自己的分支上提交（可以按任务分几次提交，提交信息用英文）。**不要合进 `custom`，不要推送，不要打包安装 App。**
 - 只改 `src-tauri/**`。前端这边的类型和事件名已经在底座提交里按 SPEC 第 3 节定好了，你的事件载荷要和它对上；发现约定有问题就在汇报里提，不要自己去改 `src/**`。
 - 不读用户的钥匙串，不用用户的 Key 调付费 API，自动化测试一律用假模型。
-- `~/.nexq/eval/interviews/` 里是用户真实面试的转写，只能在本机读，不要复制进仓库，不要发到任何外部服务，不要贴进提交信息或汇报里（汇报里引用标注 id 和行 id 就够了）。
+- 不要读用户的应用数据目录 `~/Library/Application Support/com.plus.nexq`（里面有真实会议的转写）。
+- `~/.nexq/eval/interviews/` 里是用户真实面试的转写。**不要打开、列出、搜索或读取这个目录里的任何文件**：你读到的内容都会发给模型服务。文件格式和一份合成的样例在 `src-tauri/src/intelligence/testdata/qd_eval_sample.json`，开发和测试只用它。
 
 ## 任务 1：Soniox 翻译分块（SPEC 3.1）
 
@@ -25,8 +26,9 @@
 
 ## 任务 2：字幕窗口的后端（SPEC 3.2）
 
-`tauri.conf.json` 里的 `captions` 窗口和 `capabilities/default.json` 里的权限已经在底座提交里加好了。你要做的：
+`tauri.conf.json` 里的 `captions` 窗口和 `capabilities/default.json` 里的权限（含 `core:window:allow-set-ignore-cursor-events`）已经在底座提交里加好了。你要做的：
 
+0. 加命令 `show_captions_window`（无参数）：显示字幕窗口但不抢键盘焦点。macOS 上 `show()` 会把窗口变成当前窗口，要改用只排到最前、不激活的方式（比如对 NSWindow 调 `orderFrontRegardless`，写法参考 `stealth_commands.rs` 里已有的原生调用）；其他平台直接 `show()`。在 `lib.rs` 里注册。前端会优先调这个命令。未锁定时点击或拖动字幕条，也尽量不要让它成为当前窗口。
 1. 启动时给 `captions` 窗口也调用 `float_over_full_screen`（和 `overlay` 一样），让它能浮在全屏的会议 App 上面。
 2. 确认隐身模式覆盖它：开着隐身时创建或显示这个窗口，屏幕共享里看不到。`stealth_commands.rs` 里按窗口 label 特殊处理的地方（任务栏按钮、缩放边缘的光标）逐个检查，说明 `captions` 应该归哪一类，并补上测试。
 3. 确认鼠标穿透在 macOS 的透明窗口上可用（前端会调用 `setIgnoreCursorEvents`）。如果需要原生层面的额外处理，加一个命令并在汇报里说明前端该怎么调。
@@ -62,18 +64,19 @@
 
 ## 任务 4：回答请求跳过查询改写（SPEC 3.5）
 
-`intelligence_commands.rs` 里 Assist 这条路径接受 `skip_query_rewrite`（默认 false），为 true 时知识库检索不调用 `rag_query_rewrite`，直接用传进来的问题。加测试。
+`generate_assist` 命令增加可选参数 `skip_query_rewrite: Option<bool>`（不传等于 false），为 true 时知识库检索不调用 `rag_query_rewrite`，直接用传进来的问题。加测试。
 
 ## 任务 5：回放评测工具（SPEC 第 7 节）
 
 做一个命令行工具（`src-tauri/examples/qd_replay.rs` 或同等形式），把评测集的转写按模拟时钟回放给任务 3 的核心，统计识别结果。
 
-- 输入目录：环境变量 `NEXQ_EVAL_DIR`，默认 `~/.nexq/eval/interviews`。文件格式见 SPEC 第 7 节和文件本身。
+- 输入目录：环境变量 `NEXQ_EVAL_DIR`，默认 `~/.nexq/eval/interviews`，读取其中所有 `.json` 文件。文件格式见 SPEC 第 7 节和样例 `src-tauri/src/intelligence/testdata/qd_eval_sample.json`。你自己运行时一律把 `NEXQ_EVAL_DIR` 指向 `src-tauri/src/intelligence/testdata`，不要用默认目录。
 - 模拟时钟：每一行从它的 `start_ms` 开始，按 15 个字符/秒逐步"说出"（如果下一行开始得更早，就在下一行开始前说完），每 300 毫秒产生一次非 final 的更新，说完后 800 毫秒给出 final（模拟停顿判定）。
 - 模型：`--model fake` 用内置的假模型（把带问号的句子当问题，用来保证工具本身能跑，CI 里跑这个）；否则调用 OpenAI 兼容的接口，参数来自环境变量 `NEXQ_EVAL_BASE_URL`、`NEXQ_EVAL_API_KEY`、`NEXQ_EVAL_MODEL`，可选 `NEXQ_EVAL_EXTRA_BODY`（一个 JSON 对象，并进请求体）。真实模型的耗时计入模拟时钟。
 - 匹配规则：一个检测结果命中某个标注，条件是它的 `line_id` 等于标注（或标注 `also` 里任一项）的 `line_id`，并且它的 `quote` 在那一行里的结束位置和标注的 `end_char` 相差不超过 60 个字符；`quote` 在行里找不到时只比较 `line_id`。
 - 输出：每场和总计的 `must` 召回、`must_not` 误触发数、被模型否决的规则抢答数、从问题最后一个词出现到发出 `complete` 结果的延迟（中位数和 90 分位）、模型调用次数；漏掉的和误触发的逐条列出（标注 id、行 id、检测到的文本）。同时写一份 JSON 报告到 `--out` 指定的路径（默认在系统临时目录，不要写进仓库）。
-- 你只需要用 `--model fake` 跑通并在汇报里贴出指标表。真实模型的评测由 Claude 来跑。
+- 你只需要在样例目录上用 `--model fake` 跑通，并在汇报里贴出指标表。真实数据和真实模型的评测由 Claude 在本机跑。
+- 加一个自动化测试：用样例文件和假模型跑一遍回放，断言能跑完并且指标的结构正确。
 
 ## 提交前的检查
 

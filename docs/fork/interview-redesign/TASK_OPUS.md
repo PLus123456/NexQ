@@ -1,10 +1,16 @@
 # 交给 Opus 5.5 的任务：答案渲染、字幕条前端、问题流程前端
 
-先读 `docs/fork/interview-redesign/SPEC.md`，重点是第 3、4.2、6、7 节。这份任务书只讲你这一块。三项任务互不依赖，按下面的顺序做，每项单独提交。
+先读 `docs/fork/interview-redesign/SPEC.md`，重点是第 3、4.2、6、7 节。这份任务书只讲你这一块。三项任务互不依赖，由三个 Opus 各做一项，各有自己的工作区和分支，改的文件互不重叠。
 
 ## 工作区和分支
 
-- 在会话自己的 worktree 和分支里工作（分支基于 `custom` 的最新提交）。新 worktree 里先装依赖：`npm install`。
+| 任务 | 工作区 | 分支 |
+|---|---|---|
+| 1 答案渲染 | `/Users/plus/NexQ/.claude/worktrees/answer-markdown` | `claude/answer-markdown` |
+| 2 字幕条前端 | `/Users/plus/NexQ/.claude/worktrees/captions-ui` | `claude/captions-ui` |
+| 3 问题流程前端 | `/Users/plus/NexQ/.claude/worktrees/question-flow` | `claude/question-flow` |
+
+- 工作区已经建好，依赖已装好，分支基于 `custom` 的最新提交。只在分给你的那个工作区里工作，只做分给你的那一项。
 - 不要改主检出 `/Users/plus/NexQ`，不要动别人的工作区。
 - 提交信息用英文。**不要合进 `custom`，不要推送，不要打包安装 App，不要运行 `npx tauri dev`**（会和正在用的正式版抢端口和数据）。
 - 不读用户的钥匙串，不用用户的 Key 调付费 API，测试一律用假数据。
@@ -22,6 +28,8 @@
 - `src/overlay/OverlayView.tsx`、`QuestionStrip.tsx`、`AIResponsePanel.tsx`、`ModeButtons.tsx`、`ResponseProgress.tsx`、`ResponseHistoryList.tsx`、`TranscriptPanel.tsx`、`QuestionPredictions.tsx`：答案窗的布局，Antigravity 在改。问题条只通过 `useQuestionFlow()` 用你的逻辑，接口见 SPEC 3.6，不要改它的形状（要加字段可以，在汇报里说明）。
 - `src-tauri/**`：Codex 在改。事件载荷以 SPEC 第 3 节为准。
 - 语言文件里 `overlay` 和其他已有的命名空间（只在确实属于你的组件时加键）。
+- 另外两项任务的文件（见上面"你负责的文件"里不属于你这一项的部分）。
+- 预览页 `harness/**` 里不归你的部分：`scenes.ts` 中答案窗的场景归 Antigravity；字幕脚本（`playCaptionScript` 及其后面的部分）和 `main.tsx` 里的 `CaptionsPage` 归任务 2；`fixtures/*.md` 归任务 1。
 
 ## 任务 1：答案渲染（SPEC 第 6 节）
 
@@ -40,7 +48,9 @@
 
 ## 任务 2：字幕条前端（SPEC 3.1–3.3）
 
-`src/captions/CaptionsWindow.tsx`、`src/lib/captions/` 下的类型和窗口辅助函数、`configStore` 里的设置项、`captions` 命名空间都已经有空壳。
+`src/captions/CaptionsWindow.tsx`（占位）、`src/lib/captions/types.ts`、`src/lib/captions/window.ts`（显示、隐藏、切换、锁定、可见状态，已经能用）、`useCaptionsVisible.ts`、`configStore` 里的十二个设置项、`captions` 命名空间、`tauri.conf.json` 里的 `captions` 窗口都已经在底座里。`src/settings/CaptionSettings.tsx` 还没有，由你新建。
+
+先注意一件事：字幕窗口不运行整个 App，所以没有人替它调用 `configStore` 的 `loadConfig()`，而跨窗口同步的订阅正是在 `loadConfig()` 里注册的。不能在字幕窗口里直接调用它：它会向后端重推语音识别、模型、会议检测等设置，并重放隐身模式。给字幕窗口做一个只读取并订阅字幕相关设置项的轻量加载方式（必要时把 `configStore` 里的加载逻辑拆出可复用的一小块，但不要改变另外两个窗口的行为，`configStore` 现有测试要全过）。
 
 1. **切分函数**（`src/lib/captions/cues.ts`，纯函数，重点测试）：输入是一行的原文（已确定的部分和还在识别的尾巴）、翻译分块（可能没有）、整行译文和是否还在翻译，输出 `CaptionCue[]`。规则见 SPEC 3.3。
    - 有分块时只在块边界断开。
@@ -55,14 +65,17 @@
    - 鼠标移上去时出现一排小控件：字号加减、底色不透明度、锁定（鼠标穿透）、关闭。锁定后这排控件不再出现，只能从答案窗解锁。
    - 整个条可以拖动；可以拖边缘改宽度；位置和大小记进 `captionsBounds`。第一次显示时放在当前屏幕底部居中，宽度取屏幕宽度的 70%（不超过 1000px）。
    - `captionsParties` 是 `both` 时，每条字幕前加一个小的说话方标记。
-4. **窗口控制**（`src/lib/captions/window.ts`）：`showCaptions()`、`hideCaptions()`、`toggleCaptions()`、`setCaptionsLocked()`。会议开始时如果 `captionsEnabled` 就显示，会议结束时隐藏并解锁。答案窗标题栏的按钮会调用这些函数（按钮本身由 Antigravity 放）。
+4. **窗口控制**（`src/lib/captions/window.ts`）：现有函数的名字、参数和返回值不要改（答案窗的按钮在用，按钮本身由 Antigravity 放）。要补的：
+   - `showCaptions()` 改成优先调用后端命令 `show_captions_window`（Codex 在加，作用是显示但不抢键盘焦点），命令不存在或失败时退回现在的 `show()`。
+   - 会议开始时如果 `captionsEnabled` 就显示，会议结束时隐藏并解锁。这段逻辑放在答案窗这一侧会运行到的地方（比如一个在 `App` 里挂载的小 hook），不要去改 `OverlayView.tsx`。
+   - 位置和大小用逻辑像素存进 `captionsBounds`，换显示器或分辨率后如果存下来的位置已经不在任何屏幕内，就回到默认位置。
 5. **设置页**（`src/settings/CaptionSettings.tsx`，并在设置导航里加一项）：SPEC 3.2 表里的全部设置项，带一个实时预览。
 6. 文字走 i18n，`captions` 命名空间，en 和 zh-CN 两份。
 7. 用预览页确认效果（`?view=captions`，有逐步"说话"的假数据），汇报里附截图：透明底、半透明底、只显示译文三种。
 
 ## 任务 3：问题流程前端（SPEC 3.4、3.5、4.2）
 
-`src/overlay/questionFlow.ts` 现在装着从旧的 `QuestionDetector.tsx` 里搬出来的逻辑：监听 `question_detection_pending` / `question_detection_result`，按行管理问题卡片，固定等 1.5 秒后自动回答，用户一说话就取消。
+`src/overlay/questionFlow.ts` 现在装着从旧的 `QuestionDetector.tsx` 里原样搬出来的逻辑：监听 `question_detection_pending` / `question_detection_result`，按行管理问题卡片，固定等 1.5 秒后自动回答，用户一说话就取消。它的测试在 `src/overlay/questionFlow.test.tsx`（45 个用例，用 `renderHook` 驱动）。新事件的类型和监听函数 `onQuestionEvent` 已经在 `src/lib/questionDetection/events.ts` 里。
 
 1. 改成监听 `question_event`（`upsert` / `remove`），按问题 id 维护列表。旧的两个事件和按行、按 revision 的逻辑删掉。
 2. 自动回答的状态机照 SPEC 4.2 的七条实现。几个容易错的地方：
@@ -74,7 +87,7 @@
 4. 自动回答调用 `runUserAction("Assist", question.text, { requestId, skipQueryRewrite: true })`；`skipQueryRewrite` 一路传到后端的 `skip_query_rewrite`。用户手动点的回答不传。
 5. `useQuestionFlow()` 返回 SPEC 3.6 定义的形状。返回从布局切换或设置页回来时，未回答的旧问题保持为可点状态，不要补答（现有行为）。
 6. 日志：沿用 `logAutoAnswer`，事件名补上新出现的情况（提前回答、因修订重答、因否决停止、因用户已在回答而跳过），只记计数和耗时。
-7. 测试：把现有 `QuestionDetector.test.tsx` 里和逻辑有关的用例迁到 `questionFlow.test.ts` 并按新事件改写；新增覆盖 SPEC 4.2 的每一条，以及"问题被修订但只是标点不同时不重答"。
+7. 测试：把 `questionFlow.test.tsx` 里的用例按新事件改写（意图保留，不要直接删）；新增覆盖 SPEC 4.2 的每一条，以及"问题被修订但只是标点不同时不重答"。`QuestionStrip.test.tsx` 不归你，不要动；`useQuestionFlow()` 返回值的形状变了要在汇报里说明。
 
 ## 提交前的检查
 
