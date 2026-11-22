@@ -2,7 +2,7 @@
 //! values inline (stdio servers inherit the whole `claude.exe` environment, so
 //! secrets must not go in the process env).
 //!
-//! The folder is `%LOCALAPPDATA%\NexQ\agent-private`: inside the user's own
+//! The folder is `%LOCALAPPDATA%\NexQPlus\agent-private`: inside the user's own
 //! profile (the default ACL there is user, SYSTEM and administrators only) and
 //! deliberately NOT under `agent-sandbox`, which is the CLI's working directory
 //! and so readable by the model's Read, Grep and Glob tools.
@@ -18,12 +18,12 @@ use std::path::{Path, PathBuf};
 const PREFIX: &str = "nexq-mcp-";
 const SUFFIX: &str = ".json";
 
-/// `%LOCALAPPDATA%\NexQ\agent-private`.
+/// `%LOCALAPPDATA%\NexQPlus\agent-private`.
 pub fn private_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("NexQ").join("agent-private")
+    base.join("NexQPlus").join("agent-private")
 }
 
 /// Write `content` to a new, uniquely named file in `dir` (created if missing).
