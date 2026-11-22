@@ -32,10 +32,28 @@ async function captionsWindow() {
   return win;
 }
 
+/** Backend command that orders the strip to the front without making it the key window (SPEC 3.2). */
+export const SHOW_CAPTIONS_COMMAND = "show_captions_window";
+
+/**
+ * Shows the strip without taking the keyboard from the meeting app: through
+ * the backend command, or, where the app has none (or it fails), the window's
+ * own `show()`, which on macOS also makes it the key window.
+ */
+async function showWithoutFocus(win: Awaited<ReturnType<typeof captionsWindow>>): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke(SHOW_CAPTIONS_COMMAND);
+  } catch (err) {
+    console.info(`[captions] "${SHOW_CAPTIONS_COMMAND}" is not available (${String(err)}); showing the window directly`);
+    await win.show();
+  }
+}
+
 /** Show the caption strip. It is not given the focus: the user is in their meeting. */
 export async function showCaptions(): Promise<void> {
   try {
-    await (await captionsWindow()).show();
+    await showWithoutFocus(await captionsWindow());
     await announce(true);
   } catch (err) {
     console.warn("[captions] Could not show the caption strip:", err);
@@ -70,7 +88,7 @@ export async function toggleCaptions(): Promise<boolean> {
   try {
     const win = await captionsWindow();
     const show = !(await win.isVisible());
-    if (show) await win.show();
+    if (show) await showWithoutFocus(win);
     else await win.hide();
     await announce(show);
     return show;

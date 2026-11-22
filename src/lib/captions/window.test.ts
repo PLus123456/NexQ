@@ -47,7 +47,19 @@ vi.mock("@tauri-apps/plugin-store", () => ({
     onKeyChange: async () => () => {},
   }),
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
+// The backend command that shows the strip without the focus: missing unless a test adds it.
+const backend = vi.hoisted(() => ({ showCommand: "missing" as "missing" | "works" | "fails" }));
+const invoke = vi.hoisted(() =>
+  vi.fn(async (command: string) => {
+    if (command !== "show_captions_window") return null;
+    if (backend.showCommand === "missing") throw new Error("command show_captions_window not found");
+    if (backend.showCommand === "fails") throw new Error("could not order the window front");
+    calls.push("show_captions_window");
+    win.visible = true;
+    return null;
+  }),
+);
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
   CAPTIONS_VISIBILITY_EVENT, CAPTIONS_WINDOW_LABEL, hideCaptions, isCaptionsVisible, setCaptionsLocked, showCaptions,
@@ -63,6 +75,8 @@ beforeEach(() => {
   win.exists = true;
   win.visible = false;
   win.failing = null;
+  backend.showCommand = "missing";
+  invoke.mockClear();
   saved.clear();
   useConfigStore.setState({ captionsLocked: false });
   getByLabel.mockClear();
@@ -88,6 +102,29 @@ describe("the caption strip's window", () => {
     await hideCaptions();
     expect(calls).toEqual(["show", "hide"]);
     expect(win.visible).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("shows through the backend command when the app has it, so the meeting app keeps the keyboard", async () => {
+    backend.showCommand = "works";
+    await showCaptions();
+    expect(invoke).toHaveBeenCalledWith("show_captions_window");
+    expect(calls).toEqual(["show_captions_window"]);
+    expect(announced).toEqual([[CAPTIONS_VISIBILITY_EVENT, { visible: true }]]);
+
+    await hideCaptions();
+    await expect(toggleCaptions()).resolves.toBe(true);
+    expect(calls).toEqual(["show_captions_window", "hide", "show_captions_window"]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the window's own show when the backend command fails", async () => {
+    backend.showCommand = "fails";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await showCaptions();
+    expect(calls).toEqual(["show"]);
+    expect(win.visible).toBe(true);
+    expect(info).toHaveBeenCalledOnce();
     expect(warn).not.toHaveBeenCalled();
   });
 

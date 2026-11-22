@@ -42,6 +42,7 @@ import { logToFile } from "./lib/logger";
 import { onWebSpeechStopRequest } from "./lib/webSpeechLifecycle";
 import { emitOverlayMeetingReady, onAudioCaptureStatus, onAudioCaptureStopped, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 import { createCaptureStatusHandler } from "./lib/captureStatus";
+import { useCaptionsMeeting } from "./lib/captions/useCaptionsMeeting";
 
 function App() {
   const { t } = useT("onboarding");
@@ -292,6 +293,9 @@ function App() {
 
   // Toast when Claude is unavailable and requests move to the fallback provider
   useAgentFallbackToast(windowLabel);
+
+  // The caption strip shows with a meeting and hides when it ends (answer window only).
+  useCaptionsMeeting(windowLabel === "overlay");
 
   // Claude's model catalog: asked once per app start by the launcher (no
   // model call); the overlay gets it through the persisted config store.
