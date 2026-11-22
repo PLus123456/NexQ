@@ -1,5 +1,76 @@
 {
   "strip": {
-    "placeholder": "Caption strip: what is being said will show here."
+    "empty": "Captions will show here. Drag to move it, drag an edge to resize.",
+    "them": "Them",
+    "you": "You",
+    "controls": {
+      "label": "Caption strip",
+      "smaller": "Smaller text",
+      "larger": "Larger text",
+      "backdrop": "Backdrop",
+      "lock": "Lock: the mouse goes through (unlock from the answer window)",
+      "close": "Hide the caption strip"
+    }
+  },
+  "settings": {
+    "tab": "Caption strip",
+    "title": "Caption strip",
+    "intro": "A see-through strip over the meeting that shows what is said, cut into short captions with the translation under each.",
+    "preview": {
+      "label": "Preview",
+      "dark": "Dark background",
+      "light": "Light background"
+    },
+    "enabled": {
+      "label": "Show when a meeting starts",
+      "hint": "The strip can always be switched on and off from the answer window's title bar."
+    },
+    "parties": {
+      "label": "Whose speech",
+      "them": "The other side",
+      "both": "Both sides"
+    },
+    "show": {
+      "label": "Show",
+      "both": "Original and translation",
+      "translation": "Translation only",
+      "original": "Original only"
+    },
+    "fontSize": "Original text size",
+    "translationFontSize": "Translation size",
+    "textColor": "Original color",
+    "translationColor": "Translation color",
+    "bgOpacity": {
+      "label": "Backdrop",
+      "hint": "0 leaves the strip fully see-through; the text keeps a dark outline."
+    },
+    "cueCount": {
+      "label": "Captions at once",
+      "hint": "The older ones are dimmed."
+    },
+    "fade": {
+      "label": "Fade out after",
+      "hint": "Seconds without anything new. 0 never fades.",
+      "never": "Never",
+      "seconds": "{{value}} s"
+    },
+    "locked": {
+      "label": "Locked",
+      "hint": "The mouse goes through the strip to the meeting underneath.",
+      "unlock": "Unlock"
+    },
+    "position": {
+      "label": "Place",
+      "hint": "Drag the strip to move it and its edges to resize it. Reset puts it back at the bottom centre of the screen.",
+      "reset": "Reset place"
+    },
+    "reset": "Restore defaults",
+    "sample": {
+      "olderSrc": "Okay, let me give you some context on what we are dealing with.",
+      "olderDst": "好，我先讲一下我们这边的情况。",
+      "newestSrc": "How would you redesign that, and where would you start",
+      "newestPending": "in the first two weeks?",
+      "newestDst": "你会怎么重新设计，"
+    }
   }
 }
