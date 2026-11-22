@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::capture_common::{classify_stream_error, StreamErrorAction};
+use crate::i18n::{current_ui_language, UiLanguage};
 
 /// Errors that arrive together (a device going away reports more than one)
 /// cause one rebuild, this long after the first.
@@ -605,47 +606,52 @@ fn recovered_message(kind: CaptureKind, device_id: &str, before: &str, now: &str
     }
     // The chosen device is gone and the default stands in for it.
     let stand_in = !is_default_id(device_id) && now != device_id;
+    recovered_message_in(current_ui_language(), kind, stand_in, now)
+}
+
+fn recovered_message_in(lang: UiLanguage, kind: CaptureKind, stand_in: bool, now: &str) -> String {
+    use crate::i18n::messages as m;
     match (kind, stand_in) {
-        (CaptureKind::Mic, true) => format!("Your microphone disconnected. Using {now} for now."),
-        (CaptureKind::Mic, false) => format!("Now using {now} as your microphone."),
-        (CaptureKind::Output, true) => {
-            format!("The speakers or headphones you hear the call on disconnected. Listening on {now} instead.")
-        }
-        (CaptureKind::Output, false) => format!("Now listening on {now} for the other side."),
-        (CaptureKind::InputThem, _) => format!("Now capturing the other side from {now}."),
-        (CaptureKind::Dual, _) => format!("Now using {now} for you and the other side."),
+        (CaptureKind::Mic, true) => m::mic_stand_in(lang, now),
+        (CaptureKind::Mic, false) => m::mic_now(lang, now),
+        (CaptureKind::Output, true) => m::output_stand_in(lang, now),
+        (CaptureKind::Output, false) => m::output_now(lang, now),
+        (CaptureKind::InputThem, _) => m::them_now(lang, now),
+        (CaptureKind::Dual, _) => m::dual_now(lang, now),
     }
 }
 
 /// After "lost", the device is back on the same one: always worth a line.
 fn back_message(kind: CaptureKind, device: &str) -> String {
+    use crate::i18n::messages as m;
+    let lang = current_ui_language();
     match kind {
-        CaptureKind::Mic => format!("{device} is back as your microphone."),
-        CaptureKind::Output => format!("{device} is back. Listening for the other side again."),
-        CaptureKind::InputThem => format!("{device} is back. Capturing the other side again."),
-        CaptureKind::Dual => format!("{device} is back for you and the other side."),
+        CaptureKind::Mic => m::mic_back(lang, device),
+        CaptureKind::Output => m::output_back(lang, device),
+        CaptureKind::InputThem => m::them_back(lang, device),
+        CaptureKind::Dual => m::dual_back(lang, device),
     }
 }
 
 fn lost_message(kind: CaptureKind, permission_denied: bool) -> String {
+    lost_message_in(current_ui_language(), kind, permission_denied)
+}
+
+fn lost_message_in(lang: UiLanguage, kind: CaptureKind, permission_denied: bool) -> String {
+    use crate::i18n::messages as m;
     let system = if cfg!(target_os = "macos") { "macOS" } else { "Windows" };
     if permission_denied {
         return match kind {
-            CaptureKind::Output => format!(
-                "{system} privacy settings are blocking NexQ from capturing the call's audio. Allow it in {system} settings and NexQ reconnects."
-            ),
-            _ => format!(
-                "{system} privacy settings are blocking your microphone. Allow microphone access for NexQ in {system} settings and NexQ reconnects."
-            ),
+            CaptureKind::Output => m::privacy_blocks_output(lang, system),
+            _ => m::privacy_blocks_mic(lang, system),
         };
     }
     match kind {
-        CaptureKind::Mic => "Your microphone disconnected. NexQ reconnects it when it's back, or pick another microphone in Audio & Devices.",
-        CaptureKind::Output => "The speakers or headphones you hear the call on disconnected. NexQ reconnects them when they're back, or pick another device in Audio & Devices.",
-        CaptureKind::InputThem => "The device the other side comes in on disconnected. NexQ reconnects it when it's back, or pick another device in Audio & Devices.",
-        CaptureKind::Dual => "Your shared input device disconnected. NexQ reconnects it when it's back, or pick another device in Audio & Devices.",
+        CaptureKind::Mic => m::mic_lost(lang),
+        CaptureKind::Output => m::output_lost(lang),
+        CaptureKind::InputThem => m::them_lost(lang),
+        CaptureKind::Dual => m::dual_lost(lang),
     }
-    .to_string()
 }
 
 /// A running side: its thread and the channel that reaches it.
@@ -1519,23 +1525,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn capture_messages_follow_the_ui_language() {
+        for kind in [CaptureKind::Mic, CaptureKind::Output, CaptureKind::InputThem, CaptureKind::Dual] {
+            let zh = lost_message_in(UiLanguage::ZhCn, kind, false);
+            assert!(zh.contains(crate::i18n::APP_NAME) && zh.contains("音频与设备"), "{kind:?}: {zh}");
+            assert!(!lost_message_in(UiLanguage::En, kind, false).contains("音频"));
+        }
+        assert!(lost_message_in(UiLanguage::ZhCn, CaptureKind::Output, true).contains("隐私设置"));
+        assert_eq!(
+            recovered_message_in(UiLanguage::ZhCn, CaptureKind::Mic, true, "Cable"),
+            "你的麦克风已断开，暂时改用 Cable。"
+        );
+    }
+
+    #[test]
     fn each_kind_words_its_messages_for_what_it_captures() {
         let lost = |kind| lost_message(kind, false);
         assert_eq!(
             lost(CaptureKind::Mic),
-            "Your microphone disconnected. NexQ reconnects it when it's back, or pick another microphone in Audio & Devices."
+            "Your microphone disconnected. NexQ Plus reconnects it when it's back, or pick another microphone in Audio & Devices."
         );
         assert_eq!(
             lost(CaptureKind::Output),
-            "The speakers or headphones you hear the call on disconnected. NexQ reconnects them when they're back, or pick another device in Audio & Devices."
+            "The speakers or headphones you hear the call on disconnected. NexQ Plus reconnects them when they're back, or pick another device in Audio & Devices."
         );
         assert_eq!(
             lost(CaptureKind::InputThem),
-            "The device the other side comes in on disconnected. NexQ reconnects it when it's back, or pick another device in Audio & Devices."
+            "The device the other side comes in on disconnected. NexQ Plus reconnects it when it's back, or pick another device in Audio & Devices."
         );
         assert_eq!(
             lost(CaptureKind::Dual),
-            "Your shared input device disconnected. NexQ reconnects it when it's back, or pick another device in Audio & Devices."
+            "Your shared input device disconnected. NexQ Plus reconnects it when it's back, or pick another device in Audio & Devices."
         );
         assert_eq!(back_message(CaptureKind::Output, "Speakers"), "Speakers is back. Listening for the other side again.");
         assert_eq!(back_message(CaptureKind::InputThem, "Cable"), "Cable is back. Capturing the other side again.");

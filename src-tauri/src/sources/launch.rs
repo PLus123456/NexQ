@@ -52,24 +52,24 @@ pub fn folder_problem(path: &Path) -> Option<String> {
 pub fn folder_problem_with(path: &Path, protected: &Protected) -> Option<String> {
     let folder = resolve(path, true);
     if folder.parent().is_none() {
-        return Some("A whole drive can't be a notes folder. Choose the folder that holds your notes.".into());
+        return Some(crate::i18n::messages::problem_whole_drive(crate::i18n::current_ui_language()));
     }
     let private = resolve(&protected.private, true);
     if private.starts_with(&folder) || folder.starts_with(&private) {
-        return Some("This folder holds NexQ's private files, so it can't be a notes folder.".into());
+        return Some(crate::i18n::messages::problem_private_files(crate::i18n::current_ui_language()));
     }
     if let Some(home) = protected.home.as_deref().map(|h| resolve(h, true)) {
         if folder == home {
-            return Some("Your whole user folder can't be a notes folder. Choose the folder that holds your notes.".into());
+            return Some(crate::i18n::messages::problem_user_folder(crate::i18n::current_ui_language()));
         }
         if home.starts_with(&folder) {
-            return Some("This folder contains your whole user folder, so it can't be a notes folder.".into());
+            return Some(crate::i18n::messages::problem_contains_user_folder(crate::i18n::current_ui_language()));
         }
     }
     for cred in &protected.credentials {
         let cred = resolve(cred, true);
         if cred.starts_with(&folder) || folder.starts_with(&cred) {
-            return Some("This folder holds your account's sign-in files, so it can't be a notes folder.".into());
+            return Some(crate::i18n::messages::problem_sign_in_files(crate::i18n::current_ui_language()));
         }
     }
     None
@@ -276,6 +276,14 @@ If a source can't be reached, say so plainly.\n",
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn folder_problems_follow_the_ui_language() {
+        use crate::i18n::{messages, UiLanguage};
+        assert!(messages::problem_private_files(UiLanguage::ZhCn).contains("笔记文件夹"));
+        assert!(messages::problem_private_files(UiLanguage::ZhCn).contains(crate::i18n::APP_NAME));
+        assert!(messages::problem_whole_drive(UiLanguage::En).contains("whole drive"));
+    }
+
     use super::*;
     use crate::sources::config::{EnvVar, McpTool};
 

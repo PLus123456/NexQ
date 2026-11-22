@@ -135,7 +135,7 @@ pub fn diagnose_stdio(
         .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return Some(redact(&format!("It couldn't start {command}: {e}."), secrets)),
+        Err(e) => return Some(redact(&crate::i18n::messages::diagnose_cant_start(crate::i18n::current_ui_language(), command, e), secrets)),
     };
     let mut tree = Some(ProcessTree::adopt(&child));
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -175,17 +175,15 @@ pub fn diagnose_stdio(
     drop(tree); // a server that stopped by itself: ends what it left behind
     let last = lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| redact(l, secrets));
     match (exited, last) {
-        (Some(status), Some(line)) => {
-            Some(format!("It stopped right away{}. Its last message: {line}", code_text(status)))
-        }
-        (Some(status), None) => Some(format!("It stopped right away{}, without saying why.", code_text(status))),
-        (None, Some(line)) => Some(format!("Its last message: {line}")),
+        (Some(status), Some(line)) => Some(crate::i18n::messages::diagnose_stopped_with_line(crate::i18n::current_ui_language(), &code_text(status), &line)),
+        (Some(status), None) => Some(crate::i18n::messages::diagnose_stopped_silent(crate::i18n::current_ui_language(), &code_text(status))),
+        (None, Some(line)) => Some(crate::i18n::messages::diagnose_last_message(crate::i18n::current_ui_language(), &line)),
         (None, None) => None,
     }
 }
 
 fn code_text(status: std::process::ExitStatus) -> String {
-    status.code().map(|c| format!(" (exit code {c})")).unwrap_or_default()
+    status.code().map(|c| crate::i18n::messages::diagnose_exit_code(crate::i18n::current_ui_language(), c)).unwrap_or_default()
 }
 
 /// Ask the URL what an MCP client asks first and report a refusal.
@@ -207,7 +205,7 @@ pub async fn diagnose_http(url: &str, headers: &[(String, String)], secrets: &[S
         Ok(resp) => {
             let status = resp.status();
             let reason = status.canonical_reason().map(|r| format!(" {r}")).unwrap_or_default();
-            Some(format!("The server answered {}{reason}.", status.as_u16()))
+            Some(crate::i18n::messages::diagnose_http_status(crate::i18n::current_ui_language(), status.as_u16(), &reason))
         }
         Err(e) => {
             let e = e.without_url();
@@ -217,7 +215,7 @@ pub async fn diagnose_http(url: &str, headers: &[(String, String)], secrets: &[S
                 text = format!("{text}: {inner}");
                 source = inner.source();
             }
-            Some(redact(&format!("It couldn't be reached: {text}"), secrets))
+            Some(redact(&crate::i18n::messages::diagnose_unreachable(crate::i18n::current_ui_language(), &text), secrets))
         }
     }
 }

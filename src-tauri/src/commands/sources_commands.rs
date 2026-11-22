@@ -92,7 +92,7 @@ fn store_secrets(store: &dyn SecretStore, secrets: &[SecretValue]) -> Result<(),
                     None => store.delete(id),
                 }
             }
-            return Err(format!("Couldn't save a secret in Windows Credential Manager: {e}"));
+            return Err(crate::i18n::messages::credential_save_failed(crate::i18n::current_ui_language(), e));
         }
         done.push((&secret.credential_id, previous));
     }
@@ -246,7 +246,7 @@ pub async fn inspect_notes_folder(path: String) -> Result<NotesFolderInfo, Strin
         info
     })
     .await
-    .map_err(|e| format!("Couldn't look at the folder: {e}"))
+    .map_err(|e| crate::i18n::messages::folder_inspect_failed(crate::i18n::current_ui_language(), e))
 }
 
 /// Is `path` a file inside one of the enabled notes folders? Both sides are
@@ -285,14 +285,14 @@ pub fn open_source_file(path: String, state: State<'_, AppState>) -> Result<(), 
     let cfg = state
         .personal_sources
         .read()
-        .map_err(|_| "Couldn't read your sources".to_string())?
+        .map_err(|_| crate::i18n::messages::sources_unreadable(crate::i18n::current_ui_language()))?
         .clone();
     let target = Path::new(&path);
     if !is_inside_enabled_folder(target, &cfg) {
-        return Err("That file isn't inside one of your enabled notes folders.".to_string());
+        return Err(crate::i18n::messages::file_outside_folders(crate::i18n::current_ui_language()));
     }
     if !is_openable_note(target) {
-        return Err("NexQ only opens notes and documents from here, not other kinds of file.".to_string());
+        return Err(crate::i18n::messages::only_notes_open(crate::i18n::current_ui_language()));
     }
     #[cfg(target_os = "windows")]
     let program = "explorer";
@@ -304,7 +304,7 @@ pub fn open_source_file(path: String, state: State<'_, AppState>) -> Result<(), 
         .arg(target)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("Couldn't open {path}: {e}"))
+        .map_err(|e| crate::i18n::messages::open_failed(crate::i18n::current_ui_language(), &path, e))
 }
 
 /// Which of these environment variable names hold a secret (their values go to
@@ -413,7 +413,7 @@ fn import_claude_code(
         match all.iter().find(|(n, _)| n == name) {
             Some((n, Ok(raw))) => picked.push((n.clone(), raw.clone())),
             Some((_, Err(reason))) => return Err(reason.clone()),
-            None => return Err(format!("Claude Code has no server named \"{name}\"")),
+            None => return Err(crate::i18n::messages::claude_code_no_server(crate::i18n::current_ui_language(), &name)),
         }
     }
     add_servers(store, picked, taken_keys)
@@ -428,7 +428,7 @@ fn read_claude_json() -> Result<Option<String>, String> {
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("Couldn't read Claude Code's config: {e}")),
+        Err(e) => Err(crate::i18n::messages::claude_code_config_unreadable(crate::i18n::current_ui_language(), e)),
     }
 }
 
@@ -450,7 +450,7 @@ pub fn import_claude_code_mcp_servers(
     names: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<McpServer>, String> {
-    let text = read_claude_json()?.ok_or("Claude Code's config wasn't found on this PC")?;
+    let text = read_claude_json()?.ok_or_else(|| crate::i18n::messages::claude_code_config_missing(crate::i18n::current_ui_language()))?;
     let servers = import_claude_code(&SystemSecrets::new(), &text, &names, &saved_keys(&state))?;
     servers.iter().for_each(|s| upsert_saved(&state, s));
     Ok(servers)
@@ -542,21 +542,21 @@ fn build_form_server(
 ) -> Result<FormBuild, String> {
     let label = form.label.trim();
     if label.is_empty() {
-        return Err("Give the server a name".to_string());
+        return Err(crate::i18n::messages::server_needs_name(crate::i18n::current_ui_language()));
     }
     let key = match old {
         Some(old) => old.key.clone(),
         None => unique_key(label, taken_keys),
     };
     if !is_valid_key(&key) {
-        return Err("This server's key isn't valid".to_string());
+        return Err(crate::i18n::messages::server_key_invalid(crate::i18n::current_ui_language()));
     }
 
     let transport = match &form.transport {
         McpTransport::Stdio { command, args } => {
             let command = command.trim();
             if command.is_empty() {
-                return Err("Enter the command that starts the server".to_string());
+                return Err(crate::i18n::messages::server_needs_command(crate::i18n::current_ui_language()));
             }
             McpTransport::Stdio {
                 command: command.to_string(),
@@ -566,16 +566,16 @@ fn build_form_server(
         McpTransport::Http { url, .. } => {
             let url = url.trim();
             if !(url.starts_with("http://") || url.starts_with("https://")) {
-                return Err("The URL must start with http:// or https://".to_string());
+                return Err(crate::i18n::messages::url_needs_scheme(crate::i18n::current_ui_language()));
             }
             let mut names: Vec<String> = Vec::new();
             for pair in &form.headers {
                 let name = pair.name.trim();
                 if name.is_empty() {
-                    return Err("A header needs a name".to_string());
+                    return Err(crate::i18n::messages::header_needs_name(crate::i18n::current_ui_language()));
                 }
                 if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                    return Err(format!("The {name} header is listed twice"));
+                    return Err(crate::i18n::messages::header_listed_twice(crate::i18n::current_ui_language(), name));
                 }
                 names.push(name.to_string());
             }
@@ -588,13 +588,13 @@ fn build_form_server(
         for pair in &form.env {
             let name = pair.name.trim();
             if name.is_empty() {
-                return Err("An environment variable needs a name".to_string());
+                return Err(crate::i18n::messages::env_needs_name(crate::i18n::current_ui_language()));
             }
             if name.contains('=') || name.contains(char::is_whitespace) {
-                return Err(format!("\"{name}\" isn't a valid environment variable name"));
+                return Err(crate::i18n::messages::env_name_invalid(crate::i18n::current_ui_language(), name));
             }
             if env.iter().any(|e| e.name.eq_ignore_ascii_case(name)) {
-                return Err(format!("{name} is listed twice"));
+                return Err(crate::i18n::messages::env_listed_twice(crate::i18n::current_ui_language(), name));
             }
             env.push(if is_secret_name(name) {
                 EnvVar { name: name.to_string(), value: None, secret: true }
@@ -674,9 +674,9 @@ pub fn save_mcp_server_form(
     state: State<'_, AppState>,
 ) -> Result<McpServer, String> {
     let old = match &form.id {
-        Some(id) => Some(saved_server(&state, id).ok_or(
-            "NexQ doesn't have this server saved yet. Save your sources first, then edit it.",
-        )?),
+        Some(id) => Some(
+            saved_server(&state, id).ok_or_else(|| crate::i18n::messages::server_not_saved_edit(crate::i18n::current_ui_language()))?,
+        ),
         None => None,
     };
     let server = save_form(&SystemSecrets::new(), &form, &saved_keys(&state), old.as_ref())?;
@@ -747,7 +747,7 @@ fn plan_check(
 ) -> Result<CheckPlan, String> {
     match draft {
         None => {
-            let saved = saved.ok_or("NexQ doesn't have this server saved yet. Save your sources first.")?;
+            let saved = saved.ok_or_else(|| crate::i18n::messages::server_not_saved(crate::i18n::current_ui_language()))?;
             Ok(CheckPlan { server: saved.clone(), typed: Default::default(), use_stored: true })
         }
         Some(form) => {
@@ -780,7 +780,7 @@ pub async fn check_mcp_server(
     state: State<'_, AppState>,
 ) -> Result<McpServer, String> {
     let saved = match &server_id {
-        Some(id) => Some(saved_server(&state, id).ok_or("NexQ doesn't have this server saved yet. Save your sources first.")?),
+        Some(id) => Some(saved_server(&state, id).ok_or_else(|| crate::i18n::messages::server_not_saved(crate::i18n::current_ui_language()))?),
         None => None,
     };
     let store = SystemSecrets::new();
@@ -844,10 +844,10 @@ fn validate_sources(cfg: &PersonalSourcesConfig) -> Result<(), String> {
     let mut seen: Vec<&str> = Vec::new();
     for server in &cfg.mcp_servers {
         if !is_valid_key(&server.key) {
-            return Err(format!("The server \"{}\" has an invalid key", server.label));
+            return Err(crate::i18n::messages::server_has_invalid_key(crate::i18n::current_ui_language(), &server.label));
         }
         if seen.contains(&server.key.as_str()) {
-            return Err(format!("Two servers share the key \"{}\"", server.key));
+            return Err(crate::i18n::messages::servers_share_key(crate::i18n::current_ui_language(), &server.key));
         }
         seen.push(&server.key);
         if let Some(tool) = server.tools.iter().find(|t| !is_valid_tool_full_name(&server.key, &t.full_name)) {

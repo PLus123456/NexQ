@@ -27,7 +27,10 @@ const MAX_EDGE: u32 = 1568;
 /// How the picture is shrunk.
 const RESIZE_FILTER: FilterType = FilterType::Lanczos3;
 
-const FAILED: &str = "Couldn't capture the screen";
+/// The generic failure sentence, in the UI language.
+fn failed() -> String {
+    crate::i18n::messages::capture_failed(crate::i18n::current_ui_language())
+}
 
 /// A rectangle in virtual-desktop pixels (`right` and `bottom` are exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +124,7 @@ pub fn encode_png(frame: Frame, max_edge: u32) -> Result<(Vec<u8>, Timings), Str
     let Frame { width, height, bgra } = frame;
     if width == 0 || height == 0 || bgra.len() != width as usize * height as usize * 4 {
         log::warn!("screen capture: malformed frame {width}x{height}, {} bytes", bgra.len());
-        return Err(FAILED.into());
+        return Err(failed());
     }
     let mut timings = Timings::default();
 
@@ -131,11 +134,11 @@ pub fn encode_png(frame: Frame, max_edge: u32) -> Result<(Vec<u8>, Timings), Str
     timings.convert = t.elapsed();
     if blank {
         log::warn!("screen capture: the screen came out entirely black");
-        return Err("The screen came out black. It may be locked or showing protected content.".into());
+        return Err(crate::i18n::messages::capture_black(crate::i18n::current_ui_language()));
     }
     let mut img = RgbImage::from_raw(width, height, rgb).ok_or_else(|| {
         log::warn!("screen capture: pixel buffer does not match {width}x{height}");
-        FAILED
+        failed()
     })?;
 
     let t = Instant::now();
@@ -151,7 +154,7 @@ pub fn encode_png(frame: Frame, max_edge: u32) -> Result<(Vec<u8>, Timings), Str
         .write_image(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgb8)
         .map_err(|e| {
             log::warn!("screen capture: PNG encoding failed: {e}");
-            FAILED
+            failed()
         })?;
     timings.encode = t.elapsed();
     Ok((out.into_inner(), timings))
@@ -159,12 +162,12 @@ pub fn encode_png(frame: Frame, max_edge: u32) -> Result<(Vec<u8>, Timings), Str
 
 /// Whether `label` may capture: only the overlay window, and only during a
 /// meeting (the shortcut is held by the overlay for the meeting's length).
-pub fn check_allowed(label: &str, meeting_active: bool) -> Result<(), &'static str> {
+pub fn check_allowed(label: &str, meeting_active: bool) -> Result<(), String> {
     if label != "overlay" {
-        return Err("Screen capture is only available from the meeting overlay");
+        return Err(crate::i18n::messages::capture_only_overlay(crate::i18n::current_ui_language()));
     }
     if !meeting_active {
-        return Err("Screen capture is only available during a meeting");
+        return Err(crate::i18n::messages::capture_only_in_meeting(crate::i18n::current_ui_language()));
     }
     Ok(())
 }
@@ -179,7 +182,7 @@ pub async fn capture_screen_under_cursor(
 ) -> Result<tauri::ipc::Response, String> {
     if let Err(refusal) = check_allowed(window.label(), state.meeting_active.load(Ordering::SeqCst)) {
         log::warn!("screen capture refused for window '{}': {refusal}", window.label());
-        return Err(refusal.into());
+        return Err(refusal);
     }
     let started = Instant::now();
     let (png, grab, timings) = tokio::task::spawn_blocking(|| {
@@ -192,7 +195,7 @@ pub async fn capture_screen_under_cursor(
     .await
     .map_err(|e| {
         log::warn!("screen capture: worker thread failed: {e}");
-        FAILED.to_string()
+        failed()
     })??;
     log::debug!(
         "screen capture: {} bytes in {:?} (grab {:?}, convert {:?}, resize {:?}, encode {:?})",
@@ -294,12 +297,12 @@ mod platform {
         // SAFETY: `cursor` is a valid out pointer.
         unsafe { GetCursorPos(&mut cursor) }.map_err(|e| {
             log::warn!("screen capture: GetCursorPos failed: {e}");
-            FAILED.to_string()
+            failed()
         })?;
         let list = monitors();
         let monitor = pick_monitor(&list, cursor.x, cursor.y).map(|i| list[i]).ok_or_else(|| {
             log::warn!("screen capture: no monitors found");
-            FAILED.to_string()
+            failed()
         })?;
         grab_monitor(&monitor)
     }
@@ -309,11 +312,11 @@ mod platform {
         let (width, height) = (monitor.width(), monitor.height());
         if width <= 0 || height <= 0 {
             log::warn!("screen capture: monitor rectangle {width}x{height} is empty");
-            return Err(FAILED.into());
+            return Err(failed());
         }
         let fail = |step: &str| -> String {
             log::warn!("screen capture: {step} failed: {}", windows::core::Error::from_thread());
-            FAILED.to_string()
+            failed()
         };
 
         // SAFETY: every handle is checked and released by its guard; the
@@ -341,7 +344,7 @@ mod platform {
             SelectObject(mem.0, previous);
             if let Err(e) = copied {
                 log::warn!("screen capture: BitBlt failed: {e}");
-                return Err(FAILED.into());
+                return Err(failed());
             }
             let mut info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -367,7 +370,7 @@ mod platform {
             );
             if lines != height {
                 log::warn!("screen capture: GetDIBits returned {lines} of {height} lines");
-                return Err(FAILED.into());
+                return Err(failed());
             }
             Ok(Frame { width: width as u32, height: height as u32, bgra })
         }
@@ -379,7 +382,7 @@ mod platform {
     use super::Frame;
 
     pub fn grab_under_cursor() -> Result<Frame, String> {
-        Err("Capturing the screen is only available on Windows for now".into())
+        Err(crate::i18n::messages::capture_windows_only(crate::i18n::current_ui_language()))
     }
 }
 

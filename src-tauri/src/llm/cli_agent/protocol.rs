@@ -245,17 +245,17 @@ pub const ALLOWED_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gi
 /// checks the same limits, but the backend never trusts it.
 pub fn validate_images(images: &[ImageAttachment]) -> Result<(), String> {
     if images.len() > MAX_IMAGES {
-        return Err(format!("You can attach up to {MAX_IMAGES} images"));
+        return Err(crate::i18n::messages::too_many_images(crate::i18n::current_ui_language(), MAX_IMAGES));
     }
     for image in images {
         if !ALLOWED_IMAGE_TYPES.contains(&image.media_type.as_str()) {
-            return Err("Only PNG, JPEG, GIF and WebP images can be attached".to_string());
+            return Err(crate::i18n::messages::image_type_refused(crate::i18n::current_ui_language()));
         }
         if image.data.is_empty() {
-            return Err("An attached image is empty".to_string());
+            return Err(crate::i18n::messages::image_empty(crate::i18n::current_ui_language()));
         }
         if image.data.len() > MAX_IMAGE_BASE64_LEN {
-            return Err("An attached image is larger than 5 MB".to_string());
+            return Err(crate::i18n::messages::image_too_large(crate::i18n::current_ui_language()));
         }
     }
     Ok(())
