@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { textColor } from "../../lib/themeColors";
 import { createPortal } from "react-dom";
 import { Bookmark as BookmarkIcon, Globe, RefreshCw } from "lucide-react";
 import type { TranslationResult, TranslationDisplayMode } from "../../lib/types";
@@ -148,7 +149,7 @@ function TranscriptRowImpl({
           className="leading-relaxed"
           style={{
             fontSize: `${transcriptFontSize}px`,
-            color: isSelected ? undefined : transcriptTextColor,
+            color: isSelected ? undefined : textColor(transcriptTextColor, "#e4e4e7"),
           }}
         >
           {matchOffsets
@@ -163,7 +164,7 @@ function TranscriptRowImpl({
           </div>
         ) : translation && translationDisplayMode === "inline" ? (
           <div className="mt-1 flex items-baseline gap-1.5 leading-[1.5]">
-            <span style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
+            <span style={{ fontSize: `${translationFontSize}px`, color: textColor(translationTextColor, "#fbbf24") }}>
               {translation.translated_text}
             </span>
             <span className={`shrink-0 rounded px-1 py-px text-[9px] font-bold tracking-wide ${

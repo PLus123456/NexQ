@@ -8,13 +8,13 @@ export interface PopoverRect {
 }
 
 /**
- * ColorPickerButton renders its swatch grid in a `fixed z-[9999]` portal on
- * `document.body`. Outside-click listeners on a parent popover ignore clicks
- * inside that portal so picking a color doesn't close the parent first.
+ * ColorPickerButton renders its swatch grid in a portal on `document.body`,
+ * marked `data-color-picker-portal`. Outside-click listeners on a parent
+ * popover ignore clicks inside it so picking a color doesn't close the parent first.
  */
 export function isInsideColorPickerPortal(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
-  return target.closest('[class*="z-[9999]"]') !== null;
+  return target.closest("[data-color-picker-portal]") !== null;
 }
 
 /**

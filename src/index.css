@@ -47,6 +47,8 @@
     --highlight-foreground: 0 0% 9%;
     --speaker-user: 217 91% 60%;
     --speaker-interviewer: 25 95% 53%;
+    /* Translations under the transcript: amber that reads on white. */
+    --translation-text: 32 95% 34%;
   }
 
   .dark {
@@ -79,6 +81,7 @@
     --highlight-foreground: 0 0% 9%;
     --speaker-user: 217 91% 60%;
     --speaker-interviewer: 25 95% 53%;
+    --translation-text: 43 96% 56%;
   }
 }
 

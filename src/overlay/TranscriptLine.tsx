@@ -16,6 +16,7 @@ import { TranscriptContextMenu } from "./TranscriptContextMenu";
 import { showBookmarkToast } from "./BookmarkToast";
 import { defaultRemoteSpeakerName, remoteKeyOf, remoteSpeakerColor } from "../lib/speakerLabels";
 import { lineTranslation } from "../lib/translation/display";
+import { textColor } from "../lib/themeColors";
 import { useT } from "../i18n";
 
 // Module-level singleton: ensures only one hover tooltip is visible at a time.
@@ -313,7 +314,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
               ? "border-b border-dotted border-white/30 opacity-70"
               : ""
           }`}
-          style={{ fontSize: `${transcriptFontSize}px`, color: segment.is_final ? transcriptTextColor : undefined }}
+          style={{ fontSize: `${transcriptFontSize}px`, color: segment.is_final ? textColor(transcriptTextColor, "#e4e4e7") : undefined }}
           title={
             isLowConfidence
               ? t("line.confidence", { percent: Math.round(segment.confidence * 100) })
@@ -330,7 +331,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
 
         {/* Inline translation — visible below the original text */}
         {displayMode === "inline" && (
-          <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
+          <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px`, color: textColor(translationTextColor, "#fbbf24") }}>
             {translation.text ? (
               <>
                 {/* Dimmed while a longer version is on its way or the engine is still streaming it. */}

@@ -71,6 +71,7 @@ export function ColorPickerButton({ value, onChange, label }: ColorPickerButtonP
       {open && createPortal(
         <div
           ref={ref}
+          data-color-picker-portal
           className="fixed z-[9999] rounded-lg border border-white/10 p-2.5 shadow-2xl shadow-black/60"
           style={{
             backgroundColor: '#111122',

@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
+import { textColor } from "../lib/themeColors";
 import { createPortal } from "react-dom";
 import { useStreamStore } from "../stores/streamStore";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -62,6 +63,7 @@ export function AIResponsePanel() {
 
   const aiResponseFontSize = useConfigStore((s) => s.aiResponseFontSize ?? 12);
   const aiResponseTextColor = useConfigStore((s) => s.aiResponseTextColor ?? "#d4d4d8");
+  const answerColor = textColor(aiResponseTextColor, "#d4d4d8");
   const aiResponseLineHeight = useConfigStore((s) => s.aiResponseLineHeight ?? 1.6);
   const aiResponseHPad = useConfigStore((s) => s.aiResponseHPad ?? 0);
   const aiResponseAlign = useConfigStore((s) => s.aiResponseAlign ?? "left");
@@ -73,7 +75,7 @@ export function AIResponsePanel() {
 
   const proseStyle = {
     fontSize: `${aiResponseFontSize}px`,
-    color: aiResponseTextColor,
+    color: answerColor,
     lineHeight: aiResponseLineHeight,
     paddingLeft: `${aiResponseHPad}px`,
     paddingRight: `${aiResponseHPad}px`,
