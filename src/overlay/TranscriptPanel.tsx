@@ -3,7 +3,11 @@
 
 import { useEffect, useLayoutEffect, useRef, useCallback, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useTranscriptStore } from "../stores/transcriptStore";
+import {
+  clearAutoScrollJump,
+  isAutoScrollJumpActive,
+  useTranscriptStore,
+} from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
 import { useConfigStore } from "../stores/configStore";
@@ -51,6 +55,7 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollAnimRef = useRef<number>(0);
   const isAnimatingRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
   const [typesetOpen, setTypesetOpen] = useState(false);
   const typesetBtnRef = useRef<HTMLButtonElement>(null);
   const typesetPopRef = useRef<HTMLDivElement>(null);
@@ -109,11 +114,16 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
     const startTime = performance.now();
 
     const step = (now: number) => {
+      if (!useTranscriptStore.getState().autoScroll) {
+        isAnimatingRef.current = false;
+        return;
+      }
       const elapsed = now - startTime;
       const progress = Math.min(elapsed / duration, 1);
       // Exponential ease-out: fast start, gentle deceleration
       const eased = 1 - Math.pow(1 - progress, 3);
       el.scrollTop = start + distance * eased;
+      lastScrollTopRef.current = el.scrollTop;
       if (progress < 1) {
         scrollAnimRef.current = requestAnimationFrame(step);
       } else {
@@ -131,20 +141,29 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
     };
   }, []);
 
-  // Auto-scroll to bottom when new segments arrive (if autoScroll is on)
-  useEffect(() => {
-    if (autoScroll && segments.length > 0) {
-      scrollToBottom();
-    }
-  }, [segments, autoScroll, scrollToBottom]);
-
-  // Cancel programmatic animation when user manually scrolls (wheel/touch)
+  // Cancel programmatic animation when user manually scrolls (wheel/touch) or auto-scroll pauses
   const cancelScrollAnimation = useCallback(() => {
     if (isAnimatingRef.current) {
       cancelAnimationFrame(scrollAnimRef.current);
       isAnimatingRef.current = false;
     }
   }, []);
+
+  const handleUserScroll = useCallback(() => {
+    cancelScrollAnimation();
+    clearAutoScrollJump();
+  }, [cancelScrollAnimation]);
+
+  // Auto-scroll to bottom when new segments arrive (if autoScroll is on)
+  useEffect(() => {
+    if (!autoScroll) {
+      cancelScrollAnimation();
+      return;
+    }
+    if (segments.length > 0) {
+      scrollToBottom();
+    }
+  }, [segments, autoScroll, scrollToBottom, cancelScrollAnimation]);
 
   // Detect manual scroll: if user scrolls up, pause auto-scroll.
   // If they scroll back to the bottom, resume it.
@@ -154,11 +173,16 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
     const el = scrollRef.current;
     if (!el) return;
 
+    const prevTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = el.scrollTop;
+
     const isAtBottom =
       Math.abs(el.scrollHeight - el.scrollTop - el.clientHeight) < 30; // i18n-ignore: a comparison, not text
 
     if (isAtBottom && !autoScroll) {
-      setAutoScroll(true);
+      if (el.scrollTop >= prevTop && !isAutoScrollJumpActive()) {
+        setAutoScroll(true);
+      }
     } else if (!isAtBottom && autoScroll) {
       setAutoScroll(false);
     }
@@ -385,8 +409,8 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        onWheel={cancelScrollAnimation}
-        onTouchMove={cancelScrollAnimation}
+        onWheel={handleUserScroll}
+        onTouchMove={handleUserScroll}
         data-scroll-container
         className="absolute inset-0 overflow-y-auto px-1 pt-1 pb-6"
       >

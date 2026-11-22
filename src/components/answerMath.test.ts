@@ -74,4 +74,37 @@ describe("prepareMath", () => {
     const text = "# Plan\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |";
     expect(prepareMath(text)).toBe(text);
   });
+
+  it("leaves 4-space and tab indented code blocks untouched while still converting prose math", () => {
+    const indented = 'Run this:\n\n    echo "$HOME/$USER"\n\nThen $x^2$ and \\( \\pi r^2 \\).';
+    expect(prepareMath(indented)).toBe('Run this:\n\n    echo "$HOME/$USER"\n\nThen $$x^2$$ and $$\\pi r^2$$.');
+
+    const atStart = '    echo "$HOME/$USER"\n\n\\[\nE = mc^2\n\\]';
+    expect(prepareMath(atStart)).toBe('    echo "$HOME/$USER"\n\n$$\nE = mc^2\n$$');
+
+    const tabbed = 'Run:\n\n\techo "$HOME/$USER"\n\nArea $a + b$.';
+    expect(prepareMath(tabbed)).toBe('Run:\n\n\techo "$HOME/$USER"\n\nArea $$a + b$$.');
+
+    // Inside a list item, 6 spaces (2 for `- ` + 4) is an indented code block,
+    // while 4 spaces inside a nested list is continuation prose (still math).
+    const insideList = '- item\n\n      echo "$HOME/$USER"\n\n- outer\n  - inner\n\n    $x^2$';
+    expect(prepareMath(insideList)).toBe('- item\n\n      echo "$HOME/$USER"\n\n- outer\n  - inner\n\n    $$x^2$$');
+  });
+
+  it("leaves fenced code blocks immediately following a list marker untouched while still converting prose math", () => {
+    const bulletFence = '- ```bash\n  echo "$HOME/$USER"\n  ```\n\nFormula $x^2$ and \\( a + b \\).';
+    expect(prepareMath(bulletFence)).toBe('- ```bash\n  echo "$HOME/$USER"\n  ```\n\nFormula $$x^2$$ and $$a + b$$.');
+
+    const orderedFence = '1. ```sh\n   echo "$HOME/$USER"\n   ```\n\n\\[\nN = B + rT\n\\]';
+    expect(prepareMath(orderedFence)).toBe('1. ```sh\n   echo "$HOME/$USER"\n   ```\n\n$$\nN = B + rT\n$$');
+
+    const secondOrderedFence = '1. First step\n2. ```bash\n   echo "$HOME/$USER"\n   ```\n\nAfter $x^2$.';
+    expect(prepareMath(secondOrderedFence)).toBe('1. First step\n2. ```bash\n   echo "$HOME/$USER"\n   ```\n\nAfter $$x^2$$.');
+
+    const tildeFence = '- ~~~bash\n  echo "$HOME/$USER"\n  ~~~\n\nAfter \\( y \\).';
+    expect(prepareMath(tildeFence)).toBe('- ~~~bash\n  echo "$HOME/$USER"\n  ~~~\n\nAfter $$y$$.');
+
+    const quotedListFence = '> - ```bash\n>   echo "$HOME/$USER"\n>   ```\n\nOutside $z^2$.';
+    expect(prepareMath(quotedListFence)).toBe('> - ```bash\n>   echo "$HOME/$USER"\n>   ```\n\nOutside $$z^2$$.');
+  });
 });

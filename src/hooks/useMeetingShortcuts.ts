@@ -33,9 +33,9 @@ export function useMeetingShortcuts(actions: ShortcutActions) {
         return;
       }
 
-      // Ctrl+B: bookmark (keep existing shortcut)
-      if (e.ctrlKey && e.key === "b" && !e.shiftKey && !e.altKey) {
-        if (isInput) return;
+      // Ctrl+B: bookmark (keep existing shortcut, avoid duplicating useBookmarkHotkey)
+      if (e.ctrlKey && e.key.toLowerCase() === "b" && !e.shiftKey && !e.altKey && !e.metaKey) {
+        if (e.defaultPrevented || isInput) return;
         e.preventDefault();
         actions.addBookmark();
         return;

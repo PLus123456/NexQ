@@ -5,6 +5,8 @@
 import { useEffect, useCallback } from "react";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useBookmarkStore } from "../stores/bookmarkStore";
+import { useTranscriptStore } from "../stores/transcriptStore";
+import { findNearestSegment } from "../lib/bookmarkTarget";
 import { showBookmarkToast } from "../overlay/BookmarkToast";
 
 export function useBookmarkHotkey(): () => void {
@@ -14,17 +16,20 @@ export function useBookmarkHotkey(): () => void {
 
   const addBookmarkAtNow = useCallback(() => {
     if (!isRecording || !meetingStartTime) return;
-    const offsetMs = Date.now() - meetingStartTime;
-    const bookmark = addBookmark(offsetMs);
+    const now = Date.now();
+    const offsetMs = Math.max(0, now - meetingStartTime);
+    const segments = useTranscriptStore.getState().segments;
+    const target = findNearestSegment(segments, offsetMs, meetingStartTime);
+    const bookmark = addBookmark(now, undefined, target?.id);
     showBookmarkToast(bookmark.id, offsetMs);
   }, [isRecording, meetingStartTime, addBookmark]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "b" && !e.shiftKey && !e.altKey) {
+      if (e.ctrlKey && e.key.toLowerCase() === "b" && !e.shiftKey && !e.altKey && !e.metaKey) {
         // Only fire when recording; don't fire in input/textarea elements
-        const target = e.target as HTMLElement;
-        const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+        const target = e.target as HTMLElement | null;
+        const isInput = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
         if (!isRecording || isInput) return;
         e.preventDefault();
         addBookmarkAtNow();

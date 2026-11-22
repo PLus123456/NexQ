@@ -1,33 +1,57 @@
 import { useT } from "../i18n";
 import { useBookmarkStore } from "../stores/bookmarkStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { pauseAutoScrollForJump, useTranscriptStore } from "../stores/transcriptStore";
+import { resolveBookmarkSegmentId, toElapsedMs } from "../lib/bookmarkTarget";
 import { formatDurationLong } from "../lib/utils";
 import { Bookmark, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { MeetingBookmark } from "../lib/types";
 
+let activeJumpToken = 0;
+
+function escapeAttrValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
+}
+
 /** Scroll to a transcript line by segment ID and briefly highlight it */
 function highlightSegment(segmentId: string): boolean {
-  const el = document.querySelector(`[data-segment-id="${segmentId}"]`);
+  const el = document.querySelector(`[data-segment-id="${escapeAttrValue(segmentId)}"]`);
   if (!el) return false;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  pauseAutoScrollForJump();
+  el.scrollIntoView?.({ behavior: "smooth", block: "center" });
   el.classList.add("ring-1", "ring-primary/40");
   setTimeout(() => el.classList.remove("ring-1", "ring-primary/40"), 1500);
   return true;
 }
 
 /**
- * Jump to a bookmarked line. The transcript can be closed (the answer window
- * shows it on demand): `openTranscript` opens it, and the jump happens once
- * the line has rendered.
+ * Jump to a bookmarked line. Disables transcript auto-scroll first so opening
+ * the drawer (or an in-flight bottom scroll) does not pull the viewport back
+ * to the latest line. Falls back to the nearest line by in-meeting time when
+ * a bookmark has no `segment_id`.
  */
-function scrollToSegment(segmentId: string | undefined, openTranscript?: () => void) {
-  if (!segmentId || highlightSegment(segmentId)) return;
-  if (!openTranscript) return;
-  openTranscript();
+function scrollToBookmark(bookmark: MeetingBookmark, openTranscript?: () => void) {
+  const { segments, searchQuery, setSearchQuery } = useTranscriptStore.getState();
+  const meetingStartTime = useMeetingStore.getState().meetingStartTime;
+  const targetId = resolveBookmarkSegmentId(bookmark, segments, meetingStartTime);
+  if (!targetId) return;
+
+  const token = ++activeJumpToken;
+  pauseAutoScrollForJump();
+  if (highlightSegment(targetId)) return;
+
+  const clearedSearch = searchQuery.trim().length > 0;
+  if (clearedSearch) setSearchQuery("");
+  if (!openTranscript && !clearedSearch) return;
+  openTranscript?.();
+
   let tries = 0;
   const retry = () => {
-    if (highlightSegment(segmentId) || ++tries >= 10) return;
+    if (token !== activeJumpToken) return;
+    if (highlightSegment(targetId) || ++tries >= 10) return;
     requestAnimationFrame(retry);
   };
   requestAnimationFrame(retry);
@@ -39,7 +63,9 @@ export function BookmarkPanel({ onOpenTranscript }: { onOpenTranscript?: () => v
   const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
   const updateBookmarkNote = useBookmarkStore((s) => s.updateBookmarkNote);
   const meetingStartTime = useMeetingStore((s) => s.meetingStartTime);
-  const sorted = [...bookmarks].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+  const sorted = [...bookmarks].sort(
+    (a, b) => toElapsedMs(a.timestamp_ms, meetingStartTime) - toElapsedMs(b.timestamp_ms, meetingStartTime),
+  );
 
   if (sorted.length === 0) {
     return (
@@ -90,15 +116,13 @@ function BookmarkRow({
   const [editNote, setEditNote] = useState(bookmark.note ?? "");
   const [editing, setEditing] = useState(false);
 
-  // Convert epoch timestamp to elapsed time since meeting start
-  const elapsedMs = meetingStartTime
-    ? Math.max(0, bookmark.timestamp_ms - meetingStartTime)
-    : bookmark.timestamp_ms;
+  // Convert epoch or legacy offset timestamp to elapsed time since meeting start
+  const elapsedMs = toElapsedMs(bookmark.timestamp_ms, meetingStartTime);
 
   return (
     <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-secondary/20">
       <button
-        onClick={() => scrollToSegment(bookmark.segment_id, onOpenTranscript)}
+        onClick={() => scrollToBookmark(bookmark, onOpenTranscript)}
         className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 hover:bg-primary/20 transition-colors cursor-pointer"
         title={t("bookmarks.panel.jump")}
       >

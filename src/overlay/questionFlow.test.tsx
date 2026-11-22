@@ -173,6 +173,13 @@ function youSay(text: string, id = "you_1", is_final = false) {
   ));
 }
 
+/** The other party said `text` (line `id` in the transcript store). */
+function themSay(text: string, id = "them_1", is_final = true) {
+  act(() => useTranscriptStore.getState().updateInterimSegment(
+    { id, text, speaker: "Them", timestamp_ms: 1, is_final, confidence: 1 } as TranscriptSegment,
+  ));
+}
+
 // ── time and answers ──────────────────────────────────────────────────────
 
 /** Lets queued Auto-Answer steps (and their stops) finish. */
@@ -622,6 +629,67 @@ describe("rule 4: you are already answering", () => {
     await later(8000);
     expect(cancelGeneration).not.toHaveBeenCalled();
     expect(shown()).toEqual([["How would you design the cache?", "answering"]]);
+  });
+
+  it("holds the card when you already spoke 12 words before the model's first confirmation arrives", async () => {
+    const { answer, shown } = mountFlow();
+    themSay("How would you design the cache?", "them_1");
+    youSay("So I think the first thing I would look at is how the", "you_1", true);
+    upsert("q1", "How would you design the cache?", { line_id: "them_1" });
+    await settle();
+    expect(runUserAction).not.toHaveBeenCalled();
+    expect(shown()).toEqual([["How would you design the cache?", "held"]]);
+
+    // Still clickable manually if the user wants an answer.
+    answer("How would you design the cache?");
+    await settle();
+    expect(askedFor()).toEqual(["How would you design the cache?"]);
+  });
+
+  it("holds the card when you spoke effectively for over 6 seconds before model confirmation arrives", async () => {
+    const { shown } = mountFlow();
+    themSay("How would you design the cache?", "them_1");
+    youSay("I think that's a", "you_1");
+    await later(6500);
+    youSay("I think that's a good", "you_1");
+    upsert("q1", "How would you design the cache?", { line_id: "them_1" });
+    await settle();
+    expect(runUserAction).not.toHaveBeenCalled();
+    expect(shown()).toEqual([["How would you design the cache?", "held"]]);
+  });
+
+  it("holds the card when effective speech spans over 6 seconds across separate finalized lines before confirmation", async () => {
+    const { shown } = mountFlow();
+    themSay("How would you design the cache?", "them_1");
+    youSay("First I look at read ratio", "you_1", true);
+    await later(6500);
+    youSay("Then I choose eviction policy", "you_2", true);
+    upsert("q1", "How would you design the cache?", { line_id: "them_1" });
+    await settle();
+    expect(runUserAction).not.toHaveBeenCalled();
+    expect(shown()).toEqual([["How would you design the cache?", "held"]]);
+  });
+
+  it("still auto-answers when you only gave short replies like 嗯 / 好的 before model confirmation", async () => {
+    mountFlow();
+    themSay("你怎么设计这个缓存系统？", "them_1");
+    youSay("嗯", "you_1", true);
+    await later(4000);
+    youSay("好的", "you_2", true);
+    await later(4000);
+    youSay("嗯", "you_3", true);
+    upsert("q1", "你怎么设计这个缓存系统？", { line_id: "them_1" });
+    await settle();
+    expect(askedFor()).toEqual(["你怎么设计这个缓存系统？"]);
+  });
+
+  it("does not count words spoken before the interviewer's question line arrived", async () => {
+    mountFlow();
+    youSay("Before that I spent two years running the platform team at a fintech startup.", "you_0", true);
+    themSay("What did the platform team own?", "them_1");
+    upsert("q1", "What did the platform team own?", { line_id: "them_1" });
+    await settle();
+    expect(askedFor()).toEqual(["What did the platform team own?"]);
   });
 });
 

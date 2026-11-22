@@ -406,12 +406,9 @@ impl QuestionDetectionService {
                         .on_detection(app, &[]);
                 }
             }
-            publish(
-                app,
-                &state.core,
-                observed.events,
-                mode == Some(DetectionMode::Rules),
-            );
+            if observed.assist_changed || !observed.events.is_empty() {
+                publish(app, &state.core, observed.events, mode == Some(DetectionMode::Rules));
+            }
             if state.core.next_start_ms().is_none() || state.worker_running {
                 return;
             }
@@ -549,9 +546,6 @@ fn publish(
     mut events: Vec<QuestionEvent>,
     confirmed_rules: bool,
 ) {
-    if events.is_empty() {
-        return;
-    }
     prepare_events(&mut events, confirmed_rules, |texts| {
         app.state::<QuestionPredictionService>()
             .on_detection(app, texts)

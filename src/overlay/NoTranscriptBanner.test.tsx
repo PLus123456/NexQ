@@ -1,28 +1,46 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AudioLevelEvent, MeetingAudioConfig } from "../lib/types";
 
-const { levelHandler, logToFile } = vi.hoisted(() => ({
-  levelHandler: { current: null as ((e: AudioLevelEvent) => void) | null },
+const { levelHandlers, logToFile } = vi.hoisted(() => ({
+  levelHandlers: new Set<(e: AudioLevelEvent) => void>(),
   logToFile: vi.fn(),
 }));
 
-vi.mock("../lib/events", () => ({
+vi.mock("../lib/events", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/events")>()),
   onAudioLevel: (handler: (e: AudioLevelEvent) => void) => {
-    levelHandler.current = handler;
+    levelHandlers.add(handler);
     return Promise.resolve(() => {
-      levelHandler.current = null;
+      levelHandlers.delete(handler);
     });
   },
 }));
 vi.mock("../lib/logger", () => ({ logToFile }));
 
 import { NoTranscriptBanner } from "./NoTranscriptBanner";
+import { OverlayView } from "./OverlayView";
 import { addLevel, EMPTY_WATCH, NO_TRANSCRIPT_AFTER_MS, shouldWarn } from "../lib/sttWatchdog";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
+
+beforeAll(() => {
+  mockWindows("overlay");
+  mockIPC(() => []);
+  Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} } });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  Element.prototype.scrollTo = () => {};
+});
 
 const audioConfig: MeetingAudioConfig = {
   you: { role: "You", device_id: "mic", is_input_device: true, stt_provider: "web_speech" },
@@ -36,7 +54,9 @@ function hear(source: AudioLevelEvent["source"], seconds: number, level = 0.4) {
   for (let t = 0; t < seconds * 1000; t += 150) {
     act(() => {
       vi.advanceTimersByTime(150);
-      levelHandler.current?.({ source, level, peak: level });
+      for (const handler of [...levelHandlers]) {
+        handler({ source, level, peak: level });
+      }
     });
   }
 }
@@ -106,5 +126,52 @@ describe("NoTranscriptBanner", () => {
       });
     });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("tracks 30s of audio while the OverlayView transcript drawer stays closed, logs once, shows immediately on open, and never re-logs across drawer toggles", async () => {
+    useMeetingStore.setState({
+      isRecording: true,
+      audioMode: "online",
+      currentView: "overlay",
+      activeMeeting: { id: "m-closed-drawer", title: "Standup" } as never,
+    });
+
+    render(<OverlayView />);
+    await act(async () => {});
+
+    // Transcript drawer starts closed.
+    expect(screen.queryByTestId("transcript-drawer")).toBeNull();
+
+    // Feed 31 seconds of audio with no transcript while the drawer remains closed.
+    hear("System", 31);
+    expect(logToFile).toHaveBeenCalledTimes(1);
+    expect(logToFile.mock.calls[0][2]).toMatch(/'Them' audio heard .* parakeet_tdt returned no transcript/);
+
+    // Open the drawer: warning banner appears immediately without needing more audio.
+    fireEvent.click(screen.getByRole("button", { name: "Show transcript" }));
+    expect(screen.getByTestId("transcript-drawer")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("No transcript from Them");
+    expect(screen.getByRole("alert")).toHaveTextContent("Parakeet TDT");
+    expect(logToFile).toHaveBeenCalledTimes(1);
+
+    // Repeatedly close and reopen the drawer: alert stays visible and never logs again.
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "Hide transcript" }));
+      expect(screen.queryByTestId("transcript-drawer")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show transcript" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("No transcript from Them");
+    }
+    expect(logToFile).toHaveBeenCalledTimes(1);
+
+    // Dismissing persists across drawer toggles, and closing the drawer keeps watching the other party.
+    fireEvent.click(screen.getByRole("button", { name: /Dismiss the Them/ }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Hide transcript" }));
+    hear("Mic", 31);
+    expect(logToFile).toHaveBeenCalledTimes(2);
+    expect(logToFile.mock.calls[1][2]).toMatch(/'You' audio heard .* web_speech returned no transcript/);
+    fireEvent.click(screen.getByRole("button", { name: "Show transcript" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("No transcript from You");
+    expect(logToFile).toHaveBeenCalledTimes(2);
   });
 });

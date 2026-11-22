@@ -100,6 +100,16 @@ struct Span {
     is_final: bool,
 }
 
+impl Span {
+    /// End offset and supporting speech for a verbatim ending quoted by the detector.
+    fn anchor(&self, quote: &str) -> Option<(usize, &str)> {
+        let start = self.text.rfind(quote)?;
+        let end = start + quote.len();
+        let lead = self.text[..start].rsplit(sentence_end).next()?.trim_start();
+        Some((end, &self.text[start - lead.len()..end]))
+    }
+}
+
 #[derive(Debug)]
 pub struct Request {
     serial: u64,
@@ -180,6 +190,8 @@ struct Line {
     sent: usize,
     // Successful model decisions cover this prefix, including valid vetoes.
     reviewed: usize,
+    // An unreviewed question in this line can supersede the one used by manual Assist.
+    pending_question: bool,
     is_final: bool,
     trigger: Option<&'static str>,
 }
@@ -190,6 +202,11 @@ impl Line {
     }
     fn delta(&self) -> &str {
         &self.text[self.sent..self.stable]
+    }
+    fn refresh_pending_question(&mut self) -> bool {
+        let tail = self.text[self.reviewed..].trim();
+        let pending = !tail.is_empty() && looks_like_new_question(tail);
+        std::mem::replace(&mut self.pending_question, pending) != pending
     }
     fn separates_turns(&self) -> bool {
         self.source == "You" && word_count(self.stable_text()) >= 4
@@ -213,6 +230,15 @@ struct Tracked {
     answered: bool,
     provisional: bool,
     end: usize,
+    // Verbatim from the start of the source sentence through the model's quote.
+    // A short quote such as "the project" can survive a change of meaning.
+    source_excerpt: String,
+}
+
+impl Tracked {
+    fn displaced_in(&self, order: u64, text: &str) -> bool {
+        self.order == order && !text.contains(&self.source_excerpt)
+    }
 }
 
 pub struct RuleCheck {
@@ -224,6 +250,7 @@ pub struct RuleCheck {
 pub struct Observation {
     pub events: Vec<QuestionEvent>,
     pub rule_check: Option<RuleCheck>,
+    pub assist_changed: bool,
 }
 
 #[derive(Default)]
@@ -353,24 +380,47 @@ const NOT_A_NAME: &[&str] = &[
 /// Lead-ins skipped before looking for a name ("Um, Rafael, …").
 const LEAD_INS: &[&str] = &["um", "uh", "so", "and", "okay", "ok", "alright", "right", "well", "oh", "now"];
 
-/// Phrases of a question about the meeting itself, not for an answer from the
-/// user's notes ("Can you go back to the last slide?", "Can you hear me?").
-const MEETING_REQUESTS: &[&str] = &[
-    "slide", "screen", "share your", "go back", "move on", "next page", "previous page", "scroll",
-    "zoom in", "zoom out", "mute", "hear me", "hear us", "see me", "see us", "see my", "camera",
-    "下一页", "上一页", "共享屏幕", "分享屏幕", "翻到", "听得到", "听得见", "看得到", "看得见",
-];
-
-/// Whether `phrase` occurs in `text` as whole words ("mute" is not in
-/// "commute"). CJK phrases have no word boundaries and match anywhere.
-fn has_phrase(text: &str, phrase: &str) -> bool {
-    if phrase.chars().any(cjk) {
-        return text.contains(phrase);
+/// Match the requested action, so interview topics such as cameras, screens
+/// and sharing an experience still reach the ordinary question rules.
+fn meeting_request(sentence: &str) -> bool {
+    const ACTIONS: &[&str] = &[
+        "share your screen", "share the screen", "share your slides", "show your screen",
+        "stop sharing your screen", "mind sharing your screen", "hear me", "hear us",
+        "see me", "see us", "see my screen", "see my slides", "see the slides",
+        "mute yourself", "unmute yourself", "mute your mic", "unmute your mic",
+        "mute your microphone", "unmute your microphone",
+        "turn on your camera", "turn off your camera", "turn your camera on", "turn your camera off",
+        "scroll up", "scroll down", "zoom in", "zoom out",
+    ];
+    let request = ["can you ", "could you ", "would you ", "will you ", "can we ", "could we ",
+        "can everyone ", "can everybody "]
+        .iter()
+        .find_map(|prefix| sentence.strip_prefix(prefix))
+        .unwrap_or(sentence);
+    let action = request.trim_start_matches("please ").trim_start_matches("just ");
+    if matches!(action.trim_end_matches(['?', '.', '!']), "mute" | "unmute" | "move on") {
+        return true;
     }
-    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
-    text.match_indices(phrase).any(|(at, _)| {
-        boundary(text[..at].chars().next_back()) && boundary(text[at + phrase.len()..].chars().next())
-    })
+    if ACTIONS.iter().any(|phrase| {
+        action.strip_prefix(phrase).is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
+    }) {
+        return true;
+    }
+    let target = ["go back to ", "go back ", "go to ", "move on to ", "move to ", "switch to ",
+        "return to ", "turn to ", "advance to ", "scroll to ", "show me ", "show us ", "show "]
+        .iter()
+        .find_map(|prefix| action.strip_prefix(prefix));
+    if let Some(target) = target {
+        let noun = words(target).map(|(_, w)| w).find(|w| !matches!(
+            *w, "a" | "the" | "your" | "my" | "one" | "next" | "previous" | "last" | "first" | "second" | "third"
+        ));
+        if matches!(noun, Some("slide" | "page")) {
+            return true;
+        }
+    }
+    ["下一页", "上一页", "共享屏幕", "分享屏幕", "翻到", "听得到", "听得见", "看得到", "看得见"]
+        .iter()
+        .any(|phrase| sentence.contains(phrase))
 }
 
 /// Endings that turn a statement into a request for a yes ("…, right?").
@@ -385,25 +435,23 @@ const TAGS: &[&str] = &[
 /// ("Can you go back to the last slide?") or only a tag ("…, right?"). The
 /// model still judges it.
 fn rules_skip(sentence: &str) -> bool {
-    let trimmed = sentence.trim();
+    let mut trimmed = sentence.trim();
+    while let Some((word, rest)) = trimmed.split_once([',', ' ']) {
+        if !LEAD_INS.contains(&word.to_ascii_lowercase().as_str()) {
+            break;
+        }
+        trimmed = rest.trim_start_matches([',', ' ']);
+    }
     let lower = trimmed.to_lowercase();
-    if MEETING_REQUESTS.iter().any(|p| has_phrase(&lower, p)) || TAGS.iter().any(|t| lower.ends_with(t)) {
+    if meeting_request(&lower) || TAGS.iter().any(|t| lower.ends_with(t)) {
         return true;
     }
     // A name, or a title, followed by a comma: "Rafael, …", "Doctor, …".
-    let mut rest = trimmed;
-    loop {
-        let Some((first, after)) = rest.split_once(',') else { return false };
-        let word = first.trim();
-        let lower = word.to_lowercase();
-        if LEAD_INS.contains(&lower.as_str()) {
-            rest = after;
-            continue;
-        }
-        let one_word = !word.is_empty() && !word.contains(char::is_whitespace);
-        let capitalised = word.chars().next().is_some_and(char::is_uppercase);
-        return one_word && capitalised && !NOT_A_NAME.contains(&lower.as_str());
-    }
+    let Some((first, _)) = trimmed.split_once(',') else { return false };
+    let word = first.trim();
+    let one_word = !word.is_empty() && !word.contains(char::is_whitespace);
+    let capitalised = word.chars().next().is_some_and(char::is_uppercase);
+    one_word && capitalised && !NOT_A_NAME.contains(&word.to_lowercase().as_str())
 }
 
 fn rule(span: &Span) -> Option<ModelQuestion> {
@@ -444,12 +492,39 @@ impl QuestionCore {
             .collect()
     }
 
+    /// The question manual Assist can use now. Earlier questions stay in the
+    /// history while a newer utterance is waiting for a model decision.
     pub fn latest_complete(&self) -> Option<&DetectedQuestionV2> {
-        self.questions
-            .iter()
-            .filter(|q| q.question.complete)
-            .max_by_key(|q| (q.order, q.end))
-            .map(|q| &q.question)
+        let latest = self.questions.iter().max_by_key(|q| (q.order, q.end))?;
+        if !latest.question.complete {
+            return None;
+        }
+        for line in self.lines.iter().rev().take_while(|l| l.order >= latest.order) {
+            if line.is_final && latest.displaced_in(line.order, &line.text) {
+                return None;
+            }
+            // A second question can also start after a complete sentence in
+            // the same growing STT paragraph.
+            let new_sentence = line.reviewed >= latest.end
+                && line.text[..line.reviewed].trim_end().ends_with(sentence_end);
+            if line.pending_question && (line.order > latest.order || new_sentence) {
+                return None;
+            }
+        }
+        Some(&latest.question)
+    }
+
+    fn retract_displaced(&mut self, order: u64, text: &str, events: &mut Vec<QuestionEvent>) {
+        self.questions.retain(|q| {
+            if q.displaced_in(order, text) {
+                events.push(QuestionEvent::Remove {
+                    id: q.question.id.clone(),
+                    reason: RemoveReason::Superseded,
+                });
+                return false;
+            }
+            true
+        });
     }
 
     pub fn question_id(&self, text: &str) -> Option<&str> {
@@ -508,6 +583,7 @@ impl QuestionCore {
                     stable: 0,
                     sent: 0,
                     reviewed: 0,
+                    pending_question: false,
                     is_final: false,
                     trigger: None,
                 });
@@ -536,6 +612,25 @@ impl QuestionCore {
             line.sent = stable;
             return observation;
         };
+        let displaced = ended && self.questions.iter().any(|q| q.displaced_in(line.order, update.text));
+        if mode != DetectionMode::Rules {
+            observation.assist_changed = line.refresh_pending_question();
+        }
+        if displaced {
+            if !substantive(update.text) {
+                let order = line.order;
+                self.retract_displaced(order, update.text, &mut observation.events);
+                return observation;
+            }
+            if mode != DetectionMode::Rules {
+                // A correction can shorten the final or change only its last word.
+                // Reconsider it even when there is no new suffix to send.
+                line.sent = 0;
+                line.trigger = Some("corrected_final");
+                observation.assist_changed = true;
+                return observation;
+            }
+        }
         if (!changed && !ended) || !substantive(line.stable_text()) {
             return observation;
         }
@@ -598,6 +693,9 @@ impl QuestionCore {
                     mode == DetectionMode::Hybrid,
                     &mut observation.events,
                 );
+            }
+            if displaced {
+                self.retract_displaced(span.order, &span.text, &mut observation.events);
             }
         }
         observation
@@ -690,7 +788,9 @@ impl QuestionCore {
                 text: q.question.text.clone(),
                 status: if q.answered {
                     "answered"
-                } else if q.provisional || !q.question.complete {
+                } else if q.provisional || !q.question.complete
+                    || spans.iter().any(|s| s.is_final && q.displaced_in(s.order, &s.text))
+                {
                     "detecting"
                 } else {
                     "open"
@@ -736,10 +836,7 @@ impl QuestionCore {
         events: &mut Vec<QuestionEvent>,
     ) {
         let quote = ending_quote(&item.quote);
-        let end = span
-            .text
-            .rfind(quote)
-            .map_or(span.text.len(), |i| i + quote.len());
+        let Some((end, source_excerpt)) = span.anchor(quote) else { return };
         let at = self.questions.iter().rposition(|q| {
             if q.question.line_id != span.id {
                 return false;
@@ -764,7 +861,10 @@ impl QuestionCore {
                     .rposition(|q| !q.answered && similar(&q.question.text, &item.text))
             });
         if origin == Origin::Rules
-            && existing.is_some_and(|i| self.questions[i].question.origin == Origin::Model)
+            && existing.is_some_and(|i| {
+                let q = &self.questions[i];
+                q.question.origin == Origin::Model && !q.displaced_in(span.order, &span.text)
+            })
         {
             return;
         }
@@ -803,6 +903,7 @@ impl QuestionCore {
             answered,
             provisional,
             end,
+            source_excerpt: source_excerpt.to_owned(),
         });
         events.push(QuestionEvent::Upsert { question });
     }
@@ -829,33 +930,33 @@ impl QuestionCore {
                 .into_iter()
                 .map(|q| {
                     let quote = ending_quote(&q.quote);
-                    let span = req
+                    let (span, excerpt) = req
                         .spans
                         .iter()
                         .rev()
-                        .find(|s| {
-                            s.text
-                                .rfind(quote)
-                                .is_some_and(|i| i + quote.len() > s.start)
+                        .find_map(|s| {
+                            let (end, excerpt) = s.anchor(quote)?;
+                            (end > s.start).then_some((s, excerpt))
                         })
                         .ok_or(Failure::Invalid)?;
-                    Ok((span, q))
+                    Ok((span, excerpt, q))
                 })
                 .collect::<Result<Vec<_>, _>>()
         });
         let result = match located {
             Ok(items) => {
                 for span in &req.spans {
-                    if let Some(line) = self.lines.iter_mut().find(|l| l.id == span.id) {
+                    if let Some(line) = self.lines.iter_mut().find(|l| l.order == span.order) {
                         line.reviewed = line
                             .reviewed
                             .max(prefix_len(&span.text, line.stable_text()));
+                        line.refresh_pending_question();
                     }
                 }
                 let mut label = "none";
-                for (span, item) in items {
+                for (span, excerpt, item) in items {
                     if self.lines.iter().any(|l| {
-                        l.id == span.id && !l.stable_text().contains(ending_quote(&item.quote))
+                        l.order == span.order && !l.stable_text().contains(excerpt)
                     }) {
                         // This particular ending was corrected while the model ran.
                         // Other questions in the same snapshot can still be valid.
@@ -892,15 +993,10 @@ impl QuestionCore {
             }
             Err(failure) => {
                 for span in &req.spans {
-                    let mut final_now = false;
-                    if let Some(line) = self.lines.iter_mut().find(|l| l.id == span.id) {
-                        final_now = line.is_final && line.text == span.text;
-                        if !span.is_final && !final_now {
-                            // Retry the undecided words on the next trigger or pause.
-                            line.sent = line.sent.min(span.start);
-                        }
-                    }
-                    if span.is_final || final_now {
+                    let Some(line) = self.lines.iter_mut().find(|l| l.order == span.order) else { continue };
+                    if (span.is_final && line.stable_text().starts_with(&span.text))
+                        || (line.is_final && line.text == span.text)
+                    {
                         let item = rule(span);
                         fallback_rules.push(RuleCheck {
                             new_chars: span.text[span.start..].chars().count(),
@@ -916,11 +1012,21 @@ impl QuestionCore {
                                 &mut events,
                             );
                         }
+                    } else {
+                        // Retry the undecided words on the next trigger or pause.
+                        line.sent = line.sent.min(span.start);
                     }
                 }
                 failure.label()
             }
         };
+        // A revision can reuse its question ID first. An older snapshot must
+        // never withdraw a question that belongs to a more recent final.
+        for span in &req.spans {
+            if self.lines.iter().any(|l| l.order == span.order && l.is_final && l.text == span.text) {
+                self.retract_displaced(span.order, &span.text, &mut events);
+            }
+        }
         Decision {
             events,
             result,
@@ -994,6 +1100,150 @@ mod tests {
         let next = c.start_request(1200).unwrap();
         let result = c.finish(&next, script("When did you sign?", "you sign?", None));
         assert_eq!(upsert(&result.events).text, "When did you sign?");
+    }
+
+    #[test]
+    fn assist_drops_the_previous_question_while_a_new_line_is_being_recognized() {
+        for mode in [HYBRID, MODEL] {
+            let mut c = QuestionCore::default();
+            let first = line("a", "Why use a queue?", 0, false);
+            c.observe(first, 0, mode);
+            c.observe(first, 200, mode);
+            let req = c.start_request(200).unwrap();
+            c.finish(&req, script(first.text, "a queue?", None));
+            c.observe(Update { is_final: true, ..first }, 400, mode);
+            assert_eq!(c.latest_complete().unwrap().text, first.text);
+
+            c.observe(line("b", "Okay.", 1000, false), 1000, mode);
+            assert_eq!(c.latest_complete().unwrap().text, first.text);
+            let next = line("b", "So how would you scale it", 1000, false);
+            let observed = c.observe(next, 1200, mode);
+            assert!(observed.assist_changed && observed.events.is_empty());
+            assert!(c.latest_complete().is_none(), "{mode:?} still selected the old question");
+            // A repeated final for the old line cannot make it current again.
+            c.observe(Update { is_final: true, ..first }, 1250, mode);
+            assert!(c.latest_complete().is_none());
+            c.observe(line("b", "How would you scale it?", 1000, true), 1500, mode);
+            let req = c.start_request(1500).unwrap();
+            c.finish(&req, script("How would you scale it?", "scale it?", None));
+            assert_eq!(c.latest_complete().unwrap().line_id, "b");
+        }
+    }
+
+    #[test]
+    fn a_corrected_final_retracts_an_already_published_model_question() {
+        for mode in [MODEL, HYBRID] {
+            let mut c = QuestionCore::default();
+            let old = line("a", "Could you describe the project?", 0, false);
+            c.observe(old, 0, mode);
+            c.observe(old, 200, mode);
+            let req = c.start_request(200).unwrap();
+            // The quote itself even survives the correction; its sentence does not.
+            let first = c.finish(&req, script(old.text, "the project", None));
+            let expected = QuestionEvent::Remove {
+                id: upsert(&first.events).id.clone(),
+                reason: RemoveReason::Superseded,
+            };
+            let observed = c.observe(line("a", "I can describe the project.", 0, true), 1100, mode);
+            let req = c.start_request(1100).unwrap();
+            let mut events = observed.events;
+            events.extend(c.finish(&req, Ok(vec![])).events);
+            assert_eq!(events, [expected]);
+            assert!(c.latest_complete().is_none());
+        }
+    }
+
+    #[test]
+    fn an_older_model_reply_cannot_replace_the_pending_question_for_assist() {
+        let mut c = QuestionCore::default();
+        let old = line("a", "Why a queue?", 0, true);
+        c.observe(old, 0, MODEL);
+        let req = c.start_request(0).unwrap();
+        c.observe(line("b", "And how do you", 500, false), 500, MODEL);
+        let decision = c.finish(&req, script(old.text, "a queue?", None));
+        assert_eq!(upsert(&decision.events).line_id, "a");
+        assert!(c.latest_complete().is_none());
+        // Once the newer speech turns out to be an acknowledgement, manual
+        // Assist may use the confirmed question again.
+        let observed = c.observe(line("b", "Okay.", 500, true), 1000, MODEL);
+        assert!(observed.assist_changed);
+        assert_eq!(c.latest_complete().unwrap().line_id, "a");
+    }
+
+    #[test]
+    fn assist_waits_for_a_second_question_in_the_same_paragraph() {
+        let mut c = QuestionCore::default();
+        let first = line("a", "Why a queue?", 0, false);
+        c.observe(first, 0, MODEL);
+        c.observe(first, 200, MODEL);
+        let req = c.start_request(200).unwrap();
+        c.finish(&req, script(first.text, first.text, None));
+
+        let next = line("a", "Why a queue? How would you handle it?", 0, false);
+        assert!(c.observe(next, 1200, MODEL).assist_changed);
+        assert!(c.latest_complete().is_none());
+        c.observe(next, 1400, MODEL);
+        let req = c.start_request(1400).unwrap();
+        let mut items = script("How would you handle it?", "handle it?", None).unwrap();
+        items[0].complete = false;
+        c.finish(&req, Ok(items));
+        assert!(c.latest_complete().is_none());
+    }
+
+    #[test]
+    fn a_shortened_final_rechecks_only_the_questions_it_no_longer_supports() {
+        let mut c = QuestionCore::default();
+        let old = line("a", "Why a queue? Which database?", 0, false);
+        c.observe(old, 0, MODEL);
+        c.observe(old, 200, MODEL);
+        let req = c.start_request(200).unwrap();
+        let mut questions = script("Why a queue?", "a queue?", None).unwrap();
+        questions.extend(script("Which database?", "database?", None).unwrap());
+        c.finish(&req, Ok(questions));
+
+        c.observe(line("a", "Why a queue?", 0, true), 1200, MODEL);
+        let req = c.start_request(1200).expect("a deletion has no new words to trigger a call");
+        assert_eq!(req.input.known_questions[0].status, "detecting");
+        let decision = c.finish(&req, Ok(vec![]));
+        assert_eq!(decision.events, [QuestionEvent::Remove {
+            id: "q2".into(), reason: RemoveReason::Superseded,
+        }]);
+        assert_eq!(c.latest_complete().unwrap().id, "q1");
+    }
+
+    #[test]
+    fn a_reworded_final_keeps_the_confirmed_id_and_handles_a_model_timeout() {
+        for result in [script("Which queue?", "Which queue?", Some("q1")), Err(Failure::Timeout)] {
+            let mut c = QuestionCore::default();
+            let old = line("a", "What queue?", 0, false);
+            c.observe(old, 0, HYBRID);
+            c.observe(old, 200, HYBRID);
+            let req = c.start_request(200).unwrap();
+            c.finish(&req, script(old.text, old.text, None));
+            let observed = c.observe(line("a", "Which queue?", 0, true), 1200, HYBRID);
+            assert!(observed.events.is_empty());
+            let req = c.start_request(1200).unwrap();
+            let decision = c.finish(&req, result);
+            assert_eq!(c.latest_complete().unwrap().text, "Which queue?");
+            if decision.result == "question" {
+                assert_eq!((upsert(&decision.events).id.as_str(), upsert(&decision.events).revision), ("q1", 2));
+            }
+        }
+    }
+
+    #[test]
+    fn a_final_acknowledgement_withdraws_an_unsupported_question_without_a_model_call() {
+        let mut c = QuestionCore::default();
+        let old = line("a", "Is it okay?", 0, false);
+        c.observe(old, 0, MODEL);
+        c.observe(old, 200, MODEL);
+        let req = c.start_request(200).unwrap();
+        c.finish(&req, script(old.text, old.text, None));
+        let observed = c.observe(line("a", "Okay.", 0, true), 1200, MODEL);
+        assert_eq!(observed.events, [QuestionEvent::Remove {
+            id: "q1".into(), reason: RemoveReason::Superseded,
+        }]);
+        assert!(c.latest_complete().is_none() && c.next_start_ms().is_none());
     }
 
     #[test]
@@ -1295,7 +1545,11 @@ mod tests {
             "Rafael, Lucas, any final question for Jaho?",
             "Doctor, any questions?",
             "Can you go back to the last slide?",
+            "Can you go back to the second slide?",
             "Can you please move on to the next slide?",
+            "Could you please share your screen?",
+            "Okay, could you share your screen now?",
+            "Can you turn your camera on?",
             "Can you hear me?",
             "Connect the department with some companies, right?",
             "So just be patient, right?",
@@ -1309,13 +1563,19 @@ mod tests {
         }
         for text in [
             "What is your motivation?",
+            "Can you share your experience leading a team?",
+            "How would you screen a candidate?",
+            "Could you describe the camera pipeline?",
+            "Can you show me how to design a login page?",
             "Interesting, why did you pick Rust?",
             "So, how long is your commute?",
             "Okay, and what did you do next?",
         ] {
-            let mut c = QuestionCore::default();
-            let observed = c.observe(line("a", text, 0, true), 0, HYBRID);
-            assert_eq!(upsert(&observed.events).origin, Origin::Rules, "{text}");
+            for mode in [Some(DetectionMode::Rules), HYBRID] {
+                let mut c = QuestionCore::default();
+                let observed = c.observe(line("a", text, 0, true), 0, mode);
+                assert_eq!(upsert(&observed.events).origin, Origin::Rules, "{text}");
+            }
         }
     }
 

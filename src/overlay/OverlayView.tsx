@@ -26,6 +26,7 @@ import { useMeetingShortcuts } from "../hooks/useMeetingShortcuts";
 import { useConfigStore } from "../stores/configStore";
 import { useSpeakerDetection } from "../hooks/useSpeakerDetection";
 import { useTopicDetection } from "../hooks/useTopicDetection";
+import { useNoTranscriptWarning } from "../hooks/useNoTranscriptWarning";
 import { showLauncherWindow } from "../lib/windows";
 import { SCREENSHOT_EVENT } from "../lib/screenCapture";
 import { setCaptionsLocked, toggleCaptions } from "../lib/captions/window";
@@ -212,6 +213,9 @@ export function OverlayView() {
 
   // Live topic detection from backend events
   useTopicDetection();
+
+  // Keep watching for "audio heard without transcript" even while the transcript drawer is closed
+  useNoTranscriptWarning();
 
   const handleEndMeeting = useCallback(async () => {
     try {

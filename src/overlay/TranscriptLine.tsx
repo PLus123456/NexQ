@@ -61,9 +61,13 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
 
   // SP2 Task 7: Bookmark state + context menu position
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const bookmark = useBookmarkStore((s) => s.getBookmarkForSegment(segment.id));
+  const bookmark = useBookmarkStore((s) => {
+    const ids = segment.originalIds ?? [segment.id];
+    return s.bookmarks.find((b) => b.segment_id !== undefined && ids.includes(b.segment_id));
+  });
   const isBookmarked = !!bookmark;
   const toggleBookmark = useBookmarkStore((s) => s.toggleBookmark);
+  const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
 
   // Translation of this line: a merged line shows every segment's (Soniox
   // translates sentence by sentence, so one line often has several).
@@ -134,6 +138,10 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
 
   // SP2 Task 7: Bookmark handlers
   const handleToggleBookmark = () => {
+    if (bookmark) {
+      removeBookmark(bookmark.id);
+      return;
+    }
     const result = toggleBookmark(segment.id, segment.timestamp_ms);
     if (result) {
       const offsetMs = meetingStartTime ? segment.timestamp_ms - meetingStartTime : segment.timestamp_ms;

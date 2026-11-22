@@ -16,7 +16,7 @@ export function NoTranscriptBanner({ onOpenDevLog }: { onOpenDevLog?: () => void
   return (
     <div className="mx-1 mb-1.5 space-y-1">
       {parties.map((party) => {
-        const id = meetingAudioConfig?.[party].stt_provider ?? "";
+        const id = meetingAudioConfig?.[party]?.stt_provider ?? "";
         // Product names as they are; Remote Whisper is worded per UI language.
         const provider = !id
           ? t("stt:noTranscript.unknownEngine")

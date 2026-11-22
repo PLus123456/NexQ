@@ -17,6 +17,11 @@ export interface CaptionLine {
   final: boolean;
 }
 
+interface CueTrack {
+  order: number;
+  text: string;
+}
+
 export interface CaptionFeed {
   /** Oldest first, at most MAX_LINES. */
   lines: CaptionLine[];
@@ -24,12 +29,21 @@ export interface CaptionFeed {
   translations: Record<string, TranslationResult>;
   /** A translation came this meeting: the strip keeps a row for it under every caption. */
   translationSeen: boolean;
+  /** Monotonic counter incremented when a line adds or changes spoken text. */
+  seq?: number;
+  /** Initial `seq` of each line id, used as fallback order for its cues. */
+  lineOrder?: Record<string, number>;
+  /** Latest `seq` and spoken text key per cue id (`lineId#n`). */
+  cueOrder?: Record<string, CueTrack>;
 }
 
 /** Lines kept (both parties); enough for three captions of either party. */
 export const MAX_LINES = 12;
 
 export const EMPTY_FEED: CaptionFeed = { lines: [], translations: {}, translationSeen: false };
+
+const isVisibleCue = (cue: CaptionCue) => !!(cue.src || cue.dst || cue.srcPending || cue.dstPending);
+const cueSpokenKey = (cue: CaptionCue) => (cue.src + (cue.srcPending ?? "")).replace(/\s+/g, "");
 
 /** The user's own lines come from the microphone ("User"); everything else is the other side. */
 export function partyOf(segment: Pick<TranscriptSegment, "speaker">): CaptionParty {
@@ -57,18 +71,75 @@ export function feedTranscript(feed: CaptionFeed, segment: TranscriptSegment, fi
     translations = { ...translations };
     delete translations[dropped];
   }
-  return { ...feed, lines, translations };
+
+  let seq = feed.seq ?? feed.lines.length;
+  let lineOrder = feed.lineOrder;
+  let cueOrder = feed.cueOrder;
+
+  if (dropped || !before || before.text !== line.text) {
+    lineOrder = { ...(lineOrder ?? {}) };
+    cueOrder = { ...(cueOrder ?? {}) };
+    if (dropped) {
+      delete lineOrder[dropped];
+      for (const key of Object.keys(cueOrder)) {
+        if (key.startsWith(`${dropped}#`)) delete cueOrder[key];
+      }
+    }
+    const cues = lineCues(line, translations[line.id]);
+    const validIds = new Set<string>();
+    let stepSeq: number | null = null;
+    const nextStep = () => (stepSeq ??= ++seq);
+
+    if (!(line.id in lineOrder)) {
+      lineOrder[line.id] = nextStep();
+    }
+    for (const cue of cues) {
+      if (!isVisibleCue(cue)) continue;
+      validIds.add(cue.id);
+      const textKey = cueSpokenKey(cue);
+      const prev = cueOrder[cue.id];
+      if (!prev || prev.text !== textKey) {
+        cueOrder[cue.id] = { order: nextStep(), text: textKey };
+      }
+    }
+    for (const key of Object.keys(cueOrder)) {
+      if (key.startsWith(`${line.id}#`) && !validIds.has(key)) delete cueOrder[key];
+    }
+  }
+
+  return { ...feed, lines, translations, seq, lineOrder, cueOrder };
 }
 
 /** A `translation_result`. Results for lines no longer kept (batch re-translations of old lines) are dropped. */
 export function feedTranslation(feed: CaptionFeed, result: TranslationResult): CaptionFeed {
   const id = result?.segment_id;
   if (!id) return feed;
-  const known = feed.lines.some((l) => l.id === id);
+  const line = feed.lines.find((l) => l.id === id);
   // A translation can come just before its line's first event reaches this window: keep a few of those.
   const pending = Object.keys(feed.translations).filter((key) => !feed.lines.some((l) => l.id === key));
-  if (!known && pending.length >= 4) return { ...feed, translationSeen: true };
-  return { ...feed, translations: { ...feed.translations, [id]: result }, translationSeen: true };
+  if (!line && pending.length >= 4) return { ...feed, translationSeen: true };
+  const translations = { ...feed.translations, [id]: result };
+  let cueOrder = feed.cueOrder;
+  if (line && cueOrder) {
+    // Keep cue text keys synced after translation-driven regrouping without advancing recency.
+    const nextCueOrder = { ...cueOrder };
+    const cues = lineCues(line, result);
+    const validIds = new Set<string>();
+    let lastOrder = feed.lineOrder?.[line.id] ?? feed.lines.indexOf(line);
+    for (const cue of cues) {
+      if (!isVisibleCue(cue)) continue;
+      validIds.add(cue.id);
+      const existing = nextCueOrder[cue.id];
+      const order = existing ? existing.order : lastOrder;
+      lastOrder = order;
+      nextCueOrder[cue.id] = { order, text: cueSpokenKey(cue) };
+    }
+    for (const key of Object.keys(nextCueOrder)) {
+      if (key.startsWith(`${line.id}#`) && !validIds.has(key)) delete nextCueOrder[key];
+    }
+    cueOrder = nextCueOrder;
+  }
+  return { ...feed, translations, translationSeen: true, cueOrder };
 }
 
 /** A caption as the strip shows it: which line and party it belongs to. */
@@ -102,16 +173,21 @@ export function lineCues(line: CaptionLine, translation: TranslationResult | und
 
 /** The newest `count` captions of the parties shown, oldest first. */
 export function stripCues(feed: CaptionFeed, parties: CaptionsParties, count: number): StripCue[] {
-  const out: StripCue[] = [];
-  for (let i = feed.lines.length - 1; i >= 0 && out.length < count; i--) {
+  if (count <= 0) return [];
+  const ranked: Array<{ cue: StripCue; order: number; lineIdx: number; cueIdx: number }> = [];
+  for (let i = 0; i < feed.lines.length; i++) {
     const line = feed.lines[i];
     if (parties === "them" && line.party !== "them") continue;
     const cues = lineCues(line, feed.translations[line.id]);
-    for (let c = cues.length - 1; c >= 0 && out.length < count; c--) {
+    let lastOrder = feed.lineOrder?.[line.id] ?? i;
+    for (let c = 0; c < cues.length; c++) {
       const cue = cues[c];
-      if (!cue.src && !cue.dst && !cue.srcPending && !cue.dstPending) continue;
-      out.push({ ...cue, lineId: line.id, party: line.party });
+      if (!isVisibleCue(cue)) continue;
+      const order = feed.cueOrder?.[cue.id]?.order ?? lastOrder;
+      lastOrder = order;
+      ranked.push({ cue: { ...cue, lineId: line.id, party: line.party }, order, lineIdx: i, cueIdx: c });
     }
   }
-  return out.reverse();
+  ranked.sort((a, b) => a.order - b.order || a.lineIdx - b.lineIdx || a.cueIdx - b.cueIdx);
+  return ranked.slice(-count).map((r) => r.cue);
 }

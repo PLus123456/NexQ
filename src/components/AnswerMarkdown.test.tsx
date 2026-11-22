@@ -144,4 +144,31 @@ describe("AnswerMarkdown", () => {
     const { container } = render(<AnswerMarkdown content={"\\( \\frac{1}{ \\)"} />);
     expect(container.textContent).toContain("\\frac{1}{");
   });
+
+  it("preserves echo \"$HOME/$USER\" verbatim in 4-space indented code blocks while rendering prose math", () => {
+    const md = 'Run this:\n\n    echo "$HOME/$USER"\n\nWhere $x^2$ and \\( \\pi r^2 \\) apply.';
+    for (const streaming of [false, true]) {
+      const { container } = render(<AnswerMarkdown content={md} streaming={streaming} />);
+      const code = container.querySelector("pre code");
+      expect(code).not.toBeNull();
+      expect(code!.textContent?.trim()).toBe('echo "$HOME/$USER"');
+      expect(code!.querySelector(".katex")).toBeNull();
+      expect(container.querySelectorAll("p .katex")).toHaveLength(2);
+      cleanup();
+    }
+  });
+
+  it("preserves echo \"$HOME/$USER\" verbatim in list-marker fenced code blocks while rendering prose math", () => {
+    const md = '- ```bash\n  echo "$HOME/$USER"\n  ```\n\nThen \\( a + b \\) and:\n\n\\[\nE = mc^2\n\\]';
+    for (const streaming of [false, true]) {
+      const { container } = render(<AnswerMarkdown content={md} streaming={streaming} />);
+      const code = container.querySelector("li pre code");
+      expect(code).not.toBeNull();
+      expect(code!.textContent?.trim()).toBe('echo "$HOME/$USER"');
+      expect(code!.querySelector(".katex")).toBeNull();
+      expect(container.querySelector("p .katex")).not.toBeNull();
+      expect(container.querySelector(".katex-display .katex")).not.toBeNull();
+      cleanup();
+    }
+  });
 });

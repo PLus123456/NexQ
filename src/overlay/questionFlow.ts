@@ -209,29 +209,60 @@ export function changedALot(before: string, after: string): boolean {
 
 // ── your own words (rule 4) ────────────────────────────────────────────────
 
-/** Your recent transcript lines: when they started and last grew, and how many words they have. */
-const yourLines = new Map<string, { firstAt: number; lastAt: number; words: number }>();
-/** For each card: when it came up, and how many words each line of yours had then. */
+/** Your recent transcript lines: when they started effective speech, last grew, and word count. */
+const yourLines = new Map<string, { firstAt: number; firstValidAt: number | null; lastAt: number; words: number }>();
+/** Snapshot of your words taken when each other-party transcript line first arrived. */
+const yourWordsAtLine = new Map<string, { at: number; words: Map<string, number> }>();
+/** For each card: when its question came up, and how many words each line of yours had then. */
 const yourWordsWhenAsked = new Map<string, { at: number; words: Map<string, number> }>();
 
+function snapshotYourWords(at: number): { at: number; words: Map<string, number> } {
+  const words = new Map<string, number>();
+  for (const [id, line] of yourLines) words.set(id, line.words);
+  return { at, words };
+}
+
 function trackYourWords(segments: readonly TranscriptSegment[]) {
+  if (segments.length === 0) {
+    yourLines.clear();
+    yourWordsAtLine.clear();
+    return;
+  }
   const now = Date.now();
-  for (let i = segments.length - 1; i >= Math.max(0, segments.length - 30); i--) {
+  const start = Math.max(0, segments.length - 30);
+  // Walk chronologically so pre-existing segments snapshot your words as they stood when each question line arrived.
+  for (let i = start; i < segments.length; i++) {
     const seg = segments[i];
-    if (!isYou(seg.speaker)) continue;
-    const words = wordsOf(seg.pending_text || seg.text).length;
-    const line = yourLines.get(seg.id);
-    if (!line) yourLines.set(seg.id, { firstAt: now, lastAt: now, words });
-    else if (line.words !== words) Object.assign(line, { lastAt: now, words });
+    if (isYou(seg.speaker)) {
+      const words = wordsOf(seg.pending_text || seg.text).length;
+      const line = yourLines.get(seg.id);
+      if (!line) {
+        yourLines.set(seg.id, {
+          firstAt: now,
+          firstValidAt: words >= SHORT_REPLY_WORDS ? now : null,
+          lastAt: now,
+          words,
+        });
+      } else if (line.words !== words) {
+        if (line.firstValidAt === null && words >= SHORT_REPLY_WORDS) line.firstValidAt = now;
+        Object.assign(line, { lastAt: now, words });
+      }
+    } else if (!yourWordsAtLine.has(seg.id)) {
+      yourWordsAtLine.set(seg.id, snapshotYourWords(now));
+    }
   }
   // Only the last minutes matter.
   for (const [id, line] of yourLines) if (now - line.lastAt > 5 * 60_000) yourLines.delete(id);
+  for (const [id, snap] of yourWordsAtLine) if (now - snap.at > 5 * 60_000) yourWordsAtLine.delete(id);
 }
 
-function rememberYourWords(cardId: string) {
-  const words = new Map<string, number>();
-  for (const [id, line] of yourLines) words.set(id, line.words);
-  yourWordsWhenAsked.set(cardId, { at: Date.now(), words });
+function rememberYourWords(cardId: string, lineId?: string) {
+  const atLine = lineId ? yourWordsAtLine.get(lineId) : undefined;
+  if (atLine) {
+    yourWordsWhenAsked.set(cardId, { at: atLine.at, words: new Map(atLine.words) });
+    return;
+  }
+  yourWordsWhenAsked.set(cardId, snapshotYourWords(Date.now()));
 }
 
 /** Whether you have been answering since the card's question came up (rule 4). */
@@ -239,13 +270,19 @@ function youAreAnswering(cardId: string): boolean {
   const asked = yourWordsWhenAsked.get(cardId);
   if (!asked) return false;
   let words = 0;
-  let ms = 0;
+  let firstSpoke = Infinity;
+  let lastSpoke = -Infinity;
   for (const [id, line] of yourLines) {
     if (line.words < SHORT_REPLY_WORDS) continue;
     // Words a line already had when the question came up don't count.
-    words += Math.max(0, line.words - (asked.words.get(id) ?? 0));
-    ms += Math.max(0, line.lastAt - Math.max(line.firstAt, asked.at));
+    const added = Math.max(0, line.words - (asked.words.get(id) ?? 0));
+    if (added === 0) continue;
+    words += added;
+    const start = Math.max(line.firstValidAt ?? line.firstAt, asked.at);
+    if (start < firstSpoke) firstSpoke = start;
+    if (line.lastAt > lastSpoke) lastSpoke = line.lastAt;
   }
+  const ms = lastSpoke > firstSpoke ? lastSpoke - firstSpoke : 0;
   return words >= YOU_ANSWERING_WORDS || ms > YOU_ANSWERING_MS;
 }
 
@@ -319,7 +356,7 @@ function onUpsert(q: DetectedQuestionV2) {
     assisted: card?.assisted ?? false,
     ...(restart ? { assisted: false, heldBack: false, autoRestarts: (card?.autoRestarts ?? 0) + 1 } : {}),
   };
-  if (!card) rememberYourWords(id);
+  if (!card) rememberYourWords(id, q.line_id);
   useQuestionStore.setState((state) => ({
     questions: card
       ? state.questions.map((c) => (c.id === card.id ? next : c))
@@ -381,6 +418,7 @@ export function resetQuestionDetectionForTests() {
   stopTrackingWords?.();
   stopTrackingWords = null;
   yourLines.clear();
+  yourWordsAtLine.clear();
   yourWordsWhenAsked.clear();
   useClickedAnswers.setState({ ids: [] });
 }

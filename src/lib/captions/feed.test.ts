@@ -97,4 +97,54 @@ describe("stripCues", () => {
     const f = conversation();
     expect(stripCues(f, "them", 3)).toEqual(stripCues(f, "them", 3));
   });
+
+  it("switches a 1-cue both-party strip back to A when A continues on the original segment after B interjects", () => {
+    let f = feedTranscript(EMPTY_FEED, seg("a1", "We need to talk about the latency budget.", "Them"), true);
+    const step1 = stripCues(f, "both", 1);
+    expect(step1.map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["them", "We need to talk about the latency budget."],
+    ]);
+
+    f = feedTranscript(f, seg("b1", "Sure, go ahead.", "User"), true);
+    const step2 = stripCues(f, "both", 1);
+    expect(step2.map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["you", "Sure, go ahead."],
+    ]);
+
+    // A continues on the original segment id ("a1") with a new sentence.
+    f = feedTranscript(f, seg("a1", "We need to talk about the latency budget. Specifically the p99 spike.", "Them"), false);
+    const step3 = stripCues(f, "both", 1);
+    expect(step3.map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["them", "Specifically the p99 spike."],
+    ]);
+
+    // Multi-cue strip also preserves chronological order: A's first part, B's interjection, A's continuation.
+    expect(stripCues(f, "both", 3).map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["them", "We need to talk about the latency budget."],
+      ["you", "Sure, go ahead."],
+      ["them", "Specifically the p99 spike."],
+    ]);
+  });
+
+  it("advances A back to the front even when A's continuation extends the same cue in place", () => {
+    let f = feedTranscript(EMPTY_FEED, seg("a1", "Let's check", "Them"), false);
+    expect(stripCues(f, "both", 1)[0].party).toBe("them");
+
+    f = feedTranscript(f, seg("b1", "Right.", "User"), true);
+    expect(stripCues(f, "both", 1)[0].party).toBe("you");
+
+    f = feedTranscript(f, seg("a1", "Let's check the cache.", "Them"), false);
+    expect(stripCues(f, "both", 1).map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["them", "Let's check the cache."],
+    ]);
+  });
+
+  it("does not bump an older speaker back to the front on a late final with unchanged text", () => {
+    let f = feedTranscript(EMPTY_FEED, seg("a1", "How was your weekend", "Them"), false);
+    f = feedTranscript(f, seg("b1", "It was great!", "User"), true);
+    f = feedTranscript(f, seg("a1", "How was your weekend", "Them"), true);
+    expect(stripCues(f, "both", 1).map((c) => [c.party, c.src || c.srcPending])).toEqual([
+      ["you", "It was great!"],
+    ]);
+  });
 });

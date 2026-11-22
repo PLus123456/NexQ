@@ -177,6 +177,19 @@ describe("CaptionsWindow", () => {
     expect(cueTexts()).toEqual(["Second line."]);
   });
 
+  it("shows A, B, A on a 1-cue both-party strip when A continues on the original segment after B interjects", async () => {
+    savedSettings({ captionsParties: "both", captionsCueCount: 1 });
+    await open();
+    say("a1", "We need to talk about the latency budget.", true, "Them");
+    expect(cueTexts()).toEqual(["ThemWe need to talk about the latency budget."]);
+
+    say("b1", "Sure, go ahead.", true, "User");
+    expect(cueTexts()).toEqual(["YouSure, go ahead."]);
+
+    say("a1", "We need to talk about the latency budget. Specifically the p99 spike.", false, "Them");
+    expect(cueTexts()).toEqual(["ThemSpecifically the p99 spike."]);
+  });
+
   it("draws a backdrop with the set opacity, none at 0", async () => {
     savedSettings({ captionsBgOpacity: 0.5 });
     await open();

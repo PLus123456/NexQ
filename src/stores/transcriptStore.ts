@@ -12,6 +12,23 @@ export const INTERIM_LIFETIME_MS = 10_000;
 /** When each open interim last changed, by segment id. */
 const interimUpdatedAt = new Map<string, number>();
 
+/** Suppresses handleScroll from flipping autoScroll back on while a smooth bookmark jump leaves the bottom. */
+const JUMP_SUPPRESS_MS = 800;
+let autoScrollJumpUntil = 0;
+
+export function pauseAutoScrollForJump(durationMs = JUMP_SUPPRESS_MS): void {
+  autoScrollJumpUntil = Date.now() + durationMs;
+  useTranscriptStore.getState().setAutoScroll(false);
+}
+
+export function clearAutoScrollJump(): void {
+  autoScrollJumpUntil = 0;
+}
+
+export function isAutoScrollJumpActive(): boolean {
+  return Date.now() < autoScrollJumpUntil;
+}
+
 interface TranscriptState {
   segments: TranscriptSegment[];
   searchQuery: string;
@@ -94,10 +111,14 @@ export const useTranscriptStore = create<TranscriptState>((set) => ({
 
   clearSegments: () => {
     interimUpdatedAt.clear();
+    autoScrollJumpUntil = 0;
     set({ segments: [] });
   },
   setSearchQuery: (query) => set({ searchQuery: query }),
-  setAutoScroll: (auto) => set({ autoScroll: auto }),
+  setAutoScroll: (auto) => {
+    if (auto) autoScrollJumpUntil = 0;
+    set({ autoScroll: auto });
+  },
   reassignSpeaker: (fromId, toId) =>
     set((state) => ({
       segments: state.segments.map((s) =>

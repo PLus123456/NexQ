@@ -21,11 +21,114 @@
  * an opener without its closer in the same paragraph is left as text.
  */
 
-/** A code fence: up to three spaces (or quote markers), then ``` or ~~~. */
-const FENCE = /^((?:[ \t]*>)*[ \t]*)(`{3,}|~{3,})/;
-
 /** What may stand before a block on its line: indentation, quote markers, a list marker. */
 const LINE_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?$/;
+
+const FENCE_MARKER = /^(`{3,}|~{3,})/;
+const LIST_MARKER = /^([-*+]|(\d{1,9})[.)])(?=[ \t]|$)/;
+const THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const ATX_HEADING = /^#{1,6}(?:[ \t]|$)/;
+const SETEXT_UNDERLINE = /^(?:=+|-+)[ \t]*$/;
+
+type Container = { kind: "quote" } | { kind: "list"; indent: number };
+
+interface LineCursor {
+  raw: string;
+  pos: number;
+  col: number;
+  pad: number;
+}
+
+function peekIndent(cur: LineCursor): { cols: number; nextPos: number } {
+  let cols = cur.pad;
+  let col = cur.col + cur.pad;
+  let pos = cur.pos;
+  while (pos < cur.raw.length) {
+    const ch = cur.raw[pos];
+    if (ch === " ") {
+      cols += 1;
+      col += 1;
+      pos += 1;
+    } else if (ch === "\t") {
+      const width = 4 - (col % 4);
+      cols += width;
+      col += width;
+      pos += 1;
+    } else {
+      break;
+    }
+  }
+  return { cols, nextPos: pos };
+}
+
+function consumeCols(cur: LineCursor, count: number): void {
+  let left = count;
+  if (cur.pad > 0) {
+    const take = Math.min(cur.pad, left);
+    cur.pad -= take;
+    cur.col += take;
+    left -= take;
+  }
+  while (left > 0 && cur.pos < cur.raw.length) {
+    const ch = cur.raw[cur.pos];
+    if (ch === " ") {
+      cur.pos += 1;
+      cur.col += 1;
+      left -= 1;
+    } else if (ch === "\t") {
+      const width = 4 - (cur.col % 4);
+      cur.pos += 1;
+      if (width <= left) {
+        cur.col += width;
+        left -= width;
+      } else {
+        cur.col += left;
+        cur.pad = width - left;
+        left = 0;
+      }
+    } else {
+      break;
+    }
+  }
+}
+
+function isBlank(cur: LineCursor): boolean {
+  return peekIndent(cur).nextPos >= cur.raw.length;
+}
+
+function matchQuote(cur: LineCursor): boolean {
+  const { cols, nextPos } = peekIndent(cur);
+  if (cols > 3 || cur.raw[nextPos] !== ">") return false;
+  consumeCols(cur, cols);
+  cur.pos += 1;
+  cur.col += 1;
+  if (peekIndent(cur).cols >= 1) consumeCols(cur, 1);
+  return true;
+}
+
+function matchListMarker(cur: LineCursor, inParagraph: boolean): number | null {
+  const { cols, nextPos } = peekIndent(cur);
+  if (cols > 3) return null;
+  const rest = cur.raw.slice(nextPos);
+  if (THEMATIC_BREAK.test(rest)) return null;
+  const match = LIST_MARKER.exec(rest);
+  if (!match) return null;
+  const marker = match[1];
+  const digits = match[2];
+  const afterPos = nextPos + marker.length;
+  const afterCur: LineCursor = { raw: cur.raw, pos: afterPos, col: cur.col + cols + marker.length, pad: 0 };
+  const afterIndent = peekIndent(afterCur);
+  const emptyItem = afterIndent.nextPos >= cur.raw.length;
+  if (inParagraph && (emptyItem || (digits !== undefined && Number(digits) !== 1))) {
+    return null;
+  }
+  consumeCols(cur, cols);
+  cur.pos += marker.length;
+  cur.col += marker.length;
+  const extraSpaces = emptyItem || afterIndent.cols >= 5 ? 1 : afterIndent.cols;
+  if (!emptyItem) consumeCols(cur, extraSpaces);
+  return cols + marker.length + extraSpaces;
+}
 
 /** The indentation the lines of a block need to stay where its first line is (list item, quote). */
 function continuationIndent(prefix: string): string {
@@ -44,38 +147,145 @@ export function prepareMath(markdown: string): string {
   }
 }
 
-/** The text cut into fenced code blocks and everything else, joined back it is the same text. */
+/** The text cut into code blocks (fenced and indented) and everything else; joined back it is the same text. */
 function splitCode(markdown: string): Array<{ code: boolean; text: string }> {
   const lines = markdown.split(/(?<=\n)/);
   const parts: Array<{ code: boolean; text: string }> = [];
-  let text = "";
-  let code = "";
-  let fence: { char: string; length: number } | null = null;
+  let buf = "";
+  let bufCode = false;
+  const pushLine = (isCode: boolean, line: string) => {
+    if (buf && bufCode !== isCode) {
+      parts.push({ code: bufCode, text: buf });
+      buf = "";
+    }
+    bufCode = isCode;
+    buf += line;
+  };
+
+  let containers: Container[] = [];
+  let fence: { char: string; length: number; containers: Container[] } | null = null;
+  let inParagraph = false;
+
   for (const line of lines) {
-    if (fence) {
-      code += line;
-      const close = FENCE.exec(line);
-      if (close && close[2][0] === fence.char && close[2].length >= fence.length && line.slice(close[0].length).trim() === "") {
-        parts.push({ code: true, text: code });
-        code = "";
-        fence = null;
+    const raw = line.replace(/\r?\n$/, "");
+    const cur: LineCursor = { raw, pos: 0, col: 0, pad: 0 };
+
+    // Match open containers (blockquotes and list items) from outer to inner.
+    let matched = 0;
+    for (const c of containers) {
+      if (c.kind === "quote") {
+        if (!matchQuote(cur)) break;
+        matched++;
+      } else {
+        if (isBlank(cur)) break;
+        if (peekIndent(cur).cols < c.indent) break;
+        consumeCols(cur, c.indent);
+        matched++;
       }
+    }
+
+    if (fence) {
+      const neededQuotes = fence.containers.filter((c) => c.kind === "quote").length;
+      const matchedQuotes = containers.slice(0, matched).filter((c) => c.kind === "quote").length;
+      const lineBlank = isBlank(cur);
+      const stillInFence =
+        matchedQuotes === neededQuotes &&
+        (lineBlank || matched >= fence.containers.length);
+
+      if (stillInFence) {
+        pushLine(true, line);
+        if (!lineBlank) {
+          const { cols, nextPos } = peekIndent(cur);
+          const rest = cur.raw.slice(nextPos);
+          const close = cols <= 3 ? FENCE_MARKER.exec(rest) : null;
+          if (
+            close &&
+            close[1][0] === fence.char &&
+            close[1].length >= fence.length &&
+            rest.slice(close[0].length).trim() === ""
+          ) {
+            fence = null;
+            inParagraph = false;
+          }
+        }
+        continue;
+      }
+      fence = null;
+      inParagraph = false;
+    }
+
+    if (isBlank(cur)) {
+      let keep = matched;
+      while (keep < containers.length && containers[keep].kind === "list") keep++;
+      containers = containers.slice(0, keep);
+      inParagraph = false;
+      pushLine(false, line);
       continue;
     }
-    const open = FENCE.exec(line);
-    // A backtick fence's info string cannot hold a backtick; otherwise it is inline code.
-    if (open && !(open[2][0] === "`" && line.slice(open[0].length).includes("`"))) {
-      if (text) parts.push({ code: false, text });
-      text = "";
-      fence = { char: open[2][0], length: open[2].length };
-      code = line;
-      continue;
+
+    let poppedList = false;
+    if (matched < containers.length) {
+      poppedList = containers.slice(matched).some((c) => c.kind === "list");
+      containers = containers.slice(0, matched);
     }
-    text += line;
+
+    let isCode = false;
+    while (true) {
+      const { cols, nextPos } = peekIndent(cur);
+      if (nextPos >= cur.raw.length) {
+        inParagraph = false;
+        break;
+      }
+
+      if (cols >= 4 && !inParagraph) {
+        isCode = true;
+        inParagraph = false;
+        break;
+      }
+
+      if (cols <= 3 && cur.raw[nextPos] === ">") {
+        matchQuote(cur);
+        containers.push({ kind: "quote" });
+        inParagraph = false;
+        poppedList = false;
+        continue;
+      }
+
+      const listIndent = matchListMarker(cur, inParagraph && !poppedList);
+      if (listIndent !== null) {
+        containers.push({ kind: "list", indent: listIndent });
+        inParagraph = false;
+        poppedList = false;
+        continue;
+      }
+
+      const rest = cur.raw.slice(nextPos);
+      const open = cols <= 3 ? FENCE_MARKER.exec(rest) : null;
+      // A backtick fence's info string cannot hold a backtick; otherwise it is inline code.
+      if (open && !(open[1][0] === "`" && rest.slice(open[0].length).includes("`"))) {
+        fence = { char: open[1][0], length: open[1].length, containers: containers.slice() };
+        isCode = true;
+        inParagraph = false;
+        break;
+      }
+
+      if (
+        cols <= 3 &&
+        (ATX_HEADING.test(rest) ||
+          THEMATIC_BREAK.test(rest) ||
+          (inParagraph && SETEXT_UNDERLINE.test(rest)))
+      ) {
+        inParagraph = false;
+      } else {
+        inParagraph = true;
+      }
+      break;
+    }
+
+    pushLine(isCode, line);
   }
-  // An unclosed fence (still streaming) runs to the end, as Markdown reads it.
-  if (code) parts.push({ code: true, text: code });
-  if (text) parts.push({ code: false, text });
+
+  if (buf) parts.push({ code: bufCode, text: buf });
   return parts;
 }
 
