@@ -1,14 +1,29 @@
 // The overlay's questions and their automatic answers: which questions the
 // other party asked, which one gets answered and when. The question strip
 // (QuestionStrip.tsx) renders what `useQuestionFlow()` returns and nothing else.
+//
+// Questions come from question detection v2 (`question_event`, SPEC 3.4) while
+// the other party is still speaking. Auto-Answer (SPEC 4.2):
+// 1. answers a question once it is complete, with no quiet wait; begun while
+//    they are still speaking, that is an early answer;
+// 2. starts over (once per question) when a question it is answering changes
+//    a lot; when its answer is over, the card offers a new answer instead;
+// 3. stops when the model turns the rules' guess down (or a newer question
+//    takes its place);
+// 4. doesn't start when you are already answering (12 words or more than
+//    6 seconds since the question came up; short replies don't count);
+// 5. doesn't interrupt another answer: the question waits as a card to click;
+//    an answer you ask for always stops an automatic one;
+// 6. replays a prepared answer, with Auto-Answer off too;
+// 7. asks the backend to skip the knowledge-base query rewrite.
+// Steps that start or stop answers run one at a time (`inTurn`), so a start
+// never races a stop that is still letting go.
 
 import { useEffect, useMemo, useRef } from "react";
 import { create } from "zustand";
 import { t } from "../i18n";
 import { onTranscriptFinal, onTranscriptUpdate } from "../lib/events";
-import {
-  onQuestionDetectionPending, onQuestionDetectionResult, type DetectionPending, type DetectionResult,
-} from "../lib/questionDetection/events";
+import { onQuestionEvent, type DetectedQuestionV2, type QuestionEvent } from "../lib/questionDetection/events";
 import { runUserAction } from "../lib/userAction";
 import {
   REFUSED, answerRunning, autoAnswerRunning, decideTurnStep, inTurn, logAutoAnswer, runYourAction, sameQuestion,
@@ -17,33 +32,46 @@ import {
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useConfigStore } from "../stores/configStore";
-import { newQuestionId, useQuestionStore, type TrackedQuestion } from "../stores/questionStore";
+import { numbered, useQuestionStore, type AutoAnswerRef, type TrackedQuestion } from "../stores/questionStore";
 import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { showToast } from "../stores/toastStore";
 import type { DetectedQuestion, TranscriptSegment, TranscriptUpdateEvent } from "../lib/types";
 
-/**
- * Quiet time after the other party's last words before Auto-Trigger answers
- * their question, so a question still being asked isn't answered half-way.
- */
-export const AUTO_TRIGGER_DELAY_MS = 1500;
+/** Below this word-set similarity a revision is a different question (rule 2). */
+export const REVISION_SIMILARITY = 0.6;
+/** How often Auto-Answer may start over for one question (rule 2). */
+export const MAX_AUTO_RESTARTS = 1;
+/** You are already answering after this many words since the question came up (rule 4)… */
+export const YOU_ANSWERING_WORDS = 12;
+/** …or after talking for longer than this (rule 4). */
+export const YOU_ANSWERING_MS = 6000;
+/** A line of yours shorter than this ("Mm.", "Okay, sure") is a reply, not an answer. */
+export const SHORT_REPLY_WORDS = 4;
 
 /** A question as the strip shows it. */
 export interface FlowQuestion {
   /** Names the question for `answer` and `dismiss`; it stays the same while the question is listed. */
   id: string;
   text: string;
-  /** Asked outright, or implied by what they said. Every question is "direct" for now. */
+  /** Asked outright, or implied by what they said ("maybe you can tell me about…"). */
   askKind: "direct" | "implicit";
   /**
-   * "detecting": a first guess the model has not confirmed (not produced yet);
-   * "open": can be answered; "answering": its answer is being sent or is
-   * arriving; "answered"; "held": not answered automatically, waits for a click.
+   * "detecting": a first guess the model has not confirmed yet (the rules'
+   * guess at a pause), or a question still being asked; "open": can be
+   * answered; "answering": its answer is being sent or is arriving;
+   * "answered"; "held": not answered automatically, waits for a click.
    */
   status: "detecting" | "open" | "answering" | "answered" | "held";
   /** An answer was prepared for it in advance. */
   prepared: boolean;
   timestampMs: number;
+  /**
+   * Answered (or being answered) for an earlier wording that differs a lot
+   * from `text`: `answer(id)` asks again with the new one. The strip can offer
+   * "answer again" for it. (Optional only so that older code building a
+   * FlowQuestion by hand still compiles; the flow always sets it.)
+   */
+  revisedSinceAnswer?: boolean;
 }
 
 export interface QuestionFlow {
@@ -56,10 +84,9 @@ export interface QuestionFlow {
 }
 
 const isOtherParty = (speaker: string) => ["them", "interviewer"].includes(speaker.toLowerCase());
-const sameSpeaker = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 // Local question rules, kept in step with src-tauri/src/intelligence/question_detector.rs.
-// The backend decides which lines are questions (question_detection_result);
+// The backend decides which lines are questions (question_event);
 // these rules only serve Auto-Answer on a provider's turn signals, and only
 // while detection runs on the rules alone (see `rulesOnly`).
 
@@ -131,13 +158,7 @@ export function lastSentence(text: string): string {
   return (sentences[last] ?? "").trim();
 }
 
-/** A question card, with what the backend's decision says about it. */
-type DetectedCard = TrackedQuestion & {
-  /** Revision of the backend decision that found it. */
-  revision?: number;
-  /** An answer was prepared for this predicted question (M2): replay it. */
-  prepared?: boolean;
-};
+const isYou = (speaker: string) => ["user", "you"].includes(speaker.toLowerCase());
 
 /** Whether question detection runs on the local rules alone (no model). */
 const rulesOnly = () => useQuestionDetectionStore.getState().view?.effective_mode === "rules";
@@ -148,15 +169,87 @@ const defaultScope = () => {
   return !scope || scope.kind === "default";
 };
 
+const autoTriggerOn = () => useAIActionsStore.getState().configs.globalDefaults.autoTrigger;
+
+// ── words ──────────────────────────────────────────────────────────────────
+
+/** `Intl.Segmenter` (ES2022; the project's TypeScript lib is older). */
+interface WordSegmenter {
+  segment(text: string): Iterable<{ segment: string; isWordLike?: boolean }>;
+}
+const Segmenter = (Intl as unknown as {
+  Segmenter?: new (locale: string | undefined, options: { granularity: "word" }) => WordSegmenter;
+}).Segmenter;
+const segmenter = Segmenter ? new Segmenter(undefined, { granularity: "word" }) : null;
+
+/** The words of `text`, lower case (Chinese and Japanese split into words too). */
+export function wordsOf(text: string): string[] {
+  if (segmenter) {
+    const words: string[] = [];
+    for (const part of segmenter.segment(text.toLowerCase())) if (part.isWordLike) words.push(part.segment);
+    return words;
+  }
+  return text.toLowerCase().match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{N}']+/gu) ?? [];
+}
+
 /**
- * The backend's detection revisions: `latest` is the newest line it started or
- * finished deciding; `answerable` is the decision Auto-Answer may answer (none
- * while a newer line is being decided, or after you spoke).
+ * Whether a revision makes it a different question (rule 2): more than
+ * punctuation and case changed, and the two share few words.
  */
-const useDetectionRevision = create<{ latest: number; answerable: number | null }>(() => ({
-  latest: 0,
-  answerable: null,
-}));
+export function changedALot(before: string, after: string): boolean {
+  if (sameQuestion(before, after)) return false;
+  const a = new Set(wordsOf(before));
+  const b = new Set(wordsOf(after));
+  const union = new Set([...a, ...b]).size;
+  if (union === 0) return false;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared++;
+  return shared / union < REVISION_SIMILARITY;
+}
+
+// ── your own words (rule 4) ────────────────────────────────────────────────
+
+/** Your recent transcript lines: when they started and last grew, and how many words they have. */
+const yourLines = new Map<string, { firstAt: number; lastAt: number; words: number }>();
+/** For each card: when it came up, and how many words each line of yours had then. */
+const yourWordsWhenAsked = new Map<string, { at: number; words: Map<string, number> }>();
+
+function trackYourWords(segments: readonly TranscriptSegment[]) {
+  const now = Date.now();
+  for (let i = segments.length - 1; i >= Math.max(0, segments.length - 30); i--) {
+    const seg = segments[i];
+    if (!isYou(seg.speaker)) continue;
+    const words = wordsOf(seg.pending_text || seg.text).length;
+    const line = yourLines.get(seg.id);
+    if (!line) yourLines.set(seg.id, { firstAt: now, lastAt: now, words });
+    else if (line.words !== words) Object.assign(line, { lastAt: now, words });
+  }
+  // Only the last minutes matter.
+  for (const [id, line] of yourLines) if (now - line.lastAt > 5 * 60_000) yourLines.delete(id);
+}
+
+function rememberYourWords(cardId: string) {
+  const words = new Map<string, number>();
+  for (const [id, line] of yourLines) words.set(id, line.words);
+  yourWordsWhenAsked.set(cardId, { at: Date.now(), words });
+}
+
+/** Whether you have been answering since the card's question came up (rule 4). */
+function youAreAnswering(cardId: string): boolean {
+  const asked = yourWordsWhenAsked.get(cardId);
+  if (!asked) return false;
+  let words = 0;
+  let ms = 0;
+  for (const [id, line] of yourLines) {
+    if (line.words < SHORT_REPLY_WORDS) continue;
+    // Words a line already had when the question came up don't count.
+    words += Math.max(0, line.words - (asked.words.get(id) ?? 0));
+    ms += Math.max(0, line.lastAt - Math.max(line.firstAt, asked.at));
+  }
+  return words >= YOU_ANSWERING_WORDS || ms > YOU_ANSWERING_MS;
+}
+
+// ── the flow's state ───────────────────────────────────────────────────────
 
 /**
  * Questions whose answer the user asked for with a click, until that answer
@@ -165,161 +258,230 @@ const useDetectionRevision = create<{ latest: number; answerable: number | null 
  */
 const useClickedAnswers = create<{ ids: readonly string[] }>(() => ({ ids: [] }));
 
-/** The transcript line a decision is about (lines keep their start time as they grow). */
-function lineIdOf(timestampMs: number, source: string): string {
-  const segments = useTranscriptStore.getState().segments;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const seg = segments[i];
-    if (seg.timestamp_ms === timestampMs && sameSpeaker(seg.speaker, source)) return seg.id;
-  }
-  return `${source}@${timestampMs}`;
+/** How many question strips are mounted: Auto-Answer starts answers only while one is. */
+let mounted = 0;
+
+const cardsNow = () => useQuestionStore.getState().questions;
+const cardById = (id: string) => cardsNow().find((q) => q.id === id);
+
+/** Whether `ref` is the automatic answer to the card `id`, still running. */
+function answeringCard(ref: AutoAnswerRef | null, id: string): ref is AutoAnswerRef {
+  return !!ref && ref.questionId === id && autoAnswerRunning();
 }
 
-function onDetectionPending(event: DetectionPending) {
-  if (event.revision < useDetectionRevision.getState().latest) return;
-  useDetectionRevision.setState({ latest: event.revision, answerable: null });
-}
-
-function onDetectionResult(event: DetectionResult) {
-  if (event.revision < useDetectionRevision.getState().latest || !isOtherParty(event.source)) return;
-  useDetectionRevision.setState({ latest: event.revision, answerable: event.question ? event.revision : null });
-
-  const segmentId = lineIdOf(event.timestamp_ms, event.source);
-  const question = event.question;
-  const store = useQuestionStore.getState();
-  // The line's question changed while Auto-Answer was still answering the old
-  // one: that answer was for an incomplete question and gives way. (Lines with
-  // turn signals are handled on those signals.)
-  const ref = store.autoAnswer;
-  const withdrawn = question && ref && ref.segmentId === segmentId && !sameQuestion(ref.question, question.text)
-    && useAIActionsStore.getState().configs.globalDefaults.autoTrigger
-    && autoAnswerRunning() && !store.isTurnLine(segmentId)
-    ? ref
-    : null;
-  if (withdrawn) {
-    store.setAutoAnswer(null);
-    logAutoAnswer("withdrawn");
-    void inTurn(() => stopAutoAnswer(withdrawn));
-  }
-
-  useQuestionStore.setState((state) => {
-    const previous = state.questions as DetectedCard[];
-    const sameLine = (q: DetectedCard) => q.timestamp_ms === event.timestamp_ms && sameSpeaker(q.source, event.source);
-    // A growing line replaces its last decision. A model veto also removes
-    // that line's provisional card; no local heuristic can bypass it.
-    const existing = previous.find((q) => sameLine(q)
-      && (!q.assisted || (!!withdrawn && sameQuestion(q.text, withdrawn.question))));
-    const rest = previous.filter((q) => q !== existing);
-    if (!question) return { questions: rest };
-    if (previous.some((q) => q.assisted && (q === previous[0] || sameLine(q)) && sameQuestion(q.text, question.text))) {
-      return { questions: rest };
-    }
-    const card: DetectedCard = {
-      ...question,
-      // The line's question, decided again: still the same card to the strip.
-      id: existing?.id ?? newQuestionId(rest, question, segmentId),
-      assisted: false,
-      segmentId,
-      revision: event.revision,
-      prepared: event.prepared,
-    };
-    return { questions: [card, ...rest].slice(0, 10) };
+/** The automatic answer `ref` was premature: stop it, then give its turn to `next` (card ids). */
+function withdraw(ref: AutoAnswerRef, next: () => string[]) {
+  useQuestionStore.getState().setAutoAnswer(null);
+  void inTurn(async () => {
+    await stopAutoAnswer(ref);
+    startDue(next());
   });
 }
 
-// Decisions also arrive while the panel is away (a layout switch, Settings),
-// so they're tracked for the overlay window's lifetime, like the questions.
-let detectionListeners: Promise<Array<() => void>> | null = null;
+/** The cards held behind `requestId`, now free to be answered. */
+function releaseHeldBy(requestId: string): string[] {
+  const released = cardsNow().filter((q) => q.heldBack && q.heldBy === requestId).map((q) => q.id);
+  for (const id of released) useQuestionStore.getState().updateCard(id, { heldBack: false, heldBy: undefined });
+  return released;
+}
 
-function listenForDetections() {
-  if (detectionListeners) return;
-  const listening = Promise.all([
-    onQuestionDetectionPending(onDetectionPending),
-    onQuestionDetectionResult(onDetectionResult),
-  ]);
-  detectionListeners = listening;
-  listening.catch(() => {
-    if (detectionListeners === listening) detectionListeners = null;
+// ── question events ────────────────────────────────────────────────────────
+
+function onUpsert(q: DetectedQuestionV2) {
+  if (isYou(q.source)) return;
+  const store = useQuestionStore.getState();
+  if (store.isDismissed(q.id)) return;
+  const cards = store.questions;
+  // A card from a provider's turn signal for the same line and words becomes this question.
+  const card = cards.find((c) => c.backendId === q.id)
+    ?? cards.find((c) => !c.backendId && c.segmentId === q.line_id && sameQuestion(c.text, q.text));
+  if (card?.backendId === q.id && (card.revision ?? 0) >= q.revision) return; // out of date
+
+  const ref = store.autoAnswer;
+  const restart = !!card && answeringCard(ref, card.id) && changedALot(ref.question, q.text)
+    && (card.autoRestarts ?? 0) < MAX_AUTO_RESTARTS;
+  const id = card?.id ?? numbered(cards, q.id);
+  const next: TrackedQuestion = {
+    ...card,
+    id,
+    backendId: q.id,
+    revision: q.revision,
+    text: q.text,
+    confidence: card?.confidence ?? 1,
+    timestamp_ms: q.timestamp_ms,
+    source: q.source as DetectedQuestion["source"],
+    segmentId: q.line_id,
+    complete: q.complete,
+    origin: q.origin,
+    askKind: q.ask_kind,
+    prepared: q.prepared,
+    speakerDone: q.speaker_done,
+    assisted: card?.assisted ?? false,
+    ...(restart ? { assisted: false, heldBack: false, autoRestarts: (card?.autoRestarts ?? 0) + 1 } : {}),
+  };
+  if (!card) rememberYourWords(id);
+  useQuestionStore.setState((state) => ({
+    questions: card
+      ? state.questions.map((c) => (c.id === card.id ? next : c))
+      : [next, ...state.questions].slice(0, 10),
+  }));
+
+  if (restart && ref) {
+    logAutoAnswer("restarted");
+    withdraw(ref, () => [id]);
+  } else {
+    void inTurn(() => startDue([id]));
+  }
+}
+
+function onRemove(backendId: string, reason: "veto" | "superseded" | "reset") {
+  const store = useQuestionStore.getState();
+  const card = store.questions.find((c) => c.backendId === backendId);
+  if (!card) return;
+  const ref = store.autoAnswer;
+  if (reason !== "reset" && answeringCard(ref, card.id)) {
+    store.removeCard(card.id);
+    logAutoAnswer(reason === "veto" ? "vetoed" : "withdrawn");
+    withdraw(ref, () => releaseHeldBy(ref.requestId));
+    return;
+  }
+  // Its answer is there, or on its way because you asked: the card stays with it.
+  if (card.assisted) return;
+  store.removeCard(card.id);
+}
+
+function onEvent(event: QuestionEvent) {
+  if (event.kind === "upsert") onUpsert(event.question);
+  else onRemove(event.id, event.reason);
+}
+
+// Questions also arrive while the panel is away (a layout switch, Settings),
+// so they're tracked for the overlay window's lifetime.
+let listening: Promise<() => void> | null = null;
+let stopTrackingWords: (() => void) | null = null;
+
+function listenForQuestions() {
+  if (!stopTrackingWords) {
+    trackYourWords(useTranscriptStore.getState().segments);
+    stopTrackingWords = useTranscriptStore.subscribe((s, before) => {
+      if (s.segments !== before.segments) trackYourWords(s.segments);
+    });
+  }
+  if (listening) return;
+  const subscribed = onQuestionEvent(onEvent);
+  listening = subscribed;
+  subscribed.catch(() => {
+    if (listening === subscribed) listening = null;
   });
 }
 
 export function resetQuestionDetectionForTests() {
-  void detectionListeners?.then((unlisten) => unlisten.forEach((u) => u())).catch(() => {});
-  detectionListeners = null;
-  useDetectionRevision.setState({ latest: 0, answerable: null });
+  void listening?.then((unlisten) => unlisten()).catch(() => {});
+  listening = null;
+  stopTrackingWords?.();
+  stopTrackingWords = null;
+  yourLines.clear();
+  yourWordsWhenAsked.clear();
   useClickedAnswers.setState({ ids: [] });
 }
 
-/** The question stays available after its prepared answer couldn't replay. */
-function unprepare(segmentId: string | undefined, text: string) {
-  useQuestionStore.setState((state) => ({
-    questions: state.questions.map((q) => {
-      if (q.segmentId !== segmentId || !sameQuestion(q.text, text)) return q;
-      const card: DetectedCard = { ...q, assisted: false, prepared: false };
-      return card;
-    }),
-  }));
-}
+// ── automatic answers ──────────────────────────────────────────────────────
 
 /**
- * Starts an automatic answer to `question` (a line's question), unless another
- * answer is running: then the question stays a card to click. `preparedOnly`
- * replays the answer prepared for it (no provider call).
+ * Starts the automatic answers that are due among `ids` (newest first): a
+ * prepared answer replays; with Auto-Answer on, a complete question gets an
+ * answer unless another one is running or you are already answering. Run it
+ * in turn (`inTurn`).
  */
-function startAutoAnswer(
-  question: DetectedQuestion,
-  segmentId: string | undefined,
-  early: boolean,
-  detail?: string,
-  preparedOnly = false,
-) {
-  const store = useQuestionStore.getState();
-  if (answerRunning()) {
-    // A turn signal can come before the line's card: it shows now.
-    if (segmentId !== undefined && !store.questions.some((q) => q.segmentId === segmentId)) {
-      store.addQuestion(question, segmentId);
+function startDue(ids: readonly string[]) {
+  if (mounted === 0) return;
+  const due = cardsNow().filter((c) => ids.includes(c.id));
+  for (const card of due) {
+    if (card.assisted || card.heldBack || card.complete === false) continue;
+    // A provider's turn signals answer that line (rule-based detection).
+    if (useQuestionStore.getState().isTurnLine(card.segmentId)) continue;
+    const replay = !!card.prepared && defaultScope();
+    if (!replay && !autoTriggerOn()) continue;
+    if (answerRunning()) {
+      const ref = useQuestionStore.getState().autoAnswer;
+      useQuestionStore.getState().holdBackCard(card.id, ref && autoAnswerRunning() ? ref.requestId : undefined);
+      logAutoAnswer("held");
+      continue;
     }
-    useQuestionStore.getState().holdBack(segmentId, question.text);
-    logAutoAnswer("held");
-    return;
+    if (!replay && youAreAnswering(card.id)) {
+      useQuestionStore.getState().holdBackCard(card.id);
+      logAutoAnswer("youAnswering");
+      continue;
+    }
+    answerCard(card, replay);
   }
-  if (segmentId !== undefined) store.answerLine(question, segmentId);
+}
+
+/** Answers the card's question by itself; `preparedOnly` replays its prepared answer. */
+function answerCard(card: TrackedQuestion, preparedOnly: boolean) {
+  const store = useQuestionStore.getState();
   const requestId = crypto.randomUUID();
-  const opts = preparedOnly ? { requestId, preparedOnly } : { requestId };
-  const done = runUserAction("Assist", question.text, opts).catch((err) => {
+  const early = card.speakerDone === false;
+  store.updateCard(card.id, { assisted: true, heldBack: false, heldBy: undefined, answeredText: card.text });
+  const opts = { requestId, skipQueryRewrite: true, ...(preparedOnly ? { preparedOnly: true } : {}) };
+  const done = runUserAction("Assist", card.text, opts).catch((err) => {
     const refused = String(err).includes(REFUSED);
     if (!refused && !preparedOnly) return;
     const now = useQuestionStore.getState();
     if (now.autoAnswer?.requestId === requestId) now.setAutoAnswer(null);
     if (refused) {
       // Refused: an answer started elsewhere in the meantime.
-      now.holdBack(segmentId, question.text);
+      now.holdBackCard(card.id);
       logAutoAnswer("held");
     } else {
       // A settings change or expiry can invalidate a prepared answer between
-      // its confirmation and the replay. The question stays available, without
-      // a paid request unless Auto-Answer is on.
-      unprepare(segmentId, question.text);
+      // its confirmation and the replay. The question stays available, and
+      // gets a fresh answer only when Auto-Answer is on.
+      now.updateCard(card.id, { assisted: false, prepared: false });
+      void inTurn(() => startDue([card.id]));
     }
   });
-  if (segmentId !== undefined) store.setAutoAnswer({ requestId, segmentId, question: question.text, early, done });
+  store.setAutoAnswer({
+    requestId, segmentId: card.segmentId ?? card.id, question: card.text, early, done, questionId: card.id,
+  });
+  const seenAt = yourWordsWhenAsked.get(card.id)?.at;
+  const detail = [
+    preparedOnly ? "a prepared answer" : card.origin === "rules" ? "the rules' guess" : "the model's question",
+    ...(seenAt !== undefined ? [`${Date.now() - seenAt} ms after it came up`] : []),
+  ].join(", ");
   logAutoAnswer(early ? "early" : "answered", detail);
 }
 
-/** Answers the newest question after the quiet wait, or replays its prepared answer. */
-function autoAssist() {
+/**
+ * An automatic answer on a provider's turn signal, unless another answer is
+ * running: then the question stays a card to click.
+ */
+function startTurnAnswer(question: DetectedQuestion, segmentId: string, early: boolean, detail: string) {
   const store = useQuestionStore.getState();
-  const q = store.questions[0] as DetectedCard | undefined;
-  if (!q || q.assisted || q.heldBack) return;
-  const preparedOnly = !!q.prepared && defaultScope();
-  if (!preparedOnly && !useAIActionsStore.getState().configs.globalDefaults.autoTrigger) return;
-  store.markAssisted(0);
-  startAutoAnswer(q, q.segmentId, false, preparedOnly ? "a prepared answer" : "after the quiet wait", preparedOnly);
+  if (answerRunning()) {
+    // A turn signal can come before the line's card: it shows now.
+    if (!store.questions.some((q) => q.segmentId === segmentId)) store.addQuestion(question, segmentId);
+    useQuestionStore.getState().holdBack(segmentId, question.text);
+    logAutoAnswer("held");
+    return;
+  }
+  store.answerLine(question, segmentId);
+  const requestId = crypto.randomUUID();
+  const done = runUserAction("Assist", question.text, { requestId }).catch((err) => {
+    if (!String(err).includes(REFUSED)) return;
+    const now = useQuestionStore.getState();
+    if (now.autoAnswer?.requestId === requestId) now.setAutoAnswer(null);
+    // Refused: an answer started elsewhere in the meantime.
+    now.holdBack(segmentId, question.text);
+    logAutoAnswer("held");
+  });
+  store.setAutoAnswer({ requestId, segmentId, question: question.text, early, done });
+  logAutoAnswer(early ? "early" : "answered", detail);
 }
 
-/** Auto-Answer for a line that carries the provider's turn signal. */
+/** Auto-Answer for a line that carries the provider's turn signal (rule-based detection only). */
 async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
-  if (!seg.turn || !useAIActionsStore.getState().configs.globalDefaults.autoTrigger || !rulesOnly()) return;
+  if (!seg.turn || !autoTriggerOn() || !rulesOnly()) return;
   const store = useQuestionStore.getState();
   const sentence = lastSentence(seg.text);
   const question = sentence && looksLikeQuestion(sentence) ? sentence : null;
@@ -340,24 +502,28 @@ async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
   }
   if (step.kind === "answer") {
     const q = { text: step.question, confidence: 0.9, timestamp_ms: seg.timestamp_ms, source: seg.speaker };
-    startAutoAnswer(q, seg.id, step.early, `${seg.turn}, ${Date.now() - signalAt} ms after the signal`);
+    startTurnAnswer(q, seg.id, step.early, `${seg.turn}, ${Date.now() - signalAt} ms after the signal`);
   }
 }
+
+// ── what a click does ──────────────────────────────────────────────────────
 
 /** The user asked for this question's answer (a click on its card). */
 function answerQuestion(id: string) {
   const store = useQuestionStore.getState();
-  const index = store.questions.findIndex((q) => q.id === id);
-  const question = store.questions[index];
+  const question = cardById(id);
   if (!question) return;
-  // Its automatic answer is on the way: a click doesn't restart it.
-  if (autoAnswerRunning() && sameQuestion(store.autoAnswer?.question, question.text)) return;
-  store.markAssisted(index);
+  // Its automatic answer is on the way: a click doesn't restart it (unless the question changed since).
+  const ref = store.autoAnswer;
+  if (autoAnswerRunning() && ref && (ref.questionId
+    ? ref.questionId === id && !changedALot(ref.question, question.text)
+    : sameQuestion(ref.question, question.text))) return;
+  store.updateCard(id, { assisted: true, heldBack: false, heldBy: undefined, answeredText: question.text });
   useClickedAnswers.setState((s) => ({ ids: [...s.ids, id] }));
   runYourAction("Assist", question.text)
     .catch((err) => {
       // No answer came, so it stays a card to click.
-      useQuestionStore.getState().holdBack(question.segmentId, question.text);
+      useQuestionStore.getState().holdBackCard(id);
       showToast(
         t(String(err).includes(REFUSED) ? "overlay:modes.errors.anotherRunning" : "overlay:modes.errors.generateFailed"),
         "error",
@@ -381,36 +547,23 @@ function dismissQuestion(id: string) {
 
 /**
  * The questions of the meeting and what a click on one does. It also runs
- * everything that happens by itself while it is mounted: it listens for the
- * backend's decisions, answers the newest question after the quiet wait or on
- * the provider's turn signals, and leaves questions that were unanswered when
- * it came back as cards to click. Mount it in one place (the question strip).
+ * everything that happens by itself while it is mounted: it answers questions
+ * as question detection finds them (or on the provider's turn signals), and
+ * leaves questions that were unanswered when it came back as cards to click.
+ * Mount it in one place (the question strip).
  */
 export function useQuestionFlow(): QuestionFlow {
-  const cards = useQuestionStore((s) => s.questions) as DetectedCard[];
-  const answerable = useDetectionRevision((s) => s.answerable);
+  const cards = useQuestionStore((s) => s.questions);
   const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
   const turnSignals = useQuestionDetectionStore((s) => autoTrigger && s.view?.effective_mode === "rules");
-  const scopeIsDefault = useConfigStore((s) => !s.contextScope || s.contextScope.kind === "default");
-  const otherPartyTalking = useTranscriptStore((s) => {
-    for (let i = s.segments.length - 1; i >= 0; i--) {
-      const seg = s.segments[i];
-      if (isOtherParty(seg.speaker)) return !seg.is_final || !!seg.pending_text;
-    }
-    return false;
-  });
-  // Changes whenever the other party says more (a new line, or a line growing).
-  const otherPartyActivity = useTranscriptStore((s) => {
-    for (let i = s.segments.length - 1; i >= 0; i--) {
-      const seg = s.segments[i];
-      if (isOtherParty(seg.speaker)) return `${seg.id}:${seg.text}:${seg.pending_text ?? ""}`;
-    }
-    return "";
-  });
   const mountedRef = useRef(false);
 
   useEffect(() => {
-    listenForDetections();
+    listenForQuestions();
+    mounted += 1;
+    return () => {
+      mounted -= 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -425,8 +578,7 @@ export function useQuestionFlow(): QuestionFlow {
   }, [cards]);
 
   // Providers that detect turns (Cartesia, Deepgram Flux): answer on their
-  // "done", or early on "probably done", instead of waiting for quiet. Only
-  // with rule-based detection: a model's decision comes after the final line.
+  // "done", or early on "probably done". Only with rule-based detection.
   useEffect(() => {
     if (!turnSignals) return;
     const onLine = ({ segment }: TranscriptUpdateEvent) => {
@@ -443,40 +595,27 @@ export function useQuestionFlow(): QuestionFlow {
     };
   }, [turnSignals]);
 
-  const latest = cards.length > 0 ? cards[0] : null;
-
-  // Auto-Trigger: answer the newest question the backend confirmed once the
-  // other party has been quiet for a moment. More words from them restart the
-  // wait; a newer line being decided, or your own words, cancel it. A prepared
-  // answer replays at once, with Auto-Answer off too, unless a transcript scope
-  // is picked. Lines from a provider that detects turns are answered on its
-  // signals instead.
-  const preparedReplay = !!latest?.prepared && scopeIsDefault;
-  const waiting = (autoTrigger || preparedReplay) && !!latest && !latest.assisted && !latest.heldBack
-    && latest.revision === answerable && !otherPartyTalking
-    && !useQuestionStore.getState().isTurnLine(latest.segmentId);
-  useEffect(() => {
-    if (!waiting) return;
-    const timer = setTimeout(() => void inTurn(autoAssist), preparedReplay ? 0 : AUTO_TRIGGER_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [waiting, latest?.text, preparedReplay, otherPartyActivity]);
-
   // Whose answer is on its way: the automatic one's question, and the ones clicked.
   const autoAnswer = useQuestionStore((s) => s.autoAnswer);
   const autoRunning = useAutoAnswerRunning();
   const clicked = useClickedAnswers((s) => s.ids);
   const questions = useMemo(
     () => cards.map((card): FlowQuestion => {
-      const answering = clicked.includes(card.id)
-        || (autoRunning && !!autoAnswer && autoAnswer.segmentId === card.segmentId
-          && sameQuestion(autoAnswer.question, card.text));
+      const automatic = autoRunning && !!autoAnswer && (autoAnswer.questionId
+        ? autoAnswer.questionId === card.id
+        : autoAnswer.segmentId === card.segmentId && sameQuestion(autoAnswer.question, card.text));
+      const answering = clicked.includes(card.id) || automatic;
+      const unconfirmed = card.origin === "rules" || card.complete === false;
       return {
         id: card.id,
         text: card.text,
-        askKind: "direct",
-        status: card.assisted ? (answering ? "answering" : "answered") : card.heldBack ? "held" : "open",
+        askKind: card.askKind ?? "direct",
+        status: card.assisted
+          ? (answering ? "answering" : "answered")
+          : card.heldBack ? "held" : unconfirmed ? "detecting" : "open",
         prepared: !!card.prepared,
         timestampMs: card.timestamp_ms,
+        revisedSinceAnswer: card.assisted && !!card.answeredText && changedALot(card.answeredText, card.text),
       };
     }),
     [cards, autoAnswer, autoRunning, clicked],
