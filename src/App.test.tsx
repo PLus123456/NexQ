@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -113,6 +113,7 @@ describe("the overlay's scenario chip", () => {
   it("shows the meeting's scenario, not the one loaded at launch", async () => {
     await launchOverlayOn("lecture");
     await launcherStartsMeeting("interview");
+    fireEvent.click(await screen.findByRole("button", { name: "More options" }));
     expect(await screen.findByText("Interview")).toBeTruthy();
     expect(screen.queryByText("Lecture")).toBeNull();
   });
@@ -121,6 +122,7 @@ describe("the overlay's scenario chip", () => {
     await launchOverlayOn("lecture");
     savedConfig.customScenarios = [{ id: "custom_1", name: "Board review", is_custom: true }];
     await launcherStartsMeeting("custom_1");
+    fireEvent.click(await screen.findByRole("button", { name: "More options" }));
     expect(await screen.findByText("Board review")).toBeTruthy();
   });
 });

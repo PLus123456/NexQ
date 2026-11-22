@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlowQuestion, QuestionFlow } from "./questionFlow";
 
@@ -25,7 +25,11 @@ import type { QuestionDetectionSettingsView } from "../lib/questionDetection/typ
 import type { GlobalDefaults } from "../lib/types";
 
 let nextId = 0;
-const question = (text: string, status: FlowQuestion["status"] = "open", patch: Partial<FlowQuestion> = {}): FlowQuestion => {
+const question = (
+  text: string,
+  status: FlowQuestion["status"] = "open",
+  patch: Partial<FlowQuestion> = {},
+): FlowQuestion => {
   nextId += 1;
   return { id: `q${nextId}`, text, askKind: "direct", status, prepared: false, timestampMs: nextId * 1000, ...patch };
 };
@@ -43,7 +47,13 @@ function setDefaults(defaults: Partial<GlobalDefaults>) {
 function setPredictions(on: boolean) {
   const view: QuestionDetectionSettingsView = {
     revision: 1,
-    settings: { mode: "hybrid", confidence_threshold: 0.7, log_requests: false, prediction_enabled: on, prediction_prepare_answers: true },
+    settings: {
+      mode: "hybrid",
+      confidence_threshold: 0.7,
+      log_requests: false,
+      prediction_enabled: on,
+      prediction_prepare_answers: true,
+    },
     effective_mode: "hybrid",
     fallback_reason: null,
   };
@@ -58,6 +68,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   flow.answer.mockReset();
   flow.dismiss.mockReset();
   flow.mounted.mockReset();
@@ -65,118 +76,160 @@ afterEach(() => {
 });
 
 describe("QuestionStrip", () => {
-  it("says it is listening while nothing was asked", () => {
+  it("shows a faint single-line placeholder while nothing was asked", () => {
     show();
     const region = screen.getByRole("region", { name: "Detected questions" });
     expect(within(region).getByText("Listening for questions from the other party")).toBeInTheDocument();
     expect(within(region).queryByRole("button")).toBeNull();
   });
 
-  it("shows the newest question as a card to click, with an Assist button", () => {
+  it("shows the newest question clamped to two lines with an Assist button and no nav when alone", () => {
     show(question("What would you do first?"));
-    expect(screen.getByText(/What would you do first\?/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Question: What would you do first?. Click to assist" })).toBeInTheDocument();
+    const p = screen.getByText("What would you do first?");
+    expect(p.tagName).toBe("P");
+    expect(p.className).toContain("line-clamp-2");
     expect(screen.getByRole("button", { name: "Get AI assistance for this question" })).toHaveTextContent("Assist");
-    expect(screen.queryByText("Answered")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Older question" })).toBeNull();
     expect(screen.queryByText("Listening for questions from the other party")).toBeNull();
   });
 
-  it.each(["answered", "answering"] as const)("shows a question whose answer is %s as answered", (status) => {
-    show(question("What would you do first?", status));
-    expect(screen.getByRole("button", { name: "Question: What would you do first?. Answered" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Already answered" })).toHaveTextContent("Answered");
-    expect(screen.queryByRole("button", { name: "Get AI assistance for this question" })).toBeNull();
+  it.each([
+    ["detecting", "Detecting", "Get AI assistance for this question", "Assist"],
+    ["open", "Ready", "Get AI assistance for this question", "Assist"],
+    ["answering", "Answering", null, null],
+    ["answered", "Answered", "Answer this question again", "Re-answer"],
+    ["held", "Click to answer", "Get AI assistance for this question", "Assist"],
+  ] as const)("renders status badge and action button for status '%s'", (status, badge, actionAria, actionText) => {
+    show(question("How did you scale it?", status));
+    const region = screen.getByRole("region", { name: "Detected questions" });
+    expect(region.querySelector(`[data-question-status="${status}"]`)).toHaveTextContent(badge);
+    if (actionAria && actionText) {
+      expect(screen.getByRole("button", { name: actionAria })).toHaveTextContent(actionText);
+    } else {
+      expect(screen.queryByRole("button", { name: "Get AI assistance for this question" })).toBeNull();
+    }
   });
 
-  it.each(["open", "held"] as const)("shows a question that is %s as one to click, not as answered", (status) => {
-    show(question("What would you do first?", status));
-    expect(screen.getByRole("button", { name: "Get AI assistance for this question" })).toBeInTheDocument();
-    expect(screen.queryByText("Answered")).toBeNull();
-  });
-
-  it("a click on the card, on its Assist button, or Enter / Space on it asks for that question's answer", () => {
-    show(question("What would you do first?"));
-    const card = screen.getByRole("button", { name: /^Question: What would you do first\?/ });
-
-    fireEvent.click(card);
-    expect(flow.answer).toHaveBeenCalledExactlyOnceWith("q1");
-
-    // The button sits in the card: one click is one request.
+  it("clicking the Assist / Re-answer button requests an answer for the displayed question", () => {
+    show(question("What would you do first?", "open"));
     fireEvent.click(screen.getByRole("button", { name: "Get AI assistance for this question" }));
-    expect(flow.answer).toHaveBeenCalledTimes(2);
-
-    fireEvent.keyDown(card, { key: "Enter" });
-    fireEvent.keyDown(card, { key: " " });
-    fireEvent.keyDown(card, { key: "a" });
-    expect(flow.answer).toHaveBeenCalledTimes(4);
-    expect(flow.answer).toHaveBeenLastCalledWith("q1");
+    expect(flow.answer).toHaveBeenCalledExactlyOnceWith("q1");
     expect(flow.dismiss).not.toHaveBeenCalled();
   });
 
-  it("a click on the card of an answered question asks again (the flow decides what that does)", () => {
-    show(question("What would you do first?", "answering"));
-    fireEvent.click(screen.getByRole("button", { name: /^Question: What would you do first\?/ }));
+  it("clicking Re-answer on an answered question asks again", () => {
+    show(question("What would you do first?", "answered"));
+    fireEvent.click(screen.getByRole("button", { name: "Answer this question again" }));
     expect(flow.answer).toHaveBeenCalledExactlyOnceWith("q1");
   });
 
-  it("the ✕ closes the question without asking for its answer", () => {
+  it("clicking Dismiss closes the question without asking for its answer", () => {
     show(question("What would you do first?"));
     fireEvent.click(screen.getByRole("button", { name: "Dismiss question" }));
     expect(flow.dismiss).toHaveBeenCalledExactlyOnceWith("q1");
     expect(flow.answer).not.toHaveBeenCalled();
   });
 
-  it("lists the three questions before the newest one, each with its full text as a tooltip", () => {
+  it("navigates between questions with prev / next and acts on the selected one", () => {
     show(
-      question("Newest?"),
+      question("Newest?", "open"),
       question("Second?", "held"),
       question("Third?", "answered"),
-      question("Fourth?"),
-      question("Fifth, not shown?"),
     );
-    expect(screen.getByText(/Newest\?/).tagName).toBe("P");
-    for (const text of ["Second?", "Third?", "Fourth?"]) {
-      expect(screen.getByTitle(text)).toHaveTextContent(text);
-    }
-    expect(screen.queryByText(/Fifth/)).toBeNull();
-    // One ✕ per question shown.
-    expect(screen.getAllByRole("button", { name: "Dismiss question" })).toHaveLength(4);
-  });
+    const prev = screen.getByRole("button", { name: "Newer question" });
+    const next = screen.getByRole("button", { name: "Older question" });
 
-  it("a click on an earlier question asks for its answer, unless it is already answered", () => {
-    show(question("Newest?"), question("Second?", "held"), question("Third?", "answered"), question("Fourth?", "answering"));
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+    expect(prev).toBeDisabled();
+    expect(next).not.toBeDisabled();
+    expect(screen.getByText("Newest?")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Second?"));
+    fireEvent.click(next);
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByText("Second?")).toBeInTheDocument();
+    expect(prev).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Get AI assistance for this question" }));
     expect(flow.answer).toHaveBeenCalledExactlyOnceWith("q2");
 
-    fireEvent.click(screen.getByText("Third?"));
-    fireEvent.click(screen.getByText("Fourth?"));
-    expect(flow.answer).toHaveBeenCalledTimes(1);
+    fireEvent.click(next);
+    expect(screen.getByText("3 / 3")).toBeInTheDocument();
+    expect(screen.getByText("Third?")).toBeInTheDocument();
+    expect(next).toBeDisabled();
 
-    // The keyboard asks again for an answered one too.
-    fireEvent.keyDown(screen.getByTitle("Third?"), { key: "Enter" });
-    expect(flow.answer).toHaveBeenLastCalledWith("q3");
-    fireEvent.keyDown(screen.getByTitle("Second?"), { key: " " });
-    expect(flow.answer).toHaveBeenLastCalledWith("q2");
-    expect(flow.answer).toHaveBeenCalledTimes(3);
-  });
-
-  it("the ✕ of an earlier question closes that one only", () => {
-    show(question("Newest?"), question("Second?"), question("Third?"));
-    const row = screen.getByTitle("Third?");
-    fireEvent.click(within(row).getByRole("button", { name: "Dismiss question" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss question" }));
     expect(flow.dismiss).toHaveBeenCalledExactlyOnceWith("q3");
-    expect(flow.answer).not.toHaveBeenCalled();
+
+    fireEvent.click(prev);
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
   });
 
-  it("follows the flow: an answered question shows as answered, a closed one is gone", () => {
+  it("jumps back to the newest question when a brand-new question arrives", () => {
+    const q1 = question("First?");
+    const q2 = question("Older?");
+    const view = show(q1, q2);
+    fireEvent.click(screen.getByRole("button", { name: "Older question" }));
+    expect(screen.getByText("Older?")).toBeInTheDocument();
+
+    const q3 = question("Brand new?");
+    flow.questions = [q3, q1, q2];
+    view.rerender(<QuestionStrip />);
+    expect(screen.getByText("Brand new?")).toBeInTheDocument();
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+  });
+
+  it("opens the full question in a portal popover on click and closes on Escape", () => {
+    const longText = "A very long multi-line interview question about distributed consensus and rate limiting?";
+    show(question(longText, "open", { prepared: true }));
+
+    const trigger = screen.getByRole("button", { name: `Question: ${longText}. Click to assist` });
+    expect(screen.queryByRole("dialog", { name: "Full question" })).toBeNull();
+
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Full question" });
+    expect(dialog).toBeInTheDocument();
+    // Rendered as a portal on document.body, outside the strip region (so it cannot push the answer down).
+    expect(screen.getByRole("region", { name: "Detected questions" }).contains(dialog)).toBe(false);
+    expect(within(dialog).getByText(longText)).toBeInTheDocument();
+    expect(within(dialog).getByText("Prepared in advance")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Full question" })).toBeNull();
+  });
+
+  it("opens the full question popover on hover and closes shortly after mouse leaves", () => {
+    vi.useFakeTimers();
+    const longText = "Walk me through the database sharding strategy you used in production.";
+    show(question(longText, "held"));
+
+    const trigger = screen.getByRole("button", { name: `Question: ${longText}. Click to assist` });
+    fireEvent.mouseEnter(trigger);
+    expect(screen.getByRole("dialog", { name: "Full question" })).toBeInTheDocument();
+
+    fireEvent.mouseLeave(trigger);
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.queryByRole("dialog", { name: "Full question" })).toBeNull();
+  });
+
+  it("popover action button answers the question and closes the popover", () => {
+    show(question("Why did you pick Kafka?"));
+    fireEvent.click(screen.getByRole("button", { name: /Question: Why did you pick Kafka/ }));
+    const dialog = screen.getByRole("dialog", { name: "Full question" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assist" }));
+    expect(flow.answer).toHaveBeenCalledExactlyOnceWith("q1");
+    expect(screen.queryByRole("dialog", { name: "Full question" })).toBeNull();
+  });
+
+  it("follows the flow: an answered question updates its status and a closed one disappears", () => {
     const first = question("What would you do first?");
     const view = show(first);
     expect(screen.getByRole("button", { name: "Get AI assistance for this question" })).toBeInTheDocument();
 
     flow.questions = [{ ...first, status: "answered" }];
     view.rerender(<QuestionStrip />);
-    expect(screen.getByRole("button", { name: "Already answered" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Answer this question again" })).toBeInTheDocument();
 
     flow.questions = [];
     view.rerender(<QuestionStrip />);
@@ -186,10 +239,12 @@ describe("QuestionStrip", () => {
 });
 
 describe("QuestionPanel", () => {
-  it("shows the strip with Question Detection on, with Auto-Answer off too", () => {
+  it("caps its height at 72px and shows the strip with Question Detection on (even with Auto-Answer off)", () => {
     setDefaults({ questionDetection: true, autoTrigger: false });
     flow.questions = [question("What would you do first?")];
     render(<QuestionPanel />);
+    const panel = screen.getByTestId("question-panel");
+    expect(panel.className).toContain("max-h-[72px]");
     expect(screen.getByRole("region", { name: "Detected questions" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Get AI assistance for this question" }));
@@ -211,7 +266,7 @@ describe("QuestionPanel", () => {
     flow.questions = [question("When can we ship this project?", "answered", { prepared: true })];
     render(<QuestionPanel />);
     expect(screen.getByRole("region", { name: "Detected questions" })).toBeInTheDocument();
-    expect(screen.getByText(/When can we ship this project\?/)).toBeInTheDocument();
+    expect(screen.getByText("When can we ship this project?")).toBeInTheDocument();
     expect(flow.mounted).toHaveBeenCalled();
   });
 });

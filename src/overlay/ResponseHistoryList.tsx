@@ -64,7 +64,7 @@ export function ResponseHistoryList({
 
   return (
     <div
-      className="history-slide-enter absolute inset-0 z-10 flex flex-col rounded-lg bg-card/95 backdrop-blur-md"
+      className="history-slide-enter absolute inset-0 z-20 flex flex-col rounded-lg bg-card/95 p-2 backdrop-blur-md"
       role="dialog"
       aria-label={t("history.title")}
       onKeyDown={onKeyDown}
