@@ -281,6 +281,8 @@ export async function generateAssist(
     requestId,
     ...(opts.pastMeetingId ? { pastMeetingId: opts.pastMeetingId } : {}),
     ...(opts.preparedOnly ? { preparedOnly: true } : {}),
+    // Read by the backend as `skip_query_rewrite`.
+    ...(opts.skipQueryRewrite ? { skipQueryRewrite: true } : {}),
     // No `sources`: an automatic answer, which never uses personal sources.
     ...(opts.sources ? { sources: opts.sources } : {}),
     // No scope (or `default`): the backend keeps the action's own window.

@@ -99,6 +99,13 @@ describe("generateAssist", () => {
     });
   });
 
+  it("asks the backend to skip the query rewrite only when told to (skip_query_rewrite)", async () => {
+    await generateAssist("Assist", "How would you roll it back?", { requestId: "a", skipQueryRewrite: true });
+    await generateAssist("Assist", "How would you roll it back?", { requestId: "b" });
+    expect(invoke.mock.calls[0][1]).toMatchObject({ skipQueryRewrite: true });
+    expect("skipQueryRewrite" in invoke.mock.calls[1][1]).toBe(false);
+  });
+
   it("sends a picked scope, and nothing for the default", async () => {
     const scope = { kind: "minutes" as const, since_ms: 100, minutes: 5, label: "Last 5 min" };
     await generateAssist("Recap", undefined, { requestId: "r", scope });

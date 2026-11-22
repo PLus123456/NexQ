@@ -32,6 +32,13 @@ describe("runUserAction", () => {
     vi.spyOn(Date, "now").mockReturnValue(T0);
   });
 
+  it("passes skipQueryRewrite on, and leaves it out unless asked", async () => {
+    await runUserAction("Assist", "How would you roll it back?", { requestId: "auto", skipQueryRewrite: true });
+    await runUserAction("Assist", "How would you roll it back?");
+    expect(generateAssist.mock.calls[0][2]).toMatchObject({ requestId: "auto", skipQueryRewrite: true });
+    expect(generateAssist.mock.calls[1][2]).not.toHaveProperty("skipQueryRewrite");
+  });
+
   it("default scope sends no scope and shows Sending… at once", async () => {
     const p = runUserAction("FollowUp");
     expect(useStreamStore.getState().phase).toBe("sending");
