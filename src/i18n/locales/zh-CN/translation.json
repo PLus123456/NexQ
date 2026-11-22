@@ -48,11 +48,11 @@
     "empty": {
       "capturing": "正在采集音频",
       "hint": "检测到语音后会立即显示在这里",
-      "startMeeting": "开始会议后即可看到字幕"
+      "startMeeting": "开始会议后即可看到转写"
     },
     "search": {
-      "placeholder": "搜索字幕…",
-      "label": "搜索字幕",
+      "placeholder": "搜索转写…",
+      "label": "搜索转写",
       "matches_other": "{{count}} 处匹配",
       "clear": "清除搜索"
     },
@@ -98,7 +98,7 @@
     },
     "layout": {
       "focusAi": "只看 AI 面板",
-      "focusTranscript": "只看字幕",
+      "focusTranscript": "只看转写",
       "split": "并排显示"
     },
     "panels": {
@@ -106,9 +106,9 @@
       "bookmarks": "书签（K）",
       "callLog": "AI 调用日志",
       "devLog": "调试日志（Ctrl+Shift+L）",
-      "transcript": "字幕",
-      "expandTranscript": "展开字幕面板",
-      "expandTranscriptTitle": "展开字幕",
+      "transcript": "转写",
+      "expandTranscript": "展开转写面板",
+      "expandTranscriptTitle": "展开转写",
       "ai": "AI",
       "expandAi": "展开 AI 面板"
     },
@@ -130,7 +130,7 @@
       "inline": "行内",
       "hover": "悬停",
       "all": "全部翻译",
-      "allTitle": "翻译之前所有的字幕片段",
+      "allTitle": "翻译之前所有的转写片段",
       "allRunning": "翻译中…",
       "target": "目标语言：{{language}}"
     },
