@@ -328,3 +328,16 @@ Ollama、LM Studio、OpenAI、Anthropic、Groq、Google Gemini、OpenRouter，�
 | `misc:capture.*` | Reconnecting your microphone… | 正在重新连接你的麦克风… | 对方一侧写“对方的音频”；通知里的“你”不用“我” |
 | `misc:images.tooLarge` | Paste a smaller area. | 请粘贴较小的区域。 | 指截图的范围 |
 | `llm:thinkingSettings.extra.*` | Extra request JSON | 额外请求体（JSON） | 与 `llm:params.extraBody.label` 一致 |
+
+
+## 答案窗重构（overlay 命名空间，2026-11-22，待人工确认）
+
+| key | 英文 | 中文 | 说明 |
+|---|---|---|---|
+| `overlay:header.captions.*` | Show / Hide / Lock caption strip (click-through) | 显示 / 隐藏 / 锁定字幕条（鼠标穿透） | 独立透明字幕悬浮窗称“字幕条”，与抽屉里的“转写”区分 |
+| `overlay:header.transcript.*` / `transcriptDrawer.title` | Show / Hide transcript / Transcript | 打开 / 收起转写 / 转写 | `translation.json` 里原有 `overlay.panels.transcript` 仍为“字幕”，这里在抽屉内改称“转写”避免与“字幕条”混淆 |
+| `overlay:question.status.*` | Detecting / Ready / Answering / Answered / Click to answer | 识别中 / 可回答 / 回答中 / 已回答 / 待点击 | 对应 `FlowQuestion.status` 的 5 种状态；`open` 英文用 “Ready”、`held` 英文用 “Click to answer” |
+| `overlay:question.reanswer` | Re-answer | 重新回答 | 已回答或回答中时重新触发回答的入口 |
+| `overlay:response.typeset.button` / `transcriptDrawer.typesetButton` | Style | 排版 | 答案区与转写区收进浮层的排版按钮 |
+| `overlay:response.scrollToLatest` | Back to latest | 回到最新 | 与 `translation:transcript.scrollToLatest` 保持一致 |
+| `overlay:transcriptDrawer.dockSideBySide` / `switchToDrawer` | Dock side by side / Switch to drawer overlay | 并排显示 / 切回抽屉覆盖 | 窗口宽度 ≥720px 时的转写面板切换按钮 |

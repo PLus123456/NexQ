@@ -6,7 +6,10 @@ import type { Meeting } from "../lib/types";
 const ipc = vi.hoisted(() => ({ get: vi.fn(), stop: vi.fn(), emit: (_: PredictionView) => {} }));
 vi.mock("../lib/questionDetection/predictions", () => ({
   getQuestionPredictions: ipc.get,
-  onQuestionPredictions: (handler: typeof ipc.emit) => { ipc.emit = handler; return Promise.resolve(ipc.stop); },
+  onQuestionPredictions: (handler: typeof ipc.emit) => {
+    ipc.emit = handler;
+    return Promise.resolve(ipc.stop);
+  },
 }));
 import { QuestionPredictions } from "./QuestionPredictions";
 import { useMeetingStore } from "../stores/meetingStore";
@@ -14,10 +17,22 @@ import { useStreamStore } from "../stores/streamStore";
 import { useCallLogStore } from "../stores/callLogStore";
 
 const snapshot = (patch: Partial<PredictionView> = {}): PredictionView => ({
-  meeting_id: "m1", revision: 1, enabled: true, expires_at_ms: Date.now() + 90_000,
-  predictions: [{ id: "p1", question: "When can we ship this project?", confidence: 0.9, status: "ready", answer: "<think>private draft</think>Next week." }],
+  meeting_id: "m1",
+  revision: 1,
+  enabled: true,
+  expires_at_ms: Date.now() + 90_000,
+  predictions: [
+    {
+      id: "p1",
+      question: "When can we ship this project?",
+      confidence: 0.9,
+      status: "ready",
+      answer: "<think>private draft</think>Next week.",
+    },
+  ],
   ...patch,
 });
+
 beforeEach(() => {
   vi.useFakeTimers();
   ipc.get.mockReset().mockResolvedValue(snapshot());
@@ -26,15 +41,26 @@ beforeEach(() => {
   useStreamStore.getState().resetForMeeting();
   useCallLogStore.getState().clearAll();
 });
-afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-it("is collapsed initially and previews an answer without generating, logging or saving it", async () => {
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+it("is collapsed as a compact count button initially and previews an answer in a popover without generating, logging or saving it", async () => {
   const stream = useStreamStore.getState();
   const log = useCallLogStore.getState();
-  const { container } = render(<QuestionPredictions />);
+  render(<QuestionPredictions />);
   await act(async () => {});
-  expect(container.querySelector("details")).not.toHaveAttribute("open");
-  fireEvent.click(screen.getByText(/They may ask/));
+  const trigger = screen.getByRole("button", { name: "1 predicted question" });
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  expect(trigger).toHaveTextContent("1");
+  expect(screen.queryByRole("dialog", { name: "They may ask" })).toBeNull();
+
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByRole("dialog", { name: "They may ask" })).toBeInTheDocument();
+
   fireEvent.click(screen.getByRole("button", { name: /When can we ship/ }));
   expect(screen.getByText("Next week.")).toBeInTheDocument();
   expect(screen.getByText("Prepared in advance")).toBeInTheDocument();
@@ -42,19 +68,22 @@ it("is collapsed initially and previews an answer without generating, logging or
   expect(useStreamStore.getState()).toBe(stream);
   expect(useCallLogStore.getState()).toBe(log);
   expect(ipc.get).toHaveBeenCalledTimes(1);
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "They may ask" })).toBeNull();
 });
 
 it("hides disabled, expired and cleared predictions", async () => {
   render(<QuestionPredictions />);
   await act(async () => {});
   act(() => ipc.emit(snapshot({ revision: 2, enabled: false })));
-  expect(screen.queryByText(/They may ask/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /predicted question/ })).toBeNull();
   act(() => ipc.emit(snapshot({ revision: 3, expires_at_ms: Date.now() + 100 })));
-  expect(screen.getByText(/They may ask/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "1 predicted question" })).toBeInTheDocument();
   act(() => vi.advanceTimersByTime(101));
-  expect(screen.queryByText(/They may ask/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /predicted question/ })).toBeNull();
   act(() => ipc.emit(snapshot({ revision: 4, predictions: [] })));
-  expect(screen.queryByText(/They may ask/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /predicted question/ })).toBeNull();
 });
 
 it("ignores old revisions, a stale initial read and another meeting's results", async () => {
@@ -65,11 +94,11 @@ it("ignores old revisions, a stale initial read and another meeting's results", 
   act(() => ipc.emit(snapshot({ revision: 4, predictions: [] })));
   await act(async () => resolve(snapshot()));
   act(() => ipc.emit(snapshot({ revision: 2 })));
-  expect(screen.queryByText(/They may ask/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /predicted question/ })).toBeNull();
   act(() => useMeetingStore.setState({ activeMeeting: { id: "m2" } as Meeting }));
   await act(async () => {});
   act(() => ipc.emit(snapshot({ revision: 5 })));
-  expect(screen.queryByText(/They may ask/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /predicted question/ })).toBeNull();
   expect(ipc.stop).toHaveBeenCalled();
 });
 

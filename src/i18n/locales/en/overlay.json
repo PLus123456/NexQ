@@ -17,6 +17,10 @@
     },
     "typeset": {
       "label": "AI Text",
+      "button": "Style",
+      "buttonTitle": "Text & layout settings",
+      "dialogLabel": "Answer typography",
+      "fontSize": "Size",
       "smaller": "Smaller",
       "larger": "Larger",
       "colorLabel": "AI text color",
@@ -26,10 +30,12 @@
         "increase": "Increase line height"
       },
       "margin": {
+        "label": "Margin",
         "decrease": "Decrease margin",
         "increase": "Increase margin"
       },
       "align": {
+        "label": "Align",
         "left": {
           "label": "L",
           "title": "Align left"
@@ -44,6 +50,7 @@
         }
       }
     },
+    "scrollToLatest": "Back to latest",
     "timing": {
       "firstWords": "first words {{duration}}"
     },
@@ -90,9 +97,28 @@
     },
     "answered": "Answered",
     "assist": "Assist",
+    "reanswer": "Re-answer",
+    "status": {
+      "detecting": "Detecting",
+      "open": "Ready",
+      "answering": "Answering",
+      "answered": "Answered",
+      "held": "Click to answer"
+    },
     "button": {
       "answeredLabel": "Already answered",
-      "assistLabel": "Get AI assistance for this question"
+      "assistLabel": "Get AI assistance for this question",
+      "reanswerLabel": "Answer this question again",
+      "answeringLabel": "Answering this question"
+    },
+    "nav": {
+      "prev": "Newer question",
+      "next": "Older question",
+      "counter": "{{current}} / {{total}}"
+    },
+    "popover": {
+      "label": "Full question",
+      "expandHint": "Click or hover to view full question"
     },
     "dismiss": "Dismiss question"
   },
@@ -239,6 +265,9 @@
     "title": "They may ask",
     "prepared": "Prepared in advance",
     "preview": "Prepared answer preview",
+    "buttonLabel_one": "{{count}} predicted question",
+    "buttonLabel_other": "{{count}} predicted questions",
+    "close": "Close predictions",
     "status": {
       "predicted": "Prediction only",
       "preparing": "Preparing answer…",
@@ -258,5 +287,36 @@
       "summarySeparator": ". ",
       "summary": "{{name}}: {{language}}"
     }
+  },
+  "header": {
+    "captions": {
+      "show": "Show caption strip",
+      "hide": "Hide caption strip",
+      "lock": "Lock caption strip (click-through)",
+      "unlock": "Unlock caption strip",
+      "lockedBadge": "Locked"
+    },
+    "transcript": {
+      "show": "Show transcript",
+      "hide": "Hide transcript"
+    },
+    "more": {
+      "label": "More options",
+      "menuLabel": "More meeting controls",
+      "sections": {
+        "audio": "Audio & captions",
+        "translation": "Translation",
+        "panels": "Panels",
+        "window": "Window"
+      }
+    }
+  },
+  "transcriptDrawer": {
+    "title": "Transcript",
+    "close": "Close transcript",
+    "dockSideBySide": "Dock side by side",
+    "switchToDrawer": "Switch to drawer overlay",
+    "typesetButton": "Style",
+    "typesetLabel": "Transcript typography"
   }
 }

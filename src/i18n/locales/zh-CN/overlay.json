@@ -16,6 +16,10 @@
     },
     "typeset": {
       "label": "AI 文字",
+      "button": "排版",
+      "buttonTitle": "排版设置",
+      "dialogLabel": "回答排版",
+      "fontSize": "字号",
       "smaller": "缩小字号",
       "larger": "放大字号",
       "colorLabel": "AI 文字颜色",
@@ -25,10 +29,12 @@
         "increase": "增大行高"
       },
       "margin": {
+        "label": "边距",
         "decrease": "减小边距",
         "increase": "增大边距"
       },
       "align": {
+        "label": "对齐",
         "left": {
           "label": "左",
           "title": "左对齐"
@@ -43,6 +49,7 @@
         }
       }
     },
+    "scrollToLatest": "回到最新",
     "timing": {
       "firstWords": "首字延迟 {{duration}}"
     },
@@ -87,9 +94,28 @@
     },
     "answered": "已回答",
     "assist": "帮我回答",
+    "reanswer": "重新回答",
+    "status": {
+      "detecting": "识别中",
+      "open": "可回答",
+      "answering": "回答中",
+      "answered": "已回答",
+      "held": "待点击"
+    },
     "button": {
       "answeredLabel": "已回答",
-      "assistLabel": "让 AI 帮忙回答这个问题"
+      "assistLabel": "让 AI 帮忙回答这个问题",
+      "reanswerLabel": "重新回答这个问题",
+      "answeringLabel": "正在回答这个问题"
+    },
+    "nav": {
+      "prev": "上一个问题",
+      "next": "下一个问题",
+      "counter": "{{current}} / {{total}}"
+    },
+    "popover": {
+      "label": "完整问题",
+      "expandHint": "悬停或点击查看完整问题"
     },
     "dismiss": "忽略此问题"
   },
@@ -235,6 +261,8 @@
     "title": "对方可能会问",
     "prepared": "提前准备的答案",
     "preview": "预备答案预览",
+    "buttonLabel_other": "{{count}} 个预测问题",
+    "close": "关闭预测列表",
     "status": {
       "predicted": "仅预测",
       "preparing": "正在准备答案…",
@@ -254,5 +282,36 @@
       "summarySeparator": "。",
       "summary": "{{name}}：{{language}}"
     }
+  },
+  "header": {
+    "captions": {
+      "show": "显示字幕条",
+      "hide": "隐藏字幕条",
+      "lock": "锁定字幕条（鼠标穿透）",
+      "unlock": "解锁字幕条",
+      "lockedBadge": "已锁定"
+    },
+    "transcript": {
+      "show": "打开转写",
+      "hide": "收起转写"
+    },
+    "more": {
+      "label": "更多",
+      "menuLabel": "更多会议控制",
+      "sections": {
+        "audio": "音频与字幕",
+        "translation": "实时翻译",
+        "panels": "面板与工具",
+        "window": "窗口与设置"
+      }
+    }
+  },
+  "transcriptDrawer": {
+    "title": "转写",
+    "close": "关闭转写",
+    "dockSideBySide": "并排显示",
+    "switchToDrawer": "切回抽屉覆盖",
+    "typesetButton": "排版",
+    "typesetLabel": "转写排版"
   }
 }
