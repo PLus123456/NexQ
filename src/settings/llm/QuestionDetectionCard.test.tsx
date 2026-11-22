@@ -72,16 +72,14 @@ describe("question detection settings", () => {
     await waitFor(() => expect(current.settings.prediction_prepare_answers).toBe(false));
     expect(current.settings.prediction_enabled).toBe(true);
   });
-  it("switches between all three modes and keeps the chosen threshold", async () => {
+  it("switches between all three modes", async () => {
     const user = userEvent.setup();
     render(<QuestionDetectionCard view={configured()} />);
     expect(await screen.findByRole("button", { name: "Rules + model confirmation (recommended)" })).toHaveAttribute("aria-pressed", "true");
     await user.click(screen.getByRole("button", { name: "Rules only" }));
     await waitFor(() => expect(ipc.set).toHaveBeenLastCalledWith({ mode: "rules", confidence_threshold: 0.7, log_requests: false, prediction_enabled: false, prediction_prepare_answers: true }));
-    expect(screen.getByRole("spinbutton", { name: "Confidence threshold" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Model only" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true"));
-    expect(screen.getByRole("spinbutton", { name: "Confidence threshold" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Rules + model confirmation (recommended)" }));
     await waitFor(() => expect(current.settings.mode).toBe("hybrid"));
   });
@@ -109,22 +107,17 @@ describe("question detection settings", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("connection or model is unavailable");
   });
 
-  it("saves confidence and logging preferences; detection logs start off", async () => {
+  it("saves the logging preference, which starts off, and shows no confidence threshold", async () => {
     const user = userEvent.setup();
     render(<QuestionDetectionCard view={configured()} />);
     const log = await screen.findByRole("switch", { name: "Record question detection in AI call logs" });
     expect(log).toHaveAttribute("aria-checked", "false");
-    const threshold = screen.getByRole("spinbutton", { name: "Confidence threshold" });
-    fireEvent.change(threshold, { target: { value: "0.85" } });
-    fireEvent.blur(threshold);
-    await waitFor(() => expect(current.settings.confidence_threshold).toBe(0.85));
+    // Detection v2 asks the model for questions, not confidence scores.
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     await user.click(log);
     await waitFor(() => expect(current.settings.log_requests).toBe(true));
-    expect(ipc.set).toHaveBeenLastCalledWith({ mode: "hybrid", confidence_threshold: 0.85, log_requests: true, prediction_enabled: false, prediction_prepare_answers: true });
-    fireEvent.change(threshold, { target: { value: "2" } });
-    fireEvent.blur(threshold);
-    expect(threshold).toHaveValue(0.85);
-    expect(ipc.set).toHaveBeenCalledTimes(2);
+    expect(ipc.set).toHaveBeenLastCalledWith({ mode: "hybrid", confidence_threshold: 0.7, log_requests: true, prediction_enabled: false, prediction_prepare_answers: true });
+    expect(ipc.set).toHaveBeenCalledTimes(1);
   });
 
   it("follows changes from another window and ignores an older response", async () => {
@@ -137,7 +130,7 @@ describe("question detection settings", () => {
       effective_mode: "model",
     }));
     expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("spinbutton", { name: "Confidence threshold" })).toHaveValue(0.9);
+
     act(() => emit(current));
     expect(screen.getByRole("button", { name: "Model only" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("switch", { name: "Record question detection in AI call logs" })).toHaveAttribute("aria-checked", "true");
@@ -147,7 +140,7 @@ describe("question detection settings", () => {
     render(<QuestionDetectionCard view={configured()} />);
     await screen.findByRole("button", { name: "Model only" });
     act(() => emit({ ...current, revision: 2, effective_mode: "rules", fallback_reason: "timeout" }));
-    expect(screen.getByRole("status")).toHaveTextContent("did not respond within 2.5 seconds");
+    expect(screen.getByRole("status")).toHaveTextContent("did not respond within 4 seconds");
     act(() => emit({ ...current, revision: 3 }));
     expect(screen.queryByRole("status")).toBeNull();
   });

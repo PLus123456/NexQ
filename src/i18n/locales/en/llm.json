@@ -1019,7 +1019,7 @@
   },
   "questionDetection": {
     "title": "Detect questions with an AI model",
-    "hint": "Checks the latest sentence against the last 90 seconds of conversation. Confirmed questions can trigger Assist with references filled in from context.",
+    "hint": "Listens while the other person speaks and checks the new words against the last 90 seconds of conversation. A question it finds can trigger Assist with references filled in from context.",
     "modeLabel": "Detection mode",
     "modes": {
       "rules": "Rules only",
@@ -1028,11 +1028,9 @@
     },
     "descriptions": {
       "rules": "Uses question wording and punctuation. No detection requests are sent to a model.",
-      "hybrid": "The model confirms or rejects rule matches and can identify implicit questions.",
-      "model": "The model decides whether a question is directed at you, including questions that have no question words."
+      "hybrid": "The model listens while the other person speaks. At a pause the rules answer first so the reply starts at once; the model then confirms or withdraws it.",
+      "model": "Only the model decides, including questions without a question word. A little slower than rules + model, but never starts an answer on a rule's mistake."
     },
-    "threshold": "Confidence threshold",
-    "thresholdHint": "0–1. A higher value requires more confidence from the model.",
     "logRequests": "Record question detection in AI call logs",
     "logHint": "Off by default because detection runs after each sentence. Enable temporarily to inspect prompts, responses and failures. Includes M2 prediction and answer preparation requests. Unused preparations are never saved as meeting answers.",
     "routeDisabled": "Not configured — use rules",
@@ -1040,7 +1038,7 @@
     "fallback": {
       "routeMissing": "Using rules only: choose a connection and model for Question detection below. This task does not inherit the default model.",
       "unavailable": "Using rules only: the Question detection connection or model is unavailable. Check its route and connection settings.",
-      "timeout": "Using rules for this sentence: the model did not respond within 2.5 seconds. The next sentence will try the model again.",
+      "timeout": "Using rules for this sentence: the model did not respond within 4 seconds. The next sentence will try the model again.",
       "invalidResponse": "Using rules for this sentence: the model returned an invalid detection result. The next sentence will try the model again.",
       "failed": "Using rules for this sentence: the detection request failed. The next sentence will try the model again."
     },
