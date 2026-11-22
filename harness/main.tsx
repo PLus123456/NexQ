@@ -120,15 +120,61 @@ const NO_EVENTS: Record<CaptionEventName, { count: number; last: string }> = {
   translation_result: { count: 0, last: "" },
 };
 
+/** What `view=captions` plays and how the strip is set up, from the address. */
+const captionOptions = {
+  /** `chunks=0`: whole-line translations without chunks (an LLM, DeepL). */
+  chunks: params.get("chunks") !== "0",
+  /** `line=N`: start the script at line N (0-based), e.g. the long monologue. */
+  startAt: Math.max(0, Number.parseInt(params.get("line") ?? "0", 10) || 0),
+  /** `hover=1`: the mouse is over the strip (its controls show). */
+  hover: params.get("hover") === "1",
+};
+
+/**
+ * Caption settings the address can set before the strip loads them (they go
+ * into the fake config file, as Settings would save them):
+ * `bg` (0–0.8), `show` (both / translation / original), `cues` (1–3),
+ * `parties` (them / both), `font` and `tfont` (px), `fade` (seconds).
+ */
+async function seedCaptionSettings() {
+  const { persistValue } = await import("../src/stores/configStore");
+  const number = (name: string) => {
+    const value = Number.parseFloat(params.get(name) ?? "");
+    return Number.isFinite(value) ? value : null;
+  };
+  const settings: Array<[string, unknown]> = [
+    ["captionsBgOpacity", number("bg")],
+    ["captionsShow", params.get("show")],
+    ["captionsCueCount", number("cues")],
+    ["captionsParties", params.get("parties")],
+    ["captionsFontSize", number("font")],
+    ["captionsTranslationFontSize", number("tfont")],
+    ["captionsFadeSeconds", number("fade")],
+  ];
+  for (const [key, value] of settings) if (value !== null) await persistValue(key, value);
+}
+
 /** Plays the caption script while shown, and says below the frame what was sent. */
 function CaptionsPage({ scenes, children }: { scenes: Scenes; children: ReactNode }) {
   const [sent, setSent] = useState(NO_EVENTS);
   useEffect(
     () => scenes.playCaptionScript((name, text) => {
       setSent((before) => ({ ...before, [name]: { count: before[name].count + 1, last: text } }));
-    }),
+    }, captionOptions),
     [scenes],
   );
+  // React's pointer-enter comes from `pointerover`: as if the mouse were over the strip.
+  useEffect(() => {
+    if (!captionOptions.hover) return;
+    const timer = setInterval(() => {
+      const root = document.querySelector("[data-captions-root]");
+      if (!root) return;
+      root.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+      clearInterval(timer);
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+  const mode = `${captionOptions.chunks ? "带 chunks（Soniox）" : "整行翻译，没有 chunks"} · 从第 ${captionOptions.startAt} 行开始`;
   return (
     <div style={{ position: "relative", minHeight: "100vh", background: CHECKERBOARD }}>
       {/* Half checkerboard, half picture: how the strip reads on both. */}
@@ -136,7 +182,7 @@ function CaptionsPage({ scenes, children }: { scenes: Scenes; children: ReactNod
       <Frame>{children}</Frame>
       <div style={{ position: "relative" }}>
         <div data-harness-events style={{ ...note, width: "fit-content", maxWidth: "100vw" }}>
-          {"脚本发出的事件（合成对话，循环播放）\n"}
+          {`脚本发出的事件（合成对话，循环播放；${mode}）\n`}
           {(Object.keys(sent) as CaptionEventName[])
             .map((name) => `${name} ×${sent[name].count}${sent[name].last ? `  ${sent[name].last.slice(-60)}` : ""}`)
             .join("\n")}
@@ -150,6 +196,7 @@ function CaptionsPage({ scenes, children }: { scenes: Scenes; children: ReactNod
 async function captionsPage(scenes: Scenes): Promise<ReactNode> {
   document.documentElement.style.background = "transparent";
   document.body.style.background = "transparent";
+  await seedCaptionSettings();
   const { CaptionsWindow } = await import("../src/captions/CaptionsWindow");
   return (
     <CaptionsPage scenes={scenes}>
