@@ -826,6 +826,12 @@ export interface GenerateAssistOptions {
    * suggestions): those never use sources.
    */
   sources?: SourceToggles;
+  /**
+   * Search the knowledge base with the question as it is, without rewriting
+   * it first (`rag_query_rewrite`). Automatic answers to questions found by
+   * question detection v2 pass true: those already spell out what they refer to.
+   */
+  skipQueryRewrite?: boolean;
 }
 
 /** One image sent with a question. Mirrors Rust `cli_agent::protocol::ImageAttachment`. */

@@ -107,7 +107,8 @@ export async function makeWayForYou(): Promise<void> {
   if (!ref || !useStreamStore.getState().isRunning(ref.requestId)) return;
   store.setAutoAnswer(null);
   // Its answer is dropped, so the question goes back to a card to click.
-  store.holdBack(ref.segmentId, ref.question);
+  if (ref.questionId) store.holdBackCard(ref.questionId);
+  else store.holdBack(ref.segmentId, ref.question);
   logAutoAnswer("stoppedForYou");
   await stopAutoAnswer(ref);
 }
@@ -155,7 +156,22 @@ export function inTurn<T>(task: () => T | Promise<T>): Promise<T> {
   return result;
 }
 
-const counts = { early: 0, kept: 0, withdrawn: 0, answered: 0, held: 0, stoppedForYou: 0 };
+const counts = {
+  /** Started before the other party had finished. */
+  early: 0,
+  kept: 0,
+  /** Stopped: the turn went on, or a newer question took its place. */
+  withdrawn: 0,
+  answered: 0,
+  held: 0,
+  stoppedForYou: 0,
+  /** Stopped and started over: the question changed a lot while it was answered. */
+  restarted: 0,
+  /** Stopped: the model turned the rules' guess down. */
+  vetoed: 0,
+  /** Not started: you were already answering. */
+  youAnswering: 0,
+};
 type AutoAnswerEvent = keyof typeof counts;
 
 /** One log line per event, with running totals; never any transcript text. */

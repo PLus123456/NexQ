@@ -40,6 +40,8 @@ export async function runUserAction(
      * for passes this; an automatic answer (Auto-Answer) never does.
      */
     sources?: SourceToggles;
+    /** Search the knowledge base with the question as it is (no query rewrite): automatic answers only. */
+    skipQueryRewrite?: boolean;
   } | boolean = {},
 ): Promise<void> {
   const {
@@ -47,7 +49,14 @@ export async function runUserAction(
     preparedOnly = false,
     images,
     sources,
-  }: { requestId?: string; preparedOnly?: boolean; images?: ImageAttachment[]; sources?: SourceToggles } =
+    skipQueryRewrite = false,
+  }: {
+    requestId?: string;
+    preparedOnly?: boolean;
+    images?: ImageAttachment[];
+    sources?: SourceToggles;
+    skipQueryRewrite?: boolean;
+  } =
     typeof opts === "boolean" ? { preparedOnly: opts } : opts;
   const config = useConfigStore.getState();
   const setting = config.contextScope ?? DEFAULT_CONTEXT_SCOPE;
@@ -73,6 +82,7 @@ export async function runUserAction(
       images,
       ...(sources ? { sources } : {}),
       ...(preparedOnly ? { preparedOnly: true } : {}),
+      ...(skipQueryRewrite ? { skipQueryRewrite: true } : {}),
     });
   } catch (err) {
     const store = useStreamStore.getState();

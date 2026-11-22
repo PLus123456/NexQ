@@ -7,8 +7,29 @@ export interface TrackedQuestion extends DetectedQuestion {
   assisted: boolean;
   /** Transcript line the question came from (lines grow while someone talks). */
   segmentId?: string;
-  /** Unanswered when the panel came back, so it may be old: Auto-Answer skips it. */
+  /** Not answered automatically (busy, back from elsewhere, you were answering): it waits for a click. */
   heldBack?: boolean;
+
+  // What question detection v2 says about it (absent on a card from a turn signal).
+  /** The backend's id for the question (`question_event`), which its revisions keep. */
+  backendId?: string;
+  /** The backend's newest revision of it. */
+  revision?: number;
+  /** Asked to the end, so it can be answered. Absent: complete. */
+  complete?: boolean;
+  /** "rules": the rules' guess at a pause, not confirmed by the model yet. */
+  origin?: "rules" | "model";
+  askKind?: "direct" | "implicit";
+  /** An answer was prepared for it in advance (question prediction): it replays. */
+  prepared?: boolean;
+  /** The other party had finished speaking when the newest revision came. */
+  speakerDone?: boolean;
+  /** The wording its newest answer was asked with. */
+  answeredText?: string;
+  /** How often Auto-Answer started over because the question changed. */
+  autoRestarts?: number;
+  /** Held behind this automatic answer: if that answer is withdrawn, this one gets its turn. */
+  heldBy?: string;
 }
 
 /** An automatic answer NexQ started, so it knows what it may stop. */
@@ -17,10 +38,12 @@ export interface AutoAnswerRef {
   /** Transcript line the question came from. */
   segmentId: string;
   question: string;
-  /** Started on "probably done" and not yet confirmed by the turn's end. */
+  /** Started before the other party had finished (or on "probably done"). */
   early: boolean;
   /** Settles once the answer has finished, was stopped, or was refused. */
   done: Promise<void>;
+  /** The card it answers (question detection v2). Absent for an answer on a turn signal. */
+  questionId?: string;
 }
 
 /**
@@ -32,20 +55,24 @@ export function newQuestionId(
   question: DetectedQuestion,
   segmentId: string | undefined,
 ): string {
-  const base = `${segmentId ?? question.source}@${question.timestamp_ms}`;
+  return numbered(listed, `${segmentId ?? question.source}@${question.timestamp_ms}`);
+}
+
+/** `base`, or `base#2`, `base#3`… when a listed card already has that id. */
+export function numbered(listed: readonly TrackedQuestion[], base: string): string {
   let id = base;
   for (let n = 2; listed.some((q) => q.id === id); n++) id = `${base}#${n}`;
   return id;
 }
 
-/** Text of each final line when it was last checked for a question. */
-const checkedText = new Map<string, string>();
-
 /**
  * Lines from a provider that detects turns (Cartesia, Deepgram Flux): Auto-Answer
- * follows the provider's signals there, not the quiet wait.
+ * follows the provider's signals there.
  */
 const turnLines = new Set<string>();
+
+/** Backend ids of questions the user closed: their later revisions stay closed. */
+const dismissedIds = new Set<string>();
 
 interface QuestionState {
   questions: TrackedQuestion[];
@@ -53,13 +80,19 @@ interface QuestionState {
   panelSeen: boolean;
 
   addQuestion: (question: DetectedQuestion, segmentId?: string) => void;
-  /** Records a final line's text. False when it was already checked as it is. */
-  checkLine: (id: string, text: string) => boolean;
   setPanelSeen: () => void;
+  /** Back from elsewhere: every complete unanswered question waits for a click. */
   holdBackUnanswered: () => void;
   markAssisted: (index: number) => void;
   dismiss: (index: number) => void;
   clear: () => void;
+
+  /** Changes the card `id` (nothing when it isn't listed). */
+  updateCard: (id: string, change: Partial<TrackedQuestion>) => void;
+  removeCard: (id: string) => void;
+  /** The card `id` waits for a click; `heldBy` names the automatic answer it waits behind. */
+  holdBackCard: (id: string, heldBy?: string) => void;
+  isDismissed: (backendId: string) => boolean;
 
   /** The newest automatic answer NexQ started (it may have finished since). */
   autoAnswer: AutoAnswerRef | null;
@@ -68,8 +101,6 @@ interface QuestionState {
   answerLine: (question: DetectedQuestion, segmentId: string) => void;
   /** The question stays a card to click; Auto-Answer leaves it alone. */
   holdBack: (segmentId: string | undefined, text: string) => void;
-  /** The line's question became `text`: a new question, not answered yet. */
-  reviseLine: (segmentId: string, text: string) => void;
   markTurnLine: (segmentId: string) => void;
   isTurnLine: (segmentId: string | undefined) => boolean;
 }
@@ -97,17 +128,12 @@ export const useQuestionStore = create<QuestionState>((set) => ({
       return { questions: [{ ...q, id, assisted: false, segmentId }, ...prev].slice(0, 10) };
     }),
 
-  checkLine: (id, text) => {
-    if (checkedText.get(id) === text) return false;
-    checkedText.set(id, text);
-    return true;
-  },
-
   setPanelSeen: () => set({ panelSeen: true }),
 
   holdBackUnanswered: () =>
     set((state) => ({
-      questions: state.questions.map((q) => (q.assisted ? q : { ...q, heldBack: true })),
+      questions: state.questions.map((q) =>
+        (q.assisted || q.complete === false ? q : { ...q, heldBack: true, heldBy: undefined })),
     })),
 
   markAssisted: (index) =>
@@ -116,13 +142,32 @@ export const useQuestionStore = create<QuestionState>((set) => ({
     })),
 
   dismiss: (index) =>
-    set((state) => ({ questions: state.questions.filter((_, i) => i !== index) })),
+    set((state) => {
+      const backendId = state.questions[index]?.backendId;
+      if (backendId) dismissedIds.add(backendId);
+      return { questions: state.questions.filter((_, i) => i !== index) };
+    }),
 
   clear: () => {
-    checkedText.clear();
     turnLines.clear();
+    dismissedIds.clear();
     set({ questions: [], panelSeen: false, autoAnswer: null });
   },
+
+  updateCard: (id, change) =>
+    set((state) => (state.questions.some((q) => q.id === id)
+      ? { questions: state.questions.map((q) => (q.id === id ? { ...q, ...change } : q)) }
+      : state)),
+
+  removeCard: (id) =>
+    set((state) => ({ questions: state.questions.filter((q) => q.id !== id) })),
+
+  holdBackCard: (id, heldBy) =>
+    set((state) => ({
+      questions: state.questions.map((q) => (q.id === id ? { ...q, assisted: false, heldBack: true, heldBy } : q)),
+    })),
+
+  isDismissed: (backendId) => dismissedIds.has(backendId),
 
   setAutoAnswer: (ref) => set({ autoAnswer: ref }),
 
@@ -145,12 +190,6 @@ export const useQuestionStore = create<QuestionState>((set) => ({
         (segmentId !== undefined ? q.segmentId === segmentId : q.text === text)
           ? { ...q, assisted: false, heldBack: true }
           : q),
-    })),
-
-  reviseLine: (segmentId, text) =>
-    set((state) => ({
-      questions: state.questions.map((q) =>
-        q.segmentId === segmentId ? { ...q, text, assisted: false, heldBack: false } : q),
     })),
 
   markTurnLine: (segmentId) => {
