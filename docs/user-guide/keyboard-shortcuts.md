@@ -14,9 +14,9 @@ These shortcuts are registered system-wide and work regardless of which applicat
 
 | Shortcut | Action | Description |
 |----------|--------|-------------|
-| `Ctrl+M` | Start / End Meeting | Starts a new meeting if none is active; ends the current meeting if one is running |
-| `Ctrl+B` | Toggle Overlay | Switches between the launcher (dashboard) and the overlay (meeting) window. With no meeting running, it brings the dashboard back |
-| `Ctrl+,` | Open / Close Settings | Toggles the settings panel |
+| `Ctrl+M` (Windows), `⌘M` (macOS) | Start / End Meeting | Starts or ends the current meeting |
+| `Ctrl+B` (Windows), `⌘B` (macOS) | Toggle Overlay | Switches between the launcher and the meeting overlay. With no meeting running, it brings the dashboard back |
+| `Ctrl+,` (Windows), `⌘,` (macOS) | Open / Close Settings | Toggles the settings panel |
 | `Ctrl+Shift+H` | Hide from screen share | Turns stealth mode on or off. Change it in Settings > General |
 | `Ctrl+Shift+Space` | Assist from any app | During a meeting, generates AI Assist without switching to NexQ. Stops an automatic answer that's running. Change it in Settings > General |
 | `Ctrl+Shift+S` | Capture screen into Ask | During a meeting with Claude (subscription), attaches a picture of the screen your mouse is on to the Ask box, opens it and puts the cursor there; press Enter to send. Windows only for now. Not used with other providers, so the key stays free for your other apps. Change it in Settings > General |
@@ -25,7 +25,7 @@ These shortcuts are registered system-wide and work regardless of which applicat
 
 These shortcuts work when a meeting is active and the NexQ window (launcher or overlay) is focused. They do not trigger when typing in input fields, text areas, or dropdowns.
 
-| Shortcut | Action | AI Mode |
+| Shortcut | Action | What it does |
 |----------|--------|---------|
 | `Space` | Generate AI Assist | Assist -- analyzes conversation and provides contextual help. Stops an automatic answer that's running |
 | `1` | What to Say | Suggests what you should say next based on the conversation |
@@ -33,6 +33,8 @@ These shortcuts work when a meeting is active and the NexQ window (launcher or o
 | `3` | Follow-Up | Generates follow-up questions or discussion points |
 | `4` | Recap | Provides a recap of the conversation so far |
 | `5` | Ask Question | Opens the free-form question input for custom AI queries |
+| `B` (also `Control+B` on macOS) | Add bookmark | While the meeting overlay has focus, bookmark the current transcript line |
+| `K` | Open or close bookmarks | Click a bookmark time to open the transcript at that line. A bookmark saved with only a time selects the nearest line |
 
 > In the Ask box, `Ctrl+V` attaches a copied screenshot (Claude subscription only). `Ctrl+Shift+S` captures the screen for you; see [Asking about something on screen](claude-subscription.md#asking-about-something-on-screen). Screenshots can include other people's video or documents and go to Anthropic with your question; NexQ doesn't save them.
 
@@ -48,10 +50,10 @@ NexQ lives in the Windows system tray. Interaction patterns:
 | Middle-click tray icon | Toggle microphone mute |
 | Right-click tray icon | Open the context menu: Open Dashboard (and Show Overlay during a meeting) first, then start/stop meeting, quick copy, settings and quit |
 
-With **Hide from screen share** on, NexQ has no taskbar button, so the tray icon and `Ctrl+B` are the way back to it. On macOS, clicking the menu-bar icon opens the menu.
+With **Hide from screen share** on, use the tray icon or `Ctrl+B` on Windows to bring NexQ back. On macOS, use `⌘B` or open the menu from the menu-bar icon.
 
 ## Tips
 
-- **Overlay during meetings**: Use `Ctrl+B` to bring up the always-on-top overlay while your meeting app (Zoom, Teams, etc.) is in the foreground. The overlay is transparent and stays above other windows.
+- **Overlay during meetings.** Use `Ctrl+B` on Windows or `⌘B` on macOS to bring up the overlay while your meeting app is in the foreground.
 - **Quick AI assist**: During a meeting, press `Ctrl+Shift+Space` from any app (your meeting app included) to get an instant AI answer without switching to NexQ, which matters when you're sharing your screen. `Space` does the same while the NexQ window is focused.
 - **Mute sources independently**: You can mute "You" (mic) or "Them" (system audio) STT independently from the overlay controls. This pauses transcription for that source without stopping audio capture or recording.

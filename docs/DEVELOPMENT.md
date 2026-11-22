@@ -54,6 +54,29 @@ Development builds, release builds, and CI use the same staging script. On Windo
 
 Do not run `npm run release`; releases are cut by maintainers (see [CONTRIBUTING.md](../CONTRIBUTING.md#how-releases-work)).
 
+### Signed local build of NexQ Plus
+
+On the `custom` branch, list the signing identities in your macOS keychain. Replace `CERTIFICATE_SHA1` below with the 40-character fingerprint of your Apple Development certificate.
+
+```bash
+security find-identity -v -p codesigning
+nexq_cert_sha1="CERTIFICATE_SHA1"
+APPLE_SIGNING_IDENTITY="$nexq_cert_sha1" ./build-mac.sh --no-install
+```
+
+The script builds for Apple Silicon and leaves the app in `src-tauri/target/release/bundle/macos/` and the disk image in the adjacent `dmg/` directory. If you omit `APPLE_SIGNING_IDENTITY`, it selects the first valid Apple Development identity and falls back to ad hoc signing when none is available.
+
+To verify both signatures against the certificate you chose, run these commands in the same shell from the repository root.
+
+```bash
+nexq_bundle="src-tauri/target/release/bundle"
+nexq_app="$nexq_bundle/macos/NexQ Plus.app"
+nexq_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$nexq_app/Contents/Info.plist")
+nexq_dmg="$nexq_bundle/dmg/NexQ Plus_${nexq_version}_aarch64.dmg"
+codesign --verify --deep --strict --verbose=2 -R "=certificate leaf = H\"$nexq_cert_sha1\"" "$nexq_app" "$nexq_dmg"
+hdiutil verify "$nexq_dmg"
+```
+
 ## Testing
 
 - **Frontend:** tests sit next to the code as `*.test.ts` / `*.test.tsx` and use Vitest, jsdom and Testing Library. Global setup is in `src/test/setup.ts`. Tauri APIs are not available in jsdom, so mock `src/lib/ipc.ts` or `@tauri-apps/api` in tests.

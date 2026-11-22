@@ -42,6 +42,8 @@ It hears both sides of a call, answers on a private overlay, and can hide from y
 
 ## Quick start
 
+**NexQ Plus on the `custom` branch.** The fork includes an answer window, a separate caption strip and streaming interview question detection. For the local Apple Silicon build, see the [NexQ Plus guide (中文)](docs/fork/TRIAL_GUIDE.md) and the [macOS signing instructions](docs/DEVELOPMENT.md#signed-local-build-of-nexq-plus).
+
 **Windows 10 / 11**
 
 1. Download `NexQ_<version>_x64-setup.exe` from the [latest release](https://github.com/naxhq/NexQ/releases/latest) and run it. It installs for your user only, no admin rights needed.
@@ -63,7 +65,7 @@ The first launch opens a short setup. You can skip it; everything below is also 
 4. **Press** <kbd>Ctrl</kbd>+<kbd>M</kbd>. NexQ captures system audio, so it works with Zoom, Teams, Meet, Discord or anything that plays sound.
 5. **Get an answer.** When a question comes up, press <kbd>Space</kbd> in the overlay, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> from any app.
 
-NexQ updates itself in the background and installs when you quit, never in the middle of a meeting. Updates are signed (Ed25519).
+Official NexQ releases download signed updates in the background and install them when you quit. NexQ Plus on `custom` uses manual updates.
 
 Guides: [Getting started](docs/user-guide/getting-started.md) · [Choosing providers](docs/user-guide/ai-providers.md) · [Audio setup](docs/user-guide/audio-setup.md) · [Interview copilot](docs/user-guide/interview-copilot.md) · [Lecture assistant](docs/user-guide/lecture-assistant.md) · [Meeting detection](docs/user-guide/meeting-detection.md) · [Claude subscription](docs/user-guide/claude-subscription.md) · [Troubleshooting](docs/user-guide/troubleshooting.md)
 

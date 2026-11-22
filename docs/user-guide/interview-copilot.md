@@ -54,15 +54,16 @@ When the meeting starts, the overlay window (500x700, always-on-top, transparent
 
 - Place it **near your webcam** but slightly to the side, so glancing at it looks natural
 - Resize it to a comfortable reading size -- you should be able to read suggestions without squinting
-- The overlay is transparent -- **only you can see it**. It will not appear in screen shares
 - Turn on **Hide from screen share** (`Ctrl+Shift+H`, `⌘⇧H` on macOS) before the call. Besides keeping NexQ out of the share, the overlay's cursor stays a plain arrow, and NexQ leaves the taskbar (Windows) or the Dock and Cmd+Tab (macOS). On macOS 14 and later, run a test share first: some recorders can still capture NexQ. Turn it off afterwards from the dashboard header
-- Use `Ctrl+B` to toggle between the launcher and overlay windows
+- Use `Ctrl+B` on Windows or `⌘B` on macOS to switch between the launcher and overlay windows.
+
+In NexQ Plus, the title bar has separate controls for **Show caption strip** and **Show transcript**. Keep the caption strip near the call and use the answer window to read responses. Under **Settings → Caption strip**, choose whose speech to show and how many captions to keep on screen. To mark a moment during the call, focus the overlay and press `B`. Press `K` and click a bookmark time to return to that line.
 
 ## During the Interview
 
-1. **Start the meeting** with `Ctrl+M` before the interview begins
+1. **Start the meeting** with `Ctrl+M` on Windows or `⌘M` on macOS before the interview begins
 2. NexQ transcribes both sides in real-time -- your mic captures your voice, and system audio captures the interviewer
-3. **AI suggestions appear automatically** as the conversation flows. The AI analyzes the dialogue and provides contextual help
+3. Enable **Question Detection** in **Settings → AI Actions** to see questions as cards. Click a card to answer that question.
 4. Press **Space** to manually trigger AI Assist at any moment for an instant analysis of the current conversation
 5. Use the number keys for specific AI modes:
    - `1` -- What to Say (suggests your next response)
@@ -73,15 +74,15 @@ When the meeting starts, the overlay window (500x700, always-on-top, transparent
 
 Question detection recognizes `?` and `？`, common Chinese question words (such as 什么 / 什麼, 怎么 / 怎麼 and 哪), Chinese sentence endings 吗 / 嗎 and 呢, and Japanese question endings such as ですか, ますか and でしょうか. Suggestions ending in 吧 ("let's…"), phrases such as 没什么 or 无论如何, and a bare tag such as "Right?" or "You know?" are not treated as questions. These are heuristic signals: an ambiguous phrase can still be marked as a question.
 
-Detected questions appear as cards in the overlay. Click the card you need to get an answer. To have the newest question answered automatically, turn on **Auto-Answer** in Settings > AI Actions.
+Turn on **Auto-Answer** in **Settings → AI Actions** to start an answer when a question is complete. In NexQ Plus, if you have already spoken at least 12 words or have been answering for more than six seconds since the question came up, the card stays available for you to click. A brief acknowledgment such as “Mm-hm” still allows an automatic answer.
 
-For the fastest automatic answers, transcribe the interviewer with Cartesia or Deepgram Flux. Both tell NexQ when the interviewer has finished, so the answer starts right away instead of after 1.5 seconds of quiet. If the interviewer keeps going after a pause, NexQ drops the answer it started and answers the complete question. Press `Space`, or click a question or an action, at any time to get your own answer instead.
+With model detection enabled, the question can appear while the interviewer is speaking. If the final transcript changes the question, NexQ Plus can revise the card or withdraw it and stop its automatic answer. Pressing `Space` while a new question is still being recognized uses the current transcript.
 
 **Important**: Do not stare at the overlay. Glance at it naturally, the way you would glance at notes. Maintain eye contact with your camera.
 
 ## After the Interview
 
-1. Press `Ctrl+M` to end the meeting
+1. Press `Ctrl+M` on Windows or `⌘M` on macOS to end the meeting
 2. **Review the full transcript** in the Launcher -- every word from both sides is saved
 3. Check the **AI Call Log** sidebar for all AI suggestions that were generated during the session
 4. **Export or copy** the transcript for your notes or follow-up preparation
