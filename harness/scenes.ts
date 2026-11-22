@@ -325,6 +325,25 @@ const CAPTION_SCRIPT: ScriptLine[] = [
     ],
   },
   {
+    // About thirty seconds without a pause, the longest a line gets before the
+    // engine cuts it (SPEC 1): many clauses, some short, some long.
+    party: "them",
+    clauses: [
+      ["Let me tell you a bit about the incident that made us rethink all of this,", "我先讲讲让我们重新思考这一切的那次事故，"],
+      ["because I think it will help you see where we are coming from.", "因为我觉得这能帮你理解我们的出发点。"],
+      ["Last spring,", "去年春天，"],
+      ["one of our biggest customers ran a migration script on a Friday evening,", "我们最大的一个客户在周五晚上跑了一个迁移脚本，"],
+      ["and it sent about forty times the usual traffic to our public API,", "给我们的公开 API 打来了平时大约四十倍的流量，"],
+      ["mostly writes,", "大部分是写请求，"],
+      ["all of it through the same three proxy addresses.", "全都来自同样的三个代理地址。"],
+      ["The gateway saw three very busy clients and throttled them,", "网关只看到三个非常忙的客户端，就把它们限流了，"],
+      ["which sounds right,", "听起来没错，"],
+      ["except that a few hundred smaller tenants were sitting behind those same addresses,", "可是还有几百个小租户也在同样的地址后面，"],
+      ["so for about two hours they could not save anything at all,", "所以大约两个小时里他们什么都保存不了，"],
+      ["and our support queue filled up faster than we could read it.", "我们的客服队列涨得比我们看得还快。"],
+    ],
+  },
+  {
     // One long turn without a pause: the strip has to cut it into captions by itself.
     party: "them",
     clauses: [
@@ -371,17 +390,38 @@ const CLAUSE_FINAL_MS = 700;
 const TRANSLATION_MS = 40;
 const LINE_FINAL_MS = 800;
 const BETWEEN_LINES_MS = 500;
+/** A whole-line translator (an LLM, DeepL) answers this long after the line ends. */
+const WHOLE_LINE_TRANSLATION_MS = 1200;
 
 export type CaptionEventName = "transcript_update" | "transcript_final" | "translation_result";
 
+export interface CaptionScriptOptions {
+  /**
+   * true: the engine translates clause by clause and says which words each
+   * piece translates (`chunks`, Soniox). false: the translation comes for the
+   * whole line after it ended, without `chunks` (an LLM, DeepL...).
+   */
+  chunks: boolean;
+  /** Index of the script line to start with (the loop then goes on from there). */
+  startAt: number;
+}
+
+/** How many lines the caption script has (`startAt` goes up to one less). */
+export const CAPTION_SCRIPT_LENGTH = CAPTION_SCRIPT.length;
+
 /**
  * Plays the caption script as the backend would send it, in a loop: a line
- * grows word by word (`transcript_update`); about 0.7 s after each clause its
- * translation arrives (`translation_result` with every chunk of the line so
- * far); a pause ends the line (`transcript_final`, then the final translation).
- * `onEvent` hears every event sent. Returns a function that stops the script.
+ * grows word by word (`transcript_update`); with `chunks`, about 0.7 s after
+ * each clause its translation arrives (`translation_result` with every chunk
+ * of the line so far); a pause ends the line (`transcript_final`, then the
+ * final translation). Without `chunks`, the only translation is the whole
+ * line's, a moment after it ended. `onEvent` hears every event sent. Returns a
+ * function that stops the script.
  */
-export function playCaptionScript(onEvent: (name: CaptionEventName, text: string) => void): () => void {
+export function playCaptionScript(
+  onEvent: (name: CaptionEventName, text: string) => void,
+  options: CaptionScriptOptions = { chunks: true, startAt: 0 },
+): () => void {
   let stopped = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const later = (ms: number, run: () => void) => {
@@ -397,54 +437,63 @@ export function playCaptionScript(onEvent: (name: CaptionEventName, text: string
     onEvent(name, text);
   };
 
-  const play = async () => {
-    for (let round = 1; !stopped; round++) {
-      for (let index = 0; index < CAPTION_SCRIPT.length; index++) {
-        const { party } = CAPTION_SCRIPT[index];
-        const chunks = chunksOf(CAPTION_SCRIPT[index]);
-        const full = chunks.map((chunk) => chunk.src).join("");
-        const base = {
-          id: `caption_${round}_${index + 1}`,
-          speaker: party === "you" ? "User" : "Them",
-          speaker_id: party,
-          timestamp_ms: Date.now(),
-          confidence: 0.93,
-        } satisfies Partial<TranscriptSegment>;
-        let spoken = "";
-        const translation = (count: number, isFinal: boolean): TranslationResult => ({
-          segment_id: base.id,
-          // The source can be ahead of the translation: more words were recognised meanwhile.
-          original_text: isFinal ? full : spoken,
-          translated_text: chunks.slice(0, count).map((chunk) => chunk.dst).join(""),
-          source_lang: "en",
-          target_lang: "zh",
-          provider: "soniox",
-          is_final: isFinal,
-          chunks: chunks.slice(0, count),
-        });
+  const playLine = async (round: number, index: number) => {
+    const { party } = CAPTION_SCRIPT[index];
+    const chunks = chunksOf(CAPTION_SCRIPT[index]);
+    const full = chunks.map((chunk) => chunk.src).join("");
+    const base = {
+      id: `caption_${round}_${index + 1}`,
+      speaker: party === "you" ? "User" : "Them",
+      speaker_id: party,
+      timestamp_ms: Date.now(),
+      confidence: 0.93,
+    } satisfies Partial<TranscriptSegment>;
+    let spoken = "";
+    const translation = (count: number, isFinal: boolean): TranslationResult => ({
+      segment_id: base.id,
+      // The source can be ahead of the translation: more words were recognised meanwhile.
+      original_text: isFinal ? full : spoken,
+      translated_text: chunks.slice(0, count).map((chunk) => chunk.dst).join(""),
+      source_lang: "en",
+      target_lang: "zh",
+      provider: options.chunks ? "soniox" : "llm",
+      is_final: isFinal,
+      ...(options.chunks ? { chunks: chunks.slice(0, count) } : {}),
+    });
 
-        for (let c = 0; c < chunks.length; c++) {
-          for (const word of chunks[c].src.match(/\s*\S+/g) ?? []) {
-            spoken += word;
-            send("transcript_update", { segment: { ...base, text: spoken, is_final: false } }, spoken);
-            await sleep(WORD_MS);
-          }
-          // The clause's words become final together, its translation right after.
-          // The last clause's comes with the end of the line.
-          const upTo = c + 1;
-          if (upTo < chunks.length) {
-            later(CLAUSE_FINAL_MS + TRANSLATION_MS, () => {
-              const event = translation(upTo, false);
-              send("translation_result", event, event.translated_text);
-            });
-          }
-        }
-        await sleep(LINE_FINAL_MS);
-        send("transcript_final", { segment: { ...base, text: full, is_final: true } }, full);
-        await sleep(TRANSLATION_MS);
-        const last = translation(chunks.length, true);
-        send("translation_result", last, last.translated_text);
-        await sleep(BETWEEN_LINES_MS);
+    for (let c = 0; c < chunks.length; c++) {
+      for (const word of chunks[c].src.match(/\s*\S+/g) ?? []) {
+        spoken += word;
+        send("transcript_update", { segment: { ...base, text: spoken, is_final: false } }, spoken);
+        await sleep(WORD_MS);
+      }
+      // The clause's words become final together, its translation right after.
+      // The last clause's comes with the end of the line.
+      const upTo = c + 1;
+      if (options.chunks && upTo < chunks.length) {
+        later(CLAUSE_FINAL_MS + TRANSLATION_MS, () => {
+          const event = translation(upTo, false);
+          send("translation_result", event, event.translated_text);
+        });
+      }
+    }
+    await sleep(LINE_FINAL_MS);
+    send("transcript_final", { segment: { ...base, text: full, is_final: true } }, full);
+    const last = translation(chunks.length, true);
+    if (options.chunks) {
+      await sleep(TRANSLATION_MS);
+      send("translation_result", last, last.translated_text);
+    } else {
+      later(WHOLE_LINE_TRANSLATION_MS, () => send("translation_result", last, last.translated_text));
+    }
+    await sleep(BETWEEN_LINES_MS);
+  };
+
+  const play = async () => {
+    const first = Math.min(Math.max(0, options.startAt), CAPTION_SCRIPT.length - 1);
+    for (let round = 1; !stopped; round++) {
+      for (let index = round === 1 ? first : 0; index < CAPTION_SCRIPT.length && !stopped; index++) {
+        await playLine(round, index);
       }
       await sleep(1500);
     }

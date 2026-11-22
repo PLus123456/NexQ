@@ -27,17 +27,23 @@ import {
   Volume2,
   BarChart2,
   Globe,
+  Captions,
 } from "lucide-react";
 import { ContextStrategySettings } from "./ContextStrategySettings";
 import { AIActionsSettings } from "./AIActionsSettings";
 import { TranslationSettings } from "./TranslationSettings";
+import { CaptionSettings } from "./CaptionSettings";
 import { Sparkles, BookOpen } from "lucide-react";
 import { PersonalSourcesEditor } from "../sources/PersonalSourcesEditor";
 
-type SettingsTab = "meeting_audio" | "llm" | "stt" | "translation" | "ai_actions" | "context_strategy" | "scenarios" | "noise_presets" | "confidence" | "personal_sources" | "hotkeys" | "general" | "about";
+type SettingsTab = "meeting_audio" | "llm" | "stt" | "translation" | "ai_actions" | "context_strategy" | "scenarios" | "noise_presets" | "confidence" | "personal_sources" | "hotkeys" | "general" | "about" | "captions";
 
-/** A key in the settings namespace. Tables store keys; labels are translated at render time. */
-type SettingsKey = ParseKeys<"settings">;
+/**
+ * A key in the settings namespace, or a tab label another work package owns
+ * (the caption strip keeps its texts in `captions`). Tables store keys;
+ * labels are translated at render time.
+ */
+type SettingsKey = ParseKeys<"settings"> | "captions:settings.tab";
 
 // ── Tab groups for sidebar (contextually organized, importance-ordered) ──
 interface TabItem {
@@ -56,6 +62,7 @@ const TAB_GROUPS: TabGroup[] = [
     labelKey: "groups.meeting",
     items: [
       { id: "meeting_audio", labelKey: "tabs.meetingAudio", icon: <Headphones className="h-4 w-4" /> },
+      { id: "captions", labelKey: "captions:settings.tab", icon: <Captions className="h-4 w-4" /> },
     ],
   },
   {
@@ -100,7 +107,7 @@ interface SettingsOverlayProps {
 }
 
 export function SettingsOverlay({ isModal = false }: SettingsOverlayProps) {
-  const { t } = useT(["settings", "common"]);
+  const { t } = useT(["settings", "common", "captions"]);
   const setSettingsOpen = useMeetingStore((s) => s.setSettingsOpen);
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
   const previousView = useMeetingStore((s) => s.previousView);
@@ -187,6 +194,8 @@ export function SettingsOverlay({ isModal = false }: SettingsOverlayProps) {
         return <GeneralSettings />;
       case "about":
         return <AboutSettings />;
+      case "captions":
+        return <CaptionSettings />;
     }
   };
 

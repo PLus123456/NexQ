@@ -24,7 +24,13 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   }),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
+const invoked = vi.hoisted(() => [] as string[]);
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: async (command: string) => {
+    invoked.push(command);
+    return null;
+  },
+}));
 
 const DEFAULTS: CaptionsSettings = {
   captionsEnabled: true,
@@ -183,5 +189,51 @@ describe("configStore: caption strip settings", () => {
     expect(saved.get("captionsBounds")).toBeNull();
     const nextStart = await openWindow();
     expect(nextStart.getState().captionsBounds).toBeNull();
+  });
+
+  describe("the caption window's light loading (loadCaptionsSettings)", () => {
+    /** The caption window: its own module graph, loading only the caption settings. */
+    async function openCaptionWindow() {
+      vi.resetModules();
+      const mod = await import("./configStore");
+      const stop = await mod.loadCaptionsSettings();
+      return { store: mod.useConfigStore, stop };
+    }
+
+    it("reads the saved caption settings and talks to the backend not at all", async () => {
+      for (const key of KEYS) saved.set(key, CHANGED[key]);
+      saved.set("stealthMode", true);
+      // Pushes still on their way from the windows of earlier tests land first.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      invoked.length = 0;
+      const { store } = await openCaptionWindow();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(captionsOf(store)).toEqual(CHANGED);
+      expect(invoked).toEqual([]);
+      // Nothing else was loaded.
+      expect(store.getState().stealthMode).toBe(false);
+      expect(store.getState()._loaded).toBe(false);
+    });
+
+    it("falls back to the defaults for settings never saved", async () => {
+      const { store } = await openCaptionWindow();
+      expect(captionsOf(store)).toEqual(DEFAULTS);
+    });
+
+    it("follows changes made in another window, null bounds included", async () => {
+      const { store: captions } = await openCaptionWindow();
+      const launcher = await openWindow();
+      changeAll(launcher);
+      await vi.waitFor(() => expect(captionsOf(captions)).toEqual(CHANGED));
+      launcher.getState().setCaptionsBounds(null);
+      await vi.waitFor(() => expect(captions.getState().captionsBounds).toBeNull());
+    });
+
+    it("its own changes reach the other windows", async () => {
+      const overlay = await openWindow();
+      const { store: captions } = await openCaptionWindow();
+      captions.getState().setCaptionsFontSize(28);
+      await vi.waitFor(() => expect(overlay.getState().captionsFontSize).toBe(28));
+    });
   });
 });

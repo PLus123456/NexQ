@@ -1,5 +1,76 @@
 {
   "strip": {
-    "placeholder": "字幕条：这里会显示正在说的话。"
+    "empty": "字幕会显示在这里。拖动可以移动，拖边缘可以改大小。",
+    "them": "对方",
+    "you": "我",
+    "controls": {
+      "label": "字幕条",
+      "smaller": "字号减小",
+      "larger": "字号增大",
+      "backdrop": "底色",
+      "lock": "锁定：鼠标穿透（从答案窗解锁）",
+      "close": "隐藏字幕条"
+    }
+  },
+  "settings": {
+    "tab": "字幕条",
+    "title": "字幕条",
+    "intro": "浮在会议画面上的透明字幕条，把说的话切成短句，每句下面是译文。",
+    "preview": {
+      "label": "预览",
+      "dark": "深色背景",
+      "light": "浅色背景"
+    },
+    "enabled": {
+      "label": "会议开始时显示",
+      "hint": "随时可以在答案窗的标题栏里打开或关闭字幕条。"
+    },
+    "parties": {
+      "label": "显示谁的话",
+      "them": "对方",
+      "both": "双方"
+    },
+    "show": {
+      "label": "显示内容",
+      "both": "原文和译文",
+      "translation": "只显示译文",
+      "original": "只显示原文"
+    },
+    "fontSize": "原文字号",
+    "translationFontSize": "译文字号",
+    "textColor": "原文颜色",
+    "translationColor": "译文颜色",
+    "bgOpacity": {
+      "label": "底色",
+      "hint": "0 是完全透明，文字保留深色描边。"
+    },
+    "cueCount": {
+      "label": "同时显示几条",
+      "hint": "旧的那几条会变暗。"
+    },
+    "fade": {
+      "label": "淡出时间",
+      "hint": "没有新内容多少秒后淡出。0 是不淡出。",
+      "never": "不淡出",
+      "seconds": "{{value}} 秒"
+    },
+    "locked": {
+      "label": "已锁定",
+      "hint": "鼠标会穿过字幕条，点到下面的会议画面。",
+      "unlock": "解锁"
+    },
+    "position": {
+      "label": "位置",
+      "hint": "拖动字幕条可以移动，拖边缘可以改大小。重置后回到屏幕底部居中。",
+      "reset": "重置位置"
+    },
+    "reset": "恢复默认",
+    "sample": {
+      "olderSrc": "Okay, let me give you some context on what we are dealing with.",
+      "olderDst": "好，我先讲一下我们这边的情况。",
+      "newestSrc": "How would you redesign that, and where would you start",
+      "newestPending": "in the first two weeks?",
+      "newestDst": "你会怎么重新设计，"
+    }
   }
 }

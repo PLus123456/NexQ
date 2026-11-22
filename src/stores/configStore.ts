@@ -1629,3 +1629,33 @@ export const useConfigStore = create<ConfigState>((set) => ({
     }
   },
 }));
+
+const CAPTIONS_KEYS = Object.keys(DEFAULT_CAPTIONS_SETTINGS) as (keyof CaptionsSettings)[];
+
+/**
+ * The caption window's own way in: it reads only the caption strip's settings
+ * (SPEC 3.2) and follows changes other windows make to them. Unlike
+ * `loadConfig` it pushes nothing to the backend and replays nothing (speech
+ * recognition, models, meeting detection, stealth): that window does not run
+ * the app. Resolves with a function that stops following.
+ */
+export async function loadCaptionsSettings(): Promise<() => void> {
+  const store = await getStore();
+  // Followed first, so a change made while the values are read is not missed.
+  const stops = await Promise.all(
+    CAPTIONS_KEYS.map((key) =>
+      store.onKeyChange<unknown>(key, (val) => {
+        // Null is a value for the bounds (back to the default place); for the others it means "unset".
+        if (key === "captionsBounds" ? val === undefined : val == null) return;
+        useConfigStore.setState({ [key]: val } as Partial<ConfigState>);
+      }),
+    ),
+  );
+  const values: Partial<CaptionsSettings> = {};
+  for (const key of CAPTIONS_KEYS) {
+    const saved = await store.get<unknown>(key);
+    Object.assign(values, { [key]: saved ?? DEFAULT_CAPTIONS_SETTINGS[key] });
+  }
+  useConfigStore.setState(values);
+  return () => stops.forEach((stop) => stop());
+}
