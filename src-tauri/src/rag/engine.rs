@@ -192,6 +192,7 @@ struct Ranked {
 /// Parameters a caller may override per search.
 #[derive(Debug, Clone, Copy)]
 pub struct SearchParams {
+    pub skip_query_rewrite: bool,
     pub top_k: usize,
     pub mode: SearchMode,
     pub semantic_weight: f32,
@@ -201,6 +202,7 @@ impl SearchParams {
     /// `top_k`, `search_mode` and `semantic_weight` of `config`.
     pub fn from_config(config: &RagConfig) -> Self {
         Self {
+            skip_query_rewrite: false,
             top_k: config.top_k.max(1),
             mode: SearchMode::parse(&config.search_mode),
             semantic_weight: config.semantic_weight,
@@ -832,7 +834,7 @@ impl RagEngine {
         let config = self.config();
         let depth = config.retrieval.depth.max(params.top_k * 2);
 
-        let rewrite = if config.rewrite.enabled {
+        let rewrite = if config.rewrite.enabled && !params.skip_query_rewrite {
             let (variants, report) = self.rewrite_query(&primary, &config).await;
             for variant in variants {
                 if !weighted.iter().any(|(q, _)| *q == variant) {

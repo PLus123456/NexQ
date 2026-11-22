@@ -218,7 +218,7 @@ impl Fixture {
 
     async fn search(&self, query: &str, mode: SearchMode) -> super::engine::SearchOutcome {
         self.engine
-            .search(query, SearchParams { top_k: 3, mode, semantic_weight: 0.7 })
+            .search(query, SearchParams { skip_query_rewrite: false, top_k: 3, mode, semantic_weight: 0.7 })
             .await
             .unwrap()
     }
@@ -415,7 +415,7 @@ async fn unconfigured_embeddings_still_give_keyword_results() {
     let info = engine.index_info().await;
     assert_eq!(info.vector_state, VectorState::Unconfigured);
     assert_eq!(info.pending_vectors, 0);
-    let out = engine.search("财务报表", SearchParams { top_k: 3, mode: SearchMode::Hybrid, semantic_weight: 0.7 }).await.unwrap();
+    let out = engine.search("财务报表", SearchParams { skip_query_rewrite: false, top_k: 3, mode: SearchMode::Hybrid, semantic_weight: 0.7 }).await.unwrap();
     assert_eq!(out.chunks[0].source_file, "b.txt");
     assert_eq!(out.degraded.as_deref(), Some("vectors_unconfigured"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -443,7 +443,7 @@ async fn the_index_and_config_survive_a_restart() {
     assert!(ready, "vectors loaded");
     let info = engine.index_info().await;
     assert_eq!((info.chunks, info.vectors), (chunks, chunks));
-    let out = engine.search("预算会议", SearchParams { top_k: 3, mode: SearchMode::Semantic, semantic_weight: 0.7 }).await.unwrap();
+    let out = engine.search("预算会议", SearchParams { skip_query_rewrite: false, top_k: 3, mode: SearchMode::Semantic, semantic_weight: 0.7 }).await.unwrap();
     assert!(out.vector_used);
     assert_eq!(out.chunks[0].source_file, "b.txt");
 }
@@ -673,7 +673,7 @@ async fn rerank_reorders_the_fused_results_with_the_key_from_the_keychain() {
     assert_eq!(sent[0], fused.chunks[0].text.as_str(), "candidates go in fusion order");
 
     // Only the top-k come back, even when there are more candidates.
-    let out = f.engine.search("预算会议", SearchParams { top_k: 1, mode: SearchMode::Hybrid, semantic_weight: 0.7 }).await.unwrap();
+    let out = f.engine.search("预算会议", SearchParams { skip_query_rewrite: false, top_k: 1, mode: SearchMode::Hybrid, semantic_weight: 0.7 }).await.unwrap();
     assert_eq!(files(&out), vec!["c.txt"]);
 
     // A removed key is no longer sent.
@@ -1037,6 +1037,23 @@ async fn query_rewrites_are_searched_too_and_any_failure_falls_back() {
 }
 
 #[tokio::test]
+async fn a_resolved_assist_question_skips_only_its_own_rewrite() {
+    let f = Fixture::new("assist-direct", "http://127.0.0.1:9/v1").await;
+    f.engine.update_config(&json!({"rewrite": {"enabled": true}, "search_mode": "keyword"})).unwrap();
+    f.host.llm.lock().unwrap().insert("rag_query_rewrite", r#"{"queries":["预算"]}"#.into());
+    let question = "开销安排";
+    let params = SearchParams::from_config(&f.engine.config());
+    let direct = f.engine.search(question, SearchParams { skip_query_rewrite: true, ..params }).await.unwrap();
+    assert_eq!(direct.queries, [question]);
+    assert!(direct.rewrite.is_none());
+    assert!(f.host.llm_calls.lock().unwrap().is_empty());
+
+    let manual = f.engine.search(question, params).await.unwrap();
+    assert_eq!(manual.queries, [question, "预算"]);
+    assert_eq!(f.host.llm_calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn several_queries_are_fused_into_one_list() {
     let svc = service().await;
     let f = Fixture::new("multi", &svc.server.base()).await;
@@ -1044,7 +1061,7 @@ async fn several_queries_are_fused_into_one_list() {
     let queries = vec!["预算".to_string(), "billing roadmap".to_string(), "预算".to_string(), " ".to_string()];
     let out = f
         .engine
-        .search_queries(&queries, SearchParams { top_k: 3, mode: SearchMode::Keyword, semantic_weight: 0.7 })
+        .search_queries(&queries, SearchParams { skip_query_rewrite: false, top_k: 3, mode: SearchMode::Keyword, semantic_weight: 0.7 })
         .await
         .unwrap();
     assert_eq!(out.queries, vec!["预算", "billing roadmap"], "blank and repeated queries dropped");

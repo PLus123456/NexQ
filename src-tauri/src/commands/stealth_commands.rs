@@ -30,6 +30,39 @@ fn is_taskbar_managed_label(label: &str) -> bool {
     matches!(label, "overlay" | "launcher")
 }
 
+/// Meeting surfaces with resize edges that should keep the arrow in stealth.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) const FLOATING_WINDOWS: [&str; 2] = ["overlay", "captions"];
+
+#[command]
+pub async fn show_captions_window(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("captions").ok_or("Captions window is unavailable")?;
+    #[cfg(target_os = "macos")]
+    {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let result = window.ns_window().map_err(|e| e.to_string()).and_then(|ptr| {
+                if ptr.is_null() {
+                    return Err("Captions NSWindow is unavailable".into());
+                }
+                // SAFETY: this is the live NSWindow on the AppKit thread.
+                let ns_window = unsafe { &*ptr.cast::<objc2::runtime::AnyObject>() };
+                unsafe {
+                    if stealth_enabled() {
+                        let _: () = objc2::msg_send![ns_window, setSharingType: 0usize];
+                    }
+                    let _: () = objc2::msg_send![ns_window, orderFrontRegardless];
+                }
+                Ok(())
+            });
+            let _ = send.send(result);
+        }).map_err(|e| e.to_string())?;
+        receive.await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.show().map_err(|e| e.to_string())
+}
+
 /// What to do with a NexQ window's taskbar button.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
@@ -225,7 +258,7 @@ fn track_visibility<R: Runtime>(window: &Window<R>) {
     let hwnd = hwnd.0 as isize;
     // The overlay's resize edges keep the arrow cursor under stealth, like
     // the rest of the overlay (useStealthCursor covers the page).
-    let arrow_edges = window.label() == "overlay";
+    let arrow_edges = FLOATING_WINDOWS.contains(&window.label());
     let taskbar = is_taskbar_managed_label(window.label());
     let target = window.clone();
     // A subclass must be installed from the thread that owns the window.
@@ -252,18 +285,19 @@ fn track_visibility<R: Runtime>(_window: &Window<R>) {}
 /// stealth is on:
 /// - NexQ leaves the Dock. macOS ties the Dock icon to Cmd+Tab and the menu
 ///   bar, so those go too; the menu-bar icon and the shortcuts still work.
-/// - The overlay's native resizing is off, so macOS doesn't show its resize
-///   cursors at the edges; the overlay's own invisible edge handles resize
-///   it instead (`OverlayResizeHandles.tsx`).
+/// - The floating meeting windows disable native resizing to suppress the
+///   system resize cursor. The overlay supplies its own edge handles.
 #[cfg(target_os = "macos")]
 fn sync_macos(app: &AppHandle) {
     let on = stealth_enabled();
     if let Err(e) = app.set_dock_visibility(!on) {
         log::warn!("Stealth mode: couldn't change the Dock icon: {e}");
     }
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        if let Err(e) = overlay.set_resizable(!on) {
-            log::warn!("Stealth mode: couldn't change overlay resizing: {e}");
+    for label in FLOATING_WINDOWS {
+        if let Some(window) = app.get_webview_window(label) {
+            if let Err(e) = window.set_resizable(!on) {
+                log::warn!("Stealth mode: couldn't change {label} resizing: {e}");
+            }
         }
     }
     // tao skips a Dock hide that comes within 1 s of a Dock show (it works
@@ -766,7 +800,7 @@ mod tests {
 
     #[test]
     fn all_windows_change_together() {
-        let ws = windows(&[("launcher", None), ("overlay", None)]);
+        let ws = windows(&[("launcher", None), ("overlay", None), ("captions", None)]);
         assert!(transition(&ws, false, true, apply).is_ok());
         assert!(ws.iter().all(|(_, w)| *w.1.borrow()));
     }
@@ -804,8 +838,25 @@ mod tests {
         // time already; the dev-log window is a developer-only surface.
         // Neither should be touched by the stealth taskbar-skip loop.
         assert!(!is_taskbar_managed_label("meeting-prompt"));
+        assert!(!is_taskbar_managed_label("captions"));
         assert!(!is_taskbar_managed_label("devlog"));
         assert!(!is_taskbar_managed_label("something-else"));
+    }
+
+    #[test]
+    fn captions_float_like_the_overlay_and_always_skip_the_taskbar() {
+        assert!(FLOATING_WINDOWS.contains(&"captions"));
+        assert!(FLOATING_WINDOWS.contains(&"overlay"));
+        assert!(!FLOATING_WINDOWS.contains(&"launcher"));
+        let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        let window = config["app"]["windows"].as_array().unwrap().iter()
+            .find(|w| w["label"] == "captions").unwrap();
+        assert_eq!(window["skipTaskbar"], true);
+        assert_eq!(window["focusable"], false);
+        assert_eq!(window["visible"], false);
+        let capability: serde_json::Value = serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap();
+        assert!(capability["windows"].as_array().unwrap().iter().any(|w| w == "captions"));
+        assert!(capability["permissions"].as_array().unwrap().iter().any(|p| p == "core:window:allow-set-ignore-cursor-events"));
     }
 
     #[test]

@@ -165,18 +165,6 @@ fn direct_line_id(
     }
 }
 
-/// Tell the intelligence engine about a line from Them, interim or final: a
-/// new line that reads as a question replaces the question detected before
-/// (`IntelligenceEngine::note_them_line`). `line_id` is the id the line goes
-/// out under. Called before the line's final is ingested.
-fn note_them_line(app: &AppHandle, line_id: &str, text: &str, is_final: bool) {
-    if let Some(intel) = app.state::<AppState>().intelligence.as_ref() {
-        if let Ok(mut engine) = intel.lock() {
-            engine.note_them_line(line_id, text, is_final);
-        }
-    }
-}
-
 /// A transcript line on its way out of `pump_party_lines`.
 struct TranscriptLine {
     /// The id it goes out under ("them_ab12_acc_3", "them_ab12_sx1_7").
@@ -261,8 +249,7 @@ async fn pump_party_lines(
 /// Forward a side's STT results as `transcript_update` / `transcript_final`
 /// until the side's result channel closes (`pump_party_lines`).
 ///
-/// Every line of Them is noted by the intelligence engine, then finals of both
-/// sides go to it and to the question services (`intelligence::ingest_transcript`).
+/// The detector sees every update under the same ID as the UI.
 fn spawn_party_emitter(
     app: &AppHandle,
     side: Side,
@@ -280,15 +267,7 @@ fn spawn_party_emitter(
         pump_party_lines(side, &provider, &session_prefix, &mut rx, &signal, &pause_threshold, |line| {
             let event_name = if line.is_final { "transcript_final" } else { "transcript_update" };
             let _ = app.emit(event_name, &serde_json::json!({ "segment": line.segment }));
-            // A new line from Them replaces the old detected question.
-            if side == Side::Them {
-                note_them_line(&app, &line.id, &line.text, line.is_final);
-            }
-            if line.is_final {
-                crate::intelligence::ingest_transcript(
-                    &app, line.text, side_speaker(side).to_string(), line.timestamp_ms, true,
-                );
-            }
+            crate::intelligence::ingest_native_line(&app, &line.id, side_speaker(side), line.text, line.timestamp_ms, line.is_final);
         })
         .await;
     })
@@ -489,17 +468,7 @@ pub async fn start_capture(
                     });
                     let _ = stt_app.emit(event_name, &payload);
 
-                    // A new line from Them replaces the old detected question.
-                    note_them_line(&stt_app, &output.id, &output.text, output.is_final);
-
-                    // Push final segments to the intelligence engine's
-                    // transcript buffer so the AI has access to what "Them" said
-                    // (and to the question services).
-                    if output.is_final {
-                        crate::intelligence::ingest_transcript(
-                            &stt_app, output.text.clone(), "Them".to_string(), output.timestamp_ms, true,
-                        );
-                    }
+                    crate::intelligence::ingest_native_line(&stt_app, &output.id, "Them", output.text, output.timestamp_ms, output.is_final);
                 }
             }
         }));

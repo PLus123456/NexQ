@@ -1294,6 +1294,9 @@ pub fn init(app: &AppHandle, app_state: &mut AppState, app_data_dir: &Path) {
 /// After every change: the old router, the `config.json` mirror and the
 /// `llm_config_changed` event.
 pub fn after_change(app: &AppHandle) {
+    if let Some(detector) = app.try_state::<crate::intelligence::llm_question::QuestionDetectionService>() {
+        detector.route_changed(app);
+    }
     crate::intelligence::question_prediction::invalidate(app);
     let Some(registry) = app.try_state::<LlmRegistry>() else {
         return;

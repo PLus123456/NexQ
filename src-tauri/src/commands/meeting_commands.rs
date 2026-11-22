@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use tauri::{command, AppHandle, Manager, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
 
 use crate::commands::meeting_chat_commands::chat_history_preload;
 use crate::db::meeting_chat::{self, MeetingChatMessage};
@@ -482,7 +482,7 @@ pub async fn start_meeting(
     // meetings otherwise, leaking the previous meeting's transcript into
     // the first AI call of the new meeting.
     drop(db); // release DB lock before acquiring other locks
-    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session();
+    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session(&app);
     app.state::<crate::intelligence::question_prediction::QuestionPredictionService>().reset_session(&app, Some(meeting.id.clone()));
     if let Some(intel_arc) = state.intelligence.as_ref() {
         if let Ok(mut engine) = intel_arc.lock() {
@@ -534,7 +534,17 @@ pub async fn end_meeting(
     app: AppHandle,
 ) -> Result<(), String> {
     state.meeting_active.store(false, Ordering::SeqCst);
-    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session();
+    if let Some(captions) = app.get_webview_window("captions") {
+        if let Err(e) = captions.hide() {
+            log::warn!("Couldn't hide captions at meeting end: {e}");
+        } else {
+            let _ = app.emit("nexq:captions_visibility", serde_json::json!({ "visible": false }));
+        }
+        if let Err(e) = captions.set_ignore_cursor_events(false) {
+            log::warn!("Couldn't unlock captions at meeting end: {e}");
+        }
+    }
+    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session(&app);
     app.state::<crate::intelligence::question_prediction::QuestionPredictionService>().reset_session(&app, None);
     if let Ok(mut live) = state.live_meeting.lock() {
         if live.as_ref().map(|m| m.id == meeting_id).unwrap_or(true) {

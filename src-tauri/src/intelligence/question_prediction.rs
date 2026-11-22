@@ -76,7 +76,7 @@ struct Inner {
     prediction_revision: u64,
     expires: Option<Instant>,
     expires_at_ms: u64,
-    confirmed: Option<(String, PreparedAnswer)>,
+    confirmed: Vec<(String, PreparedAnswer)>,
 }
 
 impl Default for Inner {
@@ -97,7 +97,7 @@ impl Default for Inner {
             prediction_revision: 0,
             expires: None,
             expires_at_ms: 0,
-            confirmed: None,
+            confirmed: Vec::new(),
         }
     }
 }
@@ -118,7 +118,7 @@ impl Inner {
 
     fn clear_predictions(&mut self) {
         self.predictions.clear();
-        self.confirmed = None;
+        self.confirmed.clear();
         self.expires = None;
         self.expires_at_ms = 0;
     }
@@ -260,27 +260,29 @@ impl Inner {
         self.enabled && self.revision == job.revision && !job.cancel.is_cancelled()
     }
 
-    fn confirm(&mut self, question: &str) -> bool {
-        // Repeated M1 confirmations of a growing STT line preserve a ready hit.
-        let hit = if self.fresh() {
-            self.confirmed
-                .as_ref()
-                .filter(|(q, _)| same_question(q, question))
-                .map(|(_, answer)| answer.clone())
-                .or_else(|| {
-                    self.predictions
-                        .iter()
-                        .find(|p| same_question(&p.question, question))
-                        .and_then(|p| p.prepared.clone())
-                })
-        } else {
-            None
-        };
+    /// One classification can confirm several questions. Match the whole batch
+    /// before retiring the predictions, and keep each ready answer consumable.
+    fn confirm(&mut self, questions: &[&str]) -> Vec<bool> {
+        let mut confirmed = Vec::new();
+        let mut ready = Vec::with_capacity(questions.len());
+        for &question in questions {
+            let hit = self.fresh().then(|| {
+                self.confirmed.iter().find(|(q, _)| same_question(q, question)).map(|(_, a)| a)
+                    .or_else(|| self.predictions.iter().find(|p| same_question(&p.question, question))
+                        .and_then(|p| p.prepared.as_ref()))
+            }).flatten();
+            ready.push(hit.is_some());
+            if let Some(answer) = hit {
+                if !confirmed.iter().any(|(q, _): &(String, PreparedAnswer)| same_question(q, question)) {
+                    confirmed.push((question.to_owned(), answer.clone()));
+                }
+            }
+        }
         self.cancel_work();
         self.predictions.clear();
-        self.confirmed = hit.map(|answer| (question.to_string(), answer));
+        self.confirmed = confirmed;
         self.new_chars = 0;
-        self.confirmed.is_some()
+        ready
     }
 
     fn consume(&mut self, question: &str) -> Option<PreparedAnswer> {
@@ -288,9 +290,10 @@ impl Inner {
             self.clear_predictions();
             return None;
         }
-        let (actual, answer) = self.confirmed.take()?;
-        self.clear_predictions();
-        same_question(&actual, question).then_some(answer)
+        let index = self.confirmed.iter().position(|(q, _)| same_question(q, question))?;
+        let (_, answer) = self.confirmed.remove(index);
+        if self.confirmed.is_empty() { self.clear_predictions(); }
+        Some(answer)
     }
 
     fn discard_older_context(&mut self) {
@@ -443,16 +446,13 @@ impl QuestionPredictionService {
         self.wake.notify_one();
     }
 
-    pub fn on_detection(&self, app: &AppHandle, question: Option<&str>) -> bool {
+    pub fn on_detection(&self, app: &AppHandle, questions: &[&str]) -> Vec<bool> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let ready = match question {
-            Some(question) => inner.confirm(question),
-            // New information can change an answer even if the future question
-            // has identical wording. Keep the next scheduled prediction only.
-            None => {
-                inner.discard_older_context();
-                false
-            }
+        let ready = if questions.is_empty() {
+            inner.discard_older_context();
+            Vec::new()
+        } else {
+            inner.confirm(questions)
         };
         publish(app, &inner);
         self.wake.notify_one();
@@ -966,26 +966,38 @@ mod tests {
             state.consume(QUESTION).is_none(),
             "previews are not confirmed questions"
         );
-        assert!(state.confirm(QUESTION));
+        assert!(state.confirm(&[QUESTION])[0]);
         assert!(
-            state.confirm(QUESTION),
+            state.confirm(&[QUESTION])[0],
             "repeated confirmations preserve the hit"
         );
         assert!(state.predictions.is_empty());
         assert!(state.consume(QUESTION).is_some());
         assert!(state.consume(QUESTION).is_none());
         let mut state = ready();
-        assert!(!state.confirm("这个项目需要哪些人员？"));
+        assert!(!state.confirm(&["这个项目需要哪些人员？"])[0]);
         assert!(state.predictions.is_empty());
         assert!(state.consume(QUESTION).is_none());
         let mut state = ready();
         state.expires = Some(Instant::now() - Duration::from_secs(1));
-        assert!(!state.confirm(QUESTION));
+        assert!(!state.confirm(&[QUESTION])[0]);
         let mut state = ready();
-        state.confirm(QUESTION);
+        state.confirm(&[QUESTION]);
         state.reset();
         assert!(state.consume(QUESTION).is_none());
         assert!(state.lines.is_empty());
+    }
+
+    #[test]
+    fn a_batch_can_replay_two_prepared_answers_after_an_unmatched_question() {
+        let mut state = ready();
+        let first = state.predictions[0].question.clone();
+        let second = state.predictions[1].question.clone();
+        assert_eq!(state.confirm(&["Unrelated question?", &first, &second]), [false, true, true]);
+        assert!(state.consume("Unrelated question?").is_none());
+        assert!(state.consume(&second).is_some());
+        assert!(state.consume(&first).is_some());
+        assert!(state.consume(&first).is_none());
     }
 
     #[test]
@@ -1156,7 +1168,7 @@ mod tests {
             .unwrap();
         let s = state.lock().unwrap();
         assert!(s.predictions.is_empty());
-        assert!(s.confirmed.is_none());
+        assert!(s.confirmed.is_empty());
         assert!(!s.worker_running);
     }
 
