@@ -582,7 +582,7 @@ export function OverlayView() {
       {/* Bookmark panel */}
       {bookmarksOpen && (
         <div className="shrink-0 border-t border-border/20">
-          <BookmarkPanel />
+          <BookmarkPanel onOpenTranscript={() => setTranscriptOpen(true)} />
         </div>
       )}
 

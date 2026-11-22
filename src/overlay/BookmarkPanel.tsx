@@ -7,17 +7,33 @@ import { useState } from "react";
 import type { MeetingBookmark } from "../lib/types";
 
 /** Scroll to a transcript line by segment ID and briefly highlight it */
-function scrollToSegment(segmentId?: string) {
-  if (!segmentId) return;
+function highlightSegment(segmentId: string): boolean {
   const el = document.querySelector(`[data-segment-id="${segmentId}"]`);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("ring-1", "ring-primary/40");
-    setTimeout(() => el.classList.remove("ring-1", "ring-primary/40"), 1500);
-  }
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("ring-1", "ring-primary/40");
+  setTimeout(() => el.classList.remove("ring-1", "ring-primary/40"), 1500);
+  return true;
 }
 
-export function BookmarkPanel() {
+/**
+ * Jump to a bookmarked line. The transcript can be closed (the answer window
+ * shows it on demand): `openTranscript` opens it, and the jump happens once
+ * the line has rendered.
+ */
+function scrollToSegment(segmentId: string | undefined, openTranscript?: () => void) {
+  if (!segmentId || highlightSegment(segmentId)) return;
+  if (!openTranscript) return;
+  openTranscript();
+  let tries = 0;
+  const retry = () => {
+    if (highlightSegment(segmentId) || ++tries >= 10) return;
+    requestAnimationFrame(retry);
+  };
+  requestAnimationFrame(retry);
+}
+
+export function BookmarkPanel({ onOpenTranscript }: { onOpenTranscript?: () => void } = {}) {
   const { t } = useT("overlay");
   const bookmarks = useBookmarkStore((s) => s.bookmarks);
   const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
@@ -49,6 +65,7 @@ export function BookmarkPanel() {
             meetingStartTime={meetingStartTime}
             onUpdateNote={(note) => updateBookmarkNote(b.id, note)}
             onRemove={() => removeBookmark(b.id)}
+            onOpenTranscript={onOpenTranscript}
           />
         ))}
       </div>
@@ -61,11 +78,13 @@ function BookmarkRow({
   meetingStartTime,
   onUpdateNote,
   onRemove,
+  onOpenTranscript,
 }: {
   bookmark: MeetingBookmark;
   meetingStartTime: number | null;
   onUpdateNote: (note: string) => void;
   onRemove: () => void;
+  onOpenTranscript?: () => void;
 }) {
   const { t } = useT("overlay");
   const [editNote, setEditNote] = useState(bookmark.note ?? "");
@@ -79,7 +98,7 @@ function BookmarkRow({
   return (
     <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-secondary/20">
       <button
-        onClick={() => scrollToSegment(bookmark.segment_id)}
+        onClick={() => scrollToSegment(bookmark.segment_id, onOpenTranscript)}
         className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 hover:bg-primary/20 transition-colors cursor-pointer"
         title={t("bookmarks.panel.jump")}
       >
