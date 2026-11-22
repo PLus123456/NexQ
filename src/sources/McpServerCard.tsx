@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { ChevronDown, Loader2, Pencil, Wrench, X } from "lucide-react";
+import { t, useT } from "../i18n";
 import type { McpServer } from "../lib/types";
 import { SourceSwitch } from "./SourceSwitch";
 
@@ -15,7 +16,10 @@ interface McpServerCardProps {
   autoOpen?: boolean;
 }
 
-export const NEEDS_SIGN_IN_TEXT = "Needs sign-in, not supported yet";
+/** Said of a server that asks for a sign-in, in the UI language. */
+export function needsSignInText(): string {
+  return t("sources:mcp.needsSignIn");
+}
 
 /** `node s.js` or the URL. */
 function summaryOf(server: McpServer): string {
@@ -24,15 +28,21 @@ function summaryOf(server: McpServer): string {
 }
 
 function statusOf(server: McpServer, checking: boolean): { text: string; tone: "ok" | "bad" | "quiet" } {
-  if (checking) return { text: "Checking…", tone: "quiet" };
-  if (server.needs_sign_in) return { text: NEEDS_SIGN_IN_TEXT, tone: "bad" };
+  if (checking) return { text: t("sources:mcp.status.checking"), tone: "quiet" };
+  if (server.needs_sign_in) return { text: needsSignInText(), tone: "bad" };
   const c = server.last_check;
-  if (!c) return { text: server.enabled ? "Not checked" : "Not checked yet. Check it to switch it on", tone: "quiet" };
-  if (c.ok) return { text: `Ready with ${c.tool_count} ${c.tool_count === 1 ? "tool" : "tools"}`, tone: "ok" };
-  return { text: `Failed: ${c.error ?? "the server did not start"}`, tone: "bad" };
+  if (!c) {
+    return {
+      text: server.enabled ? t("sources:mcp.status.notChecked") : t("sources:mcp.status.notCheckedYet"),
+      tone: "quiet",
+    };
+  }
+  if (c.ok) return { text: t("sources:mcp.status.ready", { count: c.tool_count }), tone: "ok" };
+  return { text: t("sources:mcp.status.failed", { detail: c.error ?? t("sources:mcp.status.failedDefault") }), tone: "bad" };
 }
 
 export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onRemove, onToolToggle, autoOpen = false }: McpServerCardProps) {
+  const { t } = useT("sources");
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (autoOpen) setOpen(true);
@@ -43,7 +53,7 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
   const ready = !!server.last_check?.ok && !server.needs_sign_in;
   // Off until a Check works; one that is on can always be switched off.
   const cantEnable = !server.enabled && !ready;
-  const allowed = server.tools.filter((t) => t.allowed).length;
+  const allowed = server.tools.filter((tool) => tool.allowed).length;
   const toolsId = `mcp-tools-${server.id}`;
 
   return (
@@ -78,7 +88,7 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
             disabled={cantEnable}
             onChange={onToggle}
             describedBy={statusId}
-            label={`Use ${server.label}`}
+            label={t("card.useAria", { name: server.label })}
           />
         </div>
       </div>
@@ -90,16 +100,16 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
           disabled={checking || server.needs_sign_in}
           className="cursor-pointer rounded-md border border-border/50 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Check
+          {t("mcp.check")}
         </button>
         <button
           type="button"
           onClick={onEdit}
-          aria-label={`Edit ${server.label}`}
+          aria-label={t("mcp.editAria", { name: server.label })}
           className="flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
         >
           <Pencil className="h-3 w-3" />
-          Edit
+          {t("mcp.edit")}
         </button>
         <button
           type="button"
@@ -110,12 +120,23 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
               setTimeout(() => setConfirmRemove(false), 3000);
             }
           }}
-          aria-label={confirmRemove ? `Confirm removing ${server.label}` : `Remove ${server.label}`}
+          aria-label={
+            confirmRemove
+              ? t("card.confirmRemoveAria", { name: server.label })
+              : t("card.removeAria", { name: server.label })
+          }
           className={`flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
             confirmRemove ? "bg-destructive/15 text-destructive" : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
           }`}
         >
-          {confirmRemove ? "Remove?" : <><X className="h-3 w-3" />Remove</>}
+          {confirmRemove ? (
+            t("card.removeQuestion")
+          ) : (
+            <>
+              <X className="h-3 w-3" />
+              {t("card.remove")}
+            </>
+          )}
         </button>
         {server.tools.length > 0 && (
           <button
@@ -126,7 +147,7 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
             className="ml-auto flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
           >
             <span>
-              {allowed} of {server.tools.length} tools allowed
+              {t("mcp.toolsAllowed", { allowed, total: server.tools.length })}
             </span>
             <ChevronDown className={`h-3 w-3 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
           </button>
@@ -135,10 +156,10 @@ export function McpServerCard({ server, checking, onToggle, onCheck, onEdit, onR
 
       {open && server.tools.length > 0 && (
         <ul id={toolsId} className="mt-2 space-y-1 pl-11">
-          {server.tools.map((t) => (
-            <li key={t.name} className="flex items-center justify-between gap-3 rounded-md px-2 py-1 hover:bg-accent/20">
-              <span className="truncate font-mono text-xs text-foreground/90">{t.name}</span>
-              <SourceSwitch checked={t.allowed} onChange={(next) => onToolToggle(t.name, next)} label={`Allow ${t.name}`} />
+          {server.tools.map((tool) => (
+            <li key={tool.name} className="flex items-center justify-between gap-3 rounded-md px-2 py-1 hover:bg-accent/20">
+              <span className="truncate font-mono text-xs text-foreground/90">{tool.name}</span>
+              <SourceSwitch checked={tool.allowed} onChange={(next) => onToolToggle(tool.name, next)} label={t("mcp.allowAria", { name: tool.name })} />
             </li>
           ))}
         </ul>

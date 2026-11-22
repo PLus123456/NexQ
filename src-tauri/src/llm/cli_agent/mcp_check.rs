@@ -33,15 +33,11 @@ pub fn tools_of_server(info: &InitInfo, key: &str) -> Result<Vec<String>, String
             let prefix = format!("mcp__{key}__");
             Ok(info.tools.iter().filter(|t| t.starts_with(&prefix)).cloned().collect())
         }
-        Some("failed") => Err(
-            "The server failed to start. Check its command, arguments and sign-in values.".to_string(),
-        ),
-        Some("needs-auth") => Err("The server needs a sign-in, which NexQ doesn't support yet.".to_string()),
-        Some("pending") => Err(
-            "The server didn't answer in time. A first run can take a while to download; try Check again.".to_string(),
-        ),
-        Some(other) => Err(format!("The server didn't finish connecting (status: {other}).")),
-        None => Err("The server didn't start.".to_string()),
+        Some("failed") => Err(crate::i18n::messages::mcp_failed_to_start(crate::i18n::current_ui_language())),
+        Some("needs-auth") => Err(crate::i18n::messages::mcp_needs_sign_in(crate::i18n::current_ui_language())),
+        Some("pending") => Err(crate::i18n::messages::mcp_pending(crate::i18n::current_ui_language())),
+        Some(other) => Err(crate::i18n::messages::mcp_other_status(crate::i18n::current_ui_language(), other)),
+        None => Err(crate::i18n::messages::mcp_not_started(crate::i18n::current_ui_language())),
     }
 }
 
@@ -68,7 +64,7 @@ pub async fn list_server_tools(
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| "Claude CLI isn't installed, so the server can't be checked.".to_string())?;
+        .ok_or_else(|| crate::i18n::messages::mcp_cli_missing(crate::i18n::current_ui_language()))?;
     let cfg = SessionConfig {
         model: "haiku".to_string(),
         effort: None,
@@ -85,7 +81,7 @@ pub async fn list_server_tools(
         }
         // Nothing usable left: the statuses say why, no error text to parse.
         Err(AgentError::NoUsableSources { info, .. }) => tools_of_server(&info, &server.key),
-        Err(AgentError::Timeout) => Err("The server took too long to start.".to_string()),
+        Err(AgentError::Timeout) => Err(crate::i18n::messages::mcp_timeout(crate::i18n::current_ui_language())),
         // Claude itself is the problem, not the server: no point diagnosing it.
         Err(e) => return Err(e.to_string()),
     };
@@ -101,6 +97,16 @@ pub async fn list_server_tools(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_failures_follow_the_ui_language() {
+        use crate::i18n::{set_current, UiLanguage};
+        let info = InitInfo::default();
+        assert_eq!(tools_of_server(&info, "mira").unwrap_err(), "The server didn't start.");
+        set_current(UiLanguage::ZhCn);
+        assert_eq!(tools_of_server(&info, "mira").unwrap_err(), "服务器没有启动。");
+        set_current(UiLanguage::En);
+    }
+
     use super::*;
     use crate::llm::cli_agent::protocol::McpServerState;
 

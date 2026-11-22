@@ -2,6 +2,7 @@
 // it to the Ask box as an attachment. The picture stays in memory (a `File` that
 // is attached or dropped); nothing is saved or logged.
 
+import { t } from "../i18n";
 import { captureScreenUnderCursor } from "./ipc";
 import { providerReadsImages } from "./imageAttachments";
 import { showMeetingOverlay } from "./windows";
@@ -20,7 +21,10 @@ export const SCREENSHOT_EVENT = "nexq:screenshot-captured";
 /** How long a screenshot waits for an Ask box that isn't on screen yet. */
 export const PENDING_SCREENSHOT_MS = 30_000;
 
-export const SCREENSHOT_NOT_ATTACHED = "Couldn't attach the screenshot. Open Ask and try again.";
+/** The toast for a screenshot nobody took, in the UI language. */
+export function screenshotNotAttached(): string {
+  return t("misc:screenshot.notAttached");
+}
 
 const pending: Array<{ file: File; at: number; timer: ReturnType<typeof setTimeout> }> = [];
 
@@ -56,12 +60,12 @@ function dropPending(file: File): boolean {
  */
 export function deliverScreenshot(file: File): void {
   const timer = setTimeout(() => {
-    if (dropPending(file)) showToast(SCREENSHOT_NOT_ATTACHED, "error");
+    if (dropPending(file)) showToast(screenshotNotAttached(), "error");
   }, PENDING_SCREENSHOT_MS);
   pending.push({ file, at: Date.now(), timer });
   const event = new Event(SCREENSHOT_EVENT, { cancelable: true });
   window.dispatchEvent(event);
-  if (!event.defaultPrevented && dropPending(file)) showToast(SCREENSHOT_NOT_ATTACHED, "error");
+  if (!event.defaultPrevented && dropPending(file)) showToast(screenshotNotAttached(), "error");
 }
 
 /**
@@ -90,7 +94,7 @@ useMeetingStore.subscribe((state, previous) => {
 /** The sentence to show for a failed capture. */
 export function captureErrorText(error: unknown): string {
   const text = typeof error === "string" ? error : error instanceof Error ? error.message : "";
-  return text.trim() || "Couldn't capture the screen";
+  return text.trim() || t("misc:screenshot.captureFailed");
 }
 
 let capturing = false;

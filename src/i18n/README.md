@@ -71,6 +71,7 @@ namespace files, even for components that live elsewhere.
 | `launcher` | Main window, meeting list, meeting details | P6 |
 | `overlay` | Overlay (except the translation package's files) | P6 |
 | `calllog` | AI call log | P6 |
+| `sources` | Personal sources (notes folders, MCP tool servers), the link dialog of AI answers | Personal sources |
 | `misc` | Remaining components, hooks, stores, lib messages | P6 |
 | `captions` | Caption strip (the `captions` window) and its settings page | Interview redesign |
 

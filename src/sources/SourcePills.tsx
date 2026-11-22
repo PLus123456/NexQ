@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useId } from "react";
 import { AlertCircle, AlertTriangle, BookOpen, Loader2, RotateCcw, Wrench } from "lucide-react";
+import { useT } from "../i18n";
 import { findSourcesSession, pillState, type PillState } from "../lib/sourcePills";
 import { retrySourcesSession } from "../lib/ipc";
 import { useAgentStore } from "../stores/agentStore";
@@ -38,6 +39,7 @@ function styleOf(kind: "notes" | "tools", state: PillState): string {
  * use. Shown only for a kind that is set up, and only on the Claude subscription.
  */
 export function SourcePills({ scope, meetingId = null }: SourcePillsProps) {
+  const { t } = useT(["sources", "common"]);
   const provider = useConfigStore((s) => s.llmProvider);
   const config = useSourcesStore((s) => s.config);
   const toggles = useSourcesStore((s) => s.toggles);
@@ -65,13 +67,16 @@ export function SourcePills({ scope, meetingId = null }: SourcePillsProps) {
   const behind = {
     notes: config.notes_folders.filter((f) => f.enabled).map((f) => f.label),
     tools: config.mcp_servers
-      .filter((s) => s.enabled && !s.needs_sign_in && s.tools.some((t) => t.allowed))
+      .filter((s) => s.enabled && !s.needs_sign_in && s.tools.some((tool) => tool.allowed))
       .map((s) => s.label),
   };
   const tooltip = (kind: "notes" | "tools") => {
-    const base = `${kind === "notes" ? "Notes" : "Tools"}: ${behind[kind].join(", ")}`;
-    if (states[kind] === "error" && detail) return `${base}. ${detail}`;
-    if (notice) return `${base}. ${notice}`;
+    const base = t("pills.tooltip", {
+      kind: kind === "notes" ? t("pills.notes") : t("pills.tools"),
+      names: behind[kind].join(t("pills.listSeparator")),
+    });
+    if (states[kind] === "error" && detail) return t("pills.withDetail", { base, detail });
+    if (notice) return t("pills.withDetail", { base, detail: notice });
     return base;
   };
 
@@ -80,10 +85,10 @@ export function SourcePills({ scope, meetingId = null }: SourcePillsProps) {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Personal sources for your next answer">
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={t("pills.groupAria")}>
       {shown.map((kind) => {
         const state = states[kind];
-        const label = kind === "notes" ? "Notes" : "Tools";
+        const label = kind === "notes" ? t("pills.notes") : t("pills.tools");
         const Icon = kind === "notes" ? BookOpen : Wrench;
         return (
           <Fragment key={kind}>
@@ -93,7 +98,7 @@ export function SourcePills({ scope, meetingId = null }: SourcePillsProps) {
             aria-checked={toggles[kind]}
             title={tooltip(kind)}
             aria-describedby={`${baseId}-${kind}`}
-            onClick={() => setToggles((t) => ({ ...t, [kind]: !t[kind] }))}
+            onClick={() => setToggles((on) => ({ ...on, [kind]: !on[kind] }))}
             className={`${PILL_BASE} ${styleOf(kind, state)}`}
           >
             {state === "loading" ? (
@@ -125,7 +130,7 @@ export function SourcePills({ scope, meetingId = null }: SourcePillsProps) {
             className="flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-meta font-medium text-destructive transition-colors hover:bg-destructive/10"
           >
             <RotateCcw className="h-3 w-3" aria-hidden="true" />
-            Retry
+            {t("common:actions.retry")}
           </button>
         </>
       )}

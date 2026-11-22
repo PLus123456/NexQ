@@ -1058,5 +1058,18 @@
     "routeDisabled": "Not configured (prediction off)",
     "assistUnavailable": "Choose an available Assist connection and model to prepare answers. Prediction can still run without prepared answers.",
     "preparationLog": "Answer preparation"
+  },
+  "thinkingSettings": {
+    "errors": {
+      "invalid": "Not valid JSON: {{detail}}",
+      "notObject": "Must be a JSON object, like {\"top_p\": 0.9}"
+    },
+    "extra": {
+      "summary": "Advanced: extra request JSON",
+      "label": "Extra request JSON",
+      "invalid": "{{detail}}. Nothing is sent until it is fixed.",
+      "help": "A JSON object merged into each request after {{appName}}'s own fields. \"model\", \"messages\" and \"stream\" are ignored.",
+      "helpOllama": "A JSON object merged into each request after {{appName}}'s own fields. \"options\" is merged key by key. \"model\", \"messages\" and \"stream\" are ignored."
+    }
   }
 }

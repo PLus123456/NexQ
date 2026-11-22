@@ -52,6 +52,7 @@ pub fn sources_degraded_notice(
     failed_keys: &[String],
     left_out: &[String],
 ) -> Option<String> {
+    let lang = crate::i18n::current_ui_language();
     let mut parts: Vec<String> = Vec::new();
     if !failed_keys.is_empty() {
         let names: Vec<&str> = failed_keys
@@ -64,35 +65,32 @@ pub fn sources_degraded_notice(
                     .unwrap_or(k.as_str())
             })
             .collect();
-        let list = match names.split_last() {
-            Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-            _ => names.join(""),
-        };
-        let (verb, pronoun) = if names.len() == 1 { ("didn't", "its tools aren't") } else { ("didn't", "their tools aren't") };
-        parts.push(format!("{list} {verb} start, so {pronoun} available"));
+        let list = crate::i18n::messages::name_list(lang, &names);
+        parts.push(crate::i18n::messages::servers_didnt_start(lang, &list, names.len() != 1));
     }
     if !left_out.is_empty() {
-        parts.push(format!("Left out: {}", left_out.join("; ")));
+        parts.push(crate::i18n::messages::left_out(lang, &left_out.join("; ")));
     }
-    (!parts.is_empty()).then(|| parts.join(". "))
+    (!parts.is_empty()).then(|| parts.join(crate::i18n::messages::notice_joiner(lang)))
 }
 
 /// One tool use as an activity line, plus the chip it leaves behind.
 /// `server_labels` maps an MCP server key to the name the user gave it.
 pub fn describe_tool_use(t: &ToolUse, server_labels: &[(String, String)]) -> SourceActivity {
+    let lang = crate::i18n::current_ui_language();
     let text = |field: &str| t.input.get(field).and_then(|v| v.as_str()).unwrap_or("");
     match t.name.as_str() {
-        "Grep" => notes_line(format!("Searching notes for '{}'", text("pattern"))),
-        "Glob" => notes_line(format!("Looking for notes named '{}'", text("pattern"))),
+        "Grep" => notes_line(crate::i18n::messages::searching_notes(lang, text("pattern"))),
+        "Glob" => notes_line(crate::i18n::messages::finding_notes(lang, text("pattern"))),
         "Read" => {
             let path = text("file_path");
             if path.is_empty() {
-                return notes_line("Reading a note".to_string());
+                return notes_line(crate::i18n::messages::reading_a_note(lang));
             }
             let name = file_name(path);
             SourceActivity {
                 kind: SourceKind::Notes,
-                label: format!("Reading {name}"),
+                label: crate::i18n::messages::reading_note(lang, name),
                 chip: Some(SourceChip {
                     kind: SourceKind::Notes,
                     label: name.to_string(),
@@ -118,7 +116,7 @@ pub fn describe_tool_use(t: &ToolUse, server_labels: &[(String, String)]) -> Sou
             }
             None => SourceActivity {
                 kind: SourceKind::Tool,
-                label: format!("Using {other}"),
+                label: crate::i18n::messages::using_tool(lang, other),
                 chip: None,
                 chip_only: false,
             },
@@ -142,6 +140,21 @@ mod tests {
 
     fn use_of(name: &str, input: serde_json::Value) -> ToolUse {
         ToolUse { id: String::new(), name: name.into(), input }
+    }
+
+    #[test]
+    fn activity_lines_and_notices_follow_the_ui_language() {
+        use crate::i18n::{set_current, UiLanguage};
+        // The language is per test thread, so this can't leak into other tests.
+        set_current(UiLanguage::ZhCn);
+        let line = describe_tool_use(&use_of("Read", json!({"file_path": "D:\\V\\People\\Dana.md"})), &[]);
+        assert_eq!(line.label, "正在阅读 Dana.md");
+        let labels = vec![("mira".to_string(), "Mira".to_string())];
+        assert_eq!(
+            sources_degraded_notice(&labels, &["mira".into()], &[]).as_deref(),
+            Some("Mira 没有启动，所以它的工具不可用")
+        );
+        set_current(UiLanguage::En);
     }
 
     #[test]

@@ -343,7 +343,7 @@ impl ToolChips {
 /// The activity line shown when a with-sources attempt fell back to the plain
 /// session.
 pub(crate) fn sources_failure_notice(reason: &str) -> SourceActivity {
-    notice(format!("Your sources couldn't be loaded, so this answer didn't use them. {reason}"))
+    notice(crate::i18n::messages::sources_not_loaded(crate::i18n::current_ui_language(), reason))
 }
 
 /// The activity line shown when an answer that asked for sources was written
@@ -372,11 +372,12 @@ pub(crate) fn is_sources_start_failure(err: &AgentError) -> bool {
 /// routed to another connection (none of them takes images yet), or to Claude
 /// but its session isn't available for this request (outage, fallback, no
 /// meeting open, meeting too long).
-pub(crate) fn images_refusal(kind: Option<LlmKind>) -> &'static str {
+pub(crate) fn images_refusal(kind: Option<LlmKind>) -> String {
+    let lang = crate::i18n::current_ui_language();
     if kind == Some(LlmKind::ClaudeCli) {
-        "Claude can't read images right now. Try again in a moment, or remove the image and ask again."
+        crate::i18n::messages::claude_cant_read_images(lang)
     } else {
-        "Images work only with Claude (subscription). Choose it for this action in Settings → AI Models, or remove the image and ask again."
+        crate::i18n::messages::images_need_claude(lang)
     }
 }
 
@@ -1234,7 +1235,7 @@ pub async fn generate_assist(
     // Only a Claude session carries images; no other route can send them, and
     // answering without the image would silently ignore what the user attached.
     if !images.is_empty() {
-        let message = images_refusal(route_kind(&app_handle, &mode)).to_string();
+        let message = images_refusal(route_kind(&app_handle, &mode));
         // End the stream too: a session attempt above may already have started
         // it, and the frontend ignores errors for streams it never started, so
         // this is harmless otherwise (the rejection below reports it then).

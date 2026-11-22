@@ -32,7 +32,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   ...ipc,
 }));
 
-import { PersonalSourcesEditor, SOURCES_GATING_LINE } from "./PersonalSourcesEditor";
+import { PersonalSourcesEditor, sourcesGatingLine } from "./PersonalSourcesEditor";
 import { DEFAULT_SOURCES_CONFIG, useSourcesStore } from "../stores/sourcesStore";
 import { useConfigStore } from "../stores/configStore";
 import { useToastStore } from "../stores/toastStore";
@@ -80,18 +80,18 @@ describe("PersonalSourcesEditor", () => {
   it("shows the gating line and keeps everything editable under another provider", () => {
     useConfigStore.setState({ llmProvider: "openai" });
     const { container } = render(<PersonalSourcesEditor variant="full" />);
-    expect(screen.getByText(SOURCES_GATING_LINE)).toBeInTheDocument();
-    expect(SOURCES_GATING_LINE).toBe("Personal sources work with the Claude subscription. Switch to it in LLM Providers to use them.");
+    expect(screen.getByText(sourcesGatingLine())).toBeInTheDocument();
+    expect(sourcesGatingLine()).toBe("Personal sources work with the Claude subscription. Switch to it in LLM Providers to use them.");
     expect(screen.getByRole("button", { name: /add folder/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /add server/i })).toBeEnabled();
     const dimmed = container.querySelector(".opacity-60");
     expect(dimmed).not.toBeNull();
-    expect(dimmed!.getAttribute("aria-describedby")).toBe(screen.getByText(SOURCES_GATING_LINE).id);
+    expect(dimmed!.getAttribute("aria-describedby")).toBe(screen.getByText(sourcesGatingLine()).id);
   });
 
   it("shows no gating line on the Claude subscription", () => {
     const { container } = render(<PersonalSourcesEditor variant="compact" />);
-    expect(screen.queryByText(SOURCES_GATING_LINE)).toBeNull();
+    expect(screen.queryByText(sourcesGatingLine())).toBeNull();
     expect(container.querySelector(".opacity-60")).toBeNull();
   });
 

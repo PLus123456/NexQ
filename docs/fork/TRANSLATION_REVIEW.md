@@ -298,3 +298,33 @@ Ollama、LM Studio、OpenAI、Anthropic、Groq、Google Gemini、OpenRouter，�
 | `overlay:prediction.prepared` | Prepared in advance | 提前准备的答案 | 预览及实际复用答案的标记 |
 | `overlay:prediction.preview` | Prepared answer preview | 预备答案预览 | 无障碍区域名称 |
 | `overlay:prediction.status.*` | Prediction only / Preparing answer… / Answer ready / No prepared answer | 仅预测 / 正在准备答案… / 答案已准备好 / 暂无预备答案 | 失败静默降级，只显示准备状态 |
+
+## 个人资料来源（sources 命名空间，v2.41.3 合并后补译，待人工确认）
+
+| key | 英文 | 中文 | 说明 |
+|---|---|---|---|
+| `sources:editor.notes.title` / `pills.notes` | Notes | 笔记 | Obsidian 等 .md 文件夹；会议中的“笔记”按钮 |
+| `sources:editor.tools.title` / `pills.tools` | Tools (MCP) | 工具（MCP） | MCP 保持英文 |
+| `sources:editor.intro` | the Notes and Tools pills | “笔记”和“工具”按钮 | pill 译成“按钮”，不用“胶囊”“标签” |
+| `sources:editor.howThisWorks` | How this works | 工作原理 | 小标题旁的说明入口 |
+| `sources:folder.notes` | {{display}} notes | {{display}} 篇笔记 | 量词用“篇”；截断时显示“200+ 篇笔记” |
+| `sources:mcp.status.ready` | Ready with N tools | 已就绪，共 N 个工具 | |
+| `sources:mcp.check` | Check | 检查 | 检查服务器能否启动并列出工具 |
+| `sources:mcp.needsSignIn` | Needs sign-in, not supported yet | 需要登录，暂不支持 | |
+| `sources:dialog.tabs.form` | Form | 表单 | 添加服务器的三种方式：粘贴 JSON / 表单 / 从 Claude Code 导入 |
+| `sources:dialog.form.headers` | Headers | 请求头 | 沿用术语表 |
+| `sources:dialog.pair.newSecret` | Kept in Windows Credential Manager | 保存在系统凭据库中 | 英文也改成了 “Kept in the system credential store”（原文只提 Windows，本版在 macOS 用钥匙串） |
+| `sources:dialog.pair.nameAria` 等 | {{title}} name 1 | {{title}}：名称 1 | 标题是中文词，避免与占位符粘连 |
+| `sources:notice.*` | switch tools on / Got it | 打开工具 / 知道了 | “工具打开后，AI 可以不经你同意直接使用”：把 “switched on” 统一译成“打开” |
+| `sources:guide.*.cant` | What it can't do | AI 不能做什么 | 小标题加上主语“AI” |
+| `sources:guide.*.slow` | It can add a few seconds | 可能多花几秒 | |
+| `sources:chips.openFailedDefault` | it could not be opened | 原因不明 | 接在“无法打开 X：”后面 |
+| `sources:link.title` | Open this link in your browser? | 要在浏览器中打开这个链接吗？ | AI 回答里的链接确认框 |
+| `sources:image.*` | [Image: alt] | [图片：alt] | AI 回答里的图片只显示描述 |
+| `overlay:ask.images.needClaude` | Settings → LLM Providers | 设置 → AI 模型 | 标签名取自 `settings:tabs.llm`，中英文各自的真实侧栏名；原文写 “Settings > LLM” |
+| `overlay:language.picker.name` | {{side}} language | “{{side}}”的语言 | 悬浮窗里每一方的语言按钮；{{side}} 是“我 / 对方 / 现场”，加引号避免粘连 |
+| `overlay:language.picker.speaks` | {{side}} speaks | “{{side}}”说的语言 | 弹出列表的小标题 |
+| `overlay:language.picker.auto` | Auto | 自动 | 语言按钮上的短标签（完整名称是“自动检测”） |
+| `misc:capture.*` | Reconnecting your microphone… | 正在重新连接你的麦克风… | 对方一侧写“对方的音频”；通知里的“你”不用“我” |
+| `misc:images.tooLarge` | Paste a smaller area. | 请粘贴较小的区域。 | 指截图的范围 |
+| `llm:thinkingSettings.extra.*` | Extra request JSON | 额外请求体（JSON） | 与 `llm:params.extraBody.label` 一致 |

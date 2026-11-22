@@ -1,0 +1,186 @@
+{
+  "gating": "个人资料来源仅适用于 Claude 订阅。要使用它们，请在“设置 → {{tab}}”中切换到该订阅。",
+  "link": {
+    "title": "要在浏览器中打开这个链接吗？",
+    "open": "打开链接"
+  },
+  "image": {
+    "withAlt": "[图片：{{alt}}]",
+    "plain": "[图片]"
+  },
+  "editor": {
+    "intro": "让 AI 在回答你时查阅你自己的笔记和工具。会议中，“笔记”和“工具”按钮决定哪些回答可以使用它们。",
+    "howThisWorks": "工作原理",
+    "notes": {
+      "sectionLabel": "笔记文件夹",
+      "title": "笔记",
+      "add": "添加文件夹",
+      "empty": "还没有文件夹。添加你的 Obsidian 库，或任何包含 .md 文件的文件夹。",
+      "pickTitle": "选择笔记文件夹",
+      "duplicate": "这个文件夹已经添加过了。",
+      "notFound": "找不到文件夹"
+    },
+    "tools": {
+      "sectionLabel": "工具服务器",
+      "title": "工具（MCP）",
+      "add": "添加服务器",
+      "empty": "还没有服务器。可以通过其 README 里的 JSON、表单或 Claude Code 添加。"
+    },
+    "toast": {
+      "checkFailed": "无法检查 {{name}}：{{detail}}",
+      "forgetSecretsFailed": "无法清除 {{name}} 已保存的密钥：{{detail}}",
+      "removeFailed": "无法移除 {{name}}：{{detail}}"
+    }
+  },
+  "card": {
+    "useAria": "使用 {{name}}",
+    "remove": "移除",
+    "removeQuestion": "移除？",
+    "removeAria": "移除 {{name}}",
+    "confirmRemoveAria": "确认移除 {{name}}"
+  },
+  "folder": {
+    "looking": "正在查看…",
+    "notFound": "找不到文件夹",
+    "notes_other": "{{display}} 篇笔记",
+    "nameAria": "{{path}} 的名称"
+  },
+  "mcp": {
+    "needsSignIn": "需要登录，暂不支持",
+    "status": {
+      "checking": "正在检查…",
+      "notChecked": "未检查",
+      "notCheckedYet": "尚未检查。检查通过后才能打开",
+      "ready_other": "已就绪，共 {{count}} 个工具",
+      "failed": "失败：{{detail}}",
+      "failedDefault": "服务器未能启动"
+    },
+    "check": "检查",
+    "edit": "编辑",
+    "editAria": "编辑 {{name}}",
+    "toolsAllowed": "已允许 {{allowed}}/{{total}} 个工具",
+    "allowAria": "允许 {{name}}"
+  },
+  "dialog": {
+    "titleAdd": "添加工具服务器",
+    "titleEdit": "编辑 {{name}}",
+    "tabsAria": "添加服务器的方式",
+    "tabs": {
+      "settings": "设置",
+      "json": "粘贴 JSON",
+      "form": "表单",
+      "claude": "从 Claude Code 导入"
+    },
+    "json": {
+      "intro": "粘贴服务器 README 里的 <code>mcpServers</code> JSON。可以一次粘贴多个服务器。",
+      "aria": "服务器 JSON",
+      "adding": "正在添加…",
+      "add": "添加服务器"
+    },
+    "form": {
+      "name": "名称",
+      "namePlaceholder": "Mira",
+      "typeAria": "服务器类型",
+      "command": "命令",
+      "commandPlaceholder": "node",
+      "url": "URL",
+      "arguments": "参数（每行一个）",
+      "headers": "请求头",
+      "environment": "环境变量",
+      "addHeader": "添加请求头",
+      "addVariable": "添加变量",
+      "check": "检查这些设置",
+      "saving": "正在保存…",
+      "save": "保存",
+      "add": "添加服务器"
+    },
+    "pair": {
+      "nameAria": "{{title}}：名称 {{n}}",
+      "valueAria": "{{title}}：值 {{n}}",
+      "removeAria": "{{title}}：移除第 {{n}} 项",
+      "namePlaceholder": "NAME",
+      "valuePlaceholder": "值",
+      "keepSecret": "已保存。留空则保持不变",
+      "newSecret": "保存在系统凭据库中"
+    },
+    "claude": {
+      "intro": "选择要复制到 {{appName}} 的 Claude Code 服务器。",
+      "looking": "正在查找…",
+      "none": "Claude Code 中没有找到服务器。",
+      "importing": "正在导入…",
+      "import": "导入所选"
+    }
+  },
+  "notice": {
+    "title": "打开工具之前",
+    "first": "工具打开后，AI 可以不经你同意直接使用它。{{appName}} 会先关掉名称看起来会修改内容的工具，比如添加、发送、编辑或删除。名称可能有误导性，所以这只是一种推测，不是保证。",
+    "second": "请逐个查看每个服务器的工具列表，只保留你愿意让 AI 使用的工具。",
+    "third": "{{appName}} 会告诉 AI，把工具返回的内容当作要阅读的信息，而不是要执行的指令。",
+    "dismiss": "知道了"
+  },
+  "guide": {
+    "notesTitle": "笔记文件夹的工作方式",
+    "toolsTitle": "工具的工作方式",
+    "notes": {
+      "can": {
+        "title": "AI 能做什么",
+        "body": "在回答你的同时，搜索并阅读这些文件夹里的文件。它只挑需要的笔记，所以简单的问题依然很快。"
+      },
+      "cant": {
+        "title": "AI 不能做什么",
+        "body": "修改、新建或删除笔记。笔记是只读的。{{appName}} 会告诉 AI，把从你的笔记里读到的内容当作信息，而不是指令。"
+      },
+      "claudeOnly": {
+        "title": "仅限 Claude 订阅",
+        "body": "无论用哪个服务商，你的文件夹都会保存，但只有 Claude 订阅能使用它们，其他服务商会忽略它们。"
+      },
+      "slow": {
+        "title": "可能多花几秒",
+        "body": "查找需要一点时间。所以会议中的“笔记”按钮会针对你每次提出的问题，决定它能不能查阅你的笔记。这个按钮会保持你上次的设置。"
+      },
+      "howTo": {
+        "title": "如何添加",
+        "body": "点“添加文件夹”，选择你的 Obsidian 库，或任何包含 .md 文件的文件夹。不会复制文件，也不会建立索引，文件仍留在原处。"
+      }
+    },
+    "tools": {
+      "can": {
+        "title": "AI 能做什么",
+        "body": "在回答你的同时，调用你保持打开的工具，比如查找某个人、你的任务或日历。"
+      },
+      "cant": {
+        "title": "AI 不能做什么",
+        "body": "调用你关掉的工具。名称看起来会修改内容的工具（添加、发送、编辑、删除）默认是关闭的，但你仍然应该看一遍列表。{{appName}} 会告诉 AI，把工具返回的内容当作信息，而不是指令。"
+      },
+      "claudeOnly": {
+        "title": "仅限 Claude 订阅",
+        "body": "无论用哪个服务商，你的服务器都会保存，但只有 Claude 订阅能使用它们，其他服务商会忽略它们。"
+      },
+      "slow": {
+        "title": "可能多花几秒",
+        "body": "启动服务器和调用工具需要一点时间。所以会议中的“工具”按钮会针对你每次提出的问题，决定它能不能使用你的工具。这个按钮会保持你上次的设置。"
+      },
+      "howTo": {
+        "title": "如何添加",
+        "body": "打开服务器的 README，复制其中的 mcpServers JSON，点“添加服务器”并粘贴。也可以填写表单，或从 Claude Code 导入服务器。{{appName}} 会立即检查它并显示它的工具，方便你在打开之前先看一眼。"
+      }
+    }
+  },
+  "pills": {
+    "groupAria": "下一个回答可用的个人资料来源",
+    "notes": "笔记",
+    "tools": "工具",
+    "tooltip": "{{kind}}：{{names}}",
+    "withDetail": "{{base}}。{{detail}}",
+    "listSeparator": "、"
+  },
+  "chips": {
+    "aria": "已使用的资料来源",
+    "opens": "打开 {{path}}",
+    "openFailed": "无法打开 {{label}}：{{reason}}",
+    "openFailedDefault": "原因不明"
+  },
+  "activity": {
+    "aria": "回答正在如何使用你的资料来源"
+  }
+}

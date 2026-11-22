@@ -179,17 +179,15 @@ impl SourcesCooldown {
     pub fn gate(&self, key: &SessionKey, now: Instant) -> Option<String> {
         let failure = self.failures.lock().unwrap().get(key).cloned()?;
         let wait = (failure.at + self.cooldown).saturating_duration_since(now);
+        let lang = crate::i18n::current_ui_language();
         let when = if wait.is_zero() {
-            "Trying again now.".to_string()
+crate::i18n::messages::retry_now(lang)
         } else if wait < Duration::from_secs(60) {
-            "Trying again in under a minute.".to_string()
+            crate::i18n::messages::retry_soon(lang)
         } else {
-            format!("Trying again in {} min.", wait.as_secs().div_ceil(60))
+            crate::i18n::messages::retry_in_minutes(lang, wait.as_secs().div_ceil(60))
         };
-        Some(format!(
-            "Your sources couldn't be loaded, so this answer didn't use them. {}. {when}",
-            failure.reason.trim_end_matches('.')
-        ))
+        Some(crate::i18n::messages::sources_not_loaded_retry(lang, failure.reason.trim_end_matches('.'), &when))
     }
 
     /// The routing decision of a request for `key`, as `run_session_assist`
@@ -669,7 +667,7 @@ fn delivered(result: &Result<TurnResult, AgentError>) -> bool {
 /// result: a hint about the image when the error mentions one, else Claude's text.
 fn image_refusal(raw: &str) -> String {
     if raw.to_lowercase().contains("image") {
-        "Claude couldn't use the attached image. Remove it or paste a smaller one, then send again.".to_string()
+        crate::i18n::messages::claude_rejected_image(crate::i18n::current_ui_language())
     } else {
         raw.to_string()
     }

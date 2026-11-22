@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import type { LLMProviderType, ThinkingSetting } from "../lib/types";
 import {
@@ -15,6 +16,7 @@ import {
  * the provider and shared with every window.
  */
 export function ThinkingSettings({ provider }: { provider: LLMProviderType }) {
+  const { t } = useT("llm");
   const thinking = useConfigStore((s) => s.llmThinking[provider]) ?? "auto";
   const savedJson = useConfigStore((s) => s.llmExtraRequestJson[provider]) ?? "";
   const setThinking = useConfigStore((s) => s.setLlmThinking);
@@ -40,7 +42,7 @@ export function ThinkingSettings({ provider }: { provider: LLMProviderType }) {
     <div className="space-y-4 rounded-xl border border-border/30 bg-card/50 p-5">
       <div>
         <label htmlFor={selectId} className="mb-1.5 block text-sm font-semibold text-primary/80">
-          Thinking
+          {t("params.thinking.label")}
         </label>
         <select
           id={selectId}
@@ -51,23 +53,23 @@ export function ThinkingSettings({ provider }: { provider: LLMProviderType }) {
         >
           {THINKING_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
-              {o.label}
+              {t(`params.thinking.options.${o.value}`)}
             </option>
           ))}
         </select>
         <p id={hintId} className="mt-1.5 text-xs text-muted-foreground">
-          Off answers faster. Not every model supports it; NexQ falls back automatically.
+          {t("params.thinking.hint")}
         </p>
       </div>
 
       {showJson && (
         <details className="group rounded-lg border border-border/30 bg-accent/10 px-3.5 py-2.5">
           <summary className="cursor-pointer text-xs font-medium text-foreground select-none">
-            Advanced: extra request JSON
+            {t("thinkingSettings.extra.summary")}
           </summary>
           <div className="mt-3">
             <label htmlFor={jsonId} className="mb-1.5 block text-xs font-medium text-foreground">
-              Extra request JSON
+              {t("thinkingSettings.extra.label")}
             </label>
             <textarea
               id={jsonId}
@@ -88,13 +90,11 @@ export function ThinkingSettings({ provider }: { provider: LLMProviderType }) {
             />
             {draftError ? (
               <p id={errorId} role="alert" className="mt-1.5 text-xs text-destructive">
-                {draftError}. Nothing is sent until it is fixed.
+                {t("thinkingSettings.extra.invalid", { detail: draftError })}
               </p>
             ) : (
               <p className="mt-1.5 text-xs text-muted-foreground">
-                A JSON object merged into each request after NexQ's own fields.
-                {provider === "ollama" ? ' "options" is merged key by key.' : ""} "model", "messages" and "stream"
-                are ignored.
+                {provider === "ollama" ? t("thinkingSettings.extra.helpOllama") : t("thinkingSettings.extra.help")}
               </p>
             )}
           </div>

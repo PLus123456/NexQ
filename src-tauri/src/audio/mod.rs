@@ -230,8 +230,9 @@ impl AudioCaptureManager {
                 Ok((side, replaced)) => {
                     self.sides.push(side);
                     if replaced {
-                        self.warnings.push(format!(
-                            "Your microphone '{mic_device_id}' isn't available, so NexQ is using the default microphone."
+                        self.warnings.push(crate::i18n::messages::mic_fallback(
+                            crate::i18n::current_ui_language(),
+                            mic_device_id,
                         ));
                     }
                     log::info!("Mic capture started");
@@ -291,8 +292,9 @@ impl AudioCaptureManager {
                     self.sides.push(side);
                     if let Some(reason) = started.and_then(|s| s.replaced) {
                         log::warn!("Output '{system_device_id}' failed ({reason}); capturing the default output instead");
-                        self.warnings.push(format!(
-                            "The other side's device '{system_device_id}' isn't available, so NexQ is capturing your default output instead."
+                        self.warnings.push(crate::i18n::messages::output_fallback(
+                            crate::i18n::current_ui_language(),
+                            system_device_id,
                         ));
                     }
                     log::info!("System output audio capture started");

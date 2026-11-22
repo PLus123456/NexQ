@@ -2,6 +2,7 @@ import { Fragment, useId } from "react";
 import { BookOpen, Wrench } from "lucide-react";
 import type { SourceChip } from "../lib/types";
 import { openSourceFile } from "../lib/ipc";
+import { t, useT } from "../i18n";
 import { showToast } from "../stores/toastStore";
 
 export { dedupeChips } from "../lib/sourceChips";
@@ -12,8 +13,8 @@ const CHIP =
 function open(chip: SourceChip) {
   if (!chip.path) return;
   openSourceFile(chip.path).catch((e) => {
-    const reason = typeof e === "string" ? e : e instanceof Error ? e.message : "it could not be opened";
-    showToast(`Couldn't open ${chip.label}: ${reason}`, "error");
+    const reason = typeof e === "string" ? e : e instanceof Error ? e.message : t("sources:chips.openFailedDefault");
+    showToast(t("sources:chips.openFailed", { label: chip.label, reason }), "error");
   });
 }
 
@@ -22,11 +23,12 @@ function open(chip: SourceChip) {
  * when clicked; a tool is plain text.
  */
 export function SourceChips({ chips }: { chips: SourceChip[] }) {
+  const { t } = useT("sources");
   const baseId = useId();
   const shown = chips.filter((c) => c.kind !== "notice");
   if (shown.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1.5 border-t border-border/10 pt-2" aria-label="Sources used">
+    <div className="flex flex-wrap items-center gap-1.5 border-t border-border/10 pt-2" aria-label={t("chips.aria")}>
       {shown.map((chip, i) =>
         chip.kind === "notes" && chip.path ? (
           <Fragment key={`${chip.kind}-${chip.label}-${chip.path}-${i}`}>
@@ -41,7 +43,7 @@ export function SourceChips({ chips }: { chips: SourceChip[] }) {
             <span className="truncate">{chip.label}</span>
           </button>
           <span id={`${baseId}-${i}`} className="sr-only">
-            Opens {chip.path}
+            {t("chips.opens", { path: chip.path })}
           </span>
           </Fragment>
         ) : (

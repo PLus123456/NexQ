@@ -13,7 +13,7 @@ vi.mock("./windows", () => ({
 import {
   PENDING_SCREENSHOT_MS,
   SCREENSHOT_EVENT,
-  SCREENSHOT_NOT_ATTACHED,
+  screenshotNotAttached,
   captureErrorText,
   captureScreenIntoAsk,
   deliverScreenshot,
@@ -184,7 +184,7 @@ describe("delivering a screenshot", () => {
 
   it("tells the user, right away, when nobody claims it", () => {
     deliverScreenshot(shot());
-    expect(messages()).toEqual([SCREENSHOT_NOT_ATTACHED]);
+    expect(messages()).toEqual([screenshotNotAttached()]);
     expect(takePendingScreenshots()).toHaveLength(0);
   });
 
@@ -196,7 +196,7 @@ describe("delivering a screenshot", () => {
     window.removeEventListener(SCREENSHOT_EVENT, claim);
     expect(messages()).toEqual([]);
     vi.advanceTimersByTime(PENDING_SCREENSHOT_MS + 1);
-    expect(messages()).toEqual([SCREENSHOT_NOT_ATTACHED]);
+    expect(messages()).toEqual([screenshotNotAttached()]);
   });
 
   it("one the Ask box took in time never produces the late toast", () => {

@@ -33,16 +33,16 @@ impl std::fmt::Debug for SecretValue {
 /// Parse pasted JSON: `{"mcpServers": {...}}`, or just the `{name: {...}}` map.
 pub fn parse_mcp_json(text: &str) -> Result<Vec<(String, RawServer)>, String> {
     let root: Value =
-        serde_json::from_str(text.trim()).map_err(|e| format!("This is not valid JSON ({e})"))?;
+        serde_json::from_str(text.trim()).map_err(|e| crate::i18n::messages::json_invalid(crate::i18n::current_ui_language(), e))?;
     let map = match root.get("mcpServers") {
         Some(Value::Object(m)) => m,
         Some(_) => return Err("\"mcpServers\" must be an object of servers".to_string()),
         None => root
             .as_object()
-            .ok_or_else(|| "Expected a JSON object with your servers".to_string())?,
+            .ok_or_else(|| crate::i18n::messages::json_expected_object(crate::i18n::current_ui_language()))?,
     };
     if map.is_empty() {
-        return Err("No servers found in this JSON".to_string());
+        return Err(crate::i18n::messages::json_no_servers(crate::i18n::current_ui_language()));
     }
     map.iter()
         .map(|(name, entry)| Ok((name.clone(), parse_server(name, entry, false)?)))
@@ -66,7 +66,7 @@ pub fn read_claude_code_entries(
     claude_json: &str,
 ) -> Result<Vec<(String, Result<RawServer, String>)>, String> {
     let root: Value = serde_json::from_str(claude_json)
-        .map_err(|e| format!("Claude Code's config is not valid JSON ({e})"))?;
+        .map_err(|e| crate::i18n::messages::claude_code_config_invalid(crate::i18n::current_ui_language(), e))?;
     let Some(map) = root.get("mcpServers").and_then(Value::as_object) else {
         return Ok(Vec::new());
     };

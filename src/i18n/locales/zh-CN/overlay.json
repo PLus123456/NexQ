@@ -177,6 +177,15 @@
     },
     "screenshot": {
       "waiting": "截图已添加，当前回答结束后会打开提问框。"
+    },
+    "images": {
+      "needClaude": "图片仅支持 Claude（订阅）。请在“设置 → {{tab}}”中选择它。",
+      "attachedLabel": "已附加的图片",
+      "attachedAlt": "已附加的图片 {{n}}",
+      "removeTitle": "移除图片",
+      "removeLabel": "移除图片 {{n}}",
+      "attachedAnnounce": "已附加图片（{{count}}/{{max}}）",
+      "removedAnnounce": "已移除图片"
     }
   },
   "speakerStats": {
@@ -231,6 +240,19 @@
       "preparing": "正在准备答案…",
       "ready": "答案已准备好",
       "unavailable": "暂无预备答案"
+    }
+  },
+  "language": {
+    "picker": {
+      "default": "默认：{{language}}",
+      "auto": "自动",
+      "name": "“{{side}}”的语言",
+      "speaks": "“{{side}}”说的语言",
+      "restarting": "正在重启…",
+      "restartingShort": "正在重启",
+      "restartingSide": "正在重启“{{side}}”的识别…",
+      "summarySeparator": "。",
+      "summary": "{{name}}：{{language}}"
     }
   }
 }

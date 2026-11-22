@@ -1,6 +1,6 @@
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AskImageChips, IMAGES_NEED_CLAUDE, askPlaceholder, useAskImages } from "./AskImages";
+import { AskImageChips, imagesNeedClaude, askPlaceholder, useAskImages } from "./AskImages";
 import { MAX_IMAGES } from "../lib/imageAttachments";
 import { useConfigStore } from "../stores/configStore";
 import { useToastStore } from "../stores/toastStore";
@@ -54,7 +54,7 @@ describe("useAskImages", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(result.current.images).toHaveLength(0);
     expect(useToastStore.getState().toasts).toEqual([
-      expect.objectContaining({ message: IMAGES_NEED_CLAUDE, type: "warning" }),
+      expect.objectContaining({ message: imagesNeedClaude(), type: "warning" }),
     ]);
   });
 
@@ -126,7 +126,7 @@ describe("useAskImages", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(result.current.images).toHaveLength(0);
     expect(useToastStore.getState().toasts).toEqual([
-      expect.objectContaining({ message: IMAGES_NEED_CLAUDE, type: "warning" }),
+      expect.objectContaining({ message: imagesNeedClaude(), type: "warning" }),
     ]);
   });
 

@@ -8,6 +8,9 @@
 //! value once so the tray doesn't flash English; for `"system"` it waits for
 //! the frontend's push instead of detecting the OS language itself.
 
+pub mod messages;
+
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use tauri::AppHandle;
@@ -62,16 +65,32 @@ impl UiLanguage {
     }
 }
 
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+
+// In tests the language is per thread: a test that switches it can't change
+// what another test (on its own thread) reads.
+#[cfg(test)]
+thread_local! {
+    static CURRENT_TEST: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
 
 /// The language the UI is shown in right now.
 pub fn current_ui_language() -> UiLanguage {
-    UiLanguage::from_u8(CURRENT.load(Ordering::Relaxed))
+    #[cfg(not(test))]
+    let value = CURRENT.load(Ordering::Relaxed);
+    #[cfg(test)]
+    let value = CURRENT_TEST.with(|c| c.get());
+    UiLanguage::from_u8(value)
 }
 
 /// Sets the current language; true when it changed.
 pub fn set_current(lang: UiLanguage) -> bool {
-    CURRENT.swap(lang.to_u8(), Ordering::Relaxed) != lang.to_u8()
+    #[cfg(not(test))]
+    let previous = CURRENT.swap(lang.to_u8(), Ordering::Relaxed);
+    #[cfg(test)]
+    let previous = CURRENT_TEST.with(|c| c.replace(lang.to_u8()));
+    previous != lang.to_u8()
 }
 
 /// Applies the stored `uiLanguage` (explicit choices only; see module docs).
