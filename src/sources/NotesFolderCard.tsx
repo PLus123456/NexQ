@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Folder, X } from "lucide-react";
+import { t, useT } from "../i18n";
 import type { NotesFolder, NotesFolderInfo } from "../lib/types";
 import { SourceSwitch } from "./SourceSwitch";
 
@@ -14,15 +15,17 @@ interface NotesFolderCardProps {
 
 /** What a folder card says about what is inside: a count, or why it can't be used. */
 function folderLine(info: NotesFolderInfo | undefined): { text: string; bad: boolean } {
-  if (!info) return { text: "Looking…", bad: false };
-  if (!info.exists) return { text: "Folder not found", bad: true };
+  if (!info) return { text: t("sources:folder.looking"), bad: false };
+  if (!info.exists) return { text: t("sources:folder.notFound"), bad: true };
   if (info.problem) return { text: info.problem, bad: true };
   const n = info.md_count;
   const count = `${n}${info.truncated ? "+" : ""}`;
-  return { text: `${count} ${n === 1 && !info.truncated ? "note" : "notes"}`, bad: false };
+  // A count with a "+" is always plural.
+  return { text: t("sources:folder.notes", { count: info.truncated ? Math.max(n, 2) : n, display: count }), bad: false };
 }
 
 export function NotesFolderCard({ folder, info, onToggle, onRename, onRemove }: NotesFolderCardProps) {
+  const { t } = useT("sources");
   const [label, setLabel] = useState(folder.label);
   const [confirmRemove, setConfirmRemove] = useState(false);
   useEffect(() => setLabel(folder.label), [folder.label]);
@@ -54,7 +57,7 @@ export function NotesFolderCard({ folder, info, onToggle, onRename, onRemove }: 
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             if (e.key === "Escape") setLabel(folder.label);
           }}
-          aria-label={`Name of ${folder.path}`}
+          aria-label={t("folder.nameAria", { path: folder.path })}
           className="w-full truncate rounded bg-transparent text-sm font-medium text-foreground outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
         />
         <div className="truncate text-xs text-muted-foreground" title={folder.path}>
@@ -68,7 +71,7 @@ export function NotesFolderCard({ folder, info, onToggle, onRename, onRemove }: 
           checked={folder.enabled}
           disabled={!folder.enabled && cantEnable}
           onChange={onToggle}
-          label={`Use ${folder.label}`}
+          label={t("card.useAria", { name: folder.label })}
         />
         <button
           type="button"
@@ -79,14 +82,18 @@ export function NotesFolderCard({ folder, info, onToggle, onRename, onRemove }: 
               setTimeout(() => setConfirmRemove(false), 3000);
             }
           }}
-          aria-label={confirmRemove ? `Confirm removing ${folder.label}` : `Remove ${folder.label}`}
+          aria-label={
+            confirmRemove
+              ? t("card.confirmRemoveAria", { name: folder.label })
+              : t("card.removeAria", { name: folder.label })
+          }
           className={`flex h-6 cursor-pointer items-center justify-center rounded-md px-1 text-xs transition-colors ${
             confirmRemove
               ? "bg-destructive/15 text-destructive"
               : "text-muted-foreground/60 hover:bg-accent/40 hover:text-foreground"
           }`}
         >
-          {confirmRemove ? "Remove?" : <X className="h-3.5 w-3.5" />}
+          {confirmRemove ? t("card.removeQuestion") : <X className="h-3.5 w-3.5" />}
         </button>
       </div>
     </div>

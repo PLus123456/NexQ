@@ -180,6 +180,15 @@
     },
     "screenshot": {
       "waiting": "Screenshot added. Ask opens when this answer finishes."
+    },
+    "images": {
+      "needClaude": "Images work only with Claude (subscription). Choose it in Settings → {{tab}}.",
+      "attachedLabel": "Attached images",
+      "attachedAlt": "Attached image {{n}}",
+      "removeTitle": "Remove image",
+      "removeLabel": "Remove image {{n}}",
+      "attachedAnnounce": "Image attached ({{count}} of {{max}})",
+      "removedAnnounce": "Image removed"
     }
   },
   "speakerStats": {
@@ -235,6 +244,19 @@
       "preparing": "Preparing answer…",
       "ready": "Answer ready",
       "unavailable": "No prepared answer"
+    }
+  },
+  "language": {
+    "picker": {
+      "default": "Default: {{language}}",
+      "auto": "Auto",
+      "name": "{{side}} language",
+      "speaks": "{{side}} speaks",
+      "restarting": "Restarting…",
+      "restartingShort": "Restarting",
+      "restartingSide": "Restarting {{side}}…",
+      "summarySeparator": ". ",
+      "summary": "{{name}}: {{language}}"
     }
   }
 }

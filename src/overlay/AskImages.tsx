@@ -12,10 +12,12 @@ import {
 } from "../lib/imageAttachments";
 import { showToast } from "../stores/toastStore";
 import { useConfigStore } from "../stores/configStore";
-import { t } from "../i18n";
+import { t, useT } from "../i18n";
 
 /** Why a pasted image is refused when the provider can't read images. */
-export const IMAGES_NEED_CLAUDE = "Images work only with Claude (subscription). Choose it in Settings > LLM.";
+export function imagesNeedClaude(): string {
+  return t("overlay:ask.images.needClaude", { tab: t("settings:tabs.llm") });
+}
 
 /**
  * The Ask box placeholder. Short enough to show whole in the overlay's Ask box
@@ -50,7 +52,7 @@ export function useAskImages() {
   const attach = useCallback((files: File[]): boolean => {
     if (files.length === 0) return false;
     if (!providerReadsImages(useConfigStore.getState().llmProvider)) {
-      showToast(IMAGES_NEED_CLAUDE, "warning");
+      showToast(imagesNeedClaude(), "warning");
       return false;
     }
     const accepted: File[] = [];
@@ -72,12 +74,12 @@ export function useAskImages() {
           added.push(result.value);
         } else {
           count.current -= 1;
-          showToast(result.reason instanceof Error ? result.reason.message : "Couldn't read the image", "error");
+          showToast(result.reason instanceof Error ? result.reason.message : t("misc:images.readFailed"), "error");
         }
       }
       if (added.length > 0) {
         setImages((prev) => [...prev, ...added]);
-        setAnnouncement(`Image attached (${count.current} of ${MAX_IMAGES})`);
+        setAnnouncement(t("overlay:ask.images.attachedAnnounce", { count: count.current, max: MAX_IMAGES }));
       }
     })();
     return true;
@@ -99,7 +101,7 @@ export function useAskImages() {
     // One slot back; images still being prepared keep theirs.
     count.current = Math.max(0, count.current - 1);
     setImages((prev) => prev.filter((_, i) => i !== index));
-    setAnnouncement("Image removed");
+    setAnnouncement(t("overlay:ask.images.removedAnnounce"));
   }, []);
 
   /**
@@ -135,22 +137,23 @@ export function AskImageChips({
   onRemove: (index: number) => void;
   announcement?: string;
 }) {
+  const { t } = useT("overlay");
   return (
     <>
       <span role="status" aria-live="polite" className="sr-only">
         {announcement}
       </span>
       {images.length > 0 && (
-        <div role="group" className="flex flex-wrap items-center gap-1.5" aria-label="Attached images">
+        <div role="group" className="flex flex-wrap items-center gap-1.5" aria-label={t("ask.images.attachedLabel")}>
           {images.map((image, i) => (
             <div key={i} className="relative h-8 w-12 overflow-hidden rounded-md border border-border/30 bg-black/20">
-              <img src={previewSrc(image)} alt={`Attached image ${i + 1}`} className="h-full w-full object-cover" />
+              <img src={previewSrc(image)} alt={t("ask.images.attachedAlt", { n: i + 1 })} className="h-full w-full object-cover" />
               <button
                 type="button"
                 onClick={() => onRemove(i)}
                 className="absolute right-0 top-0 flex h-6 w-6 items-start justify-end rounded-bl-md p-0.5 text-white/80 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                title="Remove image"
-                aria-label={`Remove image ${i + 1}`}
+                title={t("ask.images.removeTitle")}
+                aria-label={t("ask.images.removeLabel", { n: i + 1 })}
               >
                 <X className="h-3 w-3 rounded-bl-md bg-black/60 p-px hover:bg-black/80" aria-hidden="true" />
               </button>

@@ -265,5 +265,25 @@
       "exported": "Exported successfully",
       "failed": "Export failed — check disk space"
     }
+  },
+  "images": {
+    "limit": "You can attach up to {{max}} images",
+    "type": "Only PNG, JPEG, GIF and WebP images can be attached",
+    "tooLarge": "That image is too large. Paste a smaller area.",
+    "readFailed": "Couldn't read the image"
+  },
+  "screenshot": {
+    "notAttached": "Couldn't attach the screenshot. Open Ask and try again.",
+    "captureFailed": "Couldn't capture the screen"
+  },
+  "capture": {
+    "reconnecting": {
+      "you": "Reconnecting your microphone…",
+      "them": "Reconnecting the other side's audio…"
+    },
+    "back": {
+      "you": "Your microphone is back.",
+      "them": "The other side's audio is back."
+    }
   }
 }

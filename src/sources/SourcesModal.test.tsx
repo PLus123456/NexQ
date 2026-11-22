@@ -81,7 +81,7 @@ describe("SourcesModal", () => {
 
   it("the tools guide says a new server is checked right away", () => {
     render(<SourcesGuideModal kind="tools" onClose={() => {}} />);
-    expect(screen.getByText(/NexQ checks it right away/)).toBeInTheDocument();
+    expect(screen.getByText(/NexQ Plus checks it right away/)).toBeInTheDocument();
     expect(screen.queryByText(/press Check/)).toBeNull();
   });
 });

@@ -1,11 +1,13 @@
 import { Info } from "lucide-react";
+import { useT } from "../i18n";
 
 /** The last few things an answer did with your sources, as quiet lines that fade in. */
 export function SourceActivityLines({ lines, max = 3 }: { lines: string[]; max?: number }) {
+  const { t } = useT("sources");
   if (lines.length === 0) return null;
   const shown = lines.slice(-max);
   return (
-    <ul className="space-y-0.5 pl-3.5" aria-live="polite" aria-label="What the answer is doing with your sources">
+    <ul className="space-y-0.5 pl-3.5" aria-live="polite" aria-label={t("activity.aria")}>
       {shown.map((line, i) => (
         <li
           key={`${lines.length - shown.length + i}-${line}`}

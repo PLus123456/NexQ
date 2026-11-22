@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useT } from "../i18n";
 
 interface SourcesModalProps {
   title: string;
@@ -22,6 +23,7 @@ const FOCUSABLE =
  * had it when it opens.
  */
 export function SourcesModal({ title, onClose, children, wide, hideClose }: SourcesModalProps) {
+  const { t } = useT("common");
   const titleId = useId();
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -31,7 +33,7 @@ export function SourcesModal({ title, onClose, children, wide, hideClose }: Sour
   useEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
-    const focusables = () => (dialog ? Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)) : []);
+    const focusables = () => (dialog ? Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)) : []); // i18n-ignore: code, not text
     // Into the first field or button of the body; the dialog itself when it has none.
     (focusables().find((el) => !el.hasAttribute("data-modal-close")) ?? dialog)?.focus();
 
@@ -97,7 +99,7 @@ export function SourcesModal({ title, onClose, children, wide, hideClose }: Sour
             <button
               type="button"
               onClick={onClose}
-              aria-label="Close"
+              aria-label={t("actions.close")}
               data-modal-close
               className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
             >

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Languages } from "lucide-react";
+import { useT } from "../i18n";
+import { sideNoticeText } from "../lib/sideNoticeText";
 import { STT_LANGUAGES, SAME_AS_SHARED_LANGUAGE } from "../lib/sttLanguages";
 import { languageLabel, languageShortLabel } from "../lib/sideLanguage";
 import { useSideLanguages, type LanguageSide } from "../hooks/useSideLanguages";
 
 const POPOVER_WIDTH = 248;
 const MAX_LIST_HEIGHT = 224;
+
+/** The side names `useSideLanguages` gives (they also sit inside the notices, in English), in the UI language. */
+const SIDE_LABEL_KEYS = { You: "common:labels.you", Them: "common:labels.them", Room: "common:labels.room" } as const;
 
 /**
  * Chip beside a side's mute button: the language that side is transcribed in.
@@ -15,6 +20,7 @@ const MAX_LIST_HEIGHT = 224;
  * Renders nothing for "You" in an in-person meeting (the room is transcribed as "Room").
  */
 export function SideLanguagePicker({ side }: { side: LanguageSide }) {
+  const { t } = useT(["overlay", "common"]);
   const languages = useSideLanguages();
   const info = languages[side];
   const setLanguage = languages.setLanguage;
@@ -30,7 +36,7 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
   // not in the short list stays listed (and checked) while it is the side's own.
   const own = info?.value ?? SAME_AS_SHARED_LANGUAGE;
   const options = [
-    { value: SAME_AS_SHARED_LANGUAGE, label: `Default: ${info?.sharedLabel ?? ""}` },
+    { value: SAME_AS_SHARED_LANGUAGE, label: t("language.picker.default", { language: info?.sharedLabel ?? "" }) },
     ...STT_LANGUAGES,
     ...(own && !STT_LANGUAGES.some((l) => l.value === own) ? [{ value: own, label: languageLabel(own) }] : []),
   ];
@@ -61,8 +67,8 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (popRef.current?.contains(t) || chipRef.current?.contains(t)) return;
+      const target = e.target as Node;
+      if (popRef.current?.contains(target) || chipRef.current?.contains(target)) return;
       close(false);
     };
     document.addEventListener("mousedown", onDown);
@@ -115,8 +121,16 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
   const shown = languageShortLabel(info.effective);
   const full = languageLabel(info.effective);
   const warning = info.notice?.tone === "warning";
-  const name = `${info.label} language`;
-  const summary = `${name}: ${full}${warning ? `. ${info.notice?.text}` : ""}${info.restarting ? ". Restarting" : ""}`;
+  const sideName = t(SIDE_LABEL_KEYS[info.label as keyof typeof SIDE_LABEL_KEYS] ?? "common:labels.unknown");
+  const noticeText = info.notice ? sideNoticeText(info.notice.text) : "";
+  const name = t("language.picker.name", { side: sideName });
+  const summary = [
+    t("language.picker.summary", { name, language: full }),
+    warning ? noticeText : null,
+    info.restarting ? t("language.picker.restartingShort") : null,
+  ]
+    .filter(Boolean)
+    .join(t("language.picker.summarySeparator"));
 
   return (
     <>
@@ -148,7 +162,7 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
           <Languages className="h-3 w-3" aria-hidden="true" />
         )}
         <span className={info.restarting ? "animate-pulse" : undefined}>
-          {info.restarting ? "Restarting…" : shown}
+          {info.restarting ? t("language.picker.restarting") : shown}
         </span>
       </button>
 
@@ -163,7 +177,7 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
             className="scope-pop-enter fixed z-50 rounded-xl border border-border/30 bg-popover/95 p-1.5 shadow-2xl backdrop-blur-md"
           >
             <p className="px-2 pb-1 pt-0.5 text-[0.6rem] font-medium uppercase tracking-widest text-muted-foreground/45">
-              {info.label} speaks
+              {t("language.picker.speaks", { side: sideName })}
             </p>
             <div
               role="radiogroup"
@@ -199,7 +213,7 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
             </div>
             {info.restarting && (
               <p role="status" className="px-2 pt-1.5 text-meta text-muted-foreground/70">
-                Restarting {info.label}…
+                {t("language.picker.restartingSide", { side: sideName })}
               </p>
             )}
             {info.notice && (
@@ -215,7 +229,7 @@ export function SideLanguagePicker({ side }: { side: LanguageSide }) {
                 <p
                   className={`text-meta leading-snug ${warning ? "text-amber-200/80" : "text-muted-foreground/70"}`}
                 >
-                  {info.notice.text}
+                  {noticeText}
                 </p>
               </div>
             )}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ALLOWED_IMAGE_TYPES,
-  IMAGE_TOO_LARGE,
+  imageTooLarge,
   MAX_IMAGES,
   MAX_IMAGE_BASE64_LEN,
   MAX_IMAGE_EDGE,
@@ -27,7 +27,7 @@ describe("imageProblem", () => {
   it("refuses other types, big files and a fourth image", () => {
     expect(imageProblem({ type: "image/bmp", size: 10 }, 0)).toMatch(/PNG, JPEG/);
     expect(imageProblem({ type: "application/pdf", size: 10 }, 0)).toMatch(/PNG, JPEG/);
-    expect(imageProblem({ type: "image/png", size: MAX_INPUT_BYTES + 1 }, 0)).toBe(IMAGE_TOO_LARGE);
+    expect(imageProblem({ type: "image/png", size: MAX_INPUT_BYTES + 1 }, 0)).toBe(imageTooLarge());
     // A 4K screenshot is bigger than 5 MB as a file but shrinks to fit.
     expect(imageProblem({ type: "image/png", size: 8 * 1024 * 1024 }, 0)).toBeNull();
     expect(imageProblem({ type: "image/png", size: 10 }, MAX_IMAGES)).toMatch(/up to 3/);
@@ -152,7 +152,7 @@ describe("prepareImage", () => {
 
   it("refuses an image that is still too big after shrinking", async () => {
     stubCanvas(4000, 3000, () => 4_000_000);
-    await expect(prepareImage(file(9_000_000))).rejects.toThrow(IMAGE_TOO_LARGE);
+    await expect(prepareImage(file(9_000_000))).rejects.toThrow(imageTooLarge());
   });
 
   it("refuses a file the browser can't decode", async () => {

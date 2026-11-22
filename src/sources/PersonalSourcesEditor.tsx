@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, HelpCircle, Plus } from "lucide-react";
 import type { McpServer, NotesFolderInfo } from "../lib/types";
 import { checkMcpServer, deleteMcpSecrets, inspectNotesFolder } from "../lib/ipc";
+import { t as translate, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import { useSourcesStore } from "../stores/sourcesStore";
 import { showToast } from "../stores/toastStore";
@@ -23,8 +24,10 @@ import {
   applyCheckResult,
 } from "./sourcesActions";
 
-export const SOURCES_GATING_LINE =
-  "Personal sources work with the Claude subscription. Switch to it in LLM Providers to use them.";
+/** Why the editor is dimmed on any provider but the Claude subscription, in the UI language. */
+export function sourcesGatingLine(): string {
+  return translate("sources:gating", { tab: translate("settings:tabs.llm") });
+}
 
 interface PersonalSourcesEditorProps {
   /** `compact` on the launcher main screen, `full` in Settings. */
@@ -32,6 +35,7 @@ interface PersonalSourcesEditorProps {
 }
 
 function GroupHeader({ title, tone, onGuide, children }: { title: string; tone: "highlight" | "primary"; onGuide: () => void; children: React.ReactNode }) {
+  const { t } = useT("sources");
   return (
     <div className="mb-2 flex items-center gap-2">
       <span className={`h-1.5 w-1.5 rounded-full ${tone === "highlight" ? "bg-highlight" : "bg-primary"}`} aria-hidden />
@@ -42,7 +46,7 @@ function GroupHeader({ title, tone, onGuide, children }: { title: string; tone: 
         className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
       >
         <HelpCircle className="h-3 w-3" />
-        How this works
+        {t("editor.howThisWorks")}
       </button>
       <div className="ml-auto">{children}</div>
     </div>
@@ -53,6 +57,7 @@ const addButton =
   "flex cursor-pointer items-center gap-1.5 rounded-lg border border-dashed border-border/40 bg-card/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-all duration-150 hover:border-border/60 hover:bg-accent/30 hover:text-foreground active:scale-[0.98]";
 
 export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
+  const { t } = useT("sources");
   const config = useSourcesStore((s) => s.config);
   const pushError = useSourcesStore((s) => s.pushError);
   const provider = useConfigStore((s) => s.llmProvider);
@@ -86,14 +91,14 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
     setFolderError(null);
     let picked: string | string[] | null;
     try {
-      picked = await open({ directory: true, title: "Choose a notes folder" });
+      picked = await open({ directory: true, title: t("editor.notes.pickTitle") });
     } catch (e) {
       setFolderError(errorText(e));
       return;
     }
     if (!picked || typeof picked !== "string") return;
     if (config.notes_folders.some((f) => f.path.toLowerCase() === picked.toLowerCase())) {
-      setFolderError("That folder is already added.");
+      setFolderError(t("editor.notes.duplicate"));
       return;
     }
     let info: NotesFolderInfo;
@@ -105,7 +110,7 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
     }
     // A folder that can't be used is not added, and never switched on.
     if (!info.exists) {
-      setFolderError("Folder not found");
+      setFolderError(t("editor.notes.notFound"));
       return;
     }
     if (info.problem) {
@@ -125,7 +130,7 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
       await applyCheckResult(result);
       if (expand && result.last_check?.ok) setExpanded((prev) => new Set(prev).add(server.id));
     } catch (e) {
-      showToast(`Couldn't check ${server.label}: ${errorText(e)}`, "error");
+      showToast(t("editor.toast.checkFailed", { name: server.label, detail: errorText(e) }), "error");
     } finally {
       setChecking((prev) => {
         const next = new Set(prev);
@@ -143,11 +148,11 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
         try {
           await deleteMcpSecrets(server.id);
         } catch (e) {
-          showToast(`Couldn't forget the saved secrets of ${server.label}: ${errorText(e)}`, "warning");
+          showToast(t("editor.toast.forgetSecretsFailed", { name: server.label, detail: errorText(e) }), "warning");
         }
       });
     } catch (e) {
-      showToast(`Couldn't remove ${server.label}: ${errorText(e)}`, "error");
+      showToast(t("editor.toast.removeFailed", { name: server.label, detail: errorText(e) }), "error");
     }
   };
 
@@ -157,15 +162,14 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
     <div className="space-y-3">
       {gated && (
         <p id={gatingId} className="rounded-lg border border-border/40 bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
-          {SOURCES_GATING_LINE}
+          {sourcesGatingLine()}
         </p>
       )}
 
       <div className={`space-y-5 transition-opacity duration-200 ${gated ? "opacity-60" : ""}`} aria-describedby={gated ? gatingId : undefined}>
         {!compact && (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Let the AI look things up in your own notes and tools while it answers you. In a meeting, the Notes and Tools pills decide
-            which answers may use them.
+            {t("editor.intro")}
           </p>
         )}
 
@@ -176,11 +180,11 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
         )}
 
         {/* Notes */}
-        <section aria-label="Notes folders">
-          <GroupHeader title="Notes" tone="highlight" onGuide={() => setGuide("notes")}>
+        <section aria-label={t("editor.notes.sectionLabel")}>
+          <GroupHeader title={t("editor.notes.title")} tone="highlight" onGuide={() => setGuide("notes")}>
             <button type="button" onClick={addFolder} className={addButton}>
               <FolderPlus className="h-3 w-3" />
-              Add folder
+              {t("editor.notes.add")}
             </button>
           </GroupHeader>
           {folderError && (
@@ -189,7 +193,7 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
             </p>
           )}
           {config.notes_folders.length === 0 ? (
-            <p className="text-xs text-muted-foreground/80">No folders yet. Add your Obsidian vault or any folder of .md files.</p>
+            <p className="text-xs text-muted-foreground/80">{t("editor.notes.empty")}</p>
           ) : (
             <div className="space-y-2">
               {config.notes_folders.map((f) => (
@@ -207,15 +211,15 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
         </section>
 
         {/* Tools */}
-        <section aria-label="Tool servers">
-          <GroupHeader title="Tools (MCP)" tone="primary" onGuide={() => setGuide("tools")}>
+        <section aria-label={t("editor.tools.sectionLabel")}>
+          <GroupHeader title={t("editor.tools.title")} tone="primary" onGuide={() => setGuide("tools")}>
             <button type="button" onClick={() => setDialog({})} className={addButton}>
               <Plus className="h-3 w-3" />
-              Add server
+              {t("editor.tools.add")}
             </button>
           </GroupHeader>
           {config.mcp_servers.length === 0 ? (
-            <p className="text-xs text-muted-foreground/80">No servers yet. Add one from its README JSON, a form, or Claude Code.</p>
+            <p className="text-xs text-muted-foreground/80">{t("editor.tools.empty")}</p>
           ) : (
             <div className="space-y-2">
               {config.mcp_servers.map((s) => (
@@ -231,7 +235,7 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
                   onToolToggle={(name, allowed) =>
                     void patchMcpServer(s.id, (cur) => ({
                       ...cur,
-                      tools: cur.tools.map((t) => (t.name === name ? { ...t, allowed } : t)),
+                      tools: cur.tools.map((tool) => (tool.name === name ? { ...tool, allowed } : tool)),
                     }))
                   }
                 />

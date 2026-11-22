@@ -1,17 +1,12 @@
+import { t } from "../i18n";
 import { useToastStore, type ToastType } from "../stores/toastStore";
 import type { AudioCaptureStatus, CaptureSide } from "./types";
 
 /** A side still reconnecting after this long is shown, so a quiet side isn't a mystery. */
 export const RECONNECT_NOTICE_AFTER_MS = 3000;
 
-const reconnectingText: Record<CaptureSide, string> = {
-  you: "Reconnecting your microphone…",
-  them: "Reconnecting the other side's audio…",
-};
-const backText: Record<CaptureSide, string> = {
-  you: "Your microphone is back.",
-  them: "The other side's audio is back.",
-};
+const reconnectingText = (side: CaptureSide) => t(`misc:capture.reconnecting.${side}`);
+const backText = (side: CaptureSide) => t(`misc:capture.back.${side}`);
 
 const SIDES: CaptureSide[] = ["you", "them"];
 const stickyKey = (side: CaptureSide) => `capture-${side}`;
@@ -60,7 +55,7 @@ export function createCaptureStatusHandler(toasts: CaptureToasts = storeToasts) 
         timers[side] = setTimeout(() => {
           delete timers[side];
           noticeUp[side] = true;
-          toasts.sticky(stickyKey(side), reconnectingText[side], "warning");
+          toasts.sticky(stickyKey(side), reconnectingText(side), "warning");
         }, RECONNECT_NOTICE_AFTER_MS);
         return;
       }
@@ -80,7 +75,7 @@ export function createCaptureStatusHandler(toasts: CaptureToasts = storeToasts) 
         if (status.message) {
           toasts.show(switchKey(side), status.message, "info");
         } else if (hadNotice) {
-          toasts.show(switchKey(side), backText[side], "info");
+          toasts.show(switchKey(side), backText(side), "info");
         }
         return;
       }

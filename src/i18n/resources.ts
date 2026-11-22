@@ -11,6 +11,7 @@ import enOnboarding from "./locales/en/onboarding.json";
 import enOverlay from "./locales/en/overlay.json";
 import enRag from "./locales/en/rag.json";
 import enSettings from "./locales/en/settings.json";
+import enSources from "./locales/en/sources.json";
 import enStt from "./locales/en/stt.json";
 import enTranslation from "./locales/en/translation.json";
 import zhCalllog from "./locales/zh-CN/calllog.json";
@@ -22,6 +23,7 @@ import zhOnboarding from "./locales/zh-CN/onboarding.json";
 import zhOverlay from "./locales/zh-CN/overlay.json";
 import zhRag from "./locales/zh-CN/rag.json";
 import zhSettings from "./locales/zh-CN/settings.json";
+import zhSources from "./locales/zh-CN/sources.json";
 import zhStt from "./locales/zh-CN/stt.json";
 import zhTranslation from "./locales/zh-CN/translation.json";
 
@@ -36,6 +38,7 @@ export const NAMESPACES = [
   "launcher",
   "overlay",
   "calllog",
+  "sources",
   "misc",
 ] as const;
 
@@ -55,6 +58,7 @@ export const en = {
   launcher: enLauncher,
   overlay: enOverlay,
   calllog: enCalllog,
+  sources: enSources,
   misc: enMisc,
 } satisfies Record<Namespace, object>;
 
@@ -69,6 +73,7 @@ export const zhCN = {
   launcher: zhLauncher,
   overlay: zhOverlay,
   calllog: zhCalllog,
+  sources: zhSources,
   misc: zhMisc,
 } satisfies Record<Namespace, object>;
 

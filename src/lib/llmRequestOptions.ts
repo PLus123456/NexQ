@@ -1,12 +1,13 @@
+import { t } from "../i18n";
 import type { LLMProviderType, ThinkingSetting } from "./types";
 
-/** The choices, in the order the select shows them. */
-export const THINKING_OPTIONS: { value: ThinkingSetting; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "off", label: "Off" },
-  { value: "low", label: "Low" },
-  { value: "high", label: "High" },
-];
+/** The choices, in the order the select shows them (labels: `llm:params.thinking.options.<value>`). */
+export const THINKING_OPTIONS = [
+  { value: "auto" },
+  { value: "off" },
+  { value: "low" },
+  { value: "high" },
+] as const satisfies readonly { value: ThinkingSetting }[];
 
 /** Providers that accept an advanced "Extra request JSON". */
 export const EXTRA_JSON_PROVIDERS: LLMProviderType[] = ["ollama", "lm_studio", "openrouter", "custom"];
@@ -59,10 +60,10 @@ export function extraJsonError(text: string): string | null {
   try {
     parsed = JSON.parse(trimmed);
   } catch (e) {
-    return `Not valid JSON: ${e instanceof Error ? e.message : String(e)}`;
+    return t("llm:thinkingSettings.errors.invalid", { detail: e instanceof Error ? e.message : String(e) });
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return "Must be a JSON object, like {\"top_p\": 0.9}";
+    return t("llm:thinkingSettings.errors.notObject");
   }
   return null;
 }

@@ -9,6 +9,7 @@ import {
   type AutoDetectModels,
   type SideLanguageHint,
 } from "./sttLanguages";
+import { t } from "../i18n";
 import { languageLabel as catalogLanguageLabel } from "./languages";
 
 /**
@@ -63,5 +64,5 @@ export function languageLabel(value: string): string {
 
 /** A few characters for a chip: "Auto", "EN-US". */
 export function languageShortLabel(value: string): string {
-  return value === AUTO_STT_LANGUAGE ? "Auto" : value.toUpperCase();
+  return value === AUTO_STT_LANGUAGE ? t("overlay:language.picker.auto") : value.toUpperCase();
 }

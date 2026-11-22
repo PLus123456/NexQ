@@ -264,5 +264,25 @@
       "exported": "已导出",
       "failed": "导出失败，请检查磁盘空间"
     }
+  },
+  "images": {
+    "limit": "最多可以附加 {{max}} 张图片",
+    "type": "只能附加 PNG、JPEG、GIF 和 WebP 图片",
+    "tooLarge": "这张图片太大了，请粘贴较小的区域。",
+    "readFailed": "无法读取这张图片"
+  },
+  "screenshot": {
+    "notAttached": "无法附加截图。请打开提问框后重试。",
+    "captureFailed": "无法截取屏幕"
+  },
+  "capture": {
+    "reconnecting": {
+      "you": "正在重新连接你的麦克风…",
+      "them": "正在重新连接对方的音频…"
+    },
+    "back": {
+      "you": "你的麦克风已恢复。",
+      "them": "对方的音频已恢复。"
+    }
   }
 }

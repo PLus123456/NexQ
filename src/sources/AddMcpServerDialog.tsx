@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
+import { Trans, useT } from "../i18n";
 import type { ClaudeCodeMcpServer, FormPair, McpServer, McpServerForm } from "../lib/types";
 import {
   checkMcpServer,
@@ -12,7 +13,7 @@ import {
 } from "../lib/ipc";
 import { SourcesModal } from "./SourcesModal";
 import { addMcpServers, errorText, replaceMcpServer } from "./sourcesActions";
-import { NEEDS_SIGN_IN_TEXT } from "./McpServerCard";
+import { needsSignInText } from "./McpServerCard";
 
 type Tab = "json" | "form" | "claude";
 
@@ -46,6 +47,7 @@ function formOf(s: McpServer): { form: McpServerForm } {
 }
 
 export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDialogProps) {
+  const { t } = useT(["sources", "common"]);
   const [tab, setTab] = useState<Tab>("json");
   const edit = editing ? formOf(editing).form : null;
 
@@ -80,11 +82,11 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
   }, [tab, ccServers, ccError]);
 
   const tabs: Array<{ id: Tab; label: string }> = editing
-    ? [{ id: "form", label: "Settings" }]
+    ? [{ id: "form", label: t("dialog.tabs.settings") }]
     : [
-        { id: "json", label: "Paste JSON" },
-        { id: "form", label: "Form" },
-        { id: "claude", label: "Import from Claude Code" },
+        { id: "json", label: t("dialog.tabs.json") },
+        { id: "form", label: t("dialog.tabs.form") },
+        { id: "claude", label: t("dialog.tabs.claude") },
       ];
   const activeTab: Tab = editing ? "form" : tab;
 
@@ -168,11 +170,11 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
       const c = result.last_check;
       setCheckResult(
         c?.ok
-          ? { ok: true, text: `Ready with ${c.tool_count} ${c.tool_count === 1 ? "tool" : "tools"}` }
-          : { ok: false, text: `Failed: ${c?.error ?? "the server did not start"}` },
+          ? { ok: true, text: t("mcp.status.ready", { count: c.tool_count }) }
+          : { ok: false, text: t("mcp.status.failed", { detail: c?.error ?? t("mcp.status.failedDefault") }) },
       );
     } catch (e) {
-      setCheckResult({ ok: false, text: `Failed: ${errorText(e)}` });
+      setCheckResult({ ok: false, text: t("mcp.status.failed", { detail: errorText(e) }) });
     } finally {
       setBusy(null);
     }
@@ -195,21 +197,21 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
     "cursor-pointer rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground transition-all duration-150 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <SourcesModal title={editing ? `Edit ${editing.label}` : "Add a tool server"} onClose={onClose} wide>
+    <SourcesModal title={editing ? t("dialog.titleEdit", { name: editing.label }) : t("dialog.titleAdd")} onClose={onClose} wide>
       {!editing && (
-        <div role="tablist" aria-label="How to add a server" className="mb-4 flex rounded-lg border border-border/50 bg-secondary/30 p-0.5">
-          {tabs.map((t) => (
+        <div role="tablist" aria-label={t("dialog.tabsAria")} className="mb-4 flex rounded-lg border border-border/50 bg-secondary/30 p-0.5">
+          {tabs.map((item) => (
             <button
-              key={t.id}
+              key={item.id}
               type="button"
               role="tab"
-              aria-selected={tab === t.id}
-              onClick={() => setTab(t.id)}
+              aria-selected={tab === item.id}
+              onClick={() => setTab(item.id)}
               className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-150 ${
-                tab === t.id ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:text-foreground"
+                tab === item.id ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {t.label}
+              {item.label}
             </button>
           ))}
         </div>
@@ -218,12 +220,12 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
       {activeTab === "json" && (
         <div role="tabpanel" className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            Paste the <span className="font-mono">mcpServers</span> JSON from the server's README. You can paste more than one server.
+            <Trans t={t} i18nKey="dialog.json.intro" components={{ code: <span className="font-mono" /> }} />
           </p>
           <textarea
             value={json}
             onChange={(e) => setJson(e.target.value)}
-            aria-label="Server JSON"
+            aria-label={t("dialog.json.aria")}
             rows={9}
             spellCheck={false}
             placeholder={'{\n  "mcpServers": {\n    "notes": { "command": "node", "args": ["server.js"] }\n  }\n}'}
@@ -236,7 +238,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
           )}
           <div className="flex justify-end">
             <button type="button" onClick={submitJson} disabled={!json.trim() || busy === "json"} className={primaryButton}>
-              {busy === "json" ? "Adding…" : "Add servers"}
+              {busy === "json" ? t("dialog.json.adding") : t("dialog.json.add")}
             </button>
           </div>
         </div>
@@ -246,12 +248,12 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
         <div role="tabpanel" className="space-y-3">
           <div>
             <label htmlFor="mcp-form-label" className={labelClass}>
-              Name
+              {t("dialog.form.name")}
             </label>
-            <input id="mcp-form-label" value={label} onChange={(e) => setLabel(e.target.value)} className={inputClass} placeholder="Mira" />
+            <input id="mcp-form-label" value={label} onChange={(e) => setLabel(e.target.value)} className={inputClass} placeholder={t("dialog.form.namePlaceholder")} />
           </div>
 
-          <div className="flex rounded-lg border border-border/50 bg-secondary/30 p-0.5" role="radiogroup" aria-label="Server type">
+          <div className="flex rounded-lg border border-border/50 bg-secondary/30 p-0.5" role="radiogroup" aria-label={t("dialog.form.typeAria")}>
             {(["stdio", "http"] as const).map((k) => (
               <button
                 key={k}
@@ -264,7 +266,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
                   kind === k ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {k === "stdio" ? "Command" : "URL"}
+                {k === "stdio" ? t("dialog.form.command") : t("dialog.form.url")}
               </button>
             ))}
           </div>
@@ -273,13 +275,13 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
             <>
               <div>
                 <label htmlFor="mcp-form-command" className={labelClass}>
-                  Command
+                  {t("dialog.form.command")}
                 </label>
-                <input id="mcp-form-command" value={command} onChange={(e) => setCommand(e.target.value)} className={`${inputClass} font-mono`} placeholder="node" />
+                <input id="mcp-form-command" value={command} onChange={(e) => setCommand(e.target.value)} className={`${inputClass} font-mono`} placeholder={t("dialog.form.commandPlaceholder")} />
               </div>
               <div>
                 <label htmlFor="mcp-form-args" className={labelClass}>
-                  Arguments, one per line
+                  {t("dialog.form.arguments")}
                 </label>
                 <textarea
                   id="mcp-form-args"
@@ -295,15 +297,15 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
           ) : (
             <div>
               <label htmlFor="mcp-form-url" className={labelClass}>
-                URL
+                {t("dialog.form.url")}
               </label>
               <input id="mcp-form-url" value={url} onChange={(e) => setUrl(e.target.value)} className={`${inputClass} font-mono`} placeholder="https://example.com/mcp" />
             </div>
           )}
 
           <PairList
-            title={kind === "http" ? "Headers" : "Environment variables"}
-            addLabel={kind === "http" ? "Add header" : "Add variable"}
+            title={kind === "http" ? t("dialog.form.headers") : t("dialog.form.environment")}
+            addLabel={kind === "http" ? t("dialog.form.addHeader") : t("dialog.form.addVariable")}
             pairs={kind === "http" ? headers : env}
             onChange={kind === "http" ? setHeaders : setEnv}
             isSecret={(name) => kind === "http" || (name.trim() !== "" && secretFlags[name.trim()] !== false)}
@@ -337,10 +339,10 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
               className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy === "check" && <Loader2 className="h-3 w-3 animate-spin" />}
-              Check these settings
+              {t("dialog.form.check")}
             </button>
             <button type="button" onClick={submitForm} disabled={!formReady || busy !== null} className={primaryButton}>
-              {busy === "form" ? "Saving…" : editing ? "Save" : "Add server"}
+              {busy === "form" ? t("dialog.form.saving") : editing ? t("dialog.form.save") : t("dialog.form.add")}
             </button>
           </div>
         </div>
@@ -348,19 +350,19 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
 
       {activeTab === "claude" && (
         <div role="tabpanel" className="space-y-3">
-          <p className="text-xs text-muted-foreground">Pick the servers from your Claude Code setup to copy into NexQ.</p>
+          <p className="text-xs text-muted-foreground">{t("dialog.claude.intro")}</p>
           {!ccServers && !ccError && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
-              Looking…
+              {t("dialog.claude.looking")}
             </div>
           )}
-          {ccServers && ccServers.length === 0 && <p className="text-xs text-muted-foreground">No servers found in Claude Code.</p>}
+          {ccServers && ccServers.length === 0 && <p className="text-xs text-muted-foreground">{t("dialog.claude.none")}</p>}
           {ccServers && ccServers.length > 0 && (
             <ul className="space-y-1.5">
               {ccServers.map((s) => {
                 const blocked = s.unsupported !== null;
-                const note = s.unsupported ?? (s.needs_sign_in ? NEEDS_SIGN_IN_TEXT : null);
+                const note = s.unsupported ?? (s.needs_sign_in ? needsSignInText() : null);
                 return (
                   <li key={s.name}>
                     <label
@@ -399,7 +401,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
           )}
           <div className="flex justify-end">
             <button type="button" onClick={submitClaude} disabled={picked.size === 0 || busy === "claude"} className={primaryButton}>
-              {busy === "claude" ? "Importing…" : "Import selected"}
+              {busy === "claude" ? t("dialog.claude.importing") : t("dialog.claude.import")}
             </button>
           </div>
         </div>
@@ -421,6 +423,7 @@ interface PairListProps {
 }
 
 function PairList({ title, addLabel, pairs, onChange, isSecret, keepHint, invalidSecrets }: PairListProps) {
+  const { t } = useT("sources");
   const set = (i: number, patch: Partial<FormPair>) => onChange(pairs.map((p, at) => (at === i ? { ...p, ...patch } : p)));
   return (
     <fieldset>
@@ -434,8 +437,8 @@ function PairList({ title, addLabel, pairs, onChange, isSecret, keepHint, invali
               <input
                 value={p.name}
                 onChange={(e) => set(i, { name: e.target.value })}
-                aria-label={`${title} name ${i + 1}`}
-                placeholder="NAME"
+                aria-label={t("dialog.pair.nameAria", { title, n: i + 1 })}
+                placeholder={t("dialog.pair.namePlaceholder")}
                 className={`${inputClass} w-2/5 font-mono`}
               />
               <input
@@ -443,15 +446,17 @@ function PairList({ title, addLabel, pairs, onChange, isSecret, keepHint, invali
                 onChange={(e) => set(i, { value: e.target.value })}
                 type={secret ? "password" : "text"}
                 autoComplete="off"
-                aria-label={`${title} value ${i + 1}`}
+                aria-label={t("dialog.pair.valueAria", { title, n: i + 1 })}
                 aria-invalid={missing || undefined}
-                placeholder={secret ? (keepHint ? "Saved. Leave blank to keep it" : "Kept in Windows Credential Manager") : "value"}
+                placeholder={
+                  secret ? (keepHint ? t("dialog.pair.keepSecret") : t("dialog.pair.newSecret")) : t("dialog.pair.valuePlaceholder")
+                }
                 className={`${inputClass} flex-1 font-mono ${missing ? "border-destructive/60" : ""}`}
               />
               <button
                 type="button"
                 onClick={() => onChange(pairs.filter((_, at) => at !== i))}
-                aria-label={`Remove ${title.toLowerCase()} ${i + 1}`}
+                aria-label={t("dialog.pair.removeAria", { title: title.toLowerCase(), n: i + 1 })}
                 className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-accent/40 hover:text-foreground"
               >
                 <X className="h-3.5 w-3.5" />

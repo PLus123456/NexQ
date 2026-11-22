@@ -2,6 +2,7 @@
 // base64 and sent with the question. Mirrors Rust
 // `cli_agent::protocol::ImageAttachment`.
 
+import { t } from "../i18n";
 import type { ImageAttachment } from "./types";
 
 // The backend checks the same limits (`validate_images` in
@@ -18,7 +19,10 @@ export const MAX_IMAGE_EDGE = 1568;
 export const SEND_AS_IS_BYTES = 1_500_000;
 /** Largest file we try to decode: a sanity limit, before any downscaling. */
 export const MAX_INPUT_BYTES = 25 * 1024 * 1024;
-export const IMAGE_TOO_LARGE = "That image is too large. Paste a smaller area.";
+/** The refusal for an image over the size limits, in the UI language. */
+export function imageTooLarge(): string {
+  return t("misc:images.tooLarge");
+}
 
 /**
  * Whether the LLM provider can read images. Only Claude (subscription) can;
@@ -30,11 +34,11 @@ export function providerReadsImages(provider: string): boolean {
 
 /** Why `file` can't be attached, or `null` when it can. */
 export function imageProblem(file: { type: string; size: number }, already: number): string | null {
-  if (already >= MAX_IMAGES) return `You can attach up to ${MAX_IMAGES} images`;
+  if (already >= MAX_IMAGES) return t("misc:images.limit", { max: MAX_IMAGES });
   if (!(ALLOWED_IMAGE_TYPES as readonly string[]).includes(file.type)) {
-    return "Only PNG, JPEG, GIF and WebP images can be attached";
+    return t("misc:images.type");
   }
-  if (file.size > MAX_INPUT_BYTES) return IMAGE_TOO_LARGE;
+  if (file.size > MAX_INPUT_BYTES) return imageTooLarge();
   return null;
 }
 
@@ -84,7 +88,7 @@ export async function prepareImage(file: File): Promise<ImageAttachment> {
   try {
     bitmap = await createImageBitmap(file);
   } catch {
-    throw new Error("Couldn't read the image");
+    throw new Error(t("misc:images.readFailed"));
   }
   try {
     const { width, height } = fitWithin(bitmap.width, bitmap.height);
@@ -98,8 +102,8 @@ export async function prepareImage(file: File): Promise<ImageAttachment> {
       blob = await encode(bitmap, width, height, "image/jpeg", 0.9);
       type = "image/jpeg";
     }
-    if (!blob) throw new Error("Couldn't read the image");
-    if (base64Length(blob.size) > MAX_IMAGE_BASE64_LEN) throw new Error(IMAGE_TOO_LARGE);
+    if (!blob) throw new Error(t("misc:images.readFailed"));
+    if (base64Length(blob.size) > MAX_IMAGE_BASE64_LEN) throw new Error(imageTooLarge());
     return await readImage(new File([blob], "image", { type }));
   } finally {
     bitmap.close?.();
@@ -137,12 +141,12 @@ export function imageFilesFrom(data: DataTransfer | null): File[] {
 export function readImage(file: File): Promise<ImageAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("Couldn't read the image"));
+    reader.onerror = () => reject(reader.error ?? new Error(t("misc:images.readFailed")));
     reader.onload = () => {
       const url = String(reader.result ?? "");
       const comma = url.indexOf(",");
       if (comma < 0) {
-        reject(new Error("Couldn't read the image"));
+        reject(new Error(t("misc:images.readFailed")));
         return;
       }
       resolve({ media_type: file.type, data: url.slice(comma + 1) });

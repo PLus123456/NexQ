@@ -42,7 +42,7 @@ describe("ThinkingSettings", () => {
     expect(select.value).toBe("auto");
     expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Auto", "Off", "Low", "High"]);
     expect(
-      screen.getByText("Off answers faster. Not every model supports it; NexQ falls back automatically."),
+      screen.getByText("Off answers faster. Not every model supports it; NexQ Plus falls back automatically."),
     ).toBeInTheDocument();
   });
 

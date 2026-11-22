@@ -1,0 +1,188 @@
+{
+  "gating": "Personal sources work with the Claude subscription. Switch to it in {{tab}} to use them.",
+  "link": {
+    "title": "Open this link in your browser?",
+    "open": "Open link"
+  },
+  "image": {
+    "withAlt": "[Image: {{alt}}]",
+    "plain": "[Image]"
+  },
+  "editor": {
+    "intro": "Let the AI look things up in your own notes and tools while it answers you. In a meeting, the Notes and Tools pills decide which answers may use them.",
+    "howThisWorks": "How this works",
+    "notes": {
+      "sectionLabel": "Notes folders",
+      "title": "Notes",
+      "add": "Add folder",
+      "empty": "No folders yet. Add your Obsidian vault or any folder of .md files.",
+      "pickTitle": "Choose a notes folder",
+      "duplicate": "That folder is already added.",
+      "notFound": "Folder not found"
+    },
+    "tools": {
+      "sectionLabel": "Tool servers",
+      "title": "Tools (MCP)",
+      "add": "Add server",
+      "empty": "No servers yet. Add one from its README JSON, a form, or Claude Code."
+    },
+    "toast": {
+      "checkFailed": "Couldn't check {{name}}: {{detail}}",
+      "forgetSecretsFailed": "Couldn't forget the saved secrets of {{name}}: {{detail}}",
+      "removeFailed": "Couldn't remove {{name}}: {{detail}}"
+    }
+  },
+  "card": {
+    "useAria": "Use {{name}}",
+    "remove": "Remove",
+    "removeQuestion": "Remove?",
+    "removeAria": "Remove {{name}}",
+    "confirmRemoveAria": "Confirm removing {{name}}"
+  },
+  "folder": {
+    "looking": "Looking…",
+    "notFound": "Folder not found",
+    "notes_one": "{{display}} note",
+    "notes_other": "{{display}} notes",
+    "nameAria": "Name of {{path}}"
+  },
+  "mcp": {
+    "needsSignIn": "Needs sign-in, not supported yet",
+    "status": {
+      "checking": "Checking…",
+      "notChecked": "Not checked",
+      "notCheckedYet": "Not checked yet. Check it to switch it on",
+      "ready_one": "Ready with {{count}} tool",
+      "ready_other": "Ready with {{count}} tools",
+      "failed": "Failed: {{detail}}",
+      "failedDefault": "the server did not start"
+    },
+    "check": "Check",
+    "edit": "Edit",
+    "editAria": "Edit {{name}}",
+    "toolsAllowed": "{{allowed}} of {{total}} tools allowed",
+    "allowAria": "Allow {{name}}"
+  },
+  "dialog": {
+    "titleAdd": "Add a tool server",
+    "titleEdit": "Edit {{name}}",
+    "tabsAria": "How to add a server",
+    "tabs": {
+      "settings": "Settings",
+      "json": "Paste JSON",
+      "form": "Form",
+      "claude": "Import from Claude Code"
+    },
+    "json": {
+      "intro": "Paste the <code>mcpServers</code> JSON from the server's README. You can paste more than one server.",
+      "aria": "Server JSON",
+      "adding": "Adding…",
+      "add": "Add servers"
+    },
+    "form": {
+      "name": "Name",
+      "namePlaceholder": "Mira",
+      "typeAria": "Server type",
+      "command": "Command",
+      "commandPlaceholder": "node",
+      "url": "URL",
+      "arguments": "Arguments, one per line",
+      "headers": "Headers",
+      "environment": "Environment variables",
+      "addHeader": "Add header",
+      "addVariable": "Add variable",
+      "check": "Check these settings",
+      "saving": "Saving…",
+      "save": "Save",
+      "add": "Add server"
+    },
+    "pair": {
+      "nameAria": "{{title}} name {{n}}",
+      "valueAria": "{{title}} value {{n}}",
+      "removeAria": "Remove {{title}} {{n}}",
+      "namePlaceholder": "NAME",
+      "valuePlaceholder": "value",
+      "keepSecret": "Saved. Leave blank to keep it",
+      "newSecret": "Kept in the system credential store"
+    },
+    "claude": {
+      "intro": "Pick the servers from your Claude Code setup to copy into {{appName}}.",
+      "looking": "Looking…",
+      "none": "No servers found in Claude Code.",
+      "importing": "Importing…",
+      "import": "Import selected"
+    }
+  },
+  "notice": {
+    "title": "Before you switch tools on",
+    "first": "When a tool is on, the AI can use it without asking you first. {{appName}} starts with the tools switched off whose names suggest they change something, such as adding, sending, editing or deleting. A name can be misleading, so this is a guess, not a guarantee.",
+    "second": "Look through each server's tool list and keep on only what you want the AI to use.",
+    "third": "{{appName}} tells the AI to treat what a tool sends back as information to read, not as instructions to follow.",
+    "dismiss": "Got it"
+  },
+  "guide": {
+    "notesTitle": "How notes folders work",
+    "toolsTitle": "How tools work",
+    "notes": {
+      "can": {
+        "title": "What the AI can do",
+        "body": "Search and read the files in these folders while it answers you. It picks the notes it needs, so a quick question stays quick."
+      },
+      "cant": {
+        "title": "What it can't do",
+        "body": "Change, create or delete a note. Notes are read only. {{appName}} tells the AI to treat what it reads in your notes as information, not as instructions."
+      },
+      "claudeOnly": {
+        "title": "Claude subscription only",
+        "body": "Your folders are saved either way, but only the Claude subscription can use them. Other providers ignore them."
+      },
+      "slow": {
+        "title": "It can add a few seconds",
+        "body": "Looking things up takes a moment. That is why the Notes pill in a meeting decides, for each answer you ask for, whether it may look in your notes. The pill stays as you left it."
+      },
+      "howTo": {
+        "title": "How to add one",
+        "body": "Choose Add folder and pick your Obsidian vault, or any folder of .md files. Nothing is copied or indexed. The files stay where they are."
+      }
+    },
+    "tools": {
+      "can": {
+        "title": "What the AI can do",
+        "body": "Call the tools you leave switched on, such as looking up a person, your tasks or your calendar, while it answers you."
+      },
+      "cant": {
+        "title": "What it can't do",
+        "body": "Call a tool you switched off. Tools whose names suggest they change something (add, send, edit, delete) start off, and you should still read the list. {{appName}} tells the AI to treat what a tool returns as information, not as instructions."
+      },
+      "claudeOnly": {
+        "title": "Claude subscription only",
+        "body": "Your servers are saved either way, but only the Claude subscription can use them. Other providers ignore them."
+      },
+      "slow": {
+        "title": "It can add a few seconds",
+        "body": "Starting a server and calling a tool takes a moment. That is why the Tools pill in a meeting decides, for each answer you ask for, whether it may use your tools. The pill stays as you left it."
+      },
+      "howTo": {
+        "title": "How to add one",
+        "body": "Open the server's README, copy its mcpServers JSON, choose Add server and paste it. You can also fill in a form, or import a server from Claude Code. {{appName}} checks it right away and shows its tools, so you can look before switching it on."
+      }
+    }
+  },
+  "pills": {
+    "groupAria": "Personal sources for your next answer",
+    "notes": "Notes",
+    "tools": "Tools",
+    "tooltip": "{{kind}}: {{names}}",
+    "withDetail": "{{base}}. {{detail}}",
+    "listSeparator": ", "
+  },
+  "chips": {
+    "aria": "Sources used",
+    "opens": "Opens {{path}}",
+    "openFailed": "Couldn't open {{label}}: {{reason}}",
+    "openFailedDefault": "it could not be opened"
+  },
+  "activity": {
+    "aria": "What the answer is doing with your sources"
+  }
+}
