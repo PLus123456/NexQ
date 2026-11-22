@@ -1,8 +1,7 @@
 //! A discrete-event simulation. Model latency advances the clock while ASR
 //! continues to deliver updates to the same single-flight core as the app.
 use super::question_core::{
-    parse_response, DetectionMode, Failure, ModelInput, QuestionCore, QuestionEvent, RemoveReason,
-    Request, Update,
+    DetectionMode, Failure, ModelInput, Origin, QuestionCore, QuestionEvent, RemoveReason, Request, Update, parse_response,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -149,6 +148,12 @@ pub struct Detail {
     pub line_id: String,
     pub canonical: String,
     pub detected_text: Option<String>,
+    /// For a false trigger: "rules" or "model", whoever published it first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
+    /// For a false trigger: the model took it back later (veto or merge).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub withdrawn: bool,
 }
 
 #[derive(Default, Serialize)]
@@ -159,25 +164,42 @@ pub struct Metrics {
     pub must_not_triggered: usize,
     pub must_not_total: usize,
     pub rules_vetoed: usize,
+    /// False triggers the rules published at a pause / the model published.
+    pub must_not_by_rules: usize,
+    pub must_not_by_model: usize,
+    /// False triggers still standing at the end (never taken back).
+    pub must_not_standing: usize,
     pub latency_p50_ms: Option<f64>,
     pub latency_p90_ms: Option<f64>,
+    /// The same, counting only questions the model published.
+    pub must_detected_by_model: usize,
+    pub model_latency_p50_ms: Option<f64>,
+    pub model_latency_p90_ms: Option<f64>,
     pub model_calls: usize,
+    /// Length of the replayed meeting, to read the call rate.
+    pub minutes: f64,
     #[serde(skip)]
     latencies: Vec<u64>,
+    #[serde(skip)]
+    model_latencies: Vec<u64>,
+}
+
+fn percentile(sorted: &[u64], p: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    let rank = last as f64 * p;
+    let low = sorted[rank.floor() as usize] as f64;
+    let high = sorted[rank.ceil() as usize] as f64;
+    Some(low + rank.fract() * (high - low))
 }
 
 impl Metrics {
-    fn percentile(&self, p: f64) -> Option<f64> {
-        let last = self.latencies.len().checked_sub(1)?;
-        let rank = last as f64 * p;
-        let low = self.latencies[rank.floor() as usize] as f64;
-        let high = self.latencies[rank.ceil() as usize] as f64;
-        Some(low + rank.fract() * (high - low))
-    }
     fn finish(&mut self) {
         self.latencies.sort_unstable();
-        self.latency_p50_ms = self.percentile(0.5);
-        self.latency_p90_ms = self.percentile(0.9);
+        self.model_latencies.sort_unstable();
+        self.latency_p50_ms = percentile(&self.latencies, 0.5);
+        self.latency_p90_ms = percentile(&self.latencies, 0.9);
+        self.model_latency_p50_ms = percentile(&self.model_latencies, 0.5);
+        self.model_latency_p90_ms = percentile(&self.model_latencies, 0.9);
         self.must_recall =
             (self.must_total != 0).then(|| self.must_detected as f64 / self.must_total as f64);
     }
@@ -190,8 +212,14 @@ impl Metrics {
             total.must_not_triggered += s.must_not_triggered;
             total.must_not_total += s.must_not_total;
             total.rules_vetoed += s.rules_vetoed;
+            total.must_not_by_rules += s.must_not_by_rules;
+            total.must_not_by_model += s.must_not_by_model;
+            total.must_not_standing += s.must_not_standing;
+            total.must_detected_by_model += s.must_detected_by_model;
             total.model_calls += s.model_calls;
+            total.minutes += s.minutes;
             total.latencies.extend_from_slice(&s.latencies);
+            total.model_latencies.extend_from_slice(&s.model_latencies);
         }
         total.finish();
         total
@@ -244,6 +272,9 @@ struct Scorer<'a> {
     data: &'a Interview,
     times: HashMap<&'a str, Timing>,
     hits: HashSet<usize>,
+    model_hits: HashSet<usize>,
+    /// Question id → its false trigger in `report.false_triggers`.
+    false_ids: HashMap<String, usize>,
     report: MeetingReport,
 }
 
@@ -252,11 +283,15 @@ impl Scorer<'_> {
         for event in events {
             let question = match event {
                 QuestionEvent::Upsert { question } if question.complete => question,
-                QuestionEvent::Remove {
-                    reason: RemoveReason::Veto,
-                    ..
-                } => {
-                    self.report.metrics.rules_vetoed += 1;
+                QuestionEvent::Remove { id, reason } => {
+                    if reason == RemoveReason::Veto {
+                        self.report.metrics.rules_vetoed += 1;
+                    }
+                    if reason != RemoveReason::Reset {
+                        if let Some(&i) = self.false_ids.get(&id) {
+                            self.report.false_triggers[i].withdrawn = true;
+                        }
+                    }
                     continue;
                 }
                 _ => continue,
@@ -270,26 +305,42 @@ impl Scorer<'_> {
             else {
                 continue;
             };
+            let label = &self.data.labels[i];
+            let by_model = question.origin == Origin::Model;
+            let latency = now.saturating_sub(timing.appeared(anchor.end_char));
+            if label.verdict == Verdict::Must && by_model && self.model_hits.insert(i) {
+                self.report.metrics.must_detected_by_model += 1;
+                self.report.metrics.model_latencies.push(latency);
+            }
+            if label.verdict == Verdict::MustNot {
+                // A later revision of a withdrawn false trigger brings it back.
+                if let Some(&j) = self.false_ids.get(&question.id) {
+                    self.report.false_triggers[j].withdrawn = false;
+                }
+            }
             if !self.hits.insert(i) {
                 continue;
             }
-            let label = &self.data.labels[i];
             match label.verdict {
                 Verdict::Must => {
                     self.report.metrics.must_detected += 1;
-                    let uttered = timing.appeared(anchor.end_char);
-                    self.report
-                        .metrics
-                        .latencies
-                        .push(now.saturating_sub(uttered));
+                    self.report.metrics.latencies.push(latency);
                 }
                 Verdict::MustNot => {
                     self.report.metrics.must_not_triggered += 1;
+                    if by_model {
+                        self.report.metrics.must_not_by_model += 1;
+                    } else {
+                        self.report.metrics.must_not_by_rules += 1;
+                    }
+                    self.false_ids.insert(question.id.clone(), self.report.false_triggers.len());
                     self.report.false_triggers.push(Detail {
                         label_id: label.id.clone(),
                         line_id: line.id.clone(),
                         canonical: label.canonical.clone(),
                         detected_text: Some(question.text),
+                        origin: Some(if by_model { "model" } else { "rules" }),
+                        withdrawn: false,
                     });
                 }
                 Verdict::Optional => {}
@@ -306,6 +357,8 @@ pub async fn replay(mut data: Interview, model: &dyn Model) -> Result<MeetingRep
         data: &data,
         times,
         hits: HashSet::new(),
+        model_hits: HashSet::new(),
+        false_ids: HashMap::new(),
         report: MeetingReport {
             name: data.name.clone(),
             metrics: Metrics {
@@ -372,9 +425,14 @@ pub async fn replay(mut data: Interview, model: &dyn Model) -> Result<MeetingRep
                 line_id: label.anchor.line_id.clone(),
                 canonical: label.canonical.clone(),
                 detected_text: None,
+                origin: None,
+                withdrawn: false,
             });
         }
     }
+    scorer.report.metrics.must_not_standing =
+        scorer.report.false_triggers.iter().filter(|d| !d.withdrawn).count();
+    scorer.report.metrics.minutes = now as f64 / 60_000.0;
     scorer.report.metrics.finish();
     Ok(scorer.report)
 }

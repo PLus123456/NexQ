@@ -301,12 +301,20 @@ fn substantive(text: &str) -> bool {
         })
 }
 
+/// Words that make a sentence worth a model call: a question, or an implicit
+/// request for an answer ("I'd love to hear about…"). Only decides when to
+/// ask the model, never what counts as a question.
+const REQUEST_CUES: &[&str] = &[
+    "tell me", "tell us", "walk me through", "walk us through", "talk me through", "talk us through",
+    "could you", "can you", "would you", "you can", "curious", "hear about", "hear more",
+    "talk about", "describe", "explain", "your thoughts", "what about", "how about",
+    "介绍", "说说", "讲讲", "谈谈", "解释", "描述",
+];
+
 fn cue(text: &str) -> bool {
     looks_like_new_question(text) || {
         let lower = text.to_lowercase();
-        ["tell me", "walk me through", "could you"]
-            .iter()
-            .any(|p| lower.contains(p))
+        REQUEST_CUES.iter().any(|p| lower.contains(p))
     }
 }
 
@@ -329,11 +337,83 @@ fn ending_quote(text: &str) -> &str {
     &text[start..]
 }
 
+/// Words a sentence can start with that are not a name, so "Interesting, why
+/// did you…" is not taken for someone being addressed.
+const NOT_A_NAME: &[&str] = &[
+    "i", "you", "we", "they", "he", "she", "it", "can", "could", "would", "will", "do", "does", "did",
+    "is", "are", "was", "were", "have", "has", "had", "what", "why", "how", "when", "where", "who",
+    "which", "whose", "tell", "please", "maybe", "so", "and", "but", "then", "now", "also", "just",
+    "let", "let's", "okay", "ok", "right", "well", "yes", "no", "great", "good", "thanks", "thank",
+    "sure", "alright", "interesting", "cool", "nice", "perfect", "awesome", "excellent", "fine",
+    "fair", "yeah", "yep", "hmm", "wow", "sorry", "actually", "basically", "anyway", "first",
+    "second", "finally", "lastly", "again", "otherwise", "honestly", "um", "uh", "oh", "if",
+    "because", "given", "since", "after", "before", "in", "on", "for", "with", "as", "at", "by",
+];
+
+/// Lead-ins skipped before looking for a name ("Um, Rafael, …").
+const LEAD_INS: &[&str] = &["um", "uh", "so", "and", "okay", "ok", "alright", "right", "well", "oh", "now"];
+
+/// Phrases of a question about the meeting itself, not for an answer from the
+/// user's notes ("Can you go back to the last slide?", "Can you hear me?").
+const MEETING_REQUESTS: &[&str] = &[
+    "slide", "screen", "share your", "go back", "move on", "next page", "previous page", "scroll",
+    "zoom in", "zoom out", "mute", "hear me", "hear us", "see me", "see us", "see my", "camera",
+    "下一页", "上一页", "共享屏幕", "分享屏幕", "翻到", "听得到", "听得见", "看得到", "看得见",
+];
+
+/// Whether `phrase` occurs in `text` as whole words ("mute" is not in
+/// "commute"). CJK phrases have no word boundaries and match anywhere.
+fn has_phrase(text: &str, phrase: &str) -> bool {
+    if phrase.chars().any(cjk) {
+        return text.contains(phrase);
+    }
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    text.match_indices(phrase).any(|(at, _)| {
+        boundary(text[..at].chars().next_back()) && boundary(text[at + phrase.len()..].chars().next())
+    })
+}
+
+/// Endings that turn a statement into a request for a yes ("…, right?").
+const TAGS: &[&str] = &[
+    ", right?", ", right", ", correct?", ", isn't it?", ", is it?", ", don't you?", ", didn't you?",
+    ", you know?", ", yeah?", ", ok?", ", okay?", ", huh?", ", no?", "，对吧？", "，是吧？",
+    "，对不对？", "，是不是？", "，对吗？", "，好吗？",
+];
+
+/// A question the rules must not answer on their own, because it is for
+/// someone else ("Rafael, do you have any questions?"), about the meeting
+/// ("Can you go back to the last slide?") or only a tag ("…, right?"). The
+/// model still judges it.
+fn rules_skip(sentence: &str) -> bool {
+    let trimmed = sentence.trim();
+    let lower = trimmed.to_lowercase();
+    if MEETING_REQUESTS.iter().any(|p| has_phrase(&lower, p)) || TAGS.iter().any(|t| lower.ends_with(t)) {
+        return true;
+    }
+    // A name, or a title, followed by a comma: "Rafael, …", "Doctor, …".
+    let mut rest = trimmed;
+    loop {
+        let Some((first, after)) = rest.split_once(',') else { return false };
+        let word = first.trim();
+        let lower = word.to_lowercase();
+        if LEAD_INS.contains(&lower.as_str()) {
+            rest = after;
+            continue;
+        }
+        let one_word = !word.is_empty() && !word.contains(char::is_whitespace);
+        let capitalised = word.chars().next().is_some_and(char::is_uppercase);
+        return one_word && capitalised && !NOT_A_NAME.contains(&lower.as_str());
+    }
+}
+
 fn rule(span: &Span) -> Option<ModelQuestion> {
     let last = span
         .text
         .split_inclusive(sentence_end)
         .rfind(|s| s.chars().any(char::is_alphanumeric))?;
+    if rules_skip(last) {
+        return None;
+    }
     let q = QuestionDetector::new()
         .detect_questions(last, span.timestamp_ms, &span.source)
         .pop()?;
@@ -491,9 +571,9 @@ impl QuestionCore {
                 Some("two_sentences")
             } else if ended && word_count(line.delta()) >= 3 {
                 Some("line_final")
-            } else if self.active.is_some() && changed && substantive(line.delta()) {
-                Some("in_flight_update")
             } else {
+                // Words arriving while a request runs wait for one of the
+                // reasons above; they are part of the next request anyway.
                 None
             };
             if reason.is_some() {
@@ -1055,7 +1135,7 @@ mod tests {
             (&rule.id, 2, Origin::Model)
         );
         let later = c.observe(
-            line("b", "Maria, do you have any questions?", 1000, true),
+            line("b", "Who wouldn't want a faster queue?", 1000, true),
             1000,
             HYBRID,
         );
@@ -1205,6 +1285,56 @@ mod tests {
             c.observe(update, 300, MODEL);
             assert_eq!(c.start_request(300).unwrap().trigger, reason);
         }
+    }
+
+    #[test]
+    fn rules_leave_names_meeting_requests_and_tags_to_the_model() {
+        for text in [
+            "Rafael, do you have any questions?",
+            "Um, Rafael, you want to go next?",
+            "Rafael, Lucas, any final question for Jaho?",
+            "Doctor, any questions?",
+            "Can you go back to the last slide?",
+            "Can you please move on to the next slide?",
+            "Can you hear me?",
+            "Connect the department with some companies, right?",
+            "So just be patient, right?",
+            "你能翻到下一页吗？",
+        ] {
+            let mut c = QuestionCore::default();
+            let observed = c.observe(line("a", text, 0, true), 0, HYBRID);
+            assert!(observed.events.is_empty(), "{text}");
+            // The model still judges it.
+            assert!(c.next_start_ms().is_some(), "{text}");
+        }
+        for text in [
+            "What is your motivation?",
+            "Interesting, why did you pick Rust?",
+            "So, how long is your commute?",
+            "Okay, and what did you do next?",
+        ] {
+            let mut c = QuestionCore::default();
+            let observed = c.observe(line("a", text, 0, true), 0, HYBRID);
+            assert_eq!(upsert(&observed.events).origin, Origin::Rules, "{text}");
+        }
+    }
+
+    #[test]
+    fn words_arriving_during_a_request_wait_for_a_reason_to_ask_again() {
+        let mut c = QuestionCore::default();
+        c.observe(line("a", "What do you build?", 0, true), 0, MODEL);
+        let req = c.start_request(0).unwrap();
+        for (i, text) in ["We use", "We use a cache", "We use a cache for the reads"].iter().enumerate() {
+            c.observe(line("b", text, 500, false), 500 + i as u64 * 300, MODEL);
+        }
+        c.finish(&req, Ok(vec![]));
+        assert!(c.next_start_ms().is_none());
+        // A reason to ask comes along: the waiting words go with it.
+        c.observe(line("b", "We use a cache for the reads. How would you size it?", 500, false), 1500, MODEL);
+        c.observe(line("b", "We use a cache for the reads. How would you size it?", 500, false), 1800, MODEL);
+        let next = c.start_request(1800).unwrap();
+        assert_eq!(next.trigger, "sentence_cue");
+        assert_eq!(next.input.new_text, "We use a cache for the reads. How would you size it?");
     }
 
     #[test]

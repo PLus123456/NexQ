@@ -127,15 +127,22 @@ fn print_metrics(name: &str, m: &Metrics) {
     let recall = m
         .must_recall
         .map_or_else(|| "-".into(), |r| format!("{:.1}%", r * 100.0));
+    let per_minute = if m.minutes > 0.0 { m.model_calls as f64 / m.minutes } else { 0.0 };
     println!(
-        "{name}\t{}/{} ({recall})\t{}/{}\t{}\t{}\t{}\t{}",
+        "{name}\t{}/{} ({recall})\t{}/{}\t{} (rules {}, model {})\t{}\t{}\t{}/{}\t{}/{}\t{} ({per_minute:.1}/min)",
         m.must_detected,
         m.must_total,
+        m.must_detected_by_model,
+        m.must_total,
         m.must_not_triggered,
-        m.must_not_total,
+        m.must_not_by_rules,
+        m.must_not_by_model,
+        m.must_not_standing,
         m.rules_vetoed,
         ms(m.latency_p50_ms),
         ms(m.latency_p90_ms),
+        ms(m.model_latency_p50_ms),
+        ms(m.model_latency_p90_ms),
         m.model_calls
     );
 }
@@ -178,7 +185,7 @@ async fn main() -> Result<(), String> {
     if paths.is_empty() {
         return Err(format!("No evaluation JSON files in {}", dir.display()));
     }
-    println!("Meeting\tmust recall\tmust_not\tvetoed\tp50 ms\tp90 ms\tcalls");
+    println!("Meeting\tmust recall\tby model\tmust_not triggered\tstanding\tvetoed\tp50/p90 ms\tmodel p50/p90 ms\tcalls");
     let mut meetings = Vec::new();
     for path in paths {
         let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -191,8 +198,13 @@ async fn main() -> Result<(), String> {
             ("false_trigger", &meeting.false_triggers),
         ] {
             for d in rows {
+                let how = match (d.origin, d.withdrawn) {
+                    (Some(origin), true) => format!(" [{origin}, withdrawn]"),
+                    (Some(origin), false) => format!(" [{origin}]"),
+                    (None, _) => String::new(),
+                };
                 println!(
-                    "  {kind} {} {}  detected={}  expected={}",
+                    "  {kind} {} {}{how}  detected={}  expected={}",
                     d.label_id,
                     d.line_id,
                     d.detected_text.as_deref().unwrap_or("—"),
