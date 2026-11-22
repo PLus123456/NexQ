@@ -1,0 +1,282 @@
+{
+ "name": "synthetic-sample",
+ "meeting_id": "00000000-0000-0000-0000-000000000000",
+ "note": "Synthetic conversation in the format of the private evaluation files: a long line with a question in the middle, a question cut in two by a pause, rhetorical and tag questions, a question for another person, a request to do something, short replies from You.",
+ "lines": [
+  {
+   "id": "them_demo_sx1_1",
+   "speaker": "Them",
+   "start_ms": 0,
+   "text": "Great, thanks for joining today. I wanted to talk a little bit about the application you sent us last week, so I was having a look at your background and your previous projects, but maybe you can just tell me a little bit more about yourself."
+  },
+  {
+   "id": "them_demo_sx1_2",
+   "speaker": "Them",
+   "start_ms": 16500,
+   "text": "And what particularly interests you in this team? And also in working on distributed systems in general."
+  },
+  {
+   "id": "you_demo_sx1_1",
+   "speaker": "You",
+   "start_ms": 24000,
+   "text": "Sure. I studied computer science and spent three years building mobile apps, and recently I moved towards backend work."
+  },
+  {
+   "id": "them_demo_sx1_3",
+   "speaker": "Them",
+   "start_ms": 34000,
+   "text": "Mm-hmm."
+  },
+  {
+   "id": "you_demo_sx1_2",
+   "speaker": "You",
+   "start_ms": 35000,
+   "text": "That is why this team caught my eye."
+  },
+  {
+   "id": "them_demo_sx1_4",
+   "speaker": "Them",
+   "start_ms": 39000,
+   "text": "I guess one question I had was, you know, you are coming from a slightly different area than the one this team works in. Mostly front-end and mobile applications. As far as I can see, um, what."
+  },
+  {
+   "id": "them_demo_sx1_5",
+   "speaker": "Them",
+   "start_ms": 52000,
+   "text": "Is your motivation to move into a slightly different field? Again, this role is a bit like the infrastructure work you mentioned, but at a much larger scale. So what's your motivation there?"
+  },
+  {
+   "id": "you_demo_sx1_3",
+   "speaker": "You",
+   "start_ms": 65000,
+   "text": "Well, actually."
+  },
+  {
+   "id": "you_demo_sx1_4",
+   "speaker": "You",
+   "start_ms": 66500,
+   "text": "I like problems where the system has to stay correct under load, and I want to go deeper into that."
+  },
+  {
+   "id": "them_demo_sx1_6",
+   "speaker": "Them",
+   "start_ms": 76000,
+   "text": "The project that I have in mind. Maybe it's helpful if I give a little overview of what we are building, and then you can tell me if this is aligned with where you want to go. We have a large cache in front of the database. How do we know what to keep in it? That is the whole problem, right? Have you worked with Redis before? Because for this project that is probably the most useful experience, and I can explain how we use it if you have not."
+  },
+  {
+   "id": "you_demo_sx1_5",
+   "speaker": "You",
+   "start_ms": 104000,
+   "text": "Yes, I used Redis for session storage and rate limiting."
+  },
+  {
+   "id": "them_demo_sx1_7",
+   "speaker": "Them",
+   "start_ms": 110000,
+   "text": "Okay. Maria, do you have any questions?"
+  },
+  {
+   "id": "them_demo_sx1_8",
+   "speaker": "Them",
+   "start_ms": 113000,
+   "text": "Yes. Can you go back to the second slide?"
+  },
+  {
+   "id": "you_demo_sx1_6",
+   "speaker": "You",
+   "start_ms": 116000,
+   "text": "Sure."
+  },
+  {
+   "id": "them_demo_sx1_9",
+   "speaker": "Them",
+   "start_ms": 118000,
+   "text": "So you said you used a queue between the two services, right?"
+  },
+  {
+   "id": "you_demo_sx1_7",
+   "speaker": "You",
+   "start_ms": 122000,
+   "text": "Yes."
+  },
+  {
+   "id": "them_demo_sx1_10",
+   "speaker": "Them",
+   "start_ms": 123000,
+   "text": "Why did you choose a queue there?"
+  },
+  {
+   "id": "them_demo_sx1_11",
+   "speaker": "Them",
+   "start_ms": 126000,
+   "text": "And how many messages per second did it handle?"
+  },
+  {
+   "id": "you_demo_sx1_8",
+   "speaker": "You",
+   "start_ms": 130000,
+   "text": "Mm."
+  },
+  {
+   "id": "them_demo_sx1_12",
+   "speaker": "Them",
+   "start_ms": 131500,
+   "text": "So that's roughly the plan. Does that sound good to you? And was there any other question that you had?"
+  },
+  {
+   "id": "you_demo_sx1_9",
+   "speaker": "You",
+   "start_ms": 140000,
+   "text": "No, that's all. Thank you."
+  }
+ ],
+ "labels": [
+  {
+   "id": "L1",
+   "verdict": "must",
+   "kind": "implicit",
+   "canonical": "Can you tell me more about yourself?",
+   "line_id": "them_demo_sx1_1",
+   "quote": "tell me a little bit more about yourself",
+   "end_char": 241,
+   "also": []
+  },
+  {
+   "id": "L2",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "What particularly interests you in this team and in working on distributed systems?",
+   "line_id": "them_demo_sx1_2",
+   "quote": "what particularly interests you in this team?",
+   "end_char": 49,
+   "also": [
+    {
+     "line_id": "them_demo_sx1_2",
+     "quote": "in working on distributed systems in general.",
+     "end_char": 104
+    }
+   ]
+  },
+  {
+   "id": "L3",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "What is your motivation for moving into a slightly different field?",
+   "line_id": "them_demo_sx1_5",
+   "quote": "Is your motivation to move into a slightly different field?",
+   "end_char": 59,
+   "also": [
+    {
+     "line_id": "them_demo_sx1_4",
+     "quote": "um, what.",
+     "end_char": 193
+    },
+    {
+     "line_id": "them_demo_sx1_5",
+     "quote": "So what's your motivation there?",
+     "end_char": 190
+    }
+   ]
+  },
+  {
+   "id": "L4",
+   "verdict": "must_not",
+   "kind": "rhetorical",
+   "canonical": "",
+   "line_id": "them_demo_sx1_6",
+   "quote": "How do we know what to keep in it?",
+   "end_char": 258,
+   "also": []
+  },
+  {
+   "id": "L5",
+   "verdict": "must_not",
+   "kind": "tag",
+   "canonical": "",
+   "line_id": "them_demo_sx1_6",
+   "quote": "That is the whole problem, right?",
+   "end_char": 292,
+   "also": []
+  },
+  {
+   "id": "L6",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "Have you worked with Redis before?",
+   "line_id": "them_demo_sx1_6",
+   "quote": "Have you worked with Redis before?",
+   "end_char": 327,
+   "also": []
+  },
+  {
+   "id": "L7",
+   "verdict": "must_not",
+   "kind": "other_person",
+   "canonical": "",
+   "line_id": "them_demo_sx1_7",
+   "quote": "Maria, do you have any questions?",
+   "end_char": 39,
+   "also": []
+  },
+  {
+   "id": "L8",
+   "verdict": "must_not",
+   "kind": "request",
+   "canonical": "",
+   "line_id": "them_demo_sx1_8",
+   "quote": "Can you go back to the second slide?",
+   "end_char": 41,
+   "also": []
+  },
+  {
+   "id": "L9",
+   "verdict": "optional",
+   "kind": "confirm",
+   "canonical": "You used a queue between the two services, is that right?",
+   "line_id": "them_demo_sx1_9",
+   "quote": "between the two services, right?",
+   "end_char": 61,
+   "also": []
+  },
+  {
+   "id": "L10",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "Why did you choose a queue between the two services?",
+   "line_id": "them_demo_sx1_10",
+   "quote": "Why did you choose a queue there?",
+   "end_char": 33,
+   "also": []
+  },
+  {
+   "id": "L11",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "How many messages per second did the queue handle?",
+   "line_id": "them_demo_sx1_11",
+   "quote": "how many messages per second did it handle?",
+   "end_char": 47,
+   "also": []
+  },
+  {
+   "id": "L12",
+   "verdict": "optional",
+   "kind": "direct",
+   "canonical": "Does that plan sound good to you?",
+   "line_id": "them_demo_sx1_12",
+   "quote": "Does that sound good to you?",
+   "end_char": 56,
+   "also": []
+  },
+  {
+   "id": "L13",
+   "verdict": "must",
+   "kind": "direct",
+   "canonical": "Do you have any other questions?",
+   "line_id": "them_demo_sx1_12",
+   "quote": "was there any other question that you had?",
+   "end_char": 103,
+   "also": []
+  }
+ ]
+}
