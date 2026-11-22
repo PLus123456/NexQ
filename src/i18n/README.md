@@ -72,6 +72,7 @@ namespace files, even for components that live elsewhere.
 | `overlay` | Overlay (except the translation package's files) | P6 |
 | `calllog` | AI call log | P6 |
 | `misc` | Remaining components, hooks, stores, lib messages | P6 |
+| `captions` | Caption strip (the `captions` window) and its settings page | Interview redesign |
 
 Adding a namespace means editing `resources.ts` (P0 only).
 
@@ -117,6 +118,7 @@ comment on the same line). `--fail-on-report` also fails on findings.
 | Launcher | 主窗口 | |
 | Meeting | 会议 | |
 | Transcript | 转写记录；实时显示时叫“字幕” | |
+| Caption strip | 字幕条 | The floating window that shows speech and its translation in short pieces |
 | Segment | 片段 | |
 | You / Them | 我 / 对方 | In-person mode's Room: 现场 |
 | Speaker | 说话人 | |

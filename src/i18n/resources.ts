@@ -3,6 +3,7 @@
 // belongs to one work package (see README.md). Only P0 edits this file.
 
 import enCalllog from "./locales/en/calllog.json";
+import enCaptions from "./locales/en/captions.json";
 import enCommon from "./locales/en/common.json";
 import enLauncher from "./locales/en/launcher.json";
 import enLlm from "./locales/en/llm.json";
@@ -14,6 +15,7 @@ import enSettings from "./locales/en/settings.json";
 import enStt from "./locales/en/stt.json";
 import enTranslation from "./locales/en/translation.json";
 import zhCalllog from "./locales/zh-CN/calllog.json";
+import zhCaptions from "./locales/zh-CN/captions.json";
 import zhCommon from "./locales/zh-CN/common.json";
 import zhLauncher from "./locales/zh-CN/launcher.json";
 import zhLlm from "./locales/zh-CN/llm.json";
@@ -37,6 +39,7 @@ export const NAMESPACES = [
   "overlay",
   "calllog",
   "misc",
+  "captions",
 ] as const;
 
 export type Namespace = (typeof NAMESPACES)[number];
@@ -56,6 +59,7 @@ export const en = {
   overlay: enOverlay,
   calllog: enCalllog,
   misc: enMisc,
+  captions: enCaptions,
 } satisfies Record<Namespace, object>;
 
 export const zhCN = {
@@ -70,6 +74,7 @@ export const zhCN = {
   overlay: zhOverlay,
   calllog: zhCalllog,
   misc: zhMisc,
+  captions: zhCaptions,
 } satisfies Record<Namespace, object>;
 
 export const resources = {

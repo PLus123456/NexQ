@@ -5,9 +5,8 @@ import { useT } from "../../i18n";
 import { useStreamStore } from "../../stores/streamStore";
 import { showToast } from "../../stores/toastStore";
 import { Sparkles, Copy, Download, Loader2, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { AnswerMarkdown } from "../../components/AnswerMarkdown";
 import { withoutImages } from "../../lib/answerMarkdown";
 
 export function stripThinkTags(text: string): string {
@@ -152,9 +151,7 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
           </button>
         </div>
         <div>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-            {cleanedStreaming}
-          </ReactMarkdown>
+          <AnswerMarkdown content={cleanedStreaming} streaming components={mdComponents} />
           <span className="inline-block h-4 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
         </div>
       </div>
@@ -204,11 +201,7 @@ export function SummaryView({ meeting, generation, onExport }: SummaryViewProps)
             {t("common:actions.export")}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-            {cleanedSummary}
-          </ReactMarkdown>
-        </div>
+        <AnswerMarkdown className="flex-1 overflow-y-auto px-5 py-4" content={cleanedSummary} components={mdComponents} />
       </div>
     );
   }

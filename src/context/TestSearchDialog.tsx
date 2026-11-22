@@ -5,9 +5,8 @@ import { useConfigStore } from "../stores/configStore";
 import { testRagAnswer } from "../lib/ipc";
 import { onStreamStart, onStreamToken, onStreamEnd, onStreamError } from "../lib/events";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { answerMd } from "../launcher/meeting-details/AskMeetingTab";
+import { AnswerMarkdown } from "../components/AnswerMarkdown";
+import { answerMd, STREAMING_ANSWER_SPACING } from "../launcher/meeting-details/AskMeetingTab";
 import { stripThinkTags } from "../launcher/meeting-details/SummaryView";
 import {
   X,
@@ -441,10 +440,8 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
                   </div>
                 </div>
                 {answerText ? (
-                  <div className="select-text text-sm">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={answerMd}>
-                      {answerText}
-                    </ReactMarkdown>
+                  <div className={isGenerating ? `select-text text-sm ${STREAMING_ANSWER_SPACING}` : "select-text text-sm"}>
+                    <AnswerMarkdown content={answerText} streaming={isGenerating} components={answerMd} />
                     {isGenerating && <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-primary/60 align-middle" />}
                   </div>
                 ) : (

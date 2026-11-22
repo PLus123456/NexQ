@@ -12,7 +12,7 @@ import { APP_NAME } from "../lib/brand";
 import { errorMessage } from "../stores/translationStore";
 import { useT } from "../i18n";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { QuestionPanel } from "./QuestionDetector";
+import { QuestionPanel } from "./QuestionStrip";
 import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { AIResponsePanel } from "./AIResponsePanel";
 import { ModeButtons } from "./ModeButtons";

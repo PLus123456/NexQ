@@ -10,9 +10,7 @@ import {
   Globe,
   History,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { noRemoteImages } from "../lib/answerMarkdown";
+import { AnswerMarkdown } from "../components/AnswerMarkdown";
 import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { getModeLabel } from "../lib/utils";
@@ -235,9 +233,7 @@ export function AIResponsePanel() {
             <SourceNotices notices={currentNotices} />
             {currentContent && (
               <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
-                  {currentContent}
-                </ReactMarkdown>
+                <AnswerMarkdown content={currentContent} streaming />
                 <span className="inline-block h-3 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
               </div>
             )}
@@ -258,11 +254,11 @@ export function AIResponsePanel() {
               />
             )}
             <SourceNotices notices={currentResponse?.source_notices ?? []} />
-            <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
-                {currentContent}
-              </ReactMarkdown>
-            </div>
+            <AnswerMarkdown
+              className="prose prose-sm prose-invert max-w-none leading-relaxed"
+              style={proseStyle}
+              content={currentContent}
+            />
             <SourcesList sources={currentSources} />
             <SourceChips chips={currentResponse?.source_chips ?? []} />
           </div>
@@ -280,11 +276,11 @@ export function AIResponsePanel() {
               onPin={() => handlePin(displayResponse!.id)}
             />
             <SourceNotices notices={displayResponse.source_notices ?? []} />
-            <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>
-                {displayContent}
-              </ReactMarkdown>
-            </div>
+            <AnswerMarkdown
+              className="prose prose-sm prose-invert max-w-none leading-relaxed"
+              style={proseStyle}
+              content={displayContent}
+            />
             <SourcesList sources={displayResponse.sources} />
             <SourceChips chips={displayResponse.source_chips ?? []} />
           </div>

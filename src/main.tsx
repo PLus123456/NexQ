@@ -22,6 +22,20 @@ function render() {
         </React.StrictMode>
       );
     });
+  } else if (view === "captions") {
+    // Caption strip: its own small root too. The page is see-through, so only
+    // what the strip draws covers the meeting underneath.
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+    import("./captions/CaptionsWindow").then(({ CaptionsWindow }) => {
+      ReactDOM.createRoot(document.getElementById("root")!).render(
+        <React.StrictMode>
+          <div className="h-screen w-screen overflow-hidden">
+            <CaptionsWindow />
+          </div>
+        </React.StrictMode>
+      );
+    });
   } else if (view === "devlog") {
     // Render only the DevLog in this window — it subscribes to Tauri events
     // independently and reads from the shared devLogStore.

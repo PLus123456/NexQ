@@ -26,6 +26,13 @@ import {
 } from "../lib/llmRequestOptions";
 import { clampMinutes, DEFAULT_CONTEXT_SCOPE, SCOPE_KINDS } from "../lib/contextScope";
 import {
+  DEFAULT_CAPTIONS_SETTINGS,
+  type CaptionsBounds,
+  type CaptionsParties,
+  type CaptionsSettings,
+  type CaptionsShow,
+} from "../lib/captions/types";
+import {
   DEFAULT_OPENAI_COMPAT_STT_CONFIG,
   DEFAULT_SONIOX_CONFIG,
   normalizeSonioxConfig,
@@ -256,7 +263,7 @@ export async function persistValue(key: string, value: unknown): Promise<void> {
   }
 }
 
-interface ConfigState {
+interface ConfigState extends CaptionsSettings {
   // Appearance
   theme: ThemeMode;
 
@@ -486,6 +493,21 @@ interface ConfigState {
   setAiResponseHPad: (v: number) => void;
   setAiResponseAlign: (align: "left" | "center" | "right") => void;
   setOverlayOpacity: (opacity: number) => void;
+  // Caption strip (the `captions` window); the fields are in CaptionsSettings.
+  setCaptionsEnabled: (enabled: boolean) => void;
+  setCaptionsParties: (parties: CaptionsParties) => void;
+  setCaptionsShow: (show: CaptionsShow) => void;
+  setCaptionsFontSize: (size: number) => void;
+  setCaptionsTranslationFontSize: (size: number) => void;
+  setCaptionsTextColor: (color: string) => void;
+  setCaptionsTranslationColor: (color: string) => void;
+  setCaptionsBgOpacity: (opacity: number) => void;
+  setCaptionsCueCount: (count: number) => void;
+  setCaptionsFadeSeconds: (seconds: number) => void;
+  /** Records the lock only; `setCaptionsLocked` in lib/captions/window.ts also applies it to the window. */
+  setCaptionsLocked: (locked: boolean) => void;
+  /** Null puts the strip back at the bottom centre of the screen. */
+  setCaptionsBounds: (bounds: CaptionsBounds | null) => void;
   setContextScope: (scope: ContextScopeSetting) => void;
   setContextScopeSticky: (sticky: boolean) => void;
   setShowPostMeetingTranslation: (enabled: boolean) => void;
@@ -576,6 +598,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
   aiResponseHPad: 0,
   aiResponseAlign: "left" as const,
   overlayOpacity: 0.65,
+  ...DEFAULT_CAPTIONS_SETTINGS,
   contextScope: DEFAULT_CONTEXT_SCOPE,
   contextScopeSticky: true,
   showPostMeetingTranslation: true,
@@ -997,6 +1020,54 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ overlayOpacity: opacity });
     persistValue("overlayOpacity", opacity);
   },
+  setCaptionsEnabled: (enabled) => {
+    set({ captionsEnabled: enabled });
+    persistValue("captionsEnabled", enabled);
+  },
+  setCaptionsParties: (parties) => {
+    set({ captionsParties: parties });
+    persistValue("captionsParties", parties);
+  },
+  setCaptionsShow: (show) => {
+    set({ captionsShow: show });
+    persistValue("captionsShow", show);
+  },
+  setCaptionsFontSize: (size) => {
+    set({ captionsFontSize: size });
+    persistValue("captionsFontSize", size);
+  },
+  setCaptionsTranslationFontSize: (size) => {
+    set({ captionsTranslationFontSize: size });
+    persistValue("captionsTranslationFontSize", size);
+  },
+  setCaptionsTextColor: (color) => {
+    set({ captionsTextColor: color });
+    persistValue("captionsTextColor", color);
+  },
+  setCaptionsTranslationColor: (color) => {
+    set({ captionsTranslationColor: color });
+    persistValue("captionsTranslationColor", color);
+  },
+  setCaptionsBgOpacity: (opacity) => {
+    set({ captionsBgOpacity: opacity });
+    persistValue("captionsBgOpacity", opacity);
+  },
+  setCaptionsCueCount: (count) => {
+    set({ captionsCueCount: count });
+    persistValue("captionsCueCount", count);
+  },
+  setCaptionsFadeSeconds: (seconds) => {
+    set({ captionsFadeSeconds: seconds });
+    persistValue("captionsFadeSeconds", seconds);
+  },
+  setCaptionsLocked: (locked) => {
+    set({ captionsLocked: locked });
+    persistValue("captionsLocked", locked);
+  },
+  setCaptionsBounds: (bounds) => {
+    set({ captionsBounds: bounds });
+    persistValue("captionsBounds", bounds);
+  },
   setContextScope: (scope) => {
     const next = normalizeContextScope(scope);
     set({ contextScope: next });
@@ -1145,6 +1216,18 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const aiResponseHPad = await store.get<number>("aiResponseHPad");
       const aiResponseAlign = await store.get<string>("aiResponseAlign");
       const overlayOpacity = await store.get<number>("overlayOpacity");
+      const captionsEnabled = await store.get<boolean>("captionsEnabled");
+      const captionsParties = await store.get<CaptionsParties>("captionsParties");
+      const captionsShow = await store.get<CaptionsShow>("captionsShow");
+      const captionsFontSize = await store.get<number>("captionsFontSize");
+      const captionsTranslationFontSize = await store.get<number>("captionsTranslationFontSize");
+      const captionsTextColor = await store.get<string>("captionsTextColor");
+      const captionsTranslationColor = await store.get<string>("captionsTranslationColor");
+      const captionsBgOpacity = await store.get<number>("captionsBgOpacity");
+      const captionsCueCount = await store.get<number>("captionsCueCount");
+      const captionsFadeSeconds = await store.get<number>("captionsFadeSeconds");
+      const captionsLocked = await store.get<boolean>("captionsLocked");
+      const captionsBounds = await store.get<CaptionsBounds | null>("captionsBounds");
       const contextScope = await store.get<ContextScopeSetting>("contextScope");
       const contextScopeSticky = await store.get<boolean>("contextScopeSticky");
       const showPostMeetingTranslation = await store.get<boolean>("showPostMeetingTranslation");
@@ -1261,6 +1344,18 @@ export const useConfigStore = create<ConfigState>((set) => ({
         aiResponseHPad: aiResponseHPad ?? 0,
         aiResponseAlign: (aiResponseAlign as "left" | "center" | "right") ?? "left",
         overlayOpacity: overlayOpacity ?? 0.65,
+        captionsEnabled: captionsEnabled ?? DEFAULT_CAPTIONS_SETTINGS.captionsEnabled,
+        captionsParties: captionsParties ?? DEFAULT_CAPTIONS_SETTINGS.captionsParties,
+        captionsShow: captionsShow ?? DEFAULT_CAPTIONS_SETTINGS.captionsShow,
+        captionsFontSize: captionsFontSize ?? DEFAULT_CAPTIONS_SETTINGS.captionsFontSize,
+        captionsTranslationFontSize: captionsTranslationFontSize ?? DEFAULT_CAPTIONS_SETTINGS.captionsTranslationFontSize,
+        captionsTextColor: captionsTextColor ?? DEFAULT_CAPTIONS_SETTINGS.captionsTextColor,
+        captionsTranslationColor: captionsTranslationColor ?? DEFAULT_CAPTIONS_SETTINGS.captionsTranslationColor,
+        captionsBgOpacity: captionsBgOpacity ?? DEFAULT_CAPTIONS_SETTINGS.captionsBgOpacity,
+        captionsCueCount: captionsCueCount ?? DEFAULT_CAPTIONS_SETTINGS.captionsCueCount,
+        captionsFadeSeconds: captionsFadeSeconds ?? DEFAULT_CAPTIONS_SETTINGS.captionsFadeSeconds,
+        captionsLocked: captionsLocked ?? DEFAULT_CAPTIONS_SETTINGS.captionsLocked,
+        captionsBounds: captionsBounds ?? DEFAULT_CAPTIONS_SETTINGS.captionsBounds,
         contextScope: normalizeContextScope(contextScope),
         contextScopeSticky: contextScopeSticky ?? true,
         sttLanguage: sttLanguage ?? "en-US",
@@ -1362,6 +1457,45 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<number>("overlayOpacity", (val) => {
         if (val != null) set({ overlayOpacity: val });
+      });
+      // The caption strip is set up in Settings (launcher), switched from the
+      // answer window and moved in its own window: every window follows.
+      store.onKeyChange<boolean>("captionsEnabled", (val) => {
+        if (val != null) set({ captionsEnabled: val });
+      });
+      store.onKeyChange<CaptionsParties>("captionsParties", (val) => {
+        if (val != null) set({ captionsParties: val });
+      });
+      store.onKeyChange<CaptionsShow>("captionsShow", (val) => {
+        if (val != null) set({ captionsShow: val });
+      });
+      store.onKeyChange<number>("captionsFontSize", (val) => {
+        if (val != null) set({ captionsFontSize: val });
+      });
+      store.onKeyChange<number>("captionsTranslationFontSize", (val) => {
+        if (val != null) set({ captionsTranslationFontSize: val });
+      });
+      store.onKeyChange<string>("captionsTextColor", (val) => {
+        if (val != null) set({ captionsTextColor: val });
+      });
+      store.onKeyChange<string>("captionsTranslationColor", (val) => {
+        if (val != null) set({ captionsTranslationColor: val });
+      });
+      store.onKeyChange<number>("captionsBgOpacity", (val) => {
+        if (val != null) set({ captionsBgOpacity: val });
+      });
+      store.onKeyChange<number>("captionsCueCount", (val) => {
+        if (val != null) set({ captionsCueCount: val });
+      });
+      store.onKeyChange<number>("captionsFadeSeconds", (val) => {
+        if (val != null) set({ captionsFadeSeconds: val });
+      });
+      store.onKeyChange<boolean>("captionsLocked", (val) => {
+        if (val != null) set({ captionsLocked: val });
+      });
+      // Null is a value here: the strip goes back to its default place.
+      store.onKeyChange<CaptionsBounds | null>("captionsBounds", (val) => {
+        if (val !== undefined) set({ captionsBounds: val });
       });
       store.onKeyChange<string>("customLlmBaseUrl", (val) => {
         if (val != null) set({ customLlmBaseUrl: val });

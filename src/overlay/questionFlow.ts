@@ -1,7 +1,10 @@
-import { useEffect, useRef, useCallback } from "react";
+// The overlay's questions and their automatic answers: which questions the
+// other party asked, which one gets answered and when. The question strip
+// (QuestionStrip.tsx) renders what `useQuestionFlow()` returns and nothing else.
+
+import { useEffect, useMemo, useRef } from "react";
 import { create } from "zustand";
-import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
-import { useT } from "../i18n";
+import { t } from "../i18n";
 import { onTranscriptFinal, onTranscriptUpdate } from "../lib/events";
 import {
   onQuestionDetectionPending, onQuestionDetectionResult, type DetectionPending, type DetectionResult,
@@ -9,15 +12,14 @@ import {
 import { runUserAction } from "../lib/userAction";
 import {
   REFUSED, answerRunning, autoAnswerRunning, decideTurnStep, inTurn, logAutoAnswer, runYourAction, sameQuestion,
-  stopAutoAnswer,
+  stopAutoAnswer, useAutoAnswerRunning,
 } from "../lib/autoAnswer";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { useConfigStore } from "../stores/configStore";
-import { useQuestionStore, type TrackedQuestion } from "../stores/questionStore";
+import { newQuestionId, useQuestionStore, type TrackedQuestion } from "../stores/questionStore";
 import { useQuestionDetectionStore } from "../stores/questionDetectionStore";
 import { showToast } from "../stores/toastStore";
-import { QuestionPredictions } from "./QuestionPredictions";
 import type { DetectedQuestion, TranscriptSegment, TranscriptUpdateEvent } from "../lib/types";
 
 /**
@@ -25,6 +27,33 @@ import type { DetectedQuestion, TranscriptSegment, TranscriptUpdateEvent } from 
  * their question, so a question still being asked isn't answered half-way.
  */
 export const AUTO_TRIGGER_DELAY_MS = 1500;
+
+/** A question as the strip shows it. */
+export interface FlowQuestion {
+  /** Names the question for `answer` and `dismiss`; it stays the same while the question is listed. */
+  id: string;
+  text: string;
+  /** Asked outright, or implied by what they said. Every question is "direct" for now. */
+  askKind: "direct" | "implicit";
+  /**
+   * "detecting": a first guess the model has not confirmed (not produced yet);
+   * "open": can be answered; "answering": its answer is being sent or is
+   * arriving; "answered"; "held": not answered automatically, waits for a click.
+   */
+  status: "detecting" | "open" | "answering" | "answered" | "held";
+  /** An answer was prepared for it in advance. */
+  prepared: boolean;
+  timestampMs: number;
+}
+
+export interface QuestionFlow {
+  /** Newest first, at most 10. */
+  questions: FlowQuestion[];
+  /** The user asked for this question's answer: a running automatic answer stops for it. */
+  answer: (id: string) => void;
+  /** The user closed this question. */
+  dismiss: (id: string) => void;
+}
 
 const isOtherParty = (speaker: string) => ["them", "interviewer"].includes(speaker.toLowerCase());
 const sameSpeaker = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -129,6 +158,13 @@ const useDetectionRevision = create<{ latest: number; answerable: number | null 
   answerable: null,
 }));
 
+/**
+ * Questions whose answer the user asked for with a click, until that answer
+ * has finished (or could not start). An automatic answer is tracked by the
+ * question store's `autoAnswer`.
+ */
+const useClickedAnswers = create<{ ids: readonly string[] }>(() => ({ ids: [] }));
+
 /** The transcript line a decision is about (lines keep their start time as they grow). */
 function lineIdOf(timestampMs: number, source: string): string {
   const segments = useTranscriptStore.getState().segments;
@@ -179,7 +215,13 @@ function onDetectionResult(event: DetectionResult) {
       return { questions: rest };
     }
     const card: DetectedCard = {
-      ...question, assisted: false, segmentId, revision: event.revision, prepared: event.prepared,
+      ...question,
+      // The line's question, decided again: still the same card to the strip.
+      id: existing?.id ?? newQuestionId(rest, question, segmentId),
+      assisted: false,
+      segmentId,
+      revision: event.revision,
+      prepared: event.prepared,
     };
     return { questions: [card, ...rest].slice(0, 10) };
   });
@@ -205,6 +247,7 @@ export function resetQuestionDetectionForTests() {
   void detectionListeners?.then((unlisten) => unlisten.forEach((u) => u())).catch(() => {});
   detectionListeners = null;
   useDetectionRevision.setState({ latest: 0, answerable: null });
+  useClickedAnswers.setState({ ids: [] });
 }
 
 /** The question stays available after its prepared answer couldn't replay. */
@@ -301,26 +344,50 @@ async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
   }
 }
 
-/**
- * The overlay's question card, unless question detection is off. Predicted
- * questions (M2) show with detection off too, and so do their cards: a
- * prepared answer replays when its question is detected.
- */
-export function QuestionPanel() {
-  const questionDetection = useAIActionsStore((s) => s.configs.globalDefaults.questionDetection);
-  const predictionEnabled = useQuestionDetectionStore((s) => s.view?.settings?.prediction_enabled ?? false);
-  if (!questionDetection && !predictionEnabled) return null;
-  return (
-    <div className="shrink-0 rounded-xl border border-info/10 bg-info/5 px-4 py-3">
-      <QuestionDetector />
-      <QuestionPredictions />
-    </div>
-  );
+/** The user asked for this question's answer (a click on its card). */
+function answerQuestion(id: string) {
+  const store = useQuestionStore.getState();
+  const index = store.questions.findIndex((q) => q.id === id);
+  const question = store.questions[index];
+  if (!question) return;
+  // Its automatic answer is on the way: a click doesn't restart it.
+  if (autoAnswerRunning() && sameQuestion(store.autoAnswer?.question, question.text)) return;
+  store.markAssisted(index);
+  useClickedAnswers.setState((s) => ({ ids: [...s.ids, id] }));
+  runYourAction("Assist", question.text)
+    .catch((err) => {
+      // No answer came, so it stays a card to click.
+      useQuestionStore.getState().holdBack(question.segmentId, question.text);
+      showToast(
+        t(String(err).includes(REFUSED) ? "overlay:modes.errors.anotherRunning" : "overlay:modes.errors.generateFailed"),
+        "error",
+      );
+    })
+    .finally(() => {
+      // One click's answer is over; an earlier click on the same question may still be running.
+      useClickedAnswers.setState((s) => {
+        const at = s.ids.indexOf(id);
+        return at < 0 ? s : { ids: s.ids.filter((_, i) => i !== at) };
+      });
+    });
 }
 
-export function QuestionDetector() {
-  const { t } = useT("overlay");
-  const questions = useQuestionStore((s) => s.questions) as DetectedCard[];
+/** The user closed this question. */
+function dismissQuestion(id: string) {
+  const store = useQuestionStore.getState();
+  const index = store.questions.findIndex((q) => q.id === id);
+  if (index >= 0) store.dismiss(index);
+}
+
+/**
+ * The questions of the meeting and what a click on one does. It also runs
+ * everything that happens by itself while it is mounted: it listens for the
+ * backend's decisions, answers the newest question after the quiet wait or on
+ * the provider's turn signals, and leaves questions that were unanswered when
+ * it came back as cards to click. Mount it in one place (the question strip).
+ */
+export function useQuestionFlow(): QuestionFlow {
+  const cards = useQuestionStore((s) => s.questions) as DetectedCard[];
   const answerable = useDetectionRevision((s) => s.answerable);
   const autoTrigger = useAIActionsStore((s) => s.configs.globalDefaults.autoTrigger);
   const turnSignals = useQuestionDetectionStore((s) => autoTrigger && s.view?.effective_mode === "rules");
@@ -355,7 +422,7 @@ export function QuestionDetector() {
       if (store.panelSeen) store.holdBackUnanswered();
     }
     if (!store.panelSeen) store.setPanelSeen();
-  }, [questions]);
+  }, [cards]);
 
   // Providers that detect turns (Cartesia, Deepgram Flux): answer on their
   // "done", or early on "probably done", instead of waiting for quiet. Only
@@ -376,27 +443,7 @@ export function QuestionDetector() {
     };
   }, [turnSignals]);
 
-  const handleAssist = useCallback((index: number) => {
-    const question = questions[index];
-    if (!question) return;
-    // Its automatic answer is on the way: a click doesn't restart it.
-    const store = useQuestionStore.getState();
-    if (autoAnswerRunning() && sameQuestion(store.autoAnswer?.question, question.text)) return;
-    store.markAssisted(index);
-    runYourAction("Assist", question.text).catch((err) => {
-      // No answer came, so it stays a card to click.
-      useQuestionStore.getState().holdBack(question.segmentId, question.text);
-      showToast(t(String(err).includes(REFUSED) ? "modes.errors.anotherRunning" : "modes.errors.generateFailed"), "error");
-    });
-  }, [questions, t]);
-
-  const handleDismiss = useCallback((index: number, e: React.MouseEvent) => {
-    e.stopPropagation();
-    useQuestionStore.getState().dismiss(index);
-  }, []);
-
-  const latest = questions.length > 0 ? questions[0] : null;
-  const previousQuestions = questions.slice(1, 4);
+  const latest = cards.length > 0 ? cards[0] : null;
 
   // Auto-Trigger: answer the newest question the backend confirmed once the
   // other party has been quiet for a moment. More words from them restart the
@@ -414,129 +461,26 @@ export function QuestionDetector() {
     return () => clearTimeout(timer);
   }, [waiting, latest?.text, preparedReplay, otherPartyActivity]);
 
-  return (
-    <div className="flex flex-col gap-2.5" role="region" aria-label={t("question.region.ariaLabel")}>
-      {/* Latest question — prominent card */}
-      <div
-        className={`group flex items-start gap-3 rounded-lg transition-all duration-200 ${
-          latest ? "cursor-pointer hover:bg-info/10 question-card-enter" : ""
-        }`}
-        onClick={() => latest && handleAssist(0)}
-        onKeyDown={(e) => { if (latest && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleAssist(0); } }}
-        role={latest ? "button" : undefined}
-        tabIndex={latest ? 0 : undefined}
-        aria-label={
-          latest
-            ? t(latest.assisted ? "question.card.labelAnswered" : "question.card.labelPending", { text: latest.text })
-            : undefined
-        }
-      >
-        <div className="relative mt-0.5 shrink-0" aria-hidden="true">
-          <HelpCircle className={`h-5 w-5 transition-colors ${latest ? "text-info" : "text-muted-foreground/50"}`} />
-          {latest && !latest.assisted && (
-            <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-info animate-pulse" />
-          )}
-          {latest?.assisted && (
-            <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-success">
-              <Check className="h-2 w-2 text-white" />
-            </span>
-          )}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          {latest ? (
-            <p className="text-sm leading-relaxed font-medium text-foreground/90">
-              &ldquo;{latest.text}&rdquo;
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground/50">
-              {t("question.empty")}
-            </p>
-          )}
-        </div>
-
-        {latest && (
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              onClick={(e) => { e.stopPropagation(); handleAssist(0); }}
-              aria-label={latest.assisted ? t("question.button.answeredLabel") : t("question.button.assistLabel")}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-150 cursor-pointer ${
-                latest.assisted
-                  ? "bg-success/10 border border-success/20 text-success"
-                  : "bg-info/10 border border-info/20 text-info hover:bg-info/20"
-              }`}
-            >
-              {latest.assisted ? (
-                <><Check className="h-3.5 w-3.5" aria-hidden="true" />{t("question.answered")}</>
-              ) : (
-                <><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />{t("question.assist")}</>
-              )}
-            </button>
-            <button
-              onClick={(e) => handleDismiss(0, e)}
-              aria-label={t("question.dismiss")}
-              className="rounded-lg p-1.5 text-muted-foreground/30 opacity-0 transition-all duration-150 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Previous questions — compact list */}
-      {previousQuestions.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {previousQuestions.map((q, idx) => {
-            const realIdx = idx + 1;
-            return (
-              <div
-                key={`q-${realIdx}-${q.timestamp_ms}`}
-                className={`group/q flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-all duration-150 question-card-enter ${
-                  q.assisted
-                    ? "bg-success/5 border border-success/10"
-                    : "bg-card/20 hover:bg-card/40 hover:border-border/20 cursor-pointer"
-                }`}
-                onClick={() => !q.assisted && handleAssist(realIdx)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleAssist(realIdx); } }}
-                title={q.text}
-              >
-                <div className="shrink-0">
-                  {q.assisted ? (
-                    <div className="flex h-4 w-4 items-center justify-center rounded-full bg-success/20">
-                      <Check className="h-2.5 w-2.5 text-success" />
-                    </div>
-                  ) : (
-                    <div className="flex h-4 w-4 items-center justify-center rounded-full bg-muted/30">
-                      <Clock className="h-2.5 w-2.5 text-muted-foreground/60" />
-                    </div>
-                  )}
-                </div>
-
-                <span className={`flex-1 truncate text-xs leading-snug transition-colors ${
-                  q.assisted
-                    ? "text-success/70 font-medium"
-                    : "text-muted-foreground/60 group-hover/q:text-foreground/80"
-                }`}>
-                  {q.text}
-                </span>
-
-                {!q.assisted && (
-                  <Sparkles className="h-3 w-3 shrink-0 text-info/0 group-hover/q:text-info/60 transition-colors" />
-                )}
-                <button
-                  onClick={(e) => handleDismiss(realIdx, e)}
-                  aria-label={t("question.dismiss")}
-                  className="rounded p-0.5 text-muted-foreground/0 opacity-0 transition-all duration-150 hover:bg-destructive/10 hover:text-destructive group-hover/q:opacity-100 group-hover/q:text-muted-foreground/30 cursor-pointer"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+  // Whose answer is on its way: the automatic one's question, and the ones clicked.
+  const autoAnswer = useQuestionStore((s) => s.autoAnswer);
+  const autoRunning = useAutoAnswerRunning();
+  const clicked = useClickedAnswers((s) => s.ids);
+  const questions = useMemo(
+    () => cards.map((card): FlowQuestion => {
+      const answering = clicked.includes(card.id)
+        || (autoRunning && !!autoAnswer && autoAnswer.segmentId === card.segmentId
+          && sameQuestion(autoAnswer.question, card.text));
+      return {
+        id: card.id,
+        text: card.text,
+        askKind: "direct",
+        status: card.assisted ? (answering ? "answering" : "answered") : card.heldBack ? "held" : "open",
+        prepared: !!card.prepared,
+        timestampMs: card.timestamp_ms,
+      };
+    }),
+    [cards, autoAnswer, autoRunning, clicked],
   );
+
+  return { questions, answer: answerQuestion, dismiss: dismissQuestion };
 }

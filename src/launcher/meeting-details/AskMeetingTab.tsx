@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ParseKeys } from "i18next";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { AnswerMarkdown } from "../../components/AnswerMarkdown";
 import { withoutImages } from "../../lib/answerMarkdown";
 import { findSourcesSession } from "../../lib/sourcePills";
 import { useAgentStore } from "../../stores/agentStore";
@@ -22,6 +21,13 @@ export const answerMd: Components = withoutImages({
   h3: ({ children }) => <h4 className="mt-3 mb-1 text-sm font-medium text-foreground/90">{children}</h4>,
   p: ({ children }) => <p className="mb-2.5 text-sm leading-relaxed text-foreground/85 last:mb-0">{children}</p>,
 });
+
+/**
+ * For the element that holds a streaming answer and its cursor: the cursor
+ * follows the text, so the answer's last paragraph keeps its bottom spacing
+ * (`answerMd` drops it for a last child) until the cursor is gone.
+ */
+export const STREAMING_ANSWER_SPACING = "[&>.answer-md>p:last-child]:mb-2.5";
 
 /** Starter questions: clicking one asks it (in the UI language), like typing it. */
 const SUGGESTION_KEYS: ParseKeys<"launcher">[] = [
@@ -233,10 +239,8 @@ function Answer({ item, loadingSources }: { item: ChatItem; loadingSources: bool
         </div>
       ) : (
         text && (
-          <div className="text-sm">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={answerMd}>
-              {text}
-            </ReactMarkdown>
+          <div className={streaming ? `text-sm ${STREAMING_ANSWER_SPACING}` : "text-sm"}>
+            <AnswerMarkdown content={text} streaming={streaming} components={answerMd} />
             {streaming && <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-primary/60 align-middle" />}
           </div>
         )

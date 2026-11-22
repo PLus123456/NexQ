@@ -3,6 +3,8 @@
 // All types mirror Rust structs. Other sub-PRDs IMPORT from here only.
 // ============================================================================
 
+import type { TranslationChunk } from "./captions/types";
+
 // == AUDIO TYPES ==
 
 export type AudioSource = "Mic" | "System" | "Room";
@@ -1111,6 +1113,11 @@ export interface TranslationResult {
   provider: string;
   /** Engine-side translations (Soniox) stream in: false while the sentence's translation can still change. */
   is_final?: boolean;
+  /**
+   * The line's translation so far as aligned pieces, in order. Only an engine
+   * that knows which words each piece translates sends them (Soniox).
+   */
+  chunks?: TranslationChunk[];
 }
 
 export interface TranslationLanguage {

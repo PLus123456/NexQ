@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { DetectedQuestion } from "../lib/types";
 
 export interface TrackedQuestion extends DetectedQuestion {
+  /** Names this card for as long as it is listed (see `newQuestionId`). */
+  id: string;
   assisted: boolean;
   /** Transcript line the question came from (lines grow while someone talks). */
   segmentId?: string;
@@ -19,6 +21,21 @@ export interface AutoAnswerRef {
   early: boolean;
   /** Settles once the answer has finished, was stopped, or was refused. */
   done: Promise<void>;
+}
+
+/**
+ * The id of a new card: the transcript line it came from and when that line
+ * started, numbered when the line already has a card (a line can ask twice).
+ */
+export function newQuestionId(
+  listed: readonly TrackedQuestion[],
+  question: DetectedQuestion,
+  segmentId: string | undefined,
+): string {
+  const base = `${segmentId ?? question.source}@${question.timestamp_ms}`;
+  let id = base;
+  for (let n = 2; listed.some((q) => q.id === id); n++) id = `${base}#${n}`;
+  return id;
 }
 
 /** Text of each final line when it was last checked for a question. */
@@ -76,7 +93,8 @@ export const useQuestionStore = create<QuestionState>((set) => ({
         }
       }
       if (prev.length > 0 && prev[0].text === q.text) return state;
-      return { questions: [{ ...q, assisted: false, segmentId }, ...prev].slice(0, 10) };
+      const id = newQuestionId(prev, q, segmentId);
+      return { questions: [{ ...q, id, assisted: false, segmentId }, ...prev].slice(0, 10) };
     }),
 
   checkLine: (id, text) => {
@@ -112,7 +130,8 @@ export const useQuestionStore = create<QuestionState>((set) => ({
     set((state) => {
       const i = state.questions.findIndex((p) => p.segmentId === segmentId);
       if (i < 0) {
-        return { questions: [{ ...q, assisted: true, segmentId }, ...state.questions].slice(0, 10) };
+        const id = newQuestionId(state.questions, q, segmentId);
+        return { questions: [{ ...q, id, assisted: true, segmentId }, ...state.questions].slice(0, 10) };
       }
       return {
         questions: state.questions.map((p, j) =>

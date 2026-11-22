@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability set for NexQ",
-  "windows": ["launcher", "overlay", "devlog", "meeting-prompt"],
+  "windows": ["launcher", "overlay", "devlog", "meeting-prompt", "captions"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -19,6 +19,7 @@
     "core:webview:allow-set-webview-background-color",
     "core:window:allow-set-decorations",
     "core:window:allow-set-skip-taskbar",
+    "core:window:allow-set-ignore-cursor-events",
     "core:tray:default",
     "core:tray:allow-set-icon",
     "dialog:default",
