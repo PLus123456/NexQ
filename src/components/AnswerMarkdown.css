@@ -1,0 +1,240 @@
+/*
+ * Typography of model output (AnswerMarkdown). Read at a glance during a live
+ * interview: compact and clearly structured rather than airy.
+ *
+ * - Every size and gap is in `em`: the caller's font size, line height and
+ *   colour (the overlay's text settings) carry through.
+ * - Tints are mixed from `currentColor`, so they follow the text colour in the
+ *   light and the dark theme and with a custom answer colour.
+ * - Element rules apply to elements without a class only (`:not([class])`):
+ *   an element a call site renders with its own classes keeps its own look,
+ *   and the rules still outrank Tailwind's preflight reset whatever order the
+ *   stylesheets load in.
+ */
+
+.answer-md {
+  --amd-gap: 0.55em;
+  --amd-rule: color-mix(in srgb, currentColor 22%, transparent);
+  --amd-tint: color-mix(in srgb, currentColor 7%, transparent);
+  --amd-code-bg: color-mix(in srgb, currentColor 11%, transparent);
+  --amd-soft: color-mix(in srgb, currentColor 62%, transparent);
+  overflow-wrap: break-word;
+}
+
+/* ── blocks ─────────────────────────────────────────────────────────────── */
+
+.answer-md p:not([class]) {
+  margin: 0 0 var(--amd-gap);
+}
+
+.answer-md :is(h1, h2, h3, h4, h5, h6):not([class]) {
+  margin: 0.85em 0 0.3em;
+  line-height: 1.3;
+  font-weight: 650;
+}
+.answer-md h1:not([class]) {
+  font-size: 1.28em;
+  font-weight: 700;
+}
+.answer-md h2:not([class]) {
+  font-size: 1.16em;
+  font-weight: 700;
+}
+.answer-md h3:not([class]) {
+  font-size: 1.05em;
+}
+.answer-md :is(h4, h5, h6):not([class]) {
+  font-size: 1em;
+}
+.answer-md h6:not([class]) {
+  color: var(--amd-soft);
+}
+
+.answer-md hr:not([class]) {
+  margin: 0.75em 0;
+  border: 0;
+  border-top: 1px solid var(--amd-rule);
+}
+
+.answer-md blockquote:not([class]) {
+  margin: 0 0 var(--amd-gap);
+  padding: 0.25em 0.7em;
+  border-left: 3px solid hsl(var(--primary) / 0.6);
+  border-radius: 0 4px 4px 0;
+  background: var(--amd-tint);
+}
+.answer-md blockquote:not([class]) > :last-child {
+  margin-bottom: 0;
+}
+
+/* The first block of an answer (or of a quote, a list item) sits flush at the top, the last at the bottom. */
+.answer-md > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, pre, blockquote, hr, div, span):first-child,
+.answer-md :is(blockquote, li) > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, pre, blockquote):first-child {
+  margin-top: 0;
+}
+.answer-md > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, pre, blockquote, hr, div, span):last-child {
+  margin-bottom: 0;
+}
+
+/* ── lists ──────────────────────────────────────────────────────────────── */
+
+.answer-md :is(ul, ol):not([class]) {
+  margin: 0 0 var(--amd-gap);
+  padding-left: 1.35em;
+}
+.answer-md ul:not([class]) {
+  list-style: disc;
+}
+.answer-md ol:not([class]) {
+  list-style: decimal;
+}
+.answer-md :is(ul, ol) ul:not([class]) {
+  list-style: circle;
+}
+.answer-md :is(ul, ol) :is(ul, ol) ul:not([class]) {
+  list-style: square;
+}
+.answer-md :is(ul, ol) ol:not([class]) {
+  list-style: lower-alpha;
+}
+.answer-md :is(ul, ol) :is(ul, ol) ol:not([class]) {
+  list-style: lower-roman;
+}
+/* A nested list follows its item's text closely. */
+.answer-md li :is(ul, ol):not([class]) {
+  margin: 0.1em 0 0;
+}
+.answer-md li:not([class]) {
+  margin: 0.12em 0 0;
+  padding-left: 0.1em;
+}
+.answer-md li:not([class])::marker {
+  color: var(--amd-soft);
+}
+.answer-md ol > li:not([class])::marker {
+  font-variant-numeric: tabular-nums;
+}
+/* Items of a loose list carry paragraphs: keep them tight anyway. */
+.answer-md li > p:not([class]) {
+  margin: 0 0 0.25em;
+}
+.answer-md li > p:not([class]):last-child {
+  margin-bottom: 0;
+}
+
+/* GitHub task lists: the checkbox stands in for the bullet. */
+.answer-md ul.contains-task-list {
+  margin: 0 0 var(--amd-gap);
+  padding-left: 0.2em;
+  list-style: none;
+}
+.answer-md li.task-list-item {
+  margin: 0.12em 0 0;
+  list-style: none;
+}
+.answer-md li.task-list-item > input[type="checkbox"] {
+  margin: 0 0.45em 0 0;
+  vertical-align: -0.1em;
+}
+
+/* ── code ───────────────────────────────────────────────────────────────── */
+
+.answer-md code:not([class]) {
+  padding: 0.08em 0.32em;
+  border-radius: 4px;
+  background: var(--amd-code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+.answer-md pre:not([class]) {
+  margin: 0 0 var(--amd-gap);
+  padding: 0.5em 0.7em;
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 6px;
+  background: var(--amd-tint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84em;
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre;
+  overflow-x: auto;
+}
+.answer-md pre:not([class]) > code {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  overflow-wrap: normal;
+}
+
+/* ── tables ─────────────────────────────────────────────────────────────── */
+
+/* The wrapper scrolls sideways in a narrow window; the answer itself never does. */
+.answer-md .answer-md-table {
+  max-width: 100%;
+  margin: 0 0 var(--amd-gap);
+  overflow-x: auto;
+}
+.answer-md .answer-md-table:last-child {
+  margin-bottom: 0;
+}
+.answer-md table:not([class]) {
+  border-collapse: collapse;
+  font-size: 0.92em;
+  line-height: 1.35;
+  text-align: left;
+}
+.answer-md :is(th, td):not([class]) {
+  padding: 0.28em 0.6em;
+  border: 1px solid var(--amd-rule);
+  vertical-align: top;
+}
+.answer-md th:not([class]) {
+  background: var(--amd-tint);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.answer-md td:not([class]) {
+  min-width: 4em;
+}
+
+/* ── inline ─────────────────────────────────────────────────────────────── */
+
+.answer-md a:not([class]) {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.answer-md strong:not([class]) {
+  font-weight: 650;
+}
+.answer-md del:not([class]) {
+  opacity: 0.7;
+}
+
+/* ── math (KaTeX) ───────────────────────────────────────────────────────── */
+
+/* KaTeX's own 1.21em towers over body text this small. */
+.answer-md .katex {
+  font-size: 1.08em;
+}
+/* A display formula: centred on its own line; a long one scrolls instead of overflowing. */
+.answer-md .katex-display {
+  margin: 0.35em 0 var(--amd-gap);
+  padding: 0.1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.answer-md > .katex-display:last-child {
+  margin-bottom: 0;
+}
+.answer-md .katex-display > .katex {
+  font-size: 1.12em;
+}
+/* Bad LaTeX shows as its source: in the answer's own colour, a little dimmed. */
+.answer-md .katex-error {
+  color: var(--amd-soft) !important;
+}
