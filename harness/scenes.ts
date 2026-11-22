@@ -16,6 +16,7 @@ import { useScenarioStore } from "../src/stores/scenarioStore";
 import { useStreamStore } from "../src/stores/streamStore";
 import { useTranscriptStore } from "../src/stores/transcriptStore";
 import { useTranslationStore } from "../src/stores/translationStore";
+import { requestInitialTranscriptDrawer } from "../src/overlay/transcriptDrawerInit";
 
 export const SCENES = ["idle", "question", "streaming", "answered", "markdown", "transcript"] as const;
 export type SceneName = (typeof SCENES)[number];
@@ -261,8 +262,9 @@ export function seedOverlayScene(scene: SceneName, meetingTitle: string) {
     return;
   }
   if (scene === "transcript") {
-    // Many lines: the conversation, four times over.
+    // Many lines: the conversation, four times over; drawer starts open.
     seedTranscript(Array.from({ length: 48 }, (_, i) => CONVERSATION[i % CONVERSATION.length]));
+    requestInitialTranscriptDrawer();
     return;
   }
   if (scene === "markdown") {

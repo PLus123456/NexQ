@@ -1,7 +1,8 @@
 // Sub-PRD 4: Rolling live transcript with auto-scroll and search
 // Displays transcript segments with auto-scroll behavior and search/filter.
 
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
@@ -10,12 +11,16 @@ import { TranscriptLine } from "./TranscriptLine";
 import { SpeakerNamingBanner } from "./SpeakerNamingBanner";
 import { NoTranscriptBanner } from "./NoTranscriptBanner";
 import { mergeConsecutiveSegments } from "../lib/mergeSegments";
-import { Mic, MicOff, Volume2, VolumeX, Search, X, Radio } from "lucide-react";
+import { Mic, MicOff, Volume2, VolumeX, Search, X, Radio, Type } from "lucide-react";
 import { ColorPickerButton } from "../components/ColorPickerButton";
 import { useT } from "../i18n";
+import { clampPopoverPosition, isInsideColorPickerPortal, type PopoverRect } from "./popoverUtils";
+
+const TYPESET_WIDTH = 236;
+const TYPESET_EST_HEIGHT = 120;
 
 export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } = {}) {
-  const { t } = useT(["translation", "common"]);
+  const { t } = useT(["translation", "common", "overlay"]);
   const segments = useTranscriptStore((s) => s.segments);
   const searchQuery = useTranscriptStore((s) => s.searchQuery);
   const autoScroll = useTranscriptStore((s) => s.autoScroll);
@@ -46,7 +51,44 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollAnimRef = useRef<number>(0);
   const isAnimatingRef = useRef(false);
-  const isSearchVisible = searchQuery.length > 0;
+  const [typesetOpen, setTypesetOpen] = useState(false);
+  const typesetBtnRef = useRef<HTMLButtonElement>(null);
+  const typesetPopRef = useRef<HTMLDivElement>(null);
+  const [typesetPos, setTypesetPos] = useState<PopoverRect>({ top: 0, left: 8, maxHeight: 200 });
+
+  useLayoutEffect(() => {
+    if (!typesetOpen || !typesetBtnRef.current) return;
+    const anchor = typesetBtnRef.current.getBoundingClientRect();
+    setTypesetPos(clampPopoverPosition(anchor, TYPESET_WIDTH, TYPESET_EST_HEIGHT, "below", "right"));
+  }, [typesetOpen]);
+
+  useEffect(() => {
+    if (!typesetOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        typesetPopRef.current?.contains(target) ||
+        typesetBtnRef.current?.contains(target) ||
+        isInsideColorPickerPortal(target)
+      ) {
+        return;
+      }
+      setTypesetOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setTypesetOpen(false);
+        typesetBtnRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [typesetOpen]);
 
   // Momentum-based smooth scroll — exponential deceleration for a buttery feel
   const scrollToBottom = useCallback(() => {
@@ -215,33 +257,128 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <NoTranscriptBanner onOpenDevLog={onOpenDevLog} />
-      {/* Search bar (shown when there's a search query or toggled) */}
-      <div className="flex items-center gap-2 rounded-lg bg-muted/20 mx-1 mt-1 mb-1.5 px-2.5 py-1.5">
-        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder={t("transcript.search.placeholder")}
-          aria-label={t("transcript.search.label")}
-          maxLength={200}
-          className="flex-1 bg-transparent text-xs text-foreground/90 placeholder:text-muted-foreground/50 outline-none"
-        />
-        {searchQuery && (
-          <>
-            <span className="text-meta text-muted-foreground/60">
-              {t("transcript.search.matches", { count: matchCount })}
-            </span>
-            <button
-              onClick={() => setSearchQuery("")}
-              className="rounded-full p-0.5 text-muted-foreground/60 hover:text-foreground/70 hover:bg-accent/50"
-              aria-label={t("transcript.search.clear")}
-            >
-              <X className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </>
-        )}
+      {/* Search bar + collapsed typography popover trigger */}
+      <div className="mx-1 mt-1 mb-1.5 flex items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg bg-muted/20 px-2.5 py-1">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={t("transcript.search.placeholder")}
+            aria-label={t("transcript.search.label")}
+            maxLength={200}
+            className="min-w-0 flex-1 bg-transparent text-xs text-foreground/90 placeholder:text-muted-foreground/50 outline-none"
+          />
+          {searchQuery && (
+            <>
+              <span className="shrink-0 text-meta text-muted-foreground/60">
+                {t("transcript.search.matches", { count: matchCount })}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="rounded-full p-0.5 text-muted-foreground/60 hover:text-foreground/70 hover:bg-accent/50 cursor-pointer"
+                aria-label={t("transcript.search.clear")}
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </>
+          )}
+        </div>
+        <button
+          ref={typesetBtnRef}
+          type="button"
+          onClick={() => setTypesetOpen((v) => !v)}
+          aria-expanded={typesetOpen}
+          aria-haspopup="dialog"
+          aria-label={t("overlay:transcriptDrawer.typesetLabel")}
+          title={t("overlay:transcriptDrawer.typesetLabel")}
+          className={`flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-meta font-medium transition-colors cursor-pointer ${
+            typesetOpen
+              ? "bg-primary/15 text-primary"
+              : "bg-muted/20 text-muted-foreground/65 hover:bg-accent/50 hover:text-foreground"
+          }`}
+        >
+          <Type className="h-3 w-3" aria-hidden="true" />
+          <span>{t("overlay:transcriptDrawer.typesetButton")}</span>
+        </button>
       </div>
+
+      {typesetOpen &&
+        createPortal(
+          <div
+            ref={typesetPopRef}
+            role="dialog"
+            aria-label={t("overlay:transcriptDrawer.typesetLabel")}
+            onKeyDown={(e) => e.stopPropagation()}
+            style={{ top: typesetPos.top, left: typesetPos.left, width: TYPESET_WIDTH }}
+            className="scope-pop-enter fixed z-50 flex flex-col gap-2 rounded-xl border border-border/30 bg-popover/95 p-2.5 shadow-2xl backdrop-blur-md"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/55">
+              {t("overlay:transcriptDrawer.typesetLabel")}
+            </p>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground/80">{t("transcript.typeset.text")}</span>
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-0.5 rounded-md border border-border/25 px-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setTranscriptFontSize(Math.max(10, transcriptFontSize - 1))}
+                    aria-label={t("overlay:response.typeset.smaller")}
+                    className="h-5 w-5 flex items-center justify-center rounded text-[10px] text-muted-foreground/75 hover:bg-accent/50 hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    A
+                  </button>
+                  <span className="w-5 text-center text-meta tabular-nums text-foreground/85">{transcriptFontSize}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTranscriptFontSize(Math.min(20, transcriptFontSize + 1))}
+                    aria-label={t("overlay:response.typeset.larger")}
+                    className="h-5 w-5 flex items-center justify-center rounded text-xs font-medium text-muted-foreground/75 hover:bg-accent/50 hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    A
+                  </button>
+                </div>
+                <ColorPickerButton
+                  value={transcriptTextColor}
+                  onChange={setTranscriptTextColor}
+                  label={t("transcript.typeset.textColor")}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground/80">{t("transcript.typeset.translation")}</span>
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-0.5 rounded-md border border-border/25 px-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setTranslationFontSize(Math.max(9, translationFontSize - 1))}
+                    aria-label={t("overlay:response.typeset.smaller")}
+                    className="h-5 w-5 flex items-center justify-center rounded text-[10px] text-muted-foreground/75 hover:bg-accent/50 hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    A
+                  </button>
+                  <span className="w-5 text-center text-meta tabular-nums text-foreground/85">{translationFontSize}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTranslationFontSize(Math.min(18, translationFontSize + 1))}
+                    aria-label={t("overlay:response.typeset.larger")}
+                    className="h-5 w-5 flex items-center justify-center rounded text-xs font-medium text-muted-foreground/75 hover:bg-accent/50 hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    A
+                  </button>
+                </div>
+                <ColorPickerButton
+                  value={translationTextColor}
+                  onChange={setTranslationTextColor}
+                  label={t("transcript.typeset.translationColor")}
+                />
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {/* Transcript lines — relative+absolute breaks out of flex min-height */}
       <div className="relative flex-1 min-h-0">
@@ -251,7 +388,7 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
         onWheel={cancelScrollAnimation}
         onTouchMove={cancelScrollAnimation}
         data-scroll-container
-        className="absolute inset-0 overflow-y-auto px-1 pt-1 pb-8"
+        className="absolute inset-0 overflow-y-auto px-1 pt-1 pb-6"
       >
         {filteredSegments.map((seg) => (
           <TranscriptLine
@@ -262,25 +399,6 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
         ))}
         <div ref={bottomRef} />
       </div>
-      </div>
-
-      {/* Typeset controls */}
-      <div className="flex items-center gap-2 mx-1 mb-1 px-2.5 py-1 border-t border-border/10">
-        <span className="text-[0.6rem] uppercase tracking-widest text-muted-foreground/40 font-medium">{t("transcript.typeset.text")}</span>
-        <div className="flex items-center gap-0.5">
-          <button onClick={() => setTranscriptFontSize(Math.max(10, transcriptFontSize - 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.6rem] text-muted-foreground/50 hover:bg-accent/40 transition-colors">A</button>
-          <span className="text-[0.6rem] tabular-nums text-muted-foreground/50 w-5 text-center">{transcriptFontSize}</span>
-          <button onClick={() => setTranscriptFontSize(Math.min(20, transcriptFontSize + 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.75rem] font-medium text-muted-foreground/50 hover:bg-accent/40 transition-colors">A</button>
-        </div>
-        <ColorPickerButton value={transcriptTextColor} onChange={setTranscriptTextColor} label={t("transcript.typeset.textColor")} />
-        <div className="h-3 w-px bg-border/10" />
-        <span className="text-[0.6rem] uppercase tracking-widest text-muted-foreground/40 font-medium">{t("transcript.typeset.translation")}</span>
-        <div className="flex items-center gap-0.5">
-          <button onClick={() => setTranslationFontSize(Math.max(9, translationFontSize - 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.6rem] text-muted-foreground/50 hover:bg-accent/40 transition-colors">A</button>
-          <span className="text-[0.6rem] tabular-nums text-muted-foreground/50 w-5 text-center">{translationFontSize}</span>
-          <button onClick={() => setTranslationFontSize(Math.min(18, translationFontSize + 1))} className="h-5 w-5 flex items-center justify-center rounded text-[0.75rem] font-medium text-muted-foreground/50 hover:bg-accent/40 transition-colors">A</button>
-        </div>
-        <ColorPickerButton value={translationTextColor} onChange={setTranslationTextColor} label={t("transcript.typeset.translationColor")} />
       </div>
 
       {/* Live audio activity indicators — mode-aware */}
@@ -378,7 +496,7 @@ function AudioActivityBar({
     : 0;
 
   return (
-    <div className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition-colors duration-200 ${
+    <div className={`flex items-center gap-2 rounded-lg px-2.5 py-1 transition-colors duration-200 ${
       muted ? "bg-destructive/5" : "bg-muted/20"
     }`}>
       {/* Mute toggle */}
