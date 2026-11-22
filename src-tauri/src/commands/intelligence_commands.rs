@@ -152,6 +152,7 @@ async fn retrieve_rag(
     question_text: Option<String>,
     transcript_excerpt: String,
     top_k: usize,
+    skip_query_rewrite: bool,
 ) -> Result<RagRetrieval, String> {
     let mut out = RagRetrieval::default();
 
@@ -191,14 +192,14 @@ async fn retrieve_rag(
     let mut queries: Vec<String> = Vec::new();
     if let Some(ref q) = question_text {
         queries.push(q.clone());
-        if has_transcript {
+        if has_transcript && !skip_query_rewrite {
             queries.push(format!("{}\n\n{}", q, transcript_excerpt));
         }
     } else {
         queries.push(transcript_excerpt.clone());
     }
     out.query = queries.first().cloned();
-    let merged = match rag::RagManager::search_queries_async(&queries, &config).await {
+    let merged = match rag::RagManager::search_queries_async(&queries, &config, skip_query_rewrite).await {
         Ok(chunks) => chunks,
         Err(e) => {
             log::warn!("RAG search failed: {}", e);
@@ -394,6 +395,7 @@ pub(crate) struct SessionAssist<'a> {
     pub scope: Option<&'a ResolvedScope>,
     pub task_instructions: String,
     pub include_rag: bool,
+    pub skip_query_rewrite: bool,
     pub include_instructions: bool,
     pub include_question: bool,
     pub rag_top_k: usize,
@@ -524,7 +526,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
             .map(|s| format!("{}: {}", s.speaker, s.text))
             .collect::<Vec<_>>()
             .join("\n");
-        match retrieve_rag(state, question_text, tail_chars(&recent, 500), req.rag_top_k).await {
+        match retrieve_rag(state, question_text, tail_chars(&recent, 500), req.rag_top_k, req.skip_query_rewrite).await {
             Ok(found) => rag = found,
             Err(e) => log::warn!("RAG retrieval for the Claude session failed: {e}"),
         }
@@ -932,6 +934,7 @@ pub(crate) async fn prepare_prediction_answer(
                 Some(question.into()),
                 tail_chars(&transcript, 500),
                 top_k,
+                false,
             )
             .await?
         } else {
@@ -1029,6 +1032,7 @@ pub async fn generate_assist(
     past_meeting_id: Option<String>,
     scope: Option<ResolvedScope>,
     prepared_only: Option<bool>,
+    skip_query_rewrite: Option<bool>,
     images: Option<Vec<ImageAttachment>>,
     sources: Option<SourceToggles>,
     app_handle: AppHandle,
@@ -1036,6 +1040,7 @@ pub async fn generate_assist(
 ) -> Result<(), String> {
     // The user's transcript scope (`scope` names the session scope below).
     let user_scope = scope;
+    let skip_query_rewrite = skip_query_rewrite.unwrap_or(false);
     let images = images.unwrap_or_default();
     // The frontend checks these too; the backend doesn't rely on it.
     crate::llm::cli_agent::protocol::validate_images(&images)?;
@@ -1110,6 +1115,16 @@ pub async fn generate_assist(
         None
     };
 
+    let detector = app_handle.state::<crate::intelligence::llm_question::QuestionDetectionService>();
+    let answer_key = effective_question.as_ref()
+        .filter(|_| mode == "Assist" && matches!(scope, SessionScope::Live(_)))
+        .and_then(|q| detector.answer_key(&q.text));
+    let record_answer = || {
+        if let Some(key) = &answer_key {
+            if !cancel_token.is_cancelled() { detector.answered(key); }
+        }
+    };
+
     // ── Route: warm Claude session, fallback provider, or stateless ──
     let mut route = request_route(&app_handle, &state, &mode, &scope, with_sources);
     // The request goes to a Claude session that has the user's sources.
@@ -1127,13 +1142,14 @@ pub async fn generate_assist(
             let mut start = answer.start;
             start.request_id = Some(request_id.clone());
             let _ = app_handle.emit("llm_stream_start", start);
-            let params = GenerationParams { request_id: Some(request_id), cancel: Some(cancel_token), ..Default::default() };
+            let params = GenerationParams { request_id: Some(request_id), cancel: Some(cancel_token.clone()), ..Default::default() };
             // Asked for sources, but this answer has none: say so, as the stateless path does.
             if with_sources {
                 emit_activity(&app_handle, &params, sources_unavailable_notice());
             }
             emit_token(&app_handle, &params, &answer.text, None);
             crate::llm::provider::emit_end(&app_handle, &params, 0, 0);
+            record_answer();
             return Ok(());
         }
     }
@@ -1188,6 +1204,7 @@ pub async fn generate_assist(
             scope: user_scope.as_ref(),
             task_instructions: task_instructions.clone(),
             include_rag,
+            skip_query_rewrite,
             include_instructions,
             include_question,
             rag_top_k,
@@ -1204,6 +1221,7 @@ pub async fn generate_assist(
         match run_session_assist(&state, &app_handle, key.clone(), make_req).await {
             SessionOutcome::Done(result) => {
                 // Release the engine only now that the stream has fully stopped.
+                if matches!(&result, Ok(Some(_))) { record_answer(); }
                 drop(generation_guard);
                 return result.map(|_| ());
             }
@@ -1371,7 +1389,7 @@ pub async fn generate_assist(
             .filter(|q| !q.is_empty())
             .map(|q| q.to_string())
             .or_else(|| effective_question.as_ref().map(|q| q.text.clone()));
-        retrieve_rag(&state, question_text, tail_chars(&transcript_text, 500), rag_top_k).await?
+        retrieve_rag(&state, question_text, tail_chars(&transcript_text, 500), rag_top_k, skip_query_rewrite).await?
     } else {
         RagRetrieval::default()
     };
@@ -1413,12 +1431,13 @@ pub async fn generate_assist(
         included_segments,
         total_segments,
         ResolvedScope::label_of(user_scope.as_ref()),
-        app_handle,
-        cancel_token,
+        app_handle.clone(),
+        cancel_token.clone(),
     )
     .await;
 
     // Release the engine only now that the stream has fully stopped.
+    if result.is_ok() { record_answer(); }
     drop(generation_guard);
 
     result

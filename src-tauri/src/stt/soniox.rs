@@ -48,7 +48,7 @@ use crate::stt::soniox_regions::{
 use crate::stt::provider::{STTProvider, STTProviderType, TranscriptResult};
 use crate::stt::soniox_protocol::{
     self as protocol, Assembler, AssemblerConfig, AssemblerEvent, Backoff, RetryClass, SentenceUpdate,
-    ServerMessage, StartParams, Token, TranslationParams, TranslationUpdate,
+    ServerMessage, StartParams, Token, TranslationChunk, TranslationParams, TranslationUpdate,
 };
 
 type SonioxSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -410,6 +410,8 @@ struct TranslationEvent {
     segment_id: String,
     original_text: String,
     translated_text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    chunks: Vec<TranslationChunk>,
     source_lang: String,
     target_lang: String,
     provider: &'static str,
@@ -1116,6 +1118,7 @@ impl Session {
             segment_id: format!("{}{}", self.segment_id_prefix, sentence_id(connection, t.seq)),
             original_text: t.original_text,
             translated_text: t.translated_text,
+            chunks: t.chunks,
             source_lang: t.source_language.unwrap_or_else(|| "auto".to_string()),
             // Two-way: per sentence, language A's or B's code.
             target_lang: self.translation.target_code(&t.target_language),
@@ -1307,6 +1310,17 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translation_payload_omits_unavailable_alignment() {
+        let mut event = TranslationEvent {
+            segment_id: "them_sx1_1".into(), original_text: "Hello".into(), translated_text: "你好".into(),
+            source_lang: "en".into(), target_lang: "zh".into(), provider: "soniox", is_final: false, chunks: vec![],
+        };
+        assert!(serde_json::to_value(&event).unwrap().get("chunks").is_none());
+        event.chunks.push(TranslationChunk { src: "Hello".into(), dst: "你好".into() });
+        assert_eq!(serde_json::to_value(event).unwrap()["chunks"], serde_json::json!([{"src":"Hello","dst":"你好"}]));
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tokio::net::TcpListener;

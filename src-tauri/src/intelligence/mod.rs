@@ -3,6 +3,8 @@ pub mod context_builder;
 pub mod context_scope;
 pub mod prompt_templates;
 pub mod question_detector;
+pub mod question_core;
+pub mod question_replay;
 pub mod llm_question;
 pub mod question_prediction;
 pub mod transcript_buffer;
@@ -351,6 +353,14 @@ impl IntelligenceEngine {
             question.filter(|q| !(from_them(&q.source) && dismissed == Some(q.timestamp_ms)));
     }
 
+    /// Drop both the selection and the rule-mode paragraph that suppressed it.
+    fn reset_detected_question(&mut self) {
+        self.last_detected_question = None;
+        self.dismissed_paragraph = None;
+        self.them_final_line = None;
+        self.them_final_started = None;
+    }
+
     /// Get recent transcript text within the configured window.
     pub fn get_recent_transcript(&self) -> String {
         let window = self.transcript_buffer.window_seconds();
@@ -381,10 +391,7 @@ impl IntelligenceEngine {
     /// Clears the transcript buffer and last detected question.
     pub fn clear_session(&mut self) {
         self.transcript_buffer.clear();
-        self.last_detected_question = None;
-        self.dismissed_paragraph = None;
-        self.them_final_line = None;
-        self.them_final_started = None;
+        self.reset_detected_question();
         log::info!("[intelligence] session cleared for new meeting");
     }
 }
@@ -395,8 +402,17 @@ fn from_them(speaker: &str) -> bool {
     speaker.eq_ignore_ascii_case("them") || speaker.eq_ignore_ascii_case("interviewer")
 }
 
-/// One ingestion path for native STT and Web Speech. Do not hold the engine
-/// lock while scheduling detection: a completed decision also updates it.
+/// Observe native updates synchronously in each audio emitter's delivery order.
+pub fn ingest_native_line(app: &tauri::AppHandle, line_id: &str, source: &str, text: String, timestamp_ms: u64, is_final: bool) {
+    app.state::<llm_question::QuestionDetectionService>().observe(app, question_core::Update {
+        line_id, source, text: &text, timestamp_ms, is_final,
+    });
+    if is_final {
+        ingest_transcript(app, text, source.to_owned(), timestamp_ms, true);
+    }
+}
+
+/// Store final transcript context and feed the speculative prediction service.
 pub fn ingest_transcript(
     app: &tauri::AppHandle,
     text: String,
@@ -413,8 +429,6 @@ pub fn ingest_transcript(
     if state.meeting_active.load(Ordering::SeqCst) {
         app.state::<question_prediction::QuestionPredictionService>()
             .observe(app, &text, &speaker, timestamp_ms, is_final);
-        app.state::<llm_question::QuestionDetectionService>()
-            .observe(app, text, speaker, timestamp_ms, is_final);
     }
 }
 

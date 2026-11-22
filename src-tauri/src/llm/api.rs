@@ -269,6 +269,13 @@ async fn resolve_with(registry: &LlmRegistry, key: &str, claude: &ClaudeContext)
     let config = registry.config();
     let resolved = registry::resolve_task(&config, key, claude)
         .map_err(|(e, conn)| LlmCallError::NotConfigured(registry::route_error_message(key, e, conn.as_ref())))?;
+    let via_fallback = resolved.via_fallback;
+    Ok((resolved_client(registry, &resolved, claude).await?, via_fallback))
+}
+
+/// Build the client for this exact resolution, including its route overrides.
+/// A background task can validate its explicit target before any provider I/O.
+pub(crate) async fn resolved_client(registry: &LlmRegistry, resolved: &registry::Resolved, claude: &ClaudeContext) -> Result<ResolvedLlm, LlmCallError> {
     let conn = &resolved.connection;
     let provider = registry.provider_for(conn).map_err(LlmCallError::NotConfigured)?;
     let model = match resolved.model.clone() {
@@ -294,7 +301,7 @@ async fn resolve_with(registry: &LlmRegistry, key: &str, claude: &ClaudeContext)
         display_name: conn.display_name(),
         kind: conn.kind,
     };
-    Ok((out, resolved.via_fallback))
+    Ok(out)
 }
 
 /// First fallback request of an outage: tell the UI who took over.

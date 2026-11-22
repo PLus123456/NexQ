@@ -222,6 +222,7 @@ pub async fn ask_meeting(
             scope: None,
             task_instructions: api::with_answer_language(&session_task_instructions(&presets), &app_handle),
             include_rag: false,
+            skip_query_rewrite: false,
             include_instructions: true,
             include_question: true,
             rag_top_k: 0,

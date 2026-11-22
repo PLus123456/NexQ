@@ -47,6 +47,7 @@
         "label": "captions",
         "title": "NexQ Plus 字幕条",
         "url": "index.html?view=captions",
+        "focusable": false,
         "width": 900,
         "height": 140,
         "minWidth": 320,

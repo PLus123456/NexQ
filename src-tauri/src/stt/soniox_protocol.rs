@@ -547,11 +547,18 @@ pub struct TranslationUpdate {
     /// The line's final original text so far.
     pub original_text: String,
     pub translated_text: String,
+    pub chunks: Vec<TranslationChunk>,
     pub source_language: Option<String>,
     /// Two-letter: the one-way target, or with two-way the other language of
     /// the pair than this sentence's.
     pub target_language: String,
     pub is_final: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TranslationChunk {
+    pub src: String,
+    pub dst: String,
 }
 
 /// One sentence: its original and translation tokens, and what was last shown.
@@ -562,6 +569,8 @@ struct Sentence {
     tail: Vec<Token>,
     tr_finals: Vec<Token>,
     tr_tail: Vec<Token>,
+    /// Exclusive ends in finals and tr_finals of each aligned run.
+    chunk_ends: Vec<(usize, usize)>,
     /// When its first original text arrived (finalize timer).
     started_at: Option<Instant>,
     /// When its last translation token arrived.
@@ -572,6 +581,7 @@ struct Sentence {
     /// Text of the last partial line / translation sent.
     shown: String,
     tr_shown: String,
+    shown_finals: usize,
     tr_shown_at: Option<Instant>,
     /// Target of the last partial translation sent: its final goes there even
     /// if the sentence's language no longer picks one (two-way).
@@ -600,8 +610,13 @@ impl Sentence {
         self.originals().any(|t| !t.text.trim().is_empty())
     }
 
-    fn translation(&self) -> String {
-        self.translations().map(|t| t.text.as_str()).collect()
+    fn push_final_translation(&mut self, token: &Token) {
+        self.tr_finals.push(token.clone());
+        let end = (self.finals.len(), self.tr_finals.len());
+        match self.chunk_ends.last_mut() {
+            Some(last) if last.0 == end.0 => last.1 = end.1,
+            _ => self.chunk_ends.push(end),
+        }
     }
 
     /// Every original token is marked "none": no translation will come.
@@ -637,12 +652,51 @@ impl Sentence {
         }
     }
 
-    fn translation_update(&self, target: &str, translated: &str, is_final: bool) -> TranslationUpdate {
-        let original = || self.finals.iter().map(|t| t.text.as_str()).collect::<String>().trim().to_string();
+    fn translation_update(&self, target: &str, is_final: bool) -> TranslationUpdate {
+        let join = |tokens: &[Token]| tokens.iter().map(|t| t.text.as_str()).collect::<String>();
+        let original = join(&self.finals);
+        let original_text = self.final_text.clone().unwrap_or_else(|| original.trim().to_owned());
+        let start = original.len() - original.trim_start().len();
+        let limit = start + original_text.len();
+        let compact = matches!(iso639_1(target).as_deref(), Some("zh" | "ja"));
+        let mut chunks = Vec::with_capacity(self.chunk_ends.len());
+        let mut translated_text = String::new();
+        let (mut src_token, mut dst_token, mut src_byte) = (0, 0, 0);
+        for &(src_end, dst_end) in &self.chunk_ends {
+            let next_byte = src_byte + self.finals[src_token..src_end].iter().map(|t| t.text.len()).sum::<usize>();
+            // The transcript trims the outside of the line. Preserve every
+            // internal space, including the leading space of the next clause.
+            let src = &original[src_byte.clamp(start, limit)..next_byte.clamp(start, limit)];
+            let dst = join(&self.tr_finals[dst_token..dst_end]);
+            let dst = if compact || translated_text.is_empty() { dst.trim_start() } else { &dst };
+            let next_block = dst_end < self.tr_finals.len()
+                || (!is_final && !self.tr_tail.is_empty() && src_end < self.finals.len());
+            let dst = if compact && next_block { dst.trim_end() } else { dst };
+            chunks.push(TranslationChunk { src: src.to_owned(), dst: dst.to_owned() });
+            translated_text.push_str(dst);
+            (src_token, dst_token, src_byte) = (src_end, dst_end, next_byte);
+        }
+        if !is_final {
+            let tail = join(&self.tr_tail);
+            let starts_block = src_token < self.finals.len();
+            translated_text.push_str(if translated_text.is_empty() || (compact && starts_block) {
+                tail.trim_start()
+            } else {
+                &tail
+            });
+        }
+        translated_text.truncate(translated_text.trim_end().len());
+        // A trailing space may be significant again when another token arrives.
+        let mut remaining = translated_text.len();
+        for chunk in &mut chunks {
+            chunk.dst.truncate(remaining.min(chunk.dst.len()));
+            remaining -= chunk.dst.len();
+        }
         TranslationUpdate {
             seq: self.seq,
-            original_text: self.final_text.clone().unwrap_or_else(original),
-            translated_text: translated.to_string(),
+            original_text,
+            translated_text,
+            chunks,
             source_language: self.source_language(),
             target_language: target.to_string(),
             is_final,
@@ -660,34 +714,36 @@ impl Sentence {
         if !self.has_text() {
             return None;
         }
-        let translated = self.translation();
-        let translated = translated.trim();
-        if translated.is_empty() || translated == self.tr_shown {
-            return None;
-        }
         if self.tr_shown_at.is_some_and(|at| now.saturating_duration_since(at) < min_interval) {
             return None;
         }
-        if may_be_echo(&self.text(), translated) {
+        let update = self.translation_update(target, false);
+        let translated = &update.translated_text;
+        if translated.is_empty() || (translated == &self.tr_shown && self.shown_finals == self.tr_finals.len()
+            && self.tr_target.as_deref() == Some(target))
+            || may_be_echo(&self.text(), translated) {
             return None;
         }
-        self.tr_shown = translated.to_string();
+        self.tr_shown.clone_from(translated);
+        self.shown_finals = self.tr_finals.len();
         self.tr_shown_at = Some(now);
         self.tr_target = Some(target.to_string());
-        Some(self.translation_update(target, translated, false))
+        Some(update)
     }
 
     /// Final translation once no more can come: the text if worth showing,
     /// else an empty one when a partial went out, else nothing.
     fn settled_translation(&self, target: &str) -> Option<TranslationUpdate> {
-        let translated = self.translation();
-        let translated = translated.trim();
+        let mut update = self.translation_update(target, true);
+        let translated = &update.translated_text;
         // A sentence already in the target language with no translation falls under "empty".
         let worth_showing = self.has_text() && !translated.is_empty() && !is_echo(&self.text(), translated);
         if worth_showing {
-            Some(self.translation_update(target, translated, true))
+            Some(update)
         } else if !self.tr_shown.is_empty() {
-            Some(self.translation_update(target, "", true))
+            update.translated_text.clear();
+            update.chunks.clear();
+            Some(update)
         } else {
             None
         }
@@ -817,19 +873,19 @@ impl Assembler {
     }
 
     /// A translation token belongs to the original text before it in the
-    /// stream: the current sentence once it has original text (final, or a
-    /// guess earlier in this message), else the archived sentence while its
-    /// translation is open (late translation), else the current sentence.
+    /// stream. A guess in the new sentence can carry a tentative translation,
+    /// but cannot claim a final translation from the preceding sentence.
     fn push_translation(&mut self, token: &Token, now: Instant) {
         if !self.cfg.translates() {
             return;
         }
         let into = match self.archived.as_mut() {
-            Some(archived) if !self.current.has_text() => archived,
+            // push_original settles the archive at the first new final original.
+            Some(archived) if token.is_final || !self.current.has_text() => archived,
             _ => &mut self.current,
         };
         if token.is_final {
-            into.tr_finals.push(token.clone());
+            into.push_final_translation(token);
         } else {
             into.tr_tail.push(token.clone());
         }
@@ -874,7 +930,13 @@ impl Assembler {
         }
     }
 
-    fn settle(&self, sentence: Sentence, events: &mut Vec<AssemblerEvent>) {
+    fn settle(&self, mut sentence: Sentence, events: &mut Vec<AssemblerEvent>) {
+        // On disconnect/flush the last live hypotheses become the saved line.
+        // Only now can its remaining translation be included in the alignment.
+        sentence.finals.append(&mut sentence.tail);
+        for token in std::mem::take(&mut sentence.tr_tail) {
+            sentence.push_final_translation(&token);
+        }
         if let Some(target) = self.cfg.target_of(&sentence).or(sentence.tr_target.as_deref()) {
             events.extend(sentence.settled_translation(target).map(AssemblerEvent::Translation));
         }
@@ -1365,6 +1427,81 @@ mod tests {
             .collect()
     }
 
+    fn chunks_of(events: &[AssemblerEvent]) -> Vec<(&str, &str)> {
+        events.iter().filter_map(|event| match event {
+            AssemblerEvent::Translation(t) => Some(&t.chunks),
+            _ => None,
+        }).flatten().map(|c| (c.src.as_str(), c.dst.as_str())).collect()
+    }
+
+    #[test]
+    fn delayed_chunks_span_messages_and_endpoint_but_exclude_the_tentative_tail() {
+        let at = clock();
+        let mut a = Assembler::new(to_zh());
+        a.on_tokens(&[orig(" First"), orig(" clause"), trans(" 第一句"), orig(" and"), orig(" more")], at(0));
+        let ev = a.on_tokens(&[trans_tail(" 第二句")], at(300));
+        assert_eq!(chunks_of(&ev), [("First clause", "第一句")]);
+        assert_eq!(translations(&ev), [(1, "第一句第二句", false)]);
+        let ev = a.on_tokens(&[end(), trans(" 第二"), trans("句")], at(600));
+        assert_eq!(chunks_of(&ev), [("First clause", "第一句"), (" and more", "第二句")]);
+        assert_eq!(translations(&ev), [(1, "第一句第二句", false)]);
+        let ev = a.flush(at(900));
+        assert_eq!(chunks_of(&ev), [("First clause", "第一句"), (" and more", "第二句")]);
+    }
+
+    #[test]
+    fn two_way_chunk_boundaries_follow_the_destination_language() {
+        let at = clock();
+        let mut a = Assembler::new(zh_en());
+        a.on_tokens(&[said("en","One"), trans(" 一"), said("en"," two"), trans(" 二"), end()], at(0));
+        let ev = a.on_tokens(&[said("zh","三"), trans(" Three"), said("zh","四"), trans(" four")], at(300));
+        assert_eq!(chunks_of(&ev), [("One","一"), (" two","二"), ("三","Three"), ("四"," four")]);
+        assert_eq!(translations(&ev), [(1, "一二", true), (2, "Three four", false)]);
+    }
+
+    #[test]
+    fn an_original_one_clause_ahead_still_pairs_in_stream_order() {
+        let at = clock();
+        let mut a = Assembler::new(to_zh());
+        a.on_tokens(&[orig("One."), orig(" Two."), trans("一。")], at(0));
+        let ev = a.on_tokens(&[trans("二。"), orig(" Three."), end(), orig_tail("Next"), trans(" 三。")], at(300));
+        assert_eq!(chunks_of(&ev), [("One. Two.", "一。二。"), (" Three.", "三。")]);
+        assert_eq!(translations(&ev), [(1, "一。二。三。", false)]);
+        let ev = a.flush(at(600));
+        assert_eq!(translations(&ev), [(1, "一。二。三。", true)]);
+    }
+
+    #[test]
+    fn recorded_translation_trace_preserves_all_24_aligned_clauses() {
+        let at = clock();
+        let mut a = Assembler::new(to_zh());
+        let mut events = Vec::new();
+        for line in include_str!("testdata/soniox_translation_trace.jsonl").lines() {
+            let frame: serde_json::Value = serde_json::from_str(line).unwrap();
+            let tokens = tokens_of(&frame["msg"].to_string());
+            events.extend(a.on_tokens(&tokens, at(frame["t"].as_u64().unwrap())));
+        }
+        events.extend(a.flush(at(100_000)));
+        let mut count = 0;
+        for event in events {
+            let AssemblerEvent::Translation(t) = event else { continue };
+            let dst: String = t.chunks.iter().map(|c| c.dst.as_str()).collect();
+            let src: String = t.chunks.iter().map(|c| c.src.as_str()).collect();
+            assert!(t.original_text.starts_with(&src));
+            assert!(t.translated_text.starts_with(&dst));
+            if t.is_final {
+                assert_eq!(t.translated_text, dst);
+                for c in &t.chunks {
+                    assert!((5..=18).contains(&c.src.split_whitespace().count()));
+                    assert!((5..=35).contains(&c.dst.chars().count()));
+                    assert_eq!(c.dst, c.dst.trim());
+                }
+                count += t.chunks.len();
+            }
+        }
+        assert_eq!(count, 24);
+    }
+
     fn clock() -> impl Fn(u64) -> Instant {
         let t0 = Instant::now();
         move |ms| t0 + Duration::from_millis(ms)
@@ -1474,6 +1611,7 @@ mod tests {
                 seq: 1,
                 original_text: "Thanks a lot".into(),
                 translated_text: "非常感谢".into(),
+                chunks: vec![TranslationChunk { src: "Thanks a lot".into(), dst: "非常感谢".into() }],
                 source_language: Some("en".into()),
                 target_language: "zh".into(),
                 is_final: true,

@@ -317,6 +317,7 @@ pub fn run() {
             ));
 
             app.manage(app_state);
+            intelligence::llm_question::listen_to_transcripts(app.handle());
 
             // -- Auto-detect the first Ollama model when the default has none --
             llm::registry::spawn_startup_tasks(app.handle().clone());
@@ -486,8 +487,10 @@ pub fn run() {
 
             // -- macOS: the overlay floats over full-screen apps (their own Space) too --
             #[cfg(target_os = "macos")]
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                stealth_commands::float_over_full_screen(&overlay.as_ref().window());
+            for label in stealth_commands::FLOATING_WINDOWS {
+                if let Some(window) = app.get_webview_window(label) {
+                    stealth_commands::float_over_full_screen(&window.as_ref().window());
+                }
             }
 
             log::info!("NexQ initialized successfully");
@@ -617,6 +620,7 @@ pub fn run() {
             screen_capture_commands::capture_screen_under_cursor,
             // == COMMANDS: stealth ==
             stealth_commands::set_stealth_mode,
+            stealth_commands::show_captions_window,
             stealth_commands::get_stealth_support,
             log_commands::get_log_info,
             log_commands::set_verbose_logging,
