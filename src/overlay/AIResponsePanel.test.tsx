@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 import { AIResponsePanel } from "./AIResponsePanel";
 import { useStreamStore } from "../stores/streamStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useConfigStore } from "../stores/configStore";
 
 const openSourceFile = vi.hoisted(() => vi.fn());
 vi.mock("../lib/ipc", async (importOriginal) => ({
@@ -184,5 +185,68 @@ describe("AIResponsePanel", () => {
     render(<AIResponsePanel />);
     answer("Assist", "plain answer");
     expect(screen.queryByLabelText("Sources used")).toBeNull();
+  });
+
+  it("pauses auto-scroll when the user scrolls up and resumes on clicking Back to latest", () => {
+    render(<AIResponsePanel />);
+    act(() => {
+      s().startStream("Assist", "m", "p", { requestId: "r-scroll" });
+      s().appendToken("Long answer text\n".repeat(30));
+    });
+    const scrollEl = screen.getByRole("tabpanel", { name: "AI response content" });
+    Object.defineProperty(scrollEl, "scrollHeight", { value: 800, configurable: true });
+    Object.defineProperty(scrollEl, "clientHeight", { value: 300, configurable: true });
+    scrollEl.scrollTop = 100;
+
+    fireEvent.scroll(scrollEl);
+    const backBtn = screen.getByRole("button", { name: "Back to latest" });
+    expect(backBtn).toBeInTheDocument();
+
+    // Streaming another token does not snap the user back to bottom while paused.
+    act(() => s().appendToken("More words"));
+    expect(scrollEl.scrollTop).toBe(100);
+
+    // Clicking "Back to latest" snaps to bottom and resumes following.
+    fireEvent.click(backBtn);
+    expect(scrollEl.scrollTop).toBe(800);
+    expect(screen.queryByRole("button", { name: "Back to latest" })).toBeNull();
+  });
+
+  it("collapses typography controls into a popover and keeps the popover open while picking a color", () => {
+    useConfigStore.setState({ aiResponseFontSize: 12, aiResponseTextColor: "#d4d4d8", aiResponseLineHeight: 1.6, aiResponseHPad: 0, aiResponseAlign: "left" });
+    render(<AIResponsePanel />);
+    // Controls are hidden behind the popover trigger by default.
+    expect(screen.queryByRole("dialog", { name: "Answer typography" })).toBeNull();
+
+    const styleBtn = screen.getByRole("button", { name: "Text & layout settings" });
+    fireEvent.click(styleBtn);
+    const dialog = screen.getByRole("dialog", { name: "Answer typography" });
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Larger" }));
+    expect(useConfigStore.getState().aiResponseFontSize).toBe(13);
+
+    // Open ColorPickerButton (which renders its own fixed z-[9999] portal) and click a swatch.
+    fireEvent.click(within(dialog).getByTitle("AI text color"));
+    const swatch = screen.getByTitle("Cyan");
+    fireEvent.mouseDown(swatch);
+    fireEvent.click(swatch);
+    expect(useConfigStore.getState().aiResponseTextColor).toBe("#67e8f9");
+    expect(screen.getByRole("dialog", { name: "Answer typography" })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Answer typography" })).toBeNull();
+  });
+
+  it("combines tabs, history, copy, pin and style in the single bottom bar", () => {
+    render(<AIResponsePanel />);
+    answer("Assist", "first");
+    answer("Shorten", "second");
+    const footer = screen.getByTestId("answer-footer-bar");
+    expect(within(footer).getByRole("tablist")).toBeInTheDocument();
+    expect(within(footer).getByRole("button", { name: /History, 2/ })).toBeInTheDocument();
+    expect(within(footer).getByRole("button", { name: "Copy to clipboard" })).toBeInTheDocument();
+    expect(within(footer).getByRole("button", { name: "Pin response" })).toBeInTheDocument();
+    expect(within(footer).getByRole("button", { name: "Text & layout settings" })).toBeInTheDocument();
   });
 });

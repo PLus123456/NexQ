@@ -201,9 +201,23 @@ export function ModeButtons() {
     setAskInputVisible(false);
   }, [askInputText, askImages, askSending, locked, removeSentImages, setAskSending, t]);
 
+  const rowRef = useRef<HTMLDivElement>(null);
+  const handleRowWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const el = rowRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      el.scrollLeft += e.deltaY;
+    }
+  }, []);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-0.5">
+      <div
+        ref={rowRef}
+        onWheel={handleRowWheel}
+        data-testid="mode-buttons-row"
+        className="flex flex-nowrap items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {visibleModes.map(({ mode, label, shortcut, icon: Icon, isCustom }) => {
           const isActive = currentMode === mode && isStreaming;
           const isAskActive = mode === "AskQuestion" && askInputVisible && !isStreaming;
@@ -217,23 +231,25 @@ export function ModeButtons() {
               aria-label={shortcut ? t("modes.shortcutLabel", { name, shortcut }) : name}
               title={shortcut ? t("modes.shortcutLabel", { name, shortcut }) : name}
               aria-pressed={isActive || isAskActive}
-              className={`flex items-center gap-1 rounded-lg px-2 py-1 text-meta font-medium transition-all duration-150 cursor-pointer ${
+              className={`flex shrink-0 whitespace-nowrap items-center gap-1 rounded-md px-2 py-0.5 text-meta font-medium transition-all duration-150 cursor-pointer ${
                 isActive
                   ? "bg-primary/20 text-primary ring-1 ring-primary/30 shadow-sm shadow-primary/10"
                   : isAskActive
                     ? "bg-info/10 text-info ring-1 ring-info/20 shadow-sm shadow-info/10"
                     : isCustom
                       ? "text-warning/60 hover:bg-warning/10 hover:text-warning border border-warning/10"
-                      : "text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
+                      : "text-muted-foreground/65 hover:bg-accent/50 hover:text-foreground"
               } ${locked && !isActive ? "opacity-40 cursor-not-allowed" : ""}`}
             >
-              {isActive ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <Icon className="h-3 w-3" aria-hidden="true" />}
+              {isActive ? <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" /> : <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />}
               <span>{label}</span>
             </button>
           );
         })}
         <ContextScopePicker />
-        <SourcePills scope="live" />
+        <div className="flex shrink-0 items-center [&>div]:flex-nowrap [&>div]:shrink-0 [&_button]:shrink-0 [&_button]:whitespace-nowrap">
+          <SourcePills scope="live" />
+        </div>
       </div>
 
       {/* Inline Ask input */}

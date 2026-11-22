@@ -59,26 +59,35 @@ export function ResponseProgress() {
       ].filter((d): d is string => !!d)
     : [];
 
+  const detailsText = details.join(" · ");
+
   return (
-    <div className="space-y-0.5" role="status" aria-live="polite" aria-label={t("progress.ariaLabel", { label, phase: phaseText })}>
-      <div className="flex items-center gap-2">
+    <div
+      data-testid="response-progress"
+      className="flex shrink-0 items-center gap-1.5 min-w-0 border-b border-border/15 bg-primary/[0.04] px-2.5 py-0.5"
+      role="status"
+      aria-live="polite"
+      aria-label={t("progress.ariaLabel", { label, phase: phaseText })}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 shrink-0 rounded-full bg-primary ${phase === "writing" ? "opacity-80" : "progress-breathe"}`}
+      />
+      <span className="shrink-0 text-meta font-semibold text-primary">{label}</span>
+      <span key={phaseText} className="progress-phase-enter shrink-0 text-meta text-foreground/70">
+        {phaseText}
+      </span>
+      {detailsText && (
         <span
-          aria-hidden="true"
-          className={`h-1.5 w-1.5 shrink-0 rounded-full bg-primary ${phase === "writing" ? "opacity-80" : "progress-breathe"}`}
-        />
-        <span className="text-meta font-semibold text-primary">{label}</span>
-        <span key={phaseText} className="progress-phase-enter min-w-0 truncate text-xs text-foreground/65">
-          {phaseText}
+          className="progress-phase-enter min-w-0 flex-1 truncate text-meta text-muted-foreground/50"
+          title={detailsText}
+        >
+          {detailsText}
         </span>
-        <span className="ml-auto shrink-0 font-mono text-meta tabular-nums text-muted-foreground/55" aria-hidden="true">
-          {formatDuration(elapsed)}
-        </span>
-      </div>
-      {details.length > 0 && (
-        <p className="progress-phase-enter pl-3.5 text-meta leading-snug text-muted-foreground/50">
-          {details.join(" · ")}
-        </p>
       )}
+      <span className="ml-auto shrink-0 font-mono text-meta tabular-nums text-muted-foreground/55" aria-hidden="true">
+        {formatDuration(elapsed)}
+      </span>
     </div>
   );
 }

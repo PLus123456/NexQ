@@ -285,4 +285,12 @@ describe("ModeButtons while an answer runs", () => {
     expect(runUserAction).not.toHaveBeenCalled();
     expect(cancelGeneration).not.toHaveBeenCalled();
   });
+
+  it("lays out mode buttons on a single horizontally scrollable row without wrapping", () => {
+    render(<ModeButtons />);
+    const row = screen.getByTestId("mode-buttons-row");
+    expect(row.className).toContain("flex-nowrap");
+    expect(row.className).toContain("overflow-x-auto");
+    expect(row.className).not.toContain("flex-wrap");
+  });
 });
