@@ -8,12 +8,15 @@
 #
 # Secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           updater key (~/.tauri/nexq-plus.key); required for a release
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty for a key made without one)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (leave unset for a key made without one)
 #   APPLE_CERTIFICATE                   optional: the Apple Development identity as a base64 .p12
 #   APPLE_CERTIFICATE_PASSWORD          optional: the .p12's password
 #   APPLE_SIGNING_IDENTITY              optional: the identity's name, e.g. "Apple Development: …"
 # Without the Apple ones the app is signed ad hoc, and macOS asks again for the
 # keychain and for microphone / screen recording access after every update.
+#
+# Secrets go only into the step that needs them (never $GITHUB_ENV), and
+# third-party actions are pinned to a commit.
 
 name: Release NexQ Plus
 
@@ -24,7 +27,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write # create the release and upload its files
 
 concurrency:
   group: release-plus-${{ github.ref }}
@@ -35,10 +38,12 @@ jobs:
     runs-on: macos-15 # Apple Silicon
     env:
       PUBLISH: ${{ startsWith(github.ref, 'refs/tags/plus-v') }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Version and release notes
+      - name: Version, release notes and update files
         id: meta
         shell: bash
         run: |
@@ -49,64 +54,38 @@ jobs:
               echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
               exit 1
             fi
+            if [[ "$HAS_UPDATER_KEY" != "true" ]]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set: a release without it gives installed apps no update."
+              exit 1
+            fi
             {
               echo "notes<<__NOTES__"
               node scripts/release-plus.mjs --notes "$version"
               echo "__NOTES__"
             } >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Signing keys
-        shell: bash
-        env:
-          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          UPDATER_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          # Only set what exists: Tauri treats an empty variable as a value.
-          echo "BUNDLE_CONFIG=$RUNNER_TEMP/bundle.json" >> "$GITHUB_ENV"
-          if [[ -n "$UPDATER_KEY" ]]; then
-            {
-              echo "TAURI_SIGNING_PRIVATE_KEY<<__KEY__"
-              echo "$UPDATER_KEY"
-              echo "__KEY__"
-              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$UPDATER_KEY_PASSWORD"
-            } >> "$GITHUB_ENV"
+          # tauri-action splits `args` like a shell, so the config goes in a file.
+          if [[ "$HAS_UPDATER_KEY" == "true" ]]; then
             echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$RUNNER_TEMP/bundle.json"
-          elif [[ "$PUBLISH" == "true" ]]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set: a release without it gives installed apps no update."
-            exit 1
           else
             echo "::warning::No updater key: building without update files."
             echo '{"bundle":{"createUpdaterArtifacts":false}}' > "$RUNNER_TEMP/bundle.json"
           fi
-          if [[ -n "$APPLE_CERT" && -n "$APPLE_IDENTITY" ]]; then
-            {
-              echo "APPLE_CERTIFICATE<<__CERT__"
-              echo "$APPLE_CERT"
-              echo "__CERT__"
-              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERT_PASSWORD"
-              echo "APPLE_SIGNING_IDENTITY=$APPLE_IDENTITY"
-            } >> "$GITHUB_ENV"
-            echo "Signing with the Apple Development certificate."
-          else
-            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-            echo "::warning::No Apple certificate: signing ad hoc."
-          fi
+          echo "bundle_config=$RUNNER_TEMP/bundle.json" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
           # Same as upstream's release job: bump when the ggml/whisper build flags change.
@@ -123,13 +102,43 @@ jobs:
           echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
           echo "CMAKE_GENERATOR=$CMAKE_GENERATOR" >> "$GITHUB_ENV"
 
+      # The certificate goes into a keychain of this run only; the build then
+      # finds the identity there by name, so no certificate reaches its env.
+      - name: Apple certificate
+        if: env.HAS_APPLE_CERT == 'true'
+        shell: bash
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -base64 24)
+          echo "$APPLE_CERT" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          # codesign needs Apple's WWDR G3 intermediate to build the chain of
+          # an Apple Development certificate; the .p12 holds only the leaf.
+          curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/AppleWWDRCAG3.cer"
+          security import "$RUNNER_TEMP/AppleWWDRCAG3.cer" -k "$keychain" || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          # shellcheck disable=SC2046 # one argument per keychain already in the list
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/signing.p12"
+          security find-identity -v -p codesigning "$keychain" | tail -1
+
       - name: Build and publish
         if: env.PUBLISH == 'true'
-        uses: tauri-apps/tauri-action@v1.0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # "-" signs ad hoc.
+          APPLE_SIGNING_IDENTITY: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
         with:
-          args: --bundles app,dmg --config ${{ env.BUNDLE_CONFIG }}
+          args: --bundles app,dmg --config ${{ steps.meta.outputs.bundle_config }}
           tagName: ${{ github.ref_name }}
           releaseName: "NexQ Plus ${{ steps.meta.outputs.version }}"
           releaseBody: ${{ steps.meta.outputs.notes }}
@@ -139,13 +148,17 @@ jobs:
 
       - name: Build only
         if: env.PUBLISH != 'true'
-        uses: tauri-apps/tauri-action@v1.0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
         with:
-          args: --bundles app,dmg --config ${{ env.BUNDLE_CONFIG }}
+          args: --bundles app,dmg --config ${{ steps.meta.outputs.bundle_config }}
 
       - name: Keep the build
         if: env.PUBLISH != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: nexq-plus-${{ steps.meta.outputs.version }}-${{ github.sha }}
           path: |

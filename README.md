@@ -65,7 +65,7 @@ The first launch opens a short setup. You can skip it; everything below is also 
 4. **Press** <kbd>Ctrl</kbd>+<kbd>M</kbd>. NexQ captures system audio, so it works with Zoom, Teams, Meet, Discord or anything that plays sound.
 5. **Get an answer.** When a question comes up, press <kbd>Space</kbd> in the overlay, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> from any app.
 
-Official NexQ releases download signed updates in the background and install them when you quit. NexQ Plus on `custom` uses manual updates.
+Official NexQ releases download signed updates in the background and install them when you quit. NexQ Plus updates from its own releases at [PLus123456/NexQ-Plus](https://github.com/PLus123456/NexQ-Plus/releases), signed with its own key.
 
 Guides: [Getting started](docs/user-guide/getting-started.md) · [Choosing providers](docs/user-guide/ai-providers.md) · [Audio setup](docs/user-guide/audio-setup.md) · [Interview copilot](docs/user-guide/interview-copilot.md) · [Lecture assistant](docs/user-guide/lecture-assistant.md) · [Meeting detection](docs/user-guide/meeting-detection.md) · [Claude subscription](docs/user-guide/claude-subscription.md) · [Troubleshooting](docs/user-guide/troubleshooting.md)
 

@@ -166,6 +166,7 @@
 
 1. **自动更新会把自编译版换回官方版。** `src/hooks/useUpdater.ts` 启动 10 秒后检查一次、之后每 4 小时检查一次，默认静默下载，退出时安装。更新地址写死在 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`（`naxhq/NexQ/releases/latest/download/latest.json`），校验公钥也是上游的。上游一发新版，官方签名能通过校验，退出 App 时就会覆盖掉你的版本。
    - 处理：换成自己仓库的 `latest.json` + 自己生成的签名密钥（`npx tauri signer generate`），或者干脆默认关闭自动更新。
+   - 2026-11-23 已做：密钥在 `~/.tauri/nexq-plus.key`，公钥进了 `tauri.conf.json`，自动更新打开；`npm run release:plus` 打 `plus-v*` 标签，`.github/workflows/release-plus.yml` 编译发布。
 2. **Bundle ID 相同会和官方版抢同一个数据目录。** `identifier` 是 `com.nexq.app`，数据在 `~/Library/Application Support/com.nexq.app`（你机器上已经有官方版的数据）。建议改成自己的 ID（例如 `com.plus.nexq`，名字待定）和产品名，两个版本可以并存。
    - 钥匙串服务名 `NexQ:{provider}` 写死在 `src-tauri/src/credentials/macos_keychain.rs`，跟 Bundle ID 无关；改 ID 后 API Key 仍会和官方版共用，要彻底隔离就把前缀也改掉。
 3. **上游链接。** `src/settings/AboutSettings.tsx` 的 `GITHUB_URL`、`src/hooks/useUpdater.ts` 的 `RELEASES_URL` 指向 `naxhq/NexQ`。

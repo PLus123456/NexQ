@@ -25,7 +25,7 @@
 - 如需安装，打开 DMG，把 `NexQ Plus.app` 拖入“应用程序”。Plus 的 Bundle ID 为 `com.plus.nexq`，数据目录是 `~/Library/Application Support/com.plus.nexq/`，钥匙串条目前缀是 `NexQPlus:`。
 - API Key 保存在钥匙串的 `NexQPlus:vault`。后续构建可沿用同一张签名证书。首次从旧的临时签名版切换时，macOS 可能再次请求钥匙串访问授权。更早的逐项密钥会在首次读取时迁移到 `vault`。
 - 两个别同时开：全局快捷键和会议检测会互相抢。先退出官方 NexQ。
-- 自动更新是关的，官方更新不会覆盖它。
+- 自动更新从本仓库的 Release 拉取（`plus-v*` 版本），用 NexQ Plus 自己的密钥签名，官方更新不会覆盖它。2026-11-23 以前的本地构建没有打开自动更新，要手动装一次新版本。
 - 新的 Bundle ID 等于新 App，第一次开会时 macOS 会重新要麦克风、屏幕与系统录音、语音识别权限。
 
 ## 这一版有什么
