@@ -4,6 +4,19 @@ What changed in each NexQ Plus release. The update dialog reads this file;
 `npm run release:plus` adds an entry. Upstream NexQ's own history is in
 CHANGELOG.md.
 
+## [2.41.4](https://github.com/PLus123456/NexQ-Plus/compare/plus-v2.41.3...plus-v2.41.4) (2026-11-23)
+
+### Features
+
+* **release:** NexQ Plus releases built on GitHub from a plus-v tag
+
+### Bug Fixes
+
+* **captions:** judge the mouse right on screens scaled unlike the main one
+* **captions:** center subtitles and remove the outer frame when unhovered
+* **captions:** the strip says where it is when it comes up empty
+* **meeting:** a muted side no longer carries over, and in person uses the mic
+
 ## [2.41.3](https://github.com/PLus123456/NexQ-Plus/releases/tag/plus-v2.41.3) (2026-11-22)
 
 The first NexQ Plus build, on upstream NexQ 2.41.3. Built locally; releases on GitHub start after it.
