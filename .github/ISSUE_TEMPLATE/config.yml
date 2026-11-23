@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/naxhq/NexQ/discussions
     about: Ask "how do I...?" questions and get help from the community in Discussions.
   - name: Report a security vulnerability
-    url: https://github.com/naxhq/NexQ/security/advisories/new
+    url: https://github.com/PLus123456/NexQ-Plus/security/advisories/new
     about: Please report security issues privately, never as a public issue.
   - name: User guide
     url: https://github.com/naxhq/NexQ/tree/main/docs/user-guide

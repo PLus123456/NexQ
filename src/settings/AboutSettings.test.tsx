@@ -142,7 +142,7 @@ describe("AboutSettings", () => {
     expect(screen.getByText("构建日期").nextElementSibling).toHaveTextContent(zhDate);
 
     // Only names stay in Latin script: the product, upstream, its author, the stack, brands.
-    const keep = ["NexQ", "Plus", "naxhq", "Vahid", "Alizadeh", "MIT", "Tauri", "React", "Rust", "macOS",
+    const keep = ["NexQ", "Plus", "PLus", "naxhq", "Vahid", "Alizadeh", "MIT", "Tauri", "React", "Rust", "macOS",
       "GitHub", "Ollama", "LM", "Studio", "AI", "API", "Key"];
     expect(untranslatedWords(container, keep)).toEqual([]);
   });

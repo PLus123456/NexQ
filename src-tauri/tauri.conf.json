@@ -80,6 +80,7 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": false,
+    "copyright": "Copyright © 2026 PLus123456. Based on NexQ, © 2026 Vahid Alizadeh (MIT).",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
