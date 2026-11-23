@@ -250,6 +250,22 @@ describe("CaptionsWindow", () => {
     expect(windowCalls).not.toContain("startDragging");
   });
 
+  it("says where it is for a few seconds when it comes up with nothing said yet", async () => {
+    await open();
+    await vi.waitFor(() => expect(listeners.get("nexq:captions_visibility")?.size ?? 0).toBeGreaterThan(0));
+    expect(screen.queryByTestId("captions-waiting")).toBeNull();
+    vi.useFakeTimers();
+    emit("nexq:captions_visibility", { visible: true });
+    expect(screen.getByTestId("captions-waiting")).toHaveTextContent("What the other side says will show here");
+    act(() => void vi.advanceTimersByTime(8100));
+    expect(screen.queryByTestId("captions-waiting")).toBeNull();
+    // A new meeting brings it back; the first words replace it.
+    emit("nexq:meeting_started", {});
+    expect(screen.getByTestId("captions-waiting")).toBeInTheDocument();
+    say("a", "Hello there.");
+    expect(screen.queryByTestId("captions-waiting")).toBeNull();
+  });
+
   it("starts empty with a new meeting", async () => {
     await open();
     say("a", "Hello there.");

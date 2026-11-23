@@ -113,6 +113,48 @@ function useHeightFollowsLook(ready: boolean, s: CaptionsSettings) {
   }, [ready, height]);
 }
 
+/** How long the strip says where it is after it comes up, while nothing has been said. */
+const SHOWN_HINT_MS = 8000;
+
+/**
+ * True for a few seconds after the strip is shown or a meeting starts. With
+ * nothing said yet the strip is fully see-through, so without this hint it
+ * looks as if it never came up.
+ */
+function useShownHint(): boolean {
+  const [hint, setHint] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let mounted = true;
+    const stops: Array<() => void> = [];
+    const flash = () => {
+      if (!mounted) return;
+      setHint(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setHint(false), SHOWN_HINT_MS);
+    };
+    void import("@tauri-apps/api/event")
+      .then(async ({ listen }) => {
+        const stopShown = await listen<{ visible: boolean }>(CAPTIONS_VISIBILITY_EVENT, (e) => {
+          if (e.payload?.visible) flash();
+        });
+        const stopMeeting = await listen("nexq:meeting_started", flash);
+        if (mounted) stops.push(stopShown, stopMeeting);
+        else {
+          stopShown();
+          stopMeeting();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+      stops.forEach((stop) => stop());
+    };
+  }, []);
+  return hint;
+}
+
 /** True for `seconds` after `signature` last changed; always true when `seconds` is 0. */
 function useRecentlyChanged(signature: string, seconds: number): boolean {
   const [recent, setRecent] = useState(false);
@@ -141,6 +183,7 @@ export function CaptionsWindow() {
   const raw = useCaptionsSettings();
   const s = useMemo(() => clampCaptionsSettings(raw), [raw]);
   const feed = useCaptionFeed();
+  const shownHint = useShownHint();
   const [hovered, setHovered] = useState(false);
   useLockApplied(ready, s.captionsLocked);
   useHeightFollowsLook(ready, s);
@@ -191,6 +234,18 @@ export function CaptionsWindow() {
           style={{ top: CONTROLS_ROOM, padding: `0 ${STRIP_PADDING + 4}px ${STRIP_PADDING}px` }}
         />
       </div>
+
+      {!showChrome && shownHint && cues.length === 0 && (
+        <div
+          data-testid="captions-waiting"
+          className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-center pb-3"
+          style={{ top: CONTROLS_ROOM }}
+        >
+          <span className="rounded-lg px-3 py-1.5 text-[13px] text-white/90" style={{ background: "rgb(0 0 0 / 0.55)" }}>
+            {t(s.captionsParties === "both" ? "strip.waitingBoth" : "strip.waitingThem")}
+          </span>
+        </div>
+      )}
 
       {showChrome && cues.length === 0 && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end px-4 pb-3 text-[13px] text-white/80" style={{ top: CONTROLS_ROOM, textShadow: "0 1px 2px rgb(0 0 0 / 0.9)" }}>

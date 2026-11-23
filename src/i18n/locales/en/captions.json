@@ -1,6 +1,8 @@
 {
   "strip": {
     "empty": "Captions will show here. Drag to move it, drag an edge to resize.",
+    "waitingThem": "Caption strip is on. What the other side says will show here.",
+    "waitingBoth": "Caption strip is on. What is said will show here.",
     "them": "Them",
     "you": "You",
     "controls": {
