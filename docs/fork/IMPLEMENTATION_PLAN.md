@@ -177,7 +177,7 @@ node scripts/i18n-check.mjs
 | 录音目录 | **Mac 上落到 `~/.config/com.nexq.app/recordings`**：`audio/recorder.rs:94-120` 同样只认 `APPDATA`，退回 `$HOME/.config` 再拼死 `com.nexq.app` | 改用 `app_data_dir()/recordings`。新建 `src-tauri/src/paths.rs`，setup 时用 `OnceLock` 记下 `app_data_dir`，`recorder.rs` 从这里取 | `audio/recorder.rs`、新 `paths.rs`、`lib.rs` |
 | Claude CLI 沙箱 | `$TMPDIR/NexQ/agent-sandbox`（`cli_agent/command.rs:64-70`）| `NexQPlus/agent-sandbox` | `llm/cli_agent/command.rs` |
 | 自动更新 | 启动 10 秒后查 `naxhq/NexQ` 的 `latest.json`，官方签名能过校验，退出时会装回官方版 | 第一版**关闭后台检查**：新 `src/lib/brand.ts` 里 `UPDATER_ENABLED = false`，`useUpdater.ts` 据此不启动定时检查，关于页显示"自用版已关闭自动更新"；`plugins.updater.endpoints` 改指 fork 的 Releases（万一被手动触发也不会拿到官方包）；`tauri.macos.conf.json`、`tauri.windows.conf.json` 的 `createUpdaterArtifacts` 改成 `false`；公钥等 Phase 5 用自己生成的密钥替换 | `tauri.conf.json`、`tauri.macos.conf.json`、`tauri.windows.conf.json`、`useUpdater.ts`、`AboutSettings.tsx`、新 `brand.ts` |
-| 上游链接 | `AboutSettings.tsx:27` 的 `GITHUB_URL`、`useUpdater.ts:46` 的 `RELEASES_URL` | 指向 `PLus123456/NexQ`；关于页注明"基于 naxhq/NexQ（MIT）"并保留原版权声明 | 同左 |
+| 上游链接 | `AboutSettings.tsx:27` 的 `GITHUB_URL`、`useUpdater.ts:46` 的 `RELEASES_URL` | 指向 `PLus123456/NexQ-Plus`；关于页注明"基于 naxhq/NexQ（MIT）"并保留原版权声明 | 同左 |
 | 权限说明 | `Info.plist` 两条英文 "NexQ captures audio…" | 改成中文，产品名 NexQ Plus（这是 macOS 弹权限框时显示的文字）| `src-tauri/Info.plist` |
 | 构建脚本 | `build-mac.sh:20` 的 `APP_NAME="NexQ"`；安装时会 `pkill -x NexQ`、`rm -rf /Applications/NexQ.app`，**不改会杀掉并删除官方版** | `APP_NAME="NexQ Plus"`，进程名用 `nexq-plus`；安装前用 `defaults read` 检查产物的 `CFBundleIdentifier` 必须是 `com.plus.nexq`，否则中止 | `build-mac.sh` |
 | 用不上的设置项 | "数据目录"设置 Rust 从来不读（OVERHAUL_PLAN 2.5）| 先在通用设置里隐藏，免得误导 | `GeneralSettings.tsx` |

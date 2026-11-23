@@ -8,7 +8,7 @@
 
 - **你感觉要大改，判断是对的。** 你提的每个痛点在代码里都有明确的根因，而且不止是"少几个输入框"：LLM、STT、翻译三套提供方都是封闭枚举 + 写死地址，界面没有任何国际化框架，首次设置流程里有好几处自相矛盾的默认值。
 - **但有一批改动很便宜、立刻见效**：手填模型名（后端本来就接受任意模型名，限制只在前端）、让 OpenAI 兼容的 STT 引擎能填自己的服务器地址、识别和翻译语言允许自填、修掉引导流程的默认值冲突。这些建议最先做。
-- **已 fork 到 [PLus123456/NexQ](https://github.com/PLus123456/NexQ)**（2026-11-01，公开），本地 `origin` 指向你的 fork、`upstream` 指向官方。策略是**通用改动优先提 PR 给官方**，只有自用的改动留在 fork 的 `custom` 分支。见第 3 节。
+- **已 fork 到 [PLus123456/NexQ-Plus](https://github.com/PLus123456/NexQ-Plus)**（2026-11-01，公开；2026-11-23 由 `NexQ` 改名，云端只留 `custom`），本地 `origin` 指向你的 fork、`upstream` 指向官方。策略是**通用改动优先提 PR 给官方**，只有自用的改动留在 fork 的 `custom` 分支。见第 3 节。
 - **自编译自用版之前必须先做"分支卫生"**（只做在 `custom` 分支）：改 Bundle ID、改掉或关掉自动更新（否则上游一发版就会把你的版本换回官方版）、装好 Rust 和 CMake 先把原版编出来。见第 4 节。
 
 ## 1. 代码现状
@@ -111,7 +111,7 @@
 
 ### 3.1 决定
 
-2026-11-01 已 fork 到 [PLus123456/NexQ](https://github.com/PLus123456/NexQ)（公开，只复制了 `main`）。本地远端：`origin` = 你的 fork，`upstream` = `naxhq/NexQ`。
+2026-11-01 已 fork 到 PLus123456/NexQ（公开，只复制了 `main`）。2026-11-23 改名为 [PLus123456/NexQ-Plus](https://github.com/PLus123456/NexQ-Plus)，云端只保留 `custom` 一个分支并设为默认分支，原 `main` 镜像和已合并的 PR 分支都删掉了。本地远端：`origin` = 你的 fork，`upstream` = `naxhq/NexQ`。
 
 为什么选公开 fork：
 
@@ -125,8 +125,8 @@
 
 | 分支 | 放什么 | 从哪拉、怎么同步 |
 |---|---|---|
-| `main` | 只跟官方同步，**不放任何自己的提交** | 本地 `main` 跟踪 `upstream/main`：`git switch main && git pull --ff-only && git push origin main`，或在 GitHub 上点 Sync fork |
-| PR 分支 | 一个分支只放一个要提给官方的改动 | `git switch -c fix/xxx upstream/main`，按 CONTRIBUTING 命名为 `<type>/<简短描述>`；推到 `origin`，向 `naxhq/NexQ` 的 `main` 提 PR |
+| `main`（只在本地） | 只跟官方同步，**不放任何自己的提交** | 本地 `main` 跟踪 `upstream/main`：`git switch main && git pull --ff-only`。fork 上不再保留 `main` |
+| PR 分支 | 一个分支只放一个要提给官方的改动 | `git switch -c fix/xxx upstream/main`，按 CONTRIBUTING 命名为 `<type>/<简短描述>`；推到 `origin`，向 `naxhq/NexQ` 的 `main` 提 PR；官方合并后删掉 fork 上的这个分支（`git push origin --delete fix/xxx`），云端只留 `custom` |
 | `custom` | 自用版：`docs/fork/`、第 4 节的分支卫生改动、所有自己的功能 | 从 `main` 拉，定期 `git merge main`；PR 分支做完就合进来，不用等官方合并 |
 | 自用功能分支 | 官方不收、或依赖分支卫生改动的功能 | 从 `custom` 拉，做完合回 `custom` |
 

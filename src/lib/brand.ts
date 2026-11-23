@@ -6,7 +6,7 @@
 export const APP_NAME = "NexQ Plus";
 
 /** This fork's repository: issues, changelog and (one day) its own releases. */
-export const REPO_URL = "https://github.com/PLus123456/NexQ";
+export const REPO_URL = "https://github.com/PLus123456/NexQ-Plus";
 
 /** The upstream project this fork is based on (MIT), credited on the About page. */
 export const UPSTREAM_URL = "https://github.com/naxhq/NexQ";

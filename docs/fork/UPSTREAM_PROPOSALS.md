@@ -13,7 +13,7 @@
 - [官方 CONTRIBUTING](https://github.com/naxhq/NexQ/blob/a1d78901ee0d2e16715715d278d5b685a7f5dc16/CONTRIBUTING.md) 要求新提供方、窗口、数据库迁移和音频采集改动先开 issue 或 discussion 商量，PR 保持小范围，重构与行为改动分开。
 - [Feature request 模板](https://github.com/naxhq/NexQ/blob/a1d78901ee0d2e16715715d278d5b685a7f5dc16/.github/ISSUE_TEMPLATE/feature_request.yml) 要求先写问题，再写方案、替代方案、Area 和是否愿意贡献；以下正文沿用这些字段。开放式设计讨论可发到现有的 **Ideas** 分类。
 - 已通过 `gh` 只读核对：[Issue #5](https://github.com/naxhq/NexQ/issues/5) 已关闭，维护者曾说明界面多语言不在近期路线图；[Discussion #28](https://github.com/naxhq/NexQ/discussions/28) 请求中文界面，目前仍无回复；[Issue #37](https://github.com/naxhq/NexQ/issues/37) 已通过调用 Anthropic Models API 修复。
-- 下文中的实现链接指向公开的 [fork `custom`](https://github.com/PLus123456/NexQ/tree/custom)，供维护者阅读代码、构建体验。它是持续变化的参考实现，不代表已通过上游验收，也不要求上游采用 fork 的全部架构。实际投稿 PR 应从当时最新的 `upstream/main` 拆出通用改动。
+- 下文中的实现链接指向公开的 [fork `custom`](https://github.com/PLus123456/NexQ-Plus/tree/custom)，供维护者阅读代码、构建体验。它是持续变化的参考实现，不代表已通过上游验收，也不要求上游采用 fork 的全部架构。实际投稿 PR 应从当时最新的 `upstream/main` 拆出通用改动。
 
 ## 1. 中文界面 / i18n 框架（完整稿，优先级最高）
 
@@ -35,7 +35,7 @@ Would you be open to a contributor-maintained, incremental UI localization effor
 
 ### Proposed solution
 
-I have implemented English / Simplified Chinese UI localization in my personal fork, using `i18next` and `react-i18next`. The [public `custom` branch](https://github.com/PLus123456/NexQ/tree/custom) is available to inspect or build. Useful starting points are the [i18n module and contributor notes](https://github.com/PLus123456/NexQ/tree/custom/src/i18n), [English and Chinese resources](https://github.com/PLus123456/NexQ/tree/custom/src/i18n/locales), and [locale checker](https://github.com/PLus123456/NexQ/blob/custom/scripts/i18n-check.mjs).
+I have implemented English / Simplified Chinese UI localization in my personal fork, using `i18next` and `react-i18next`. The [public `custom` branch](https://github.com/PLus123456/NexQ-Plus/tree/custom) is available to inspect or build. Useful starting points are the [i18n module and contributor notes](https://github.com/PLus123456/NexQ-Plus/tree/custom/src/i18n), [English and Chinese resources](https://github.com/PLus123456/NexQ-Plus/tree/custom/src/i18n/locales), and [locale checker](https://github.com/PLus123456/NexQ-Plus/blob/custom/scripts/i18n-check.mjs).
 
 I would adapt this work to upstream's preferred conventions through small PRs:
 
@@ -108,7 +108,7 @@ Start with an editable model combobox: **API-fetched dropdown suggestions plus a
 
 Then, if useful, discuss named connections with their own endpoint, credentials and default model, followed by optional per-task connection/model overrides. Tasks would initially inherit the current default; selecting another model for translation would not require changing the assistant or summary model. Credentials would remain in the OS credential store, and existing settings would need a reviewed migration.
 
-My [fork implementation](https://github.com/PLus123456/NexQ/tree/custom/src/settings/llm) includes these features and a [shared model combobox](https://github.com/PLus123456/NexQ/blob/custom/src/components/ModelCombobox.tsx). I would extract the combobox first and discuss the connection/routing design separately. Would that smaller first contribution fit your preferred direction?
+My [fork implementation](https://github.com/PLus123456/NexQ-Plus/tree/custom/src/settings/llm) includes these features and a [shared model combobox](https://github.com/PLus123456/NexQ-Plus/blob/custom/src/components/ModelCombobox.tsx). I would extract the combobox first and discuss the connection/routing design separately. Would that smaller first contribution fit your preferred direction?
 
 ### Alternatives considered
 
@@ -142,7 +142,7 @@ I would like to use Soniox for live transcription and receive its native transla
 
 Add Soniox as an optional STT provider, selectable independently for You and Them. Each selected audio stream would have its own session. Expose region, model and language settings, plus optional one-way translation to a chosen target language. Match partial/final transcripts and translated text to stable segment IDs, and route the translations through the existing display/history path. When native translation is enabled for a stream, skip the separate automatic translation request for that stream.
 
-The [provider and protocol implementation in my fork](https://github.com/PLus123456/NexQ/blob/custom/src-tauri/src/stt/soniox.rs) and [region router](https://github.com/PLus123456/NexQ/blob/custom/src-tauri/src/stt/soniox_regions.rs) cover US, EU, Japan and India configurations, per-region keys, and fixed, latency-based or ordered region selection.
+The [provider and protocol implementation in my fork](https://github.com/PLus123456/NexQ-Plus/blob/custom/src-tauri/src/stt/soniox.rs) and [region router](https://github.com/PLus123456/NexQ-Plus/blob/custom/src-tauri/src/stt/soniox_regions.rs) cover US, EU, Japan and India configurations, per-region keys, and fixed, latency-based or ordered region selection.
 
 For upstream I suggest fixed-region configuration first, followed by transcription and native-translation integration in reviewable steps. Automatic selection/failover could be a separate opt-in follow-up restricted to user-enabled regions. The integration touches audio result emission and segment handling, so I would agree on those changes before opening PRs. Protocol tests and manual two-stream checks would cover delayed translations, reconnects and duplicate translation requests.
 
@@ -182,7 +182,7 @@ Add an optional OpenAI-compatible STT provider with a base URL, manually editabl
 
 This would support chunked HTTP transcription from self-hosted Whisper services exposing that contract, such as compatible speaches deployments. It would not imply arbitrary Whisper servers are compatible or provide token-streaming latency. Connection testing should exercise transcription explicitly and should not depend solely on `/models` being available.
 
-My [fork provider](https://github.com/PLus123456/NexQ/blob/custom/src-tauri/src/stt/openai_compat.rs) provides a reference. I propose one shared endpoint configuration initially, with independent provider/language selection for You and Them. Network work should stay off the capture loop, with bounded buffering, timeouts and ordered results. Tests would cover slow/error responses and a manual two-stream session. Multiple named STT endpoints and WebSocket protocols can follow separately.
+My [fork provider](https://github.com/PLus123456/NexQ-Plus/blob/custom/src-tauri/src/stt/openai_compat.rs) provides a reference. I propose one shared endpoint configuration initially, with independent provider/language selection for You and Them. Network work should stay off the capture loop, with bounded buffering, timeouts and ordered results. Tests would cover slow/error responses and a manual two-stream session. Multiple named STT endpoints and WebSocket protocols can follow separately.
 
 Would you prefer a new generic provider or a narrowly scoped generalization of the existing Whisper API integration?
 
@@ -220,7 +220,7 @@ Keep the Ollama path and add an optional OpenAI-compatible `/embeddings` provide
 
 The index must record which embedding configuration produced its vectors and validate response dimensions. A model or embedding-space change must require an explicit rebuild before those vectors are used with new queries; equal dimensions alone do not make two models compatible. Existing documents should be retained, and paid re-embedding should require user confirmation. Embedding selection would remain separate from chat task routing.
 
-My fork includes an [embedding adapter](https://github.com/PLus123456/NexQ/blob/custom/src-tauri/src/rag/embedding/openai_compat.rs), [configuration](https://github.com/PLus123456/NexQ/blob/custom/src-tauri/src/rag/config.rs) and [settings UI](https://github.com/PLus123456/NexQ/blob/custom/src/settings/rag/EmbeddingSection.tsx). It also has broader indexing changes; the upstream proposal can be limited to endpoint configuration and the index-compatibility safeguards it needs. Any metadata/schema migration should be agreed first, with upgrade and rebuild tests.
+My fork includes an [embedding adapter](https://github.com/PLus123456/NexQ-Plus/blob/custom/src-tauri/src/rag/embedding/openai_compat.rs), [configuration](https://github.com/PLus123456/NexQ-Plus/blob/custom/src-tauri/src/rag/config.rs) and [settings UI](https://github.com/PLus123456/NexQ-Plus/blob/custom/src/settings/rag/EmbeddingSection.tsx). It also has broader indexing changes; the upstream proposal can be limited to endpoint configuration and the index-compatibility safeguards it needs. Any metadata/schema migration should be agreed first, with upgrade and rebuild tests.
 
 Would you be interested in that limited scope, and where would you prefer the embedding identity to be stored?
 

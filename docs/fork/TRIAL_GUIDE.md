@@ -2,7 +2,7 @@
 
 ## 当前本地构建
 
-2026-11-22 构建的 NexQ Plus 版本为 **2.41.3**，适用于 Apple Silicon。应用和安装镜像均使用 Apple Development 证书签名，对应 `custom` 的[源码提交 8d38841](https://github.com/PLus123456/NexQ/commit/8d38841064e8a94d6649633bff5cefe6cedb9de3)。
+2026-11-22 构建的 NexQ Plus 版本为 **2.41.3**，适用于 Apple Silicon。应用和安装镜像均使用 Apple Development 证书签名，对应 `custom` 的[源码提交 8d38841](https://github.com/PLus123456/NexQ-Plus/commit/8d38841064e8a94d6649633bff5cefe6cedb9de3)。
 
 | 本地产物 | 相对仓库根目录的位置 |
 |---|---|
