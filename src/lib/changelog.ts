@@ -28,10 +28,14 @@ export function releasesBetween(
   );
 }
 
-/** This fork's changelog at the release tag (brand.ts: never the official NexQ's). */
+/**
+ * This fork's changelog at its release tag (brand.ts: never the official
+ * NexQ's). NexQ Plus tags are `plus-v<version>` and its entries live in
+ * CHANGELOG.plus.md (scripts/release-plus.mjs), apart from upstream's.
+ */
 export function changelogUrl(version: string): string {
   const repo = REPO_URL.replace("https://github.com/", "https://raw.githubusercontent.com/");
-  return `${repo}/v${version}/CHANGELOG.md`;
+  return `${repo}/plus-v${version}/CHANGELOG.plus.md`;
 }
 
 const FETCH_LIMIT_MS = 8_000;

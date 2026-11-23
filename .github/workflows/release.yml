@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   windows:
+    # NexQ Plus: upstream's release (its v* tags); the fork releases through release-plus.yml.
+    if: github.repository == 'naxhq/NexQ'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

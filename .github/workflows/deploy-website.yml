@@ -24,6 +24,8 @@ concurrency:
 
 jobs:
   build:
+    # NexQ Plus: upstream's website; the fork has no Pages site.
+    if: github.repository == 'naxhq/NexQ'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

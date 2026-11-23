@@ -15,8 +15,9 @@ export const UPSTREAM_URL = "https://github.com/naxhq/NexQ";
 export const RELEASES_URL = `${REPO_URL}/releases`;
 
 /**
- * Background update checks. Off in the first fork release: the updater would
- * otherwise fetch upstream's signed builds and replace this app on quit.
- * Turn on only once the fork publishes its own signed releases.
+ * Background update checks against this fork's releases (the `plus-v*` tags
+ * built by .github/workflows/release-plus.yml). They are signed with the
+ * fork's own updater key, whose public half is in tauri.conf.json, so
+ * upstream's builds can never replace this app.
  */
-export const UPDATER_ENABLED = false;
+export const UPDATER_ENABLED = true;

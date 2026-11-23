@@ -128,6 +128,7 @@ describe("fetchReleaseNotes", () => {
     const notes = await fetchReleaseNotes("2.29.1", "2.34.0");
 
     expect(fetchMock.mock.calls[0][0]).toBe(changelogUrl("2.34.0"));
+    expect(changelogUrl("2.34.0")).toBe("https://raw.githubusercontent.com/PLus123456/NexQ-Plus/plus-v2.34.0/CHANGELOG.plus.md");
     expect(notes.map((r) => r.version)).toEqual(["2.34.0", "2.33.0"]);
   });
 

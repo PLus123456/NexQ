@@ -12,6 +12,11 @@ const shell = vi.hoisted(() => ({ open: vi.fn(async (_url: string) => {}) }));
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: shell.open }));
 const os = vi.hoisted(() => ({ arch: vi.fn<() => string>() }));
 vi.mock("@tauri-apps/plugin-os", () => ({ arch: () => os.arch() }));
+// The About page of a build with the updater off; AboutSettings.updater.test.tsx has it on.
+vi.mock("../lib/brand", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/brand")>()),
+  UPDATER_ENABLED: false,
+}));
 
 import { AboutSettings } from "./AboutSettings";
 import { REPO_URL, UPSTREAM_URL } from "../lib/brand";

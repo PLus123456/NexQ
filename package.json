@@ -12,6 +12,7 @@
     "release": "node scripts/release.js",
     "release:dry-run": "node scripts/release.js --dry-run",
     "sync-version": "node scripts/sync-version.js",
+    "release:plus": "node scripts/release-plus.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
