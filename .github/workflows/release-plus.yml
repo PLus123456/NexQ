@@ -11,8 +11,8 @@
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (leave unset for a key made without one)
 #   APPLE_CERTIFICATE                   optional: the Apple Development identity as a base64 .p12
 #   APPLE_CERTIFICATE_PASSWORD          optional: the .p12's password
-#   APPLE_SIGNING_IDENTITY              optional: the identity's name, e.g. "Apple Development: …"
-# Without the Apple ones the app is signed ad hoc, and macOS asks again for the
+# The build signs with the identity in that .p12 (found by its fingerprint, so
+# no name is needed). Without the Apple ones the app is signed ad hoc, and macOS asks again for the
 # keychain and for microphone / screen recording access after every update.
 #
 # Secrets go only into the step that needs them (never $GITHUB_ENV), and
@@ -39,7 +39,7 @@ jobs:
     env:
       PUBLISH: ${{ startsWith(github.ref, 'refs/tags/plus-v') }}
       HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -103,8 +103,9 @@ jobs:
           echo "CMAKE_GENERATOR=$CMAKE_GENERATOR" >> "$GITHUB_ENV"
 
       # The certificate goes into a keychain of this run only; the build then
-      # finds the identity there by name, so no certificate reaches its env.
+      # signs with that identity's fingerprint, so no certificate reaches its env.
       - name: Apple certificate
+        id: apple
         if: env.HAS_APPLE_CERT == 'true'
         shell: bash
         env:
@@ -126,6 +127,13 @@ jobs:
           # shellcheck disable=SC2046 # one argument per keychain already in the list
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/signing.p12"
+          # The SHA-1 fingerprint, not the name (which carries the account's email).
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *1) \([0-9A-F]\{40\}\) .*/\1/p')
+          if [[ -z "$identity" ]]; then
+            echo "::error::No valid code signing identity in APPLE_CERTIFICATE (wrong password, or an expired certificate?)"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
           security find-identity -v -p codesigning "$keychain" | tail -1
 
       - name: Build and publish
@@ -136,7 +144,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # "-" signs ad hoc.
-          APPLE_SIGNING_IDENTITY: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple.outputs.identity || '-' }}
         with:
           args: --bundles app,dmg --config ${{ steps.meta.outputs.bundle_config }}
           tagName: ${{ github.ref_name }}
@@ -152,7 +160,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple.outputs.identity || '-' }}
         with:
           args: --bundles app,dmg --config ${{ steps.meta.outputs.bundle_config }}
 
