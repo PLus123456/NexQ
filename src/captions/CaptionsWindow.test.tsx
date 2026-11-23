@@ -18,6 +18,14 @@ const pointerMock = vi.hoisted(() => ({
   cursor: { x: 10, y: 10 },
   /** When set, outerPosition/innerSize expose physical x/y/width/height like real Tauri. */
   physicalRect: null as { x: number; y: number; width: number; height: number } | null,
+  /** Scale of the screen the strip is on, and of the main display. */
+  windowScale: 2,
+  primaryScale: 2,
+}));
+const platformMock = vi.hoisted(() => ({ mac: false }));
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  isMac: () => platformMock.mac,
 }));
 vi.mock("@tauri-apps/api/window", () => {
   const record = (name: string) => async (...args: unknown[]) => {
@@ -30,7 +38,7 @@ vi.mock("@tauri-apps/api/window", () => {
     setPosition: record("setPosition"),
     onMoved: async () => () => {},
     onResized: async () => () => {},
-    scaleFactor: async () => 2,
+    scaleFactor: async () => pointerMock.windowScale,
     outerPosition: async () => ({
       ...(pointerMock.physicalRect ? { x: pointerMock.physicalRect.x, y: pointerMock.physicalRect.y } : {}),
       toLogical: () => ({ x: 256, y: 640 }),
@@ -45,7 +53,7 @@ vi.mock("@tauri-apps/api/window", () => {
     getCurrentWindow: () => win,
     availableMonitors: async () => [monitor],
     currentMonitor: async () => monitor,
-    primaryMonitor: async () => monitor,
+    primaryMonitor: async () => ({ ...monitor, scaleFactor: pointerMock.primaryScale }),
     cursorPosition: async () => ({ ...pointerMock.cursor }),
     monitorFromPoint: async () => monitor,
     LogicalSize: class { constructor(public width: number, public height: number) {} toJSON() { return [this.width, this.height]; } },
@@ -65,6 +73,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ WebviewWindow: { getByLabel: async () => null } }));
 
 import { CaptionsWindow } from "./CaptionsWindow";
+import { isCursorInsideWindow } from "../lib/captions/placement";
 import { useConfigStore } from "../stores/configStore";
 import { DEFAULT_CAPTIONS_SETTINGS } from "../lib/captions/types";
 import { changeUiLanguage } from "../i18n";
@@ -105,6 +114,9 @@ beforeEach(() => {
   saved.clear();
   pointerMock.cursor = { x: 10, y: 10 };
   pointerMock.physicalRect = null;
+  pointerMock.windowScale = 2;
+  pointerMock.primaryScale = 2;
+  platformMock.mac = false;
   useConfigStore.setState({ ...DEFAULT_CAPTIONS_SETTINGS });
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -427,5 +439,66 @@ describe("CaptionsWindow", () => {
     });
     expect(windowCalls).toContain("startDragging");
     expect(screen.queryByTestId("captions-frame")).toBeNull();
+  });
+
+  describe("pointer check on screens with different scales (macOS)", () => {
+    // Main display a 1x monitor at points (0,0)–(2560,1440); a 2x laptop screen
+    // below it. The strip sits on the laptop at points (780,2150), 1000×229.
+    // Tauri gives the cursor at the main display's scale (1) and the window at
+    // its own screen's scale (2).
+    const stripOnLaptop = () => {
+      pointerMock.primaryScale = 1;
+      pointerMock.windowScale = 2;
+      pointerMock.physicalRect = { x: 1560, y: 4300, width: 2000, height: 458 };
+    };
+
+    it("finds the cursor inside the strip on the laptop screen", async () => {
+      stripOnLaptop();
+      pointerMock.cursor = { x: 1280, y: 2264 }; // points (1280,2264): over the strip
+      expect(await isCursorInsideWindow(true)).toBe(true);
+      pointerMock.cursor = { x: 1280, y: 700 }; // on the monitor above
+      expect(await isCursorInsideWindow(true)).toBe(false);
+    });
+
+    it("finds the cursor inside the strip on a 1x monitor next to a 2x main display", async () => {
+      // Main display 2x at points (0,0)–(1512,982); a 1x monitor to its right.
+      // Strip on the monitor at points (2000,1100), 1000×229.
+      pointerMock.primaryScale = 2;
+      pointerMock.windowScale = 1;
+      pointerMock.physicalRect = { x: 2000, y: 1100, width: 1000, height: 229 };
+      pointerMock.cursor = { x: 5000, y: 2400 }; // points (2500,1200): over the strip
+      expect(await isCursorInsideWindow(true)).toBe(true);
+      pointerMock.cursor = { x: 2000, y: 1000 }; // points (1000,500): on the main display
+      expect(await isCursorInsideWindow(true)).toBe(false);
+    });
+
+    it("compares desktop pixels as they are on other systems, and gives up on an unknown scale", async () => {
+      pointerMock.physicalRect = { x: 1560, y: 4300, width: 2000, height: 458 };
+      pointerMock.cursor = { x: 2000, y: 4500 };
+      expect(await isCursorInsideWindow(false)).toBe(true);
+      pointerMock.primaryScale = 0;
+      expect(await isCursorInsideWindow(true)).toBeNull();
+    });
+
+    it("keeps the frame and controls up while the mouse rests over the strip", async () => {
+      platformMock.mac = true;
+      stripOnLaptop();
+      pointerMock.cursor = { x: 1280, y: 2264 };
+      await open();
+      vi.useFakeTimers();
+
+      fireEvent.pointerEnter(document.querySelector("[data-captions-root]")!);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+      expect(screen.getByRole("toolbar").style.opacity).toBe("1");
+
+      pointerMock.cursor = { x: 1280, y: 700 };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(screen.queryByTestId("captions-frame")).toBeNull();
+    });
   });
 });

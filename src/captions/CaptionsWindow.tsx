@@ -5,7 +5,7 @@ import { useT } from "../i18n";
 import { loadCaptionsSettings, useConfigStore } from "../stores/configStore";
 import { stripCues } from "../lib/captions/feed";
 import { CONTROLS_ROOM, MIN_STRIP, STRIP_PADDING, clampCaptionsSettings, recommendedHeight, sameBounds } from "../lib/captions/layout";
-import { followCaptionsBounds, placeCaptionsWindow, setCaptionsHeight } from "../lib/captions/placement";
+import { followCaptionsBounds, isCursorInsideWindow, placeCaptionsWindow, setCaptionsHeight } from "../lib/captions/placement";
 import { CAPTIONS_VISIBILITY_EVENT, hideCaptions, setCaptionsLocked } from "../lib/captions/window";
 import type { CaptionsSettings } from "../lib/captions/types";
 import type { ResizeEdge } from "../lib/resizeRect";
@@ -173,40 +173,6 @@ function useRecentlyChanged(signature: string, seconds: number): boolean {
 
 /** How often to verify the pointer is still over the strip while chrome is up, ms. */
 const HOVER_CHECK_MS = 120;
-
-/**
- * Checks whether the OS pointer is inside this window using Tauri's physical
- * desktop coordinates. Returns `null` when the native API is unavailable or
- * partially mocked (tests, browser harness).
- */
-export async function isCursorInsideWindow(): Promise<boolean | null> {
-  try {
-    const api = await import("@tauri-apps/api/window");
-    if (typeof api.cursorPosition !== "function" || typeof api.getCurrentWindow !== "function") return null;
-    const win = api.getCurrentWindow();
-    if (typeof win.outerPosition !== "function" || typeof win.innerSize !== "function") return null;
-    const [cursor, pos, size] = await Promise.all([api.cursorPosition(), win.outerPosition(), win.innerSize()]);
-    if (
-      !cursor || !pos || !size
-      || typeof cursor.x !== "number" || !Number.isFinite(cursor.x)
-      || typeof cursor.y !== "number" || !Number.isFinite(cursor.y)
-      || typeof pos.x !== "number" || !Number.isFinite(pos.x)
-      || typeof pos.y !== "number" || !Number.isFinite(pos.y)
-      || typeof size.width !== "number" || !Number.isFinite(size.width) || size.width <= 0
-      || typeof size.height !== "number" || !Number.isFinite(size.height) || size.height <= 0
-    ) {
-      return null;
-    }
-    return (
-      cursor.x >= pos.x
-      && cursor.x <= pos.x + size.width
-      && cursor.y >= pos.y
-      && cursor.y <= pos.y + size.height
-    );
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Tracks whether the pointer is over the caption strip.

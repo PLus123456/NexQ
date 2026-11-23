@@ -4,6 +4,7 @@
 
 import type { CaptionsBounds } from "./types";
 import { defaultBounds, isOnScreen, sameBounds } from "./layout";
+import { isMac } from "../platform";
 
 type Monitor = NonNullable<Awaited<ReturnType<typeof import("@tauri-apps/api/window").currentMonitor>>>;
 
@@ -19,12 +20,68 @@ function workArea(monitor: Monitor): CaptionsBounds {
   };
 }
 
+const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const positive = (v: unknown): v is number => finite(v) && v > 0;
+
+/**
+ * The mouse in desktop coordinates: points on macOS, pixels elsewhere. On
+ * macOS Tauri scales the cursor by the main display's factor whatever screen
+ * it is on, while screens are found (`monitorFromPoint`) and windows laid out
+ * in points; elsewhere cursor, screens and windows are all desktop pixels.
+ * Null when the position (on macOS also the main display's scale) can't be
+ * read, e.g. a partial stand-in for Tauri.
+ */
+export async function desktopCursor(mac = isMac()): Promise<{ x: number; y: number } | null> {
+  const api = await import("@tauri-apps/api/window");
+  if (typeof api.cursorPosition !== "function" || (mac && typeof api.primaryMonitor !== "function")) return null;
+  const [cursor, main] = await Promise.all([api.cursorPosition(), mac ? api.primaryMonitor() : null]);
+  const scale = mac ? main?.scaleFactor : 1;
+  if (!cursor || !finite(cursor.x) || !finite(cursor.y) || !positive(scale)) return null;
+  return { x: cursor.x / scale, y: cursor.y / scale };
+}
+
+/**
+ * Whether the mouse is inside this window, compared in desktop coordinates
+ * (`desktopCursor`): on macOS the window's pixels go back to points by its
+ * own screen's scale, so a strip on a screen scaled unlike the main one (a
+ * Retina laptop next to a 1x monitor) is still judged right. Null when it
+ * can't be told (no native API, tests, browser harness).
+ */
+export async function isCursorInsideWindow(mac = isMac()): Promise<boolean | null> {
+  try {
+    const api = await import("@tauri-apps/api/window");
+    if (typeof api.getCurrentWindow !== "function") return null;
+    const win = api.getCurrentWindow();
+    if (typeof win.outerPosition !== "function" || typeof win.innerSize !== "function") return null;
+    if (mac && typeof win.scaleFactor !== "function") return null;
+    const [cursor, pos, size, scale] = await Promise.all([
+      desktopCursor(mac),
+      win.outerPosition(),
+      win.innerSize(),
+      mac ? win.scaleFactor() : 1,
+    ]);
+    if (
+      !cursor || !pos || !size
+      || !finite(pos.x) || !finite(pos.y)
+      || !positive(size.width) || !positive(size.height)
+      || !positive(scale)
+    ) {
+      return null;
+    }
+    const left = pos.x / scale;
+    const top = pos.y / scale;
+    return cursor.x >= left && cursor.x <= left + size.width / scale && cursor.y >= top && cursor.y <= top + size.height / scale;
+  } catch {
+    return null;
+  }
+}
+
 /** The screen the user is on: the one under the mouse, else this window's, else the main one. */
 async function currentScreen(): Promise<Monitor | null> {
   const api = await import("@tauri-apps/api/window");
   try {
-    const cursor = await api.cursorPosition();
-    const under = await api.monitorFromPoint(cursor.x, cursor.y);
+    const cursor = await desktopCursor();
+    const under = cursor && (await api.monitorFromPoint(cursor.x, cursor.y));
     if (under) return under;
   } catch {
     // Not available on this platform: fall through.
