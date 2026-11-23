@@ -9,6 +9,13 @@ import { initI18n } from "./i18n";
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
 
+if (view === "captions") {
+  // Caption strip: make the page see-through before i18n resolves so no opaque
+  // frame flashes while the window initializes.
+  document.documentElement.style.background = "transparent";
+  document.body.style.background = "transparent";
+}
+
 installFrontendLogging();
 
 function render() {

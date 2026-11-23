@@ -159,7 +159,7 @@ export function CaptionStack({ cues, look, showParty, reserveTranslation, classN
   const newestId = cues.length > 0 ? cues[cues.length - 1].id : null;
 
   return (
-    <div className={`caption-stack ${className ?? ""}`} style={{ gap: CUE_GAP, ...style }} aria-live="polite">
+    <div className={`caption-stack items-center ${className ?? ""}`} style={{ gap: CUE_GAP, ...style }} aria-live="polite">
       {shown.map((cue) => {
         const old = cue.id !== newestId;
         const srcGlue = cue.src && cue.srcPending && !isCjkText(cue.src) ? " " : "";
@@ -176,7 +176,7 @@ export function CaptionStack({ cues, look, showParty, reserveTranslation, classN
               if (el) nodes.current.set(cue.id, el);
               else nodes.current.delete(cue.id);
             }}
-            className="caption-cue"
+            className="caption-cue text-center"
             data-cue-id={cue.id}
             data-old={old || undefined}
             data-leaving={cue.leaving || undefined}

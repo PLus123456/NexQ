@@ -171,6 +171,201 @@ function useRecentlyChanged(signature: string, seconds: number): boolean {
   return recent;
 }
 
+/** How often to verify the pointer is still over the strip while chrome is up, ms. */
+const HOVER_CHECK_MS = 120;
+
+/**
+ * Checks whether the OS pointer is inside this window using Tauri's physical
+ * desktop coordinates. Returns `null` when the native API is unavailable or
+ * partially mocked (tests, browser harness).
+ */
+export async function isCursorInsideWindow(): Promise<boolean | null> {
+  try {
+    const api = await import("@tauri-apps/api/window");
+    if (typeof api.cursorPosition !== "function" || typeof api.getCurrentWindow !== "function") return null;
+    const win = api.getCurrentWindow();
+    if (typeof win.outerPosition !== "function" || typeof win.innerSize !== "function") return null;
+    const [cursor, pos, size] = await Promise.all([api.cursorPosition(), win.outerPosition(), win.innerSize()]);
+    if (
+      !cursor || !pos || !size
+      || typeof cursor.x !== "number" || !Number.isFinite(cursor.x)
+      || typeof cursor.y !== "number" || !Number.isFinite(cursor.y)
+      || typeof pos.x !== "number" || !Number.isFinite(pos.x)
+      || typeof pos.y !== "number" || !Number.isFinite(pos.y)
+      || typeof size.width !== "number" || !Number.isFinite(size.width) || size.width <= 0
+      || typeof size.height !== "number" || !Number.isFinite(size.height) || size.height <= 0
+    ) {
+      return null;
+    }
+    return (
+      cursor.x >= pos.x
+      && cursor.x <= pos.x + size.width
+      && cursor.y >= pos.y
+      && cursor.y <= pos.y + size.height
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tracks whether the pointer is over the caption strip.
+ *
+ * On macOS transparent non-focusable windows (`focusable: false`), WKWebView
+ * frequently drops `pointerleave` (fast exits, after `startDragging()`, after
+ * resize drags, or when hidden/locked while hovered). While hovered we also
+ * watch document/window leave events, reset on lock or visibility changes, and
+ * verify against the OS cursor bounds so the outer frame never lingers once
+ * the pointer has left.
+ */
+function useWindowHover(interactive: boolean) {
+  const [hovered, setHovered] = useState(false);
+  /** True while dragging a resize edge or range slider (pointer capture). */
+  const draggingControl = useRef(false);
+
+  // Locking stops cursor events from reaching the window: clear hover now so
+  // unlocking later doesn't bring the frame back while the mouse is elsewhere.
+  useEffect(() => {
+    if (!interactive) {
+      draggingControl.current = false;
+      setHovered(false);
+    }
+  }, [interactive]);
+
+  // Hiding or re-showing the strip (e.g. clicking Close while hovered) never
+  // fires `pointerleave`: start every show unhovered.
+  useEffect(() => {
+    let mounted = true;
+    let stop: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(async ({ listen }) => {
+        const unlisten = await listen<{ visible: boolean }>(CAPTIONS_VISIBILITY_EVENT, () => {
+          if (!mounted) return;
+          draggingControl.current = false;
+          setHovered(false);
+        });
+        if (mounted) stop = unlisten;
+        else unlisten();
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+      stop?.();
+    };
+  }, []);
+
+  // While hovered: catch missed leave events via document/window listeners and
+  // verify the OS pointer is still inside the window bounds.
+  useEffect(() => {
+    if (!hovered || !interactive) return;
+    let cancelled = false;
+    let checking = false;
+
+    const verifyCursor = () => {
+      if (cancelled || checking || draggingControl.current) return;
+      checking = true;
+      void isCursorInsideWindow()
+        .then((inside) => {
+          if (!cancelled && !draggingControl.current && inside === false) {
+            setHovered(false);
+          }
+        })
+        .finally(() => {
+          checking = false;
+        });
+    };
+
+    const clearIfNotDragging = () => {
+      if (!draggingControl.current) setHovered(false);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        draggingControl.current = false;
+        setHovered(false);
+      }
+    };
+    const onPointerRelease = (e: PointerEvent) => {
+      if (!draggingControl.current) return;
+      draggingControl.current = false;
+      const insideViewport =
+        e.clientX >= 0 && e.clientY >= 0 && e.clientX <= window.innerWidth && e.clientY <= window.innerHeight;
+      if (!insideViewport) {
+        setHovered(false);
+      } else {
+        verifyCursor();
+      }
+    };
+
+    const docEl = document.documentElement;
+    docEl.addEventListener("mouseleave", clearIfNotDragging);
+    docEl.addEventListener("pointerleave", clearIfNotDragging);
+    window.addEventListener("blur", clearIfNotDragging);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pointerup", onPointerRelease, true);
+    window.addEventListener("pointercancel", onPointerRelease, true);
+
+    const timer = setInterval(verifyCursor, HOVER_CHECK_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      docEl.removeEventListener("mouseleave", clearIfNotDragging);
+      docEl.removeEventListener("pointerleave", clearIfNotDragging);
+      window.removeEventListener("blur", clearIfNotDragging);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pointerup", onPointerRelease, true);
+      window.removeEventListener("pointercancel", onPointerRelease, true);
+    };
+  }, [hovered, interactive]);
+
+  const onPointerEnter = useCallback(() => {
+    if (interactive) setHovered(true);
+  }, [interactive]);
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (!interactive) return;
+      if (e.buttons === 0) draggingControl.current = false;
+      const inside =
+        e.clientX >= 0 && e.clientY >= 0 && e.clientX <= window.innerWidth && e.clientY <= window.innerHeight;
+      if (inside) {
+        setHovered(true);
+      } else if (!draggingControl.current && e.buttons === 0) {
+        setHovered(false);
+      }
+    },
+    [interactive],
+  );
+
+  const onLeave = useCallback(() => {
+    if (!draggingControl.current) setHovered(false);
+  }, []);
+
+  const onPointerDownCapture = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('[data-resize-edge], input[type="range"]')) {
+      draggingControl.current = true;
+    }
+  }, []);
+
+  const clearHover = useCallback(() => {
+    draggingControl.current = false;
+    setHovered(false);
+  }, []);
+
+  return {
+    hovered: hovered && interactive,
+    clearHover,
+    handlers: {
+      onPointerEnter,
+      onPointerMove,
+      onPointerLeave: onLeave,
+      onMouseLeave: onLeave,
+      onPointerDownCapture,
+    },
+  };
+}
+
 /**
  * The `captions` window: the caption strip floating over the meeting. It
  * shows what the other side says (or both sides), each caption the original
@@ -184,7 +379,6 @@ export function CaptionsWindow() {
   const s = useMemo(() => clampCaptionsSettings(raw), [raw]);
   const feed = useCaptionFeed();
   const shownHint = useShownHint();
-  const [hovered, setHovered] = useState(false);
   useLockApplied(ready, s.captionsLocked);
   useHeightFollowsLook(ready, s);
 
@@ -192,37 +386,45 @@ export function CaptionsWindow() {
   const signature = cues.map((c) => `${c.id}:${c.src.length}:${c.dst.length}:${c.srcPending?.length ?? 0}`).join("|");
   const fresh = useRecentlyChanged(signature, s.captionsFadeSeconds);
   const interactive = !s.captionsLocked;
-  const showChrome = hovered && interactive;
+  const { hovered: showChrome, clearHover, handlers: hoverHandlers } = useWindowHover(interactive);
   const visible = fresh || showChrome;
 
-  const startDrag = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("[data-no-drag]")) return;
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().startDragging())
-      .catch(() => {});
-  }, []);
+  const startDrag = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0 || (e.target as HTMLElement).closest("[data-no-drag]")) return;
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().startDragging())
+        .then(() => isCursorInsideWindow())
+        .then((inside) => {
+          if (inside === false) clearHover();
+        })
+        .catch(() => {});
+    },
+    [clearHover],
+  );
 
   return (
     <div
       className="no-select relative h-full w-full overflow-hidden bg-transparent"
       data-captions-root
       data-hovered={showChrome || undefined}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
+      {...hoverHandlers}
       onPointerDown={interactive ? startDrag : undefined}
       style={{ cursor: showChrome ? "grab" : "default" }}
     >
-      {/* Shows where the window is while the mouse is over it. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-[1px] rounded-[10px] transition-opacity duration-150"
-        style={{
-          opacity: showChrome ? 1 : 0,
-          border: "1px solid rgb(255 255 255 / 0.28)",
-          background: "rgb(0 0 0 / 0.12)",
-          boxShadow: "inset 0 0 0 1px rgb(0 0 0 / 0.25)",
-        }}
-      />
+      {/* Only mounted while the mouse is over the strip so no outer frame exists otherwise. */}
+      {showChrome && (
+        <div
+          aria-hidden="true"
+          data-testid="captions-frame"
+          className="caption-chrome-frame pointer-events-none absolute inset-[1px] rounded-[10px]"
+          style={{
+            border: "1px solid rgb(255 255 255 / 0.28)",
+            background: "rgb(0 0 0 / 0.12)",
+            boxShadow: "inset 0 0 0 1px rgb(0 0 0 / 0.25)",
+          }}
+        />
+      )}
 
       <div className="caption-strip-fade absolute inset-0" data-shown={visible ? "true" : "false"} style={{ opacity: visible ? 1 : 0 }}>
         <CaptionStack
@@ -248,7 +450,10 @@ export function CaptionsWindow() {
       )}
 
       {showChrome && cues.length === 0 && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end px-4 pb-3 text-[13px] text-white/80" style={{ top: CONTROLS_ROOM, textShadow: "0 1px 2px rgb(0 0 0 / 0.9)" }}>
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-center px-4 pb-3 text-center text-[13px] text-white/80"
+          style={{ top: CONTROLS_ROOM, textShadow: "0 1px 2px rgb(0 0 0 / 0.9)" }}
+        >
           {t("strip.empty")}
         </div>
       )}
@@ -257,8 +462,14 @@ export function CaptionsWindow() {
         <StripControls
           shown={showChrome}
           settings={s}
-          onLock={() => void setCaptionsLocked(true)}
-          onClose={() => void hideCaptions()}
+          onLock={() => {
+            clearHover();
+            void setCaptionsLocked(true);
+          }}
+          onClose={() => {
+            clearHover();
+            void hideCaptions();
+          }}
         />
       )}
       {interactive && <ResizeHandles shown={showChrome} />}
@@ -382,10 +593,11 @@ function ResizeHandle({ edge, className, grip, shown }: { edge: ResizeEdge; clas
       }}
       {...handlers}
     >
-      {grip && (
+      {grip && shown && (
         <span
-          className="block rounded-full transition-opacity duration-150"
-          style={{ width: 3, height: 26, background: "rgb(255 255 255 / 0.55)", opacity: shown ? 1 : 0 }}
+          data-testid={`resize-grip-${edge}`}
+          className="caption-chrome-frame block rounded-full"
+          style={{ width: 3, height: 26, background: "rgb(255 255 255 / 0.55)" }}
         />
       )}
     </div>

@@ -14,6 +14,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const windowCalls = vi.hoisted(() => [] as string[]);
+const pointerMock = vi.hoisted(() => ({
+  cursor: { x: 10, y: 10 },
+  /** When set, outerPosition/innerSize expose physical x/y/width/height like real Tauri. */
+  physicalRect: null as { x: number; y: number; width: number; height: number } | null,
+}));
 vi.mock("@tauri-apps/api/window", () => {
   const record = (name: string) => async (...args: unknown[]) => {
     windowCalls.push(args.length ? `${name}(${args.map((a) => JSON.stringify(a)).join(",")})` : name);
@@ -26,8 +31,14 @@ vi.mock("@tauri-apps/api/window", () => {
     onMoved: async () => () => {},
     onResized: async () => () => {},
     scaleFactor: async () => 2,
-    outerPosition: async () => ({ toLogical: () => ({ x: 256, y: 640 }) }),
-    innerSize: async () => ({ toLogical: () => ({ width: 1000, height: 229 }) }),
+    outerPosition: async () => ({
+      ...(pointerMock.physicalRect ? { x: pointerMock.physicalRect.x, y: pointerMock.physicalRect.y } : {}),
+      toLogical: () => ({ x: 256, y: 640 }),
+    }),
+    innerSize: async () => ({
+      ...(pointerMock.physicalRect ? { width: pointerMock.physicalRect.width, height: pointerMock.physicalRect.height } : {}),
+      toLogical: () => ({ width: 1000, height: 229 }),
+    }),
   };
   const monitor = { position: { x: 0, y: 0 }, size: { width: 3024, height: 1964 }, workArea: { position: { x: 0, y: 50 }, size: { width: 3024, height: 1790 } }, scaleFactor: 2 };
   return {
@@ -35,7 +46,7 @@ vi.mock("@tauri-apps/api/window", () => {
     availableMonitors: async () => [monitor],
     currentMonitor: async () => monitor,
     primaryMonitor: async () => monitor,
-    cursorPosition: async () => ({ x: 10, y: 10 }),
+    cursorPosition: async () => ({ ...pointerMock.cursor }),
     monitorFromPoint: async () => monitor,
     LogicalSize: class { constructor(public width: number, public height: number) {} toJSON() { return [this.width, this.height]; } },
     LogicalPosition: class { constructor(public x: number, public y: number) {} toJSON() { return [this.x, this.y]; } },
@@ -92,6 +103,8 @@ beforeEach(() => {
   listeners.clear();
   windowCalls.length = 0;
   saved.clear();
+  pointerMock.cursor = { x: 10, y: 10 };
+  pointerMock.physicalRect = null;
   useConfigStore.setState({ ...DEFAULT_CAPTIONS_SETTINGS });
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -278,5 +291,141 @@ describe("CaptionsWindow", () => {
     await open();
     fireEvent.pointerEnter(document.querySelector("[data-captions-root]")!);
     expect(screen.getByText("字幕会显示在这里。拖动可以移动，拖边缘可以改大小。")).toBeInTheDocument();
+  });
+
+  it("centers captions horizontally and centers the empty hover hint", async () => {
+    await open();
+    const stack = document.querySelector<HTMLElement>(".caption-stack")!;
+    expect(stack.className).toContain("items-center");
+
+    fireEvent.pointerEnter(document.querySelector("[data-captions-root]")!);
+    const emptyHint = screen.getByText("Captions will show here. Drag to move it, drag an edge to resize.");
+    expect(emptyHint.className).toContain("justify-center");
+    expect(emptyHint.className).toContain("text-center");
+
+    say("a", "Hello there.");
+    const cue = document.querySelector<HTMLElement>(".caption-cue")!;
+    expect(cue.className).toContain("text-center");
+  });
+
+  it("does not mount the outer transparent frame or side grips when unhovered, and removes them on leave", async () => {
+    await open();
+    const root = document.querySelector("[data-captions-root]")!;
+
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+    expect(screen.queryByTestId("resize-grip-w")).toBeNull();
+    expect(screen.queryByTestId("resize-grip-e")).toBeNull();
+
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    expect(screen.getByTestId("resize-grip-w")).toBeInTheDocument();
+    expect(screen.getByTestId("resize-grip-e")).toBeInTheDocument();
+
+    fireEvent.pointerLeave(root);
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+    expect(screen.queryByTestId("resize-grip-w")).toBeNull();
+    expect(screen.queryByTestId("resize-grip-e")).toBeNull();
+    expect(screen.getByRole("toolbar").style.opacity).toBe("0");
+
+    // Also clears on mouseLeave, document mouseleave, and window blur.
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    fireEvent.mouseLeave(root);
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    act(() => void document.documentElement.dispatchEvent(new MouseEvent("mouseleave")));
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    act(() => void window.dispatchEvent(new Event("blur")));
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+  });
+
+  it("clears the outer transparent frame when the OS cursor leaves even if WKWebView drops pointerleave", async () => {
+    pointerMock.physicalRect = { x: 512, y: 1280, width: 2000, height: 458 };
+    pointerMock.cursor = { x: 1000, y: 1500 }; // inside the window
+    await open();
+    vi.useFakeTimers();
+
+    const root = document.querySelector("[data-captions-root]")!;
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+
+    // Still inside after several poll ticks → frame stays.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+
+    // Cursor moves outside with no DOM pointerleave → poll catches it and removes the frame.
+    pointerMock.cursor = { x: 10, y: 10 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+    expect(screen.getByRole("toolbar").style.opacity).toBe("0");
+  });
+
+  it("does not bring the outer frame back stuck after locking/unlocking or hiding/showing while hovered", async () => {
+    await open();
+    await vi.waitFor(() => expect(listeners.get("nexq:captions_visibility")?.size ?? 0).toBeGreaterThan(0));
+    const root = document.querySelector("[data-captions-root]")!;
+
+    // Hover then lock (e.g. from the strip or overlay), then unlock later while pointer is away.
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    act(() => useConfigStore.setState({ captionsLocked: true }));
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+    act(() => useConfigStore.setState({ captionsLocked: false }));
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+
+    // Hover then hide and re-show via visibility event.
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+    emit("nexq:captions_visibility", { visible: false });
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+    emit("nexq:captions_visibility", { visible: true });
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+  });
+
+  it("keeps the outer frame during a resize drag and removes it once released outside", async () => {
+    await open();
+    const root = document.querySelector("[data-captions-root]")!;
+    const eastEdge = document.querySelector<HTMLElement>('[data-resize-edge="e"]')!;
+    eastEdge.setPointerCapture = vi.fn();
+    eastEdge.hasPointerCapture = () => false;
+    eastEdge.releasePointerCapture = vi.fn();
+
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+
+    fireEvent.pointerDown(eastEdge, { button: 0, pointerId: 1 });
+    fireEvent.pointerLeave(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { clientX: -20, clientY: 50 }));
+    });
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+  });
+
+  it("clears the outer frame after body drag if the cursor ends outside the window", async () => {
+    pointerMock.physicalRect = { x: 512, y: 1280, width: 2000, height: 458 };
+    pointerMock.cursor = { x: 10, y: 10 }; // outside when drag finishes
+    await open();
+    const root = document.querySelector("[data-captions-root]")!;
+
+    fireEvent.pointerEnter(root);
+    expect(screen.getByTestId("captions-frame")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.pointerDown(root, { button: 0 });
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+    expect(windowCalls).toContain("startDragging");
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
   });
 });

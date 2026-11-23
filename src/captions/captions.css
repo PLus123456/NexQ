@@ -5,7 +5,7 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  align-items: flex-start;
+  align-items: center;
   overflow: hidden;
   /* Captions pushed out at the top fade instead of being cut. */
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--caption-fade, 14px));
@@ -15,6 +15,7 @@
 .caption-cue {
   max-width: 100%;
   flex: none;
+  text-align: center;
   transition: opacity 320ms ease;
   will-change: transform;
 }
@@ -65,13 +66,18 @@
   transition: opacity 160ms ease;
 }
 
+.caption-chrome-frame {
+  animation: caption-enter 150ms ease;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .caption-cue,
   .caption-cue[data-leaving],
   .caption-strip-fade {
     transition: none;
   }
-  .caption-cue[data-entering] {
+  .caption-cue[data-entering],
+  .caption-chrome-frame {
     animation: none;
   }
 }
