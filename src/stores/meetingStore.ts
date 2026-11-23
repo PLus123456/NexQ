@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { AppView, Meeting, MeetingSummary, AudioMode, AIScenario, WindowMeetingEndedEvent } from "../lib/types";
 import { shouldPersistOverlayData } from "../lib/windows";
-import { skipYouStt } from "../lib/audioMode";
+import { captureParties, skipYouStt } from "../lib/audioMode";
 import {
   startMeeting as ipcStartMeeting,
   endMeeting as ipcEndMeeting,
@@ -208,12 +208,23 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         await setRecordingEnabled(config.recordingEnabled);
       } catch { /* non-critical */ }
 
+      // 2b. Both sides start unmuted. The mute flags live in the backend for the
+      // whole run, and the window that ends a meeting may not be the one that
+      // muted a side (an in-person meeting mutes "You"), so a mute must not
+      // carry over into the next meeting.
+      try {
+        const { setSourceMuted } = await import("../lib/ipc");
+        await Promise.all([setSourceMuted("you", false), setSourceMuted("them", false)]);
+        useConfigStore.setState({ mutedYou: false, mutedThem: false });
+      } catch { /* non-critical */ }
+
       // 3. Start audio capture — use per-party config if available, else legacy
       try {
         if (config.meetingAudioConfig) {
+          const parties = captureParties(config.meetingAudioConfig.you, config.meetingAudioConfig.them, resolvedMode);
           await startCapturePerParty(
-            config.meetingAudioConfig.you,
-            config.meetingAudioConfig.them,
+            parties.you,
+            parties.them,
             { skipYouStt: skipYouStt(resolvedMode) }
           );
           // In-person mode: mute "you" source — room mic captures everyone,

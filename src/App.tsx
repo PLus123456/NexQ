@@ -262,6 +262,9 @@ function App() {
         try {
           await resetMeetingScopedStores();
           initMeetingSpeakers(audioMode);
+          // The launcher started the meeting with both sides unmuted, then muted
+          // "You" in person: this window shows (and later resets) the same state.
+          useConfigStore.setState({ mutedYou: audioMode === "in_person", mutedThem: false });
         } catch (err) {
           console.warn("[App] Failed to reset meeting stores in overlay:", err);
         }

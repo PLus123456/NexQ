@@ -167,7 +167,12 @@ it("tells Rust the room is an in-person meeting's other side", async () => {
   renderHook(() => useAudioConfigSync());
 
   await change(spanishThem);
-  expect(setPartyLanguage).toHaveBeenCalledWith("them", spanishThem.them, { skipYouStt: true });
+  // The room side is set to an output here, so in person it listens on You's microphone.
+  expect(setPartyLanguage).toHaveBeenCalledWith(
+    "them",
+    { ...spanishThem.them, device_id: config.you.device_id, is_input_device: true },
+    { skipYouStt: true },
+  );
 });
 
 it("restarts the whole capture when a side's provider changes along with a language", async () => {

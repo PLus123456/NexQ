@@ -15,7 +15,7 @@ import { useTranslationStore } from "../stores/translationStore";
 import { useCaptureSyncStore } from "../stores/captureSyncStore";
 import { stopCapture, startCapturePerParty, setPartyLanguage, setTranslationLanguages } from "../lib/ipc";
 import { sttProviderMeta } from "../lib/stt/providerMeta";
-import { skipYouStt } from "../lib/audioMode";
+import { captureParties, skipYouStt } from "../lib/audioMode";
 import { AUTO_DETECT_REFUSAL_PREFIX, autoDetectRefusalSentences } from "../lib/sttLanguages";
 import { captureKey as audioConfigKey, languageOnlyChange, overrideKey } from "../lib/audioConfigKeys";
 import type { MeetingAudioConfig } from "../lib/types";
@@ -141,7 +141,8 @@ export function useAudioConfigSync() {
           if (side) {
             try {
               log("info", "config", `Language change: restarting only the ${side} side's STT...`);
-              swapped = await setPartyLanguage(side, next.config[side], { skipYouStt: skipYou });
+              const sides = captureParties(next.config.you, next.config.them, useMeetingStore.getState().audioMode);
+              swapped = await setPartyLanguage(side, sides[side], { skipYouStt: skipYou });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               // A refusal would be the same for a full swap, and nothing was stopped.
@@ -162,7 +163,8 @@ export function useAudioConfigSync() {
             // (and stops that one itself), so a refused swap leaves the meeting as it was.
             useTranscriptStore.getState().finalizeAllInterim();
             log("info", "config", "Hot-swap: starting new capture pipeline...");
-            await startCapturePerParty(next.config.you, next.config.them, {
+            const sides = captureParties(next.config.you, next.config.them, useMeetingStore.getState().audioMode);
+            await startCapturePerParty(sides.you, sides.them, {
               skipYouStt: skipYou,
               ...(meetingId ? { expectedMeetingId: meetingId } : {}),
             });

@@ -13,6 +13,8 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
 import { useMeetingStore } from "./meetingStore";
 import { useScenarioStore } from "./scenarioStore";
+import { useConfigStore } from "./configStore";
+import type { MeetingAudioConfig } from "../lib/types";
 
 const boardReview = {
   id: "custom_1",
@@ -25,17 +27,21 @@ const boardReview = {
 };
 
 const calls = new Map<string, Record<string, unknown>>();
+/** Every IPC call in order (`calls` keeps only the last one per command). */
+const log: Array<[string, Record<string, unknown>]> = [];
 
 beforeAll(() => {
   mockWindows("launcher");
   mockIPC((cmd, args) => {
     calls.set(cmd, args as Record<string, unknown>);
+    log.push([cmd, args as Record<string, unknown>]);
     return cmd === "start_meeting" ? JSON.stringify({ id: "meeting-1", title: "Standup" }) : [];
   });
 });
 
 beforeEach(() => {
   calls.clear();
+  log.length = 0;
   saved.config = {};
 });
 
@@ -68,5 +74,43 @@ describe("startMeetingFlow's scenario", () => {
     expect(calls.get("set_active_scenario")).toMatchObject({ systemPrompt: BUILT_IN_SCENARIOS[0].system_prompt });
     expect(calls.get("update_meeting_mode")).toMatchObject({ aiScenario: "team_meeting" });
     expect(useMeetingStore.getState().aiScenario).toBe("team_meeting");
+  });
+});
+
+describe("startMeetingFlow's audio", () => {
+  const audio = {
+    preset_name: null,
+    recording_enabled: false,
+    you: { role: "You", device_id: "MacBook mic", is_input_device: true, stt_provider: "soniox", language: "auto" },
+    them: { role: "Them", device_id: "MacBook speakers", is_input_device: false, stt_provider: "soniox", language: "en-US" },
+  } as unknown as MeetingAudioConfig;
+  const muteCalls = () => log.filter(([cmd]) => cmd === "set_source_muted").map(([, a]) => a);
+  /** The "Them" side the capture was started with (sent as JSON). */
+  const capturedThem = () => {
+    const args = log.find(([cmd]) => cmd === "start_capture_per_party")?.[1];
+    return args ? JSON.parse(String(args.themConfig)) : undefined;
+  };
+
+  beforeEach(() => {
+    useConfigStore.setState({ meetingAudioConfig: audio, mutedYou: true, mutedThem: true });
+  });
+
+  it("an online meeting starts with both sides unmuted, whatever the last meeting left", async () => {
+    await useMeetingStore.getState().startMeetingFlow("Interview", "online", "team_meeting");
+    expect(muteCalls()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "you", muted: false }),
+      expect.objectContaining({ source: "them", muted: false }),
+    ]));
+    expect(muteCalls().some((a) => a.muted === true)).toBe(false);
+    expect(useConfigStore.getState()).toMatchObject({ mutedYou: false, mutedThem: false });
+    expect(capturedThem()).toMatchObject({ device_id: "MacBook speakers", is_input_device: false });
+  });
+
+  it("in person, the room listens on the microphone and You is muted after the reset", async () => {
+    await useMeetingStore.getState().startMeetingFlow("Workshop", "in_person", "team_meeting");
+    expect(capturedThem()).toMatchObject({ device_id: "MacBook mic", is_input_device: true, language: "en-US" });
+    const mutes = muteCalls();
+    expect(mutes[mutes.length - 1]).toMatchObject({ source: "you", muted: true });
+    expect(useConfigStore.getState().mutedYou).toBe(true);
   });
 });
