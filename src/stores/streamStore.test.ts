@@ -99,6 +99,26 @@ describe("streamStore", () => {
     expect(s()).toMatchObject({ phase: "waiting", currentMode: "Assist" });
   });
 
+  it("tracks a pending click independently of another window's stream", () => {
+    const sources = { notes: true, tools: false };
+    s().setPending("FollowUp", "pending", sources);
+    vi.setSystemTime(T0 + 200);
+    s().startStream("Assist", "m", "p", { requestId: "other-window" });
+    expect(s()).toMatchObject({ phase: "waiting", pendingRequestId: "pending", requestStartedAt: T0 + 200, requestSources: null });
+    expect(s().isRunning("pending")).toBe(true);
+    s().endStream(50);
+    expect(s()).toMatchObject({ phase: "sending", requestStartedAt: T0, requestSources: sources });
+    s().startStream("FollowUp", "m", "p", { requestId: "pending" });
+    expect(s()).toMatchObject({ phase: "waiting", pendingRequestId: null, requestStartedAt: T0, requestSources: sources });
+  });
+
+  it("clearing a refused pending click leaves the unrelated stream active", () => {
+    s().setPending("FollowUp", "pending");
+    s().startStream("Assist", "m", "p", { requestId: "other-window" });
+    s().clearPending("pending");
+    expect(s()).toMatchObject({ phase: "waiting", pendingRequestId: null, streamRequestId: "other-window" });
+  });
+
   it("keeps every answer (newest first) up to the cap", () => {
     for (let i = 0; i < RESPONSE_HISTORY_CAP + 5; i++) answer("Assist", `a${i}`);
     expect(RESPONSE_HISTORY_CAP).toBe(100);

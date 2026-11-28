@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { createEventScope } from "../lib/eventScope";
 import { t } from "../i18n";
 import { onSTTConnectionStatus, type STTConnectionStatusEvent } from "../lib/events";
 import { onSonioxRegionSwitch } from "../lib/stt/events";
@@ -52,23 +53,14 @@ export function regionSwitchMessage(event: SonioxRegionSwitchEvent): string {
  */
 export function useSTTStatus() {
   const connectedRef = useRef<Set<string>>(new Set());
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const unlisteners: UnlistenFn[] = [];
-    let mounted = true;
+    const scope = createEventScope("STT status");
     const setRegion = (party: string, region: string | null) => useSttRegionStore.getState().setRegion(party, region);
 
-    const track = (pending: Promise<UnlistenFn>) =>
-      pending
-        .then((u) => {
-          if (mounted) unlisteners.push(u);
-          else u();
-        })
-        .catch((e) => console.warn("[STT Status] listen failed:", e));
-
-    track(
-      onSTTConnectionStatus((event: STTConnectionStatusEvent) => {
-        if (!mounted) return;
+    void Promise.all([
+      scope.add(onSTTConnectionStatus, (event: STTConnectionStatusEvent) => {
         console.log("[STT Status]", event);
 
         // Soniox: the region the party is connected to (the chips' tooltips).
@@ -93,19 +85,19 @@ export function useSTTStatus() {
           connectedRef.current.delete(key);
         }
       }),
-    );
-    track(
-      onSonioxRegionSwitch((event) => {
-        if (mounted) setRegion(event.party, event.to);
-      }),
-    );
+      scope.add(onSonioxRegionSwitch, (event) => setRegion(event.party, event.to)),
+    ]).then((results) => {
+      if (scope.active()) setReady(results.every(Boolean));
+    });
 
     return () => {
-      mounted = false;
-      unlisteners.forEach((u) => u());
+      scope.dispose();
+      connectedRef.current.clear();
       useSttRegionStore.getState().clear();
     };
   }, []);
+
+  return ready;
 }
 
 /**

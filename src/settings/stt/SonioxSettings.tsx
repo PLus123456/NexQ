@@ -248,10 +248,7 @@ export function SonioxSettings({ compact = false, onKeyChange }: SonioxSettingsP
 
   const setVerified = (state: "ok" | "failed" | "keep") => {
     if (state === "keep") return;
-    const { verifiedCloudProviders, setVerifiedCloudProviders } = useConfigStore.getState();
-    const has = verifiedCloudProviders.includes(ENGINE);
-    if (state === "ok" && !has) setVerifiedCloudProviders([...verifiedCloudProviders, ENGINE]);
-    if (state === "failed" && has) setVerifiedCloudProviders(verifiedCloudProviders.filter((p) => p !== ENGINE));
+    useConfigStore.getState().setCloudProviderVerified(ENGINE, state === "ok");
   };
 
   /** A key was saved for `region`: turn the region on (Fixed: use it). */

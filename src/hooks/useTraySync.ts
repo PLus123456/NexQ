@@ -28,12 +28,13 @@ function computeTrayState(
   return "idle";
 }
 
-export function useTraySync() {
+export function useTraySync(enabled: boolean) {
   const prevState = useRef<TrayState>("idle");
   const prevRecording = useRef(false);
   const initialized = useRef(false);
 
-  const isRecording = useMeetingStore((s) => s.isRecording);
+  const isRecording = useMeetingStore((s) => !!s.activeMeeting);
+  const recentMeetings = useMeetingStore((s) => s.recentMeetings);
   const overlayHidden = useMeetingStore((s) => s.overlayHidden);
   const mutedYou = useConfigStore((s) => s.mutedYou);
   const isStreaming = useStreamStore((s) => s.isStreaming);
@@ -41,6 +42,7 @@ export function useTraySync() {
 
   // Sync tray state on store changes — skip initial idle (icon already set by Rust setup)
   useEffect(() => {
+    if (!enabled) return;
     const newState = computeTrayState(
       isRecording, mutedYou, overlayHidden, isStreaming, isIndexing
     );
@@ -55,10 +57,11 @@ export function useTraySync() {
       }
     }
     initialized.current = true;
-  }, [isRecording, mutedYou, overlayHidden, isStreaming, isIndexing]);
+  }, [enabled, isRecording, mutedYou, overlayHidden, isStreaming, isIndexing]);
 
   // Sync meeting start/stop time
   useEffect(() => {
+    if (!enabled) return;
     if (isRecording && !prevRecording.current) {
       setMeetingStartTime(true).catch((e) =>
         console.warn("[useTraySync] Failed to set meeting start:", e)
@@ -69,11 +72,12 @@ export function useTraySync() {
       );
     }
     prevRecording.current = isRecording;
-  }, [isRecording]);
+  }, [enabled, isRecording]);
 
   // Rebuild tray menu when meeting state changes (idle vs meeting menu)
   // Delay initial rebuild to let WebView2 settle (Rust setup already built the idle menu)
   useEffect(() => {
+    if (!enabled) return;
     const delay = initialized.current ? 0 : 1000;
     const timer = setTimeout(() => {
       rebuildTrayMenu(isRecording).catch((e) =>
@@ -82,5 +86,5 @@ export function useTraySync() {
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [isRecording]);
+  }, [enabled, isRecording, recentMeetings]);
 }

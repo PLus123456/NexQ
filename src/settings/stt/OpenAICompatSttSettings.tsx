@@ -100,10 +100,7 @@ export function OpenAICompatSttSettings({ compact = false, onKeyChange }: OpenAI
   };
 
   const setVerified = (ok: boolean) => {
-    const { verifiedCloudProviders, setVerifiedCloudProviders } = useConfigStore.getState();
-    const has = verifiedCloudProviders.includes(ENGINE);
-    if (ok && !has) setVerifiedCloudProviders([...verifiedCloudProviders, ENGINE]);
-    if (!ok && has) setVerifiedCloudProviders(verifiedCloudProviders.filter((p) => p !== ENGINE));
+    useConfigStore.getState().setCloudProviderVerified(ENGINE, ok);
   };
 
   const handleEndpointChange = (next: EndpointFieldsValue) => {

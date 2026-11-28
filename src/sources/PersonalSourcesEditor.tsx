@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, HelpCircle, Plus } from "lucide-react";
 import type { McpServer, NotesFolderInfo } from "../lib/types";
-import { checkMcpServer, deleteMcpSecrets, inspectNotesFolder } from "../lib/ipc";
+import { checkMcpServer, inspectNotesFolder } from "../lib/ipc";
 import { t as translate, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
 import { useSourcesStore } from "../stores/sourcesStore";
@@ -141,16 +141,8 @@ export function PersonalSourcesEditor({ variant }: PersonalSourcesEditorProps) {
   };
 
   const removeServer = async (server: McpServer) => {
-    // The removal is saved first; the secrets go only after that (and the backend,
-    // which forgets them too, hears of it last). A failed save keeps the server.
     try {
-      await removeMcpServerDurably(server.id, async () => {
-        try {
-          await deleteMcpSecrets(server.id);
-        } catch (e) {
-          showToast(t("editor.toast.forgetSecretsFailed", { name: server.label, detail: errorText(e) }), "warning");
-        }
-      });
+      await removeMcpServerDurably(server.id);
     } catch (e) {
       showToast(t("editor.toast.removeFailed", { name: server.label, detail: errorText(e) }), "error");
     }

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { Meeting, MeetingBookmark, RecordingInfo, TranslationResult } from "../../lib/types";
 import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession, renameSpeaker } from "../../lib/ipc";
 import { withSpeakerName } from "../../lib/speakerLabels";
+import { findNearestSegment, toElapsedMs } from "../../lib/bookmarkTarget";
 import { showToast } from "../../stores/toastStore";
 import { onTranscriptFinal, onRecordingReady, onTranslationResult, onTranslationError } from "../../lib/events";
 import { useMeetingStore } from "../../stores/meetingStore";
@@ -31,7 +32,7 @@ import { SpeakersTab } from "./SpeakersTab";
 import { ActionItemsTab } from "./ActionItemsTab";
 import { BookmarksTab } from "./BookmarksTab";
 import { AskMeetingTab } from "./AskMeetingTab";
-import { AudioPlayer, AudioPlayerSkeleton } from "../../components/AudioPlayer";
+import { AudioPlayer } from "../../components/AudioPlayer";
 import { Loader2 } from "lucide-react";
 
 interface MeetingDetailsProps {
@@ -39,7 +40,11 @@ interface MeetingDetailsProps {
   onBack: () => void;
 }
 
-export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
+export function MeetingDetails(props: MeetingDetailsProps) {
+  return <MeetingDetailsContent key={props.meetingId} {...props} />;
+}
+
+function MeetingDetailsContent({ meetingId, onBack }: MeetingDetailsProps) {
   const { t } = useT("launcher");
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,13 +53,13 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   const [expandedInteraction, setExpandedInteraction] = useState<string | null>(null);
   const [scrollToSegmentIndex, setScrollToSegmentIndex] = useState<number | null>(null);
   const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
-  const [recordingProcessing, setRecordingProcessing] = useState(false);
 
   // Translation state for post-meeting view
-  const [translations, setTranslations] = useState<Map<string, TranslationResult>>(new Map());
+  const [translationVersions, setTranslationVersions] = useState<Map<string, Map<string, TranslationResult>>>(new Map());
   const [translatingSegments, setTranslatingSegments] = useState<Set<string>>(new Set());
   const [translationsVisible, setTranslationsVisible] = useState(true);
   const [retranslating, setRetranslating] = useState(false);
+  const translationGeneration = useRef(0);
 
   // Translation store selectors
   const displayMode = useTranslationStore((s) => s.displayMode);
@@ -89,9 +94,11 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     };
   }, [meetingId]);
 
-  const loadMeeting = useCallback(async () => {
+  useEffect(() => {
+    let disposed = false;
     setLoading(true);
     setError(null);
+    setMeeting(null);
 
     if (isDemoActive) {
       const demoMeeting = buildDemoMeeting();
@@ -104,18 +111,16 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       return;
     }
 
-    try {
-      const data = await getMeeting(meetingId);
-      setMeeting(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("container.error.loadFailed"));
-    } finally {
-      setLoading(false);
-    }
+    void getMeeting(meetingId).then((data) => {
+      if (!disposed) setMeeting(data);
+    }).catch((err) => {
+      if (!disposed) setError(err instanceof Error ? err.message : t("container.error.loadFailed"));
+    }).finally(() => {
+      if (!disposed) setLoading(false);
+    });
+    return () => { disposed = true; };
     // `t` is read when a load fails; switching the UI language must not reload the meeting.
   }, [meetingId, isDemoActive, buildDemoMeeting]);
-
-  useEffect(() => { loadMeeting(); }, [loadMeeting]);
 
   // In demo mode, keep meeting data in sync with stores as they update
   const demoSegments = useTranscriptStore((s) => isDemoActive ? s.segments : null);
@@ -148,97 +153,116 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
 
   useEffect(() => {
     if (!isActiveMeeting) return;
+    let disposed = false;
     const unlistenPromise = onTranscriptFinal((event) => {
+      if (disposed || useMeetingStore.getState().activeMeeting?.id !== meetingId) return;
       setMeeting((prev) => {
         if (!prev) return prev;
         return { ...prev, transcript: [...prev.transcript, event.segment] };
       });
-    });
-    return () => { unlistenPromise.then((unlisten) => unlisten()); };
-  }, [isActiveMeeting]);
+    }).catch((err) => console.warn("[MeetingDetails] Couldn't listen for transcripts:", err));
+    return () => {
+      disposed = true;
+      void unlistenPromise.then((unlisten) => unlisten?.());
+    };
+  }, [isActiveMeeting, meetingId]);
 
-  // Load recording info when meeting loads (waveform_data is included in the response)
+  // Register before querying so a recording that finishes during load is picked up.
   useEffect(() => {
-    if (!meeting?.id || isDemoActive) return;
-    getRecordingInfo(meeting.id).then((info) => {
-      if (info) {
-        setRecordingInfo(info);
+    setRecordingInfo(null);
+    if (!meeting || isDemoActive) return;
+    const recordingMeetingId = meeting.id;
+    let disposed = false;
+    let request = 0;
+    const loadRecording = async () => {
+      if (disposed) return;
+      const id = ++request;
+      try {
+        const info = await getRecordingInfo(recordingMeetingId);
+        if (!disposed && request === id) setRecordingInfo(info);
+      } catch (err) {
+        if (!disposed && request === id) {
+          setRecordingInfo(null);
+          console.warn("[MeetingDetails] Couldn't load recording:", err);
+        }
       }
-    }).catch(() => { /* no recording for this meeting */ });
+    };
+    const subscription = onRecordingReady((data) => {
+      if (data.meeting_id === recordingMeetingId) void loadRecording();
+    }).catch((err) => console.warn("[MeetingDetails] Couldn't listen for recordings:", err));
+    void subscription.then(loadRecording);
+    return () => {
+      disposed = true;
+      void subscription.then((unlisten) => unlisten?.());
+    };
   }, [meeting?.id, isDemoActive]);
 
-  // Listen for recording_ready event (fires when post-meeting processing completes)
+  // Load saved languages once. A result delivered while loading takes precedence.
   useEffect(() => {
-    const unlisten = onRecordingReady((data) => {
-      if (data.meeting_id === meeting?.id) {
-        setRecordingProcessing(false);
-        getRecordingInfo(meeting.id).then((info) => {
-          if (info) {
-            setRecordingInfo(info);
+    if (isDemoActive) return;
+    let disposed = false;
+    void getAllMeetingTranslations(meetingId).then((results) => {
+      if (disposed) return;
+      setTranslationVersions((prev) => {
+        const next = new Map(prev);
+        for (const result of results) {
+          if (!result.segment_id || (result.meeting_id && result.meeting_id !== meetingId)) continue;
+          const versions = next.get(result.segment_id);
+          if (!versions?.has(result.target_lang)) {
+            next.set(result.segment_id, new Map(versions).set(result.target_lang, result));
           }
-        });
-      }
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, [meeting?.id]);
-
-  // Load all translations for this meeting
-  useEffect(() => {
-    if (!meetingId || isDemoActive) return;
-    getAllMeetingTranslations(meetingId).then((results) => {
-      const map = new Map<string, TranslationResult>();
-      // Results are ordered by created_at DESC — first match per segment wins
-      for (const r of results) {
-        if (r.segment_id && !map.has(r.segment_id)) {
-          map.set(r.segment_id, r);
         }
-      }
-      // Second pass: override with currentTargetLang matches
-      for (const r of results) {
-        if (r.segment_id && r.target_lang === currentTargetLang) {
-          map.set(r.segment_id, r);
-        }
-      }
-      setTranslations(map);
+        return next;
+      });
     }).catch((err) => {
-      console.error("[MeetingDetails] Failed to load translations:", err);
+      if (!disposed) console.error("[MeetingDetails] Failed to load translations:", err);
     });
-  }, [meetingId, currentTargetLang]);
+    return () => { disposed = true; };
+  }, [meetingId, isDemoActive]);
+
+  const translations = useMemo(() => {
+    const selected = new Map<string, TranslationResult>();
+    for (const [segmentId, versions] of translationVersions) {
+      const result = versions.get(currentTargetLang) ?? versions.values().next().value;
+      if (result) selected.set(segmentId, result);
+    }
+    return selected;
+  }, [translationVersions, currentTargetLang]);
 
   // Listen for new translation results (from on-demand translating)
   useEffect(() => {
+    if (isDemoActive) return;
+    const generation = ++translationGeneration.current;
+    setTranslatingSegments(new Set());
+    setRetranslating(false);
+    const isCurrent = () => generation === translationGeneration.current;
+    const unregisterError = (err: unknown) => console.warn("[MeetingDetails] Couldn't listen for translations:", err);
+    const clearPending = (segmentId: string) => setTranslatingSegments((prev) => {
+      const next = new Set(prev);
+      next.delete(segmentId);
+      return next;
+    });
     const unlistenResult = onTranslationResult((result) => {
-      if (result.segment_id) {
-        setTranslations((prev) => {
-          const next = new Map(prev);
-          next.set(result.segment_id!, result);
-          return next;
-        });
-        setTranslatingSegments((prev) => {
-          const next = new Set(prev);
-          next.delete(result.segment_id!);
-          return next;
-        });
-      }
-    });
-    // Every window hears the live meeting's failed lines too: only this
-    // meeting's errors count. handleRetranslateAll resets `retranslating`
-    // itself once the whole batch is done.
+      const { segment_id: segmentId } = result;
+      if (!isCurrent() || result.meeting_id !== meetingId || result.target_lang !== currentTargetLang || !segmentId) return;
+      setTranslationVersions((prev) => {
+        const next = new Map(prev);
+        next.set(segmentId, new Map(prev.get(segmentId)).set(result.target_lang, result));
+        return next;
+      });
+      clearPending(segmentId);
+    }).catch(unregisterError);
     const unlistenError = onTranslationError((error) => {
-      if (error.meeting_id && error.meeting_id !== meetingId) return;
-      if (error.segment_id) {
-        setTranslatingSegments((prev) => {
-          const next = new Set(prev);
-          next.delete(error.segment_id!);
-          return next;
-        });
+      if (isCurrent() && error.meeting_id === meetingId && error.target_lang === currentTargetLang && error.segment_id) {
+        clearPending(error.segment_id);
       }
-    });
+    }).catch(unregisterError);
     return () => {
-      unlistenResult.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      ++translationGeneration.current;
+      void unlistenResult.then((unlisten) => unlisten?.());
+      void unlistenError.then((unlisten) => unlisten?.());
     };
-  }, [meetingId]);
+  }, [meetingId, currentTargetLang, isDemoActive]);
 
   // Audio keyboard shortcuts (Space, Arrow keys, [ ])
   useAudioKeyboardShortcuts();
@@ -293,11 +317,13 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   // On-demand translate a single segment
   const handleTranslateSegment = useCallback(async (segmentId: string, text: string) => {
     if (!meetingId || !currentTargetLang) return;
+    const generation = translationGeneration.current;
     setTranslatingSegments((prev) => new Set(prev).add(segmentId));
     try {
       await translateSegments([segmentId], [text], meetingId, currentTargetLang);
     } catch (err) {
       console.error("[MeetingDetails] Translate segment failed:", err);
+      if (generation !== translationGeneration.current) return;
       setTranslatingSegments((prev) => {
         const next = new Set(prev);
         next.delete(segmentId);
@@ -318,6 +344,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       .filter((s) => s.id && translations.has(s.id) && translations.get(s.id)!.target_lang !== currentTargetLang)
       .map((s) => ({ id: s.id!, text: s.text }));
     if (mismatched.length === 0) return;
+    const generation = translationGeneration.current;
     setRetranslating(true);
     for (const seg of mismatched) {
       setTranslatingSegments((prev) => new Set(prev).add(seg.id));
@@ -331,6 +358,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       );
     } catch (err) {
       console.error("[MeetingDetails] Retranslate all failed:", err);
+      if (generation !== translationGeneration.current) return;
       // Lines that never reported back (the batch failed up front) stop spinning.
       setTranslatingSegments((prev) => {
         const next = new Set(prev);
@@ -338,7 +366,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         return next;
       });
     } finally {
-      setRetranslating(false);
+      if (generation === translationGeneration.current) setRetranslating(false);
     }
   }, [meeting, translations, currentTargetLang]);
 
@@ -370,13 +398,14 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
 
   // Name a remote speaker (`them:S1`): every line with that tag follows, and
   // the name is saved with the meeting (also used for its AI context).
-  const handleRenameSpeaker = useCallback((speakerKey: string, name: string) => {
-    setMeeting((prev) => (prev ? { ...prev, speakers: withSpeakerName(prev.speakers, speakerKey, name) } : prev));
-    if (isDemoActive) return;
-    renameSpeaker(meetingId, speakerKey, name).catch((err) => {
+  const handleRenameSpeaker = useCallback(async (speakerKey: string, name: string) => {
+    try {
+      if (!isDemoActive) await renameSpeaker(meetingId, speakerKey, name);
+      setMeeting((prev) => (prev ? { ...prev, speakers: withSpeakerName(prev.speakers, speakerKey, name) } : prev));
+    } catch (err) {
       console.error("[MeetingDetails] Failed to save the speaker name:", err);
       showToast(t("container.toast.speakerNameFailed"), "error");
-    });
+    }
   }, [meetingId, isDemoActive, t]);
 
   const handleScrollHandled = useCallback(() => setScrollToSegmentIndex(null), []);
@@ -499,6 +528,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         {activeTab === "speakers" && (
           <SpeakersTab
             meeting={meeting}
+            onRename={handleRenameSpeaker}
             onSegmentClick={(idx) => {
               setScrollToSegmentIndex(idx);
               setActiveTab("transcript");
@@ -521,11 +551,10 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
               setMeeting((prev) => (prev ? { ...prev, bookmarks } : prev))
             }
             onNavigateToBookmark={(bookmark) => {
-              // Find the segment index matching this bookmark
-              const idx = meeting.transcript.findIndex(
-                (s) => (bookmark.segment_id && s.id === bookmark.segment_id)
-                  || s.timestamp_ms === bookmark.timestamp_ms
-              );
+              const startMs = Date.parse(meeting.start_time);
+              const segment = meeting.transcript.find((line) => line.id === bookmark.segment_id)
+                ?? findNearestSegment(meeting.transcript, toElapsedMs(bookmark.timestamp_ms, startMs), startMs);
+              const idx = segment ? meeting.transcript.indexOf(segment) : -1;
               setScrollToSegmentIndex(idx >= 0 ? idx : null);
               setActiveTab("transcript");
             }}
@@ -535,8 +564,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       </div>
 
       {/* Audio Player — sticky bottom bar */}
-      {recordingProcessing && <AudioPlayerSkeleton />}
-      {recordingInfo && !recordingProcessing && (
+      {recordingInfo && (
         <AudioPlayer
           meetingId={meeting.id}
           meetingStartMs={new Date(meeting.start_time).getTime()}

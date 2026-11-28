@@ -29,6 +29,7 @@ import type {
   FetchModelsResult,
   LlmConfigView,
   LlmConnection,
+  QuickSetupSave,
   ResponseLanguage,
   RouteTarget,
   SecretStatus,
@@ -58,7 +59,10 @@ interface LlmConnectionsState {
    * undefined leaves the key alone, a string stores it ("" removes it).
    * Resolves to the connection's id.
    */
-  upsertConnection: (connection: LlmConnection, options?: { isNew?: boolean; secret?: string }) => Promise<string>;
+  upsertConnection: (
+    connection: LlmConnection,
+    options?: { isNew?: boolean; secret?: string; quickSetup?: QuickSetupSave },
+  ) => Promise<string>;
   /** Resolves to the task keys whose routes were cleared. */
   deleteConnection: (id: string) => Promise<string[]>;
   setSecret: (id: string, secret: string | null) => Promise<SecretStatus>;
@@ -76,14 +80,15 @@ let subscription: Promise<UnlistenFn> | null = null;
 let inflight: Promise<void> | null = null;
 
 function subscribe(apply: (raw: unknown) => boolean) {
-  if (subscription) return;
-  subscription = onLlmConfigChanged((view) => {
-    apply(view);
-  });
-  subscription.catch((err) => {
-    console.warn("[llmConnections] Failed to listen for config changes:", err);
-    subscription = null;
-  });
+  if (!subscription) {
+    const setup = onLlmConfigChanged((view) => { apply(view); });
+    subscription = setup;
+    void setup.catch((err) => {
+      console.warn("[llmConnections] Failed to listen for config changes:", err);
+      if (subscription === setup) subscription = null;
+    });
+  }
+  return subscription;
 }
 
 export const useLlmConnectionsStore = create<LlmConnectionsState>((set, get) => {
@@ -101,10 +106,11 @@ export const useLlmConnectionsStore = create<LlmConnectionsState>((set, get) => 
     load: () => {
       if (inflight) return inflight;
       // Listen before fetching, so a change between the two isn't missed.
-      subscribe(get().applyView);
+      const listening = subscribe(get().applyView);
       if (!get().view) set({ loadState: "loading" });
       inflight = (async () => {
         try {
+          await listening.catch(() => {});
           const raw = await llmGetConfig();
           get().applyView(raw);
           set({ loadState: "ready", loadError: null });
@@ -134,7 +140,11 @@ export const useLlmConnectionsStore = create<LlmConnectionsState>((set, get) => 
 
     upsertConnection: async (connection, options = {}) => {
       const input = toInput(connection);
-      const result = await llmUpsertConnection(options.isNew ? { ...input, id: "" } : input, options.secret);
+      const result = await llmUpsertConnection(
+        options.isNew ? { ...input, id: "" } : input,
+        options.secret,
+        options.quickSetup,
+      );
       take(result.config);
       return result.id;
     },

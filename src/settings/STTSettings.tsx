@@ -3,7 +3,7 @@
 // Badges: ready=green, no model/key/server=red, key saved or server set but
 //         not tested yet=amber, tested=green.
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { useConfigStore } from "../stores/configStore";
@@ -16,8 +16,10 @@ import {
   testSTTConnection,
   listLocalSTTEngines,
   deleteApiKey,
+  storeApiKey,
+  getApiKey,
+  storeAzureSpeechCredentials,
 } from "../lib/ipc";
-import { storeApiKey, getApiKey, hasApiKey } from "../lib/ipc";
 import type { STTProviderType, DeepgramConfig, GroqConfig } from "../lib/types";
 import {
   CheckCircle,
@@ -200,7 +202,7 @@ export function STTSettings() {
   const recordingEnabled = useConfigStore((s) => s.recordingEnabled);
   // Persisted: providers whose key has been saved + tested successfully
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
-  const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
+  const setCloudProviderVerified = useConfigStore((s) => s.setCloudProviderVerified);
   const hasBaseUrl = useConfigStore((s) => s.openaiCompatSttConfig.base_url.trim() !== "");
   // In an in-person meeting only the room microphone ("Them") is transcribed.
   const inPerson = useMeetingStore((s) => skipYouStt(s.audioMode));
@@ -226,9 +228,14 @@ export function STTSettings() {
     useState<ConnectionStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const [pendingSwap, setPendingSwap] = useState<PendingSwap | null>(null);
+  const credentialRequest = useRef(0);
+  const credentialWriteInProgress = useRef(false);
+  const keyEdited = useRef(false);
+  const regionEdited = useRef(false);
 
   const [azureRegion, setAzureRegion] = useState("eastus");
-  const [, setHasStoredRegion] = useState(false);
+  const [regionDirty, setRegionDirty] = useState(false);
+  const [regionLoaded, setRegionLoaded] = useState(false);
 
   const currentProviderOption: SttProviderMeta | undefined =
     offered.find((p) => p.id === selectedProvider) ?? sttProviderMeta(selectedProvider);
@@ -236,6 +243,7 @@ export function STTSettings() {
   /** The generic key panel: cloud engines without their own panel. */
   const usesKeyPanel = !!currentProviderOption?.requiresApiKey && !hasOwnPanel;
   const needsRegion = selectedProvider === "azure_speech";
+  const regionReady = !needsRegion || (!!azureRegion.trim() && (regionLoaded || regionDirty));
   const credentialKey = currentProviderOption ? sttKeySlot(currentProviderOption) : "";
   const selectedLabel = sttEngineLabel(selectedProvider);
 
@@ -266,45 +274,54 @@ export function STTSettings() {
   // ── Key loading (load stored key display when switching providers) ──
 
   useEffect(() => {
-    const loadKeyForProvider = async () => {
-      setApiKey("");
-      setShowApiKey(false);
-      setHasStoredKey(false);
-      setKeyDirty(false);
-      setConnectionStatus("idle");
-      setStatusMessage("");
-      setPendingSwap(null);
+    let disposed = false;
+    credentialRequest.current++;
+    keyEdited.current = false;
+    regionEdited.current = false;
+    setApiKey("");
+    setShowApiKey(false);
+    setHasStoredKey(false);
+    setKeyDirty(false);
+    setAzureRegion("eastus");
+    setRegionDirty(false);
+    setRegionLoaded(false);
+    setConnectionStatus("idle");
+    setStatusMessage("");
+    setPendingSwap(null);
 
-      if (!usesKeyPanel || !credentialKey) return;
-
-      try {
-        const keyExists = await hasApiKey(credentialKey);
-        setHasStoredKey(keyExists);
-        if (keyExists) {
-          const stored = await getApiKey(credentialKey);
-          if (stored) setApiKey(stored);
-        }
-      } catch (e) {
-        console.warn("Failed to load STT API key:", e);
-      }
-
+    if (usesKeyPanel && credentialKey) {
+      void getApiKey(credentialKey).then((stored) => {
+        if (disposed) return;
+        setHasStoredKey(!!stored);
+        if (!keyEdited.current) setApiKey(stored ?? "");
+      }).catch((e) => console.warn("Failed to load STT API key:", e));
       if (needsRegion) {
-        try {
-          const regionExists = await hasApiKey("azure_speech_region");
-          setHasStoredRegion(regionExists);
-          if (regionExists) {
-            const stored = await getApiKey("azure_speech_region");
-            if (stored) setAzureRegion(stored);
-          }
-        } catch (e) {
-          console.warn("Failed to load Azure region:", e);
-        }
+        void getApiKey("azure_speech_region").then((stored) => {
+          if (disposed) return;
+          if (stored && !regionEdited.current) setAzureRegion(stored);
+          setRegionLoaded(true);
+        }).catch((e) => console.warn("Failed to load Azure region:", e));
       }
+    }
+    return () => {
+      disposed = true;
+      credentialRequest.current++;
     };
-    loadKeyForProvider();
   }, [selectedProvider, credentialKey, usesKeyPanel, needsRegion]);
 
   // ── Handlers ──
+
+  const selectProvider = (provider: STTProviderType) => {
+    if (provider === selectedProvider) return;
+    credentialRequest.current++;
+    setSelectedProvider(provider);
+  };
+
+  const invalidateCredentialTest = () => {
+    credentialRequest.current++;
+    setConnectionStatus("idle");
+    setStatusMessage("");
+  };
 
   /** The party's availability inputs (its device kind decides input-only engines). */
   const partyContext = useCallback(
@@ -377,73 +394,71 @@ export function STTSettings() {
 
   /** Save & Test: test key first, only persist on success. */
   const handleSaveAndTest = useCallback(async () => {
-    if (!apiKey.trim() || !credentialKey) return;
+    const key = apiKey.trim();
+    const region = needsRegion ? azureRegion.trim() : undefined;
+    if (!key || !credentialKey || !regionReady || credentialWriteInProgress.current) return;
 
+    const request = ++credentialRequest.current;
     setConnectionStatus("testing");
     setStatusMessage(t("stt:settings.apiKey.testing"));
 
     try {
-      // Temporarily store so the backend can read it during test
-      await storeApiKey(credentialKey, apiKey.trim());
-      if (needsRegion && azureRegion.trim()) {
-        await storeApiKey("azure_speech_region", azureRegion.trim());
-        setHasStoredRegion(true);
-      }
-
-      const success = await testSTTConnection(selectedProvider);
-      if (success) {
-        setHasStoredKey(true);
-        setKeyDirty(false);
-        setConnectionStatus("success");
-        setStatusMessage(t("stt:settings.apiKey.success"));
-        // Persist the verified state
-        const updated = Array.from(new Set([...verifiedCloudProviders, selectedProvider]));
-        setVerifiedCloudProviders(updated);
-      } else {
-        // Remove the key we temporarily stored — test failed
-        await deleteApiKey(credentialKey).catch(() => {});
-        setHasStoredKey(false);
+      const success = await testSTTConnection(selectedProvider, { key, region });
+      if (request !== credentialRequest.current) return;
+      if (!success) {
         setConnectionStatus("error");
         setStatusMessage(t("stt:settings.apiKey.failed"));
-        const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
-        setVerifiedCloudProviders(updated);
+        return;
       }
+
+      credentialWriteInProgress.current = true;
+      try {
+        if (region) await storeAzureSpeechCredentials(key, region);
+        else await storeApiKey(credentialKey, key);
+        setCloudProviderVerified(selectedProvider, true);
+        readiness.refresh();
+      } finally {
+        credentialWriteInProgress.current = false;
+      }
+      if (request !== credentialRequest.current) return;
+      setHasStoredKey(true);
+      setKeyDirty(false);
+      setRegionDirty(false);
+      setConnectionStatus("success");
+      setStatusMessage(t("stt:settings.apiKey.success"));
     } catch (e) {
-      await deleteApiKey(credentialKey).catch(() => {});
-      setHasStoredKey(false);
+      if (request !== credentialRequest.current) return;
       setConnectionStatus("error");
       setStatusMessage(t("common:errors.testFailed", { detail: String(e) }));
-      const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
-      setVerifiedCloudProviders(updated);
     }
-    readiness.refresh();
-  }, [apiKey, azureRegion, selectedProvider, credentialKey, needsRegion, verifiedCloudProviders, setVerifiedCloudProviders, readiness, t]);
+  }, [apiKey, azureRegion, selectedProvider, credentialKey, needsRegion, regionReady, setCloudProviderVerified, readiness, t]);
 
   const handleClearApiKey = useCallback(async () => {
-    if (!credentialKey) return;
-    try { await deleteApiKey(credentialKey); } catch { /* ok */ }
-    setApiKey("");
-    setHasStoredKey(false);
-    setKeyDirty(false);
-    setConnectionStatus("idle");
-    setStatusMessage("");
-    const updated = verifiedCloudProviders.filter((p) => p !== selectedProvider);
-    setVerifiedCloudProviders(updated);
-    readiness.refresh();
-  }, [credentialKey, selectedProvider, verifiedCloudProviders, setVerifiedCloudProviders, readiness]);
-
-  const handleSaveRegion = useCallback(async () => {
-    if (!azureRegion.trim()) return;
+    if (!credentialKey || credentialWriteInProgress.current) return;
+    const request = ++credentialRequest.current;
+    credentialWriteInProgress.current = true;
     try {
-      await storeApiKey("azure_speech_region", azureRegion.trim());
-      setHasStoredRegion(true);
+      await deleteApiKey(credentialKey);
+      setCloudProviderVerified(selectedProvider, false);
+      readiness.refresh();
+      if (request !== credentialRequest.current) return;
+      setApiKey("");
+      setHasStoredKey(false);
+      setKeyDirty(false);
+      setConnectionStatus("idle");
+      setStatusMessage("");
     } catch (e) {
-      console.warn("Failed to save Azure region:", e);
+      if (request !== credentialRequest.current) return;
+      setConnectionStatus("error");
+      setStatusMessage(t("common:errors.saveFailed", { detail: String(e) }));
+    } finally {
+      credentialWriteInProgress.current = false;
     }
-  }, [azureRegion]);
+  }, [credentialKey, selectedProvider, setCloudProviderVerified, readiness, t]);
 
   /** Test Connection — only for local/always-ready providers; cloud uses handleSaveAndTest. */
   const handleTestConnection = useCallback(async () => {
+    const request = ++credentialRequest.current;
     setConnectionStatus("testing");
     setStatusMessage(t("common:status.testing"));
 
@@ -451,6 +466,7 @@ export function STTSettings() {
       const engineId = currentProviderOption?.requiresDownload;
       if (engineId) {
         const engines = await listLocalSTTEngines();
+        if (request !== credentialRequest.current) return;
         const eng = engines.find((e) => e.engine === engineId);
         const downloaded = eng?.models.filter((m) => m.is_downloaded && !m.id.startsWith("binary-")) ?? [];
         readiness.refresh();
@@ -465,9 +481,11 @@ export function STTSettings() {
       }
 
       const success = await testSTTConnection(selectedProvider);
+      if (request !== credentialRequest.current) return;
       setConnectionStatus(success ? "success" : "error");
       setStatusMessage(success ? t("stt:settings.connection.ready") : t("stt:settings.connection.failed"));
     } catch (e) {
+      if (request !== credentialRequest.current) return;
       setConnectionStatus("error");
       setStatusMessage(t("common:errors.testFailed", { detail: String(e) }));
     }
@@ -501,7 +519,7 @@ export function STTSettings() {
                 isSelected={selectedProvider === p.id}
                 usedBy={usedBy(p.id)}
                 badge={getBadgeState(p)}
-                onClick={() => setSelectedProvider(p.id)}
+                onClick={() => selectProvider(p.id)}
               />
             ))}
           </div>
@@ -524,7 +542,7 @@ export function STTSettings() {
                 isSelected={selectedProvider === p.id}
                 usedBy={usedBy(p.id)}
                 badge={getBadgeState(p)}
-                onClick={() => setSelectedProvider(p.id)}
+                onClick={() => selectProvider(p.id)}
               />
             ))}
           </div>
@@ -657,10 +675,10 @@ export function STTSettings() {
                 type={showApiKey ? "text" : "password"}
                 value={apiKey}
                 onChange={(e) => {
+                  keyEdited.current = true;
                   setApiKey(e.target.value);
                   setKeyDirty(true);
-                  setConnectionStatus("idle");
-                  setStatusMessage("");
+                  invalidateCredentialTest();
                 }}
                 placeholder={
                   hasStoredKey && !keyDirty
@@ -682,10 +700,10 @@ export function STTSettings() {
             </div>
 
             {/* Save & Test — shown whenever user has typed a key */}
-            {(keyDirty || (!hasStoredKey && apiKey.trim())) && (
+            {(keyDirty || regionDirty || (!hasStoredKey && apiKey.trim())) && (
               <button
                 onClick={handleSaveAndTest}
-                disabled={!apiKey.trim() || connectionStatus === "testing"}
+                disabled={!apiKey.trim() || !regionReady || connectionStatus === "testing"}
                 className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {connectionStatus === "testing" ? (
@@ -698,7 +716,7 @@ export function STTSettings() {
             )}
 
             {/* Clear — only if key is stored and verified, and user hasn't started typing a new one */}
-            {hasStoredKey && !keyDirty && (
+            {hasStoredKey && !keyDirty && !regionDirty && (
               <button
                 onClick={handleClearApiKey}
                 className="flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive transition-colors hover:bg-destructive/10"
@@ -723,7 +741,7 @@ export function STTSettings() {
                 {statusMessage}
               </div>
             )}
-            {connectionStatus === "idle" && hasStoredKey && !keyDirty && (
+            {connectionStatus === "idle" && hasStoredKey && !keyDirty && !regionDirty && (
               <p className="text-xs text-success/70">
                 {t("stt:settings.apiKey.stored")}
               </p>
@@ -746,8 +764,12 @@ export function STTSettings() {
           <input
             type="text"
             value={azureRegion}
-            onChange={(e) => setAzureRegion(e.target.value)}
-            onBlur={handleSaveRegion}
+            onChange={(e) => {
+              regionEdited.current = true;
+              setAzureRegion(e.target.value);
+              setRegionDirty(true);
+              invalidateCredentialTest();
+            }}
             placeholder="eastus"
             aria-label={t("stt:settings.azureRegion.title")}
             className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"

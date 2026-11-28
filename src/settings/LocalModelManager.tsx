@@ -1,7 +1,7 @@
 // Model download/management UI for local STT engines.
 // Tracks active model, auto-activates on first download, supports Set Active.
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   HardDrive,
   Download,
@@ -15,7 +15,7 @@ import {
 import { useModelDownload } from "../hooks/useModelDownload";
 import { useConfigStore } from "../stores/configStore";
 import { listLocalSTTEngines, deleteLocalSTTModel } from "../lib/ipc";
-import type { LocalSTTEngineInfo, LocalSTTModelInfo } from "../lib/types";
+import type { LocalSTTEngineInfo, LocalSTTModelInfo, ModelDownloadProgress } from "../lib/types";
 import { showToast } from "../stores/toastStore";
 import { useT } from "../i18n";
 
@@ -31,7 +31,8 @@ export function LocalModelManager({ compact, engineFilter, onModelsChange }: Loc
   const { t } = useT(["stt", "common"]);
   const [engines, setEngines] = useState<LocalSTTEngineInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const { downloads, startDownload, cancelDownload } = useModelDownload();
+  const { downloads, startDownload, cancelDownload, waitForDownloadEvents } = useModelDownload(true);
+  const seenCompletions = useRef(new WeakSet<ModelDownloadProgress>());
   const activeWhisperModel = useConfigStore((s) => s.activeWhisperModel);
   const setActiveWhisperModel = useConfigStore((s) => s.setActiveWhisperModel);
   const activeModelPerEngine = useConfigStore((s) => s.activeModelPerEngine);
@@ -40,6 +41,7 @@ export function LocalModelManager({ compact, engineFilter, onModelsChange }: Loc
   async function loadEngines() {
     setLoading(true);
     try {
+      await waitForDownloadEvents();
       const data = await listLocalSTTEngines();
       setEngines(data);
       return data;
@@ -57,13 +59,15 @@ export function LocalModelManager({ compact, engineFilter, onModelsChange }: Loc
 
   // When a download completes: reload engines, auto-activate if no active model for that engine
   useEffect(() => {
-    const completed = Object.entries(downloads).find(
-      ([, d]) => d.status === "complete"
+    const completed = Object.values(downloads).filter(
+      (progress) => progress.engine !== "opus_mt" && progress.status === "complete"
+        && !seenCompletions.current.has(progress),
     );
-    if (completed) {
+    for (const progress of completed) seenCompletions.current.add(progress);
+    if (completed.length > 0) {
       loadEngines().then((data) => {
         for (const engine of data) {
-          const engineActiveModel = activeModelPerEngine[engine.engine];
+          const engineActiveModel = useConfigStore.getState().activeModelPerEngine[engine.engine];
           if (!engineActiveModel) {
             const firstDownloaded = engine.models.find(
               (m) => !m.id.startsWith("binary-") && m.is_downloaded
@@ -122,7 +126,8 @@ export function LocalModelManager({ compact, engineFilter, onModelsChange }: Loc
               const isDownloading =
                 progress?.status === "downloading" ||
                 progress?.status === "verifying" ||
-                progress?.status === "extracting";
+                progress?.status === "extracting" ||
+                progress?.status === "cancelling";
               // Per-engine active model: check if THIS model is active for THIS engine
               const isActive = (activeModelPerEngine[model.engine] ?? activeWhisperModel) === model.id;
 
@@ -245,12 +250,7 @@ function ModelRow({
   model: LocalSTTModelInfo;
   isActive: boolean;
   isDownloading: boolean;
-  progress?: {
-    percent: number;
-    status: string;
-    downloaded_bytes: number;
-    total_bytes: number;
-  };
+  progress?: ModelDownloadProgress;
   compact?: boolean;
   onDownload: () => void;
   onCancel: () => void;
@@ -259,6 +259,15 @@ function ModelRow({
 }) {
   const { t } = useT(["stt", "common"]);
   const sizeLabel = formatSize(model.size_bytes);
+  const progressLabel = progress && {
+    downloading: `${formatSize(progress.downloaded_bytes)} / ${formatSize(progress.total_bytes)}`,
+    verifying: t("stt:localModels.verifying"),
+    extracting: t("stt:localModels.extracting"),
+    cancelling: t("stt:localModels.cancelling"),
+    complete: "",
+    error: "",
+    cancelled: "",
+  }[progress.status];
 
   return (
     <div
@@ -297,7 +306,8 @@ function ModelRow({
           {isDownloading ? (
             <button
               onClick={onCancel}
-              className="rounded-md p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+              disabled={progress?.status === "cancelling"}
+              className="rounded-md p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 disabled:opacity-50"
               title={t("stt:localModels.cancelDownload")}
               aria-label={t("stt:localModels.cancelDownload")}
             >
@@ -353,15 +363,16 @@ function ModelRow({
           </div>
           <div className="mt-0.5 flex items-center justify-between text-meta text-muted-foreground">
             <span>
-              {progress.status === "extracting"
-                ? t("stt:localModels.extracting")
-                : progress.status === "verifying"
-                  ? t("stt:localModels.verifying")
-                  : `${formatSize(progress.downloaded_bytes)} / ${formatSize(progress.total_bytes)}`}
+              {progressLabel}
             </span>
             <span>{Math.round(progress.percent)}%</span>
           </div>
         </div>
+      )}
+      {progress?.status === "error" && (
+        <p role="status" className="mt-1 break-words text-meta text-red-500">
+          {t("stt:localModels.toasts.downloadFailed", { detail: progress.detail ?? t("common:errors.unknown") })}
+        </p>
       )}
     </div>
   );

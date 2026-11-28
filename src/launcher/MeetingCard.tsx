@@ -126,10 +126,10 @@ export function MeetingCard({
   const handleConfirmDelete = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      onDelete(meeting.id);
+      if (!isLive) onDelete(meeting.id);
       setShowDeleteConfirm(false);
     },
-    [meeting.id, onDelete]
+    [meeting.id, onDelete, isLive]
   );
 
   const handleCancelDelete = useCallback((e: React.MouseEvent) => {
@@ -318,7 +318,7 @@ export function MeetingCard({
 
         {/* Actions */}
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-          {showDeleteConfirm ? (
+          {showDeleteConfirm && !isLive ? (
             <div className="flex items-center gap-1 rounded-lg bg-destructive/10 px-2 py-1">
               <span className="text-meta text-destructive">{t("card.delete.prompt")}</span>
               <button
@@ -345,13 +345,15 @@ export function MeetingCard({
               >
                 <Pencil className="h-3 w-3" aria-hidden="true" />
               </button>
-              <button
-                onClick={handleDeleteClick}
-                className="rounded-md p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
-                aria-label={t("card.delete.ariaLabel")}
-              >
-                <Trash2 className="h-3 w-3" aria-hidden="true" />
-              </button>
+              {!isLive && (
+                <button
+                  onClick={handleDeleteClick}
+                  className="rounded-md p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                  aria-label={t("card.delete.ariaLabel")}
+                >
+                  <Trash2 className="h-3 w-3" aria-hidden="true" />
+                </button>
+              )}
             </>
           )}
           <ChevronRight className="ml-0.5 h-3.5 w-3.5 text-muted-foreground/50" />

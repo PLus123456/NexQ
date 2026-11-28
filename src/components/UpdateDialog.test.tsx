@@ -154,7 +154,7 @@ describe("UpdateDialog", () => {
     openWith();
     fireEvent.click(screen.getByRole("button", { name: /full release notes/i }));
     // NexQ Plus: this fork's releases, never the official NexQ's.
-    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/tag/v2.34.0`);
+    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/tag/plus-v2.34.0`);
   });
 
   it("Later closes it without installing and keeps the update ready", async () => {

@@ -10,7 +10,7 @@ import type {
   PersonalSourcesConfig,
   SourceToggles,
 } from "../lib/types";
-import { setPersonalSources } from "../lib/ipc";
+import { setPersonalSources, type SourceConfigWrite } from "../lib/ipc";
 import { useConfigStore } from "./configStore";
 
 // Same plugin-store file as `configStore`, so the launcher and the overlay see
@@ -152,6 +152,14 @@ function fingerprint(value: unknown): string {
 
 // ── Store ──
 
+type SourcesConfigEdit = PersonalSourcesConfig | ((latest: PersonalSourcesConfig) => PersonalSourcesConfig);
+
+interface SourcesWriteOptions {
+  durable?: boolean;
+  pendingIds?: string[];
+  canCommit?: () => boolean;
+}
+
 interface SourcesState {
   config: PersonalSourcesConfig;
   toggles: SourceToggles;
@@ -159,15 +167,10 @@ interface SourcesState {
   /** Why the backend refused the last config (an invalid or duplicate server key); `null` when it took it. */
   pushError: string | null;
   load: () => Promise<void>;
-  /** Set, save and give to the backend. Resolves once the backend has answered; never rejects. */
-  setConfig: (c: PersonalSourcesConfig) => Promise<void>;
-  /**
-   * Like `setConfig` for a change that must not be lost (a removal): rejects when
-   * the save fails, then nothing reaches the backend and the config goes back to
-   * what it was. `afterSave` runs once the save is done, before the backend gets
-   * the new config (it still has the old one then); it must not throw.
-   */
-  setConfigDurably: (c: PersonalSourcesConfig, afterSave?: () => Promise<void>) => Promise<void>;
+  /** Set, save and give to the backend. A required persistence failure rejects. */
+  setConfig: (c: SourcesConfigEdit, options?: SourcesWriteOptions) => Promise<void>;
+  /** Save the settings to disk and reject if the backend cannot complete the change. */
+  setConfigDurably: (c: SourcesConfigEdit) => Promise<void>;
   /**
    * Set and save. A pill flipped here applies to the next answer. Pass a
    * function to change the latest value (two quick clicks each see the other's
@@ -177,37 +180,32 @@ interface SourcesState {
 }
 
 /** Notices of our own saves come back through `onKeyChange`; skip them. */
-const ownSaves: Record<string, string[]> = { [CONFIG_KEY]: [], [TOGGLES_KEY]: [] };
+const ownToggleSaves: string[] = [];
 const OWN_SAVES_KEPT = 16;
 
-function rememberOwnSave(key: string, value: unknown): string {
-  const mine = fingerprint(value);
-  ownSaves[key].push(mine);
-  if (ownSaves[key].length > OWN_SAVES_KEPT) ownSaves[key].shift();
-  return mine;
-}
-
-function forgetOwnSave(key: string, mine: string): void {
-  const at = ownSaves[key].lastIndexOf(mine);
-  if (at >= 0) ownSaves[key].splice(at, 1);
-}
-
-/** Save `value`. A failed write is logged and swallowed, unless `strict`: then it is thrown too. */
-async function persist(key: string, value: unknown, strict = false): Promise<void> {
+async function persistToggles(value: SourceToggles): Promise<void> {
   let mine: string | null = null;
   try {
     const store = await getStore();
-    mine = rememberOwnSave(key, value);
-    await store.set(key, value);
+    mine = fingerprint(value);
+    ownToggleSaves.push(mine);
+    if (ownToggleSaves.length > OWN_SAVES_KEPT) ownToggleSaves.shift();
+    await store.set(TOGGLES_KEY, value);
   } catch (e) {
-    if (mine) forgetOwnSave(key, mine);
-    console.error(`[sourcesStore] Failed to persist ${key}:`, e);
-    if (strict) throw e;
+    const recorded = mine === null ? -1 : ownToggleSaves.lastIndexOf(mine);
+    if (recorded >= 0) ownToggleSaves.splice(recorded, 1);
+    console.error("[sourcesStore] Failed to persist your source switches:", e);
   }
 }
 
-/** Pushes reach the backend in the order they were made. */
-let pushChain: Promise<void> = Promise.resolve();
+/** Persistence and backend changes share a queue within the window. */
+let configWrites: Promise<void> = Promise.resolve();
+
+function enqueueConfigWrite(write: () => Promise<void>): Promise<void> {
+  const next = configWrites.then(write, write);
+  configWrites = next.catch(() => {});
+  return next;
+}
 
 /**
  * At startup the window can ask before the backend has finished setting up
@@ -218,10 +216,19 @@ const STARTING_RE = /state not managed/i;
 const STARTING_WAIT_MS = 150;
 const STARTING_TRIES = 200;
 
-async function sendWhenReady(config: PersonalSourcesConfig): Promise<void> {
+const SOURCE_CONFIG_CHANGED = "SOURCE_CONFIG_CHANGED";
+const MAX_WRITE_ATTEMPTS = 8;
+
+async function sendWhenReady(
+  config: PersonalSourcesConfig,
+  pendingIds?: string[],
+  write?: SourceConfigWrite,
+  canCommit?: () => boolean,
+): Promise<void> {
   for (let attempt = 1; ; attempt++) {
+    if (canCommit?.() === false) throw new Error("Source editing was cancelled");
     try {
-      return await setPersonalSources(config);
+      return await setPersonalSources(config, pendingIds, write);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (!STARTING_RE.test(message) || attempt >= STARTING_TRIES) throw e;
@@ -230,104 +237,109 @@ async function sendWhenReady(config: PersonalSourcesConfig): Promise<void> {
   }
 }
 
-function pushToBackend(config: PersonalSourcesConfig): Promise<void> {
-  const run = async () => {
-    try {
-      await sendWhenReady(config);
-      useSourcesStore.setState({ pushError: null });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.warn("[sourcesStore] Backend refused the sources:", message);
-      useSourcesStore.setState({ pushError: message });
-    }
-  };
-  pushChain = pushChain.then(run, run);
-  return pushChain;
+function showBackendError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn("[sourcesStore] Backend refused the sources:", message);
+  useSourcesStore.setState({ pushError: message });
 }
 
-let unlisten: Array<() => void> = [];
+let watchingSaved: Promise<void> | null = null;
 
 async function watchSaved(): Promise<void> {
-  for (const stop of unlisten) stop();
-  unlisten = [];
   const store = await getStore();
-  unlisten.push(
-    await store.onKeyChange<unknown>(CONFIG_KEY, (saved) => {
+  return watchingSaved ??= Promise.allSettled([
+    store.onKeyChange<unknown>(CONFIG_KEY, (saved) => {
       if (saved === undefined || saved === null) return;
-      const own = ownSaves[CONFIG_KEY].indexOf(fingerprint(saved));
-      if (own >= 0) {
-        ownSaves[CONFIG_KEY].splice(own, 1);
-        return;
-      }
-      // The window that saved it already told the backend.
       useSourcesStore.setState({ config: normalizeSourcesConfig(saved) });
     }),
-    await store.onKeyChange<unknown>(TOGGLES_KEY, (saved) => {
+    store.onKeyChange<unknown>(TOGGLES_KEY, (saved) => {
       if (saved === undefined || saved === null) return;
-      const own = ownSaves[TOGGLES_KEY].indexOf(fingerprint(saved));
+      const own = ownToggleSaves.indexOf(fingerprint(saved));
       if (own >= 0) {
-        ownSaves[TOGGLES_KEY].splice(own, 1);
+        ownToggleSaves.splice(own, 1);
         return;
       }
       useSourcesStore.setState({ toggles: normalizeToggles(saved) });
     }),
-  );
+  ]).then((results) => {
+    const failure = results.find((result) => result.status === "rejected");
+    if (!failure) return;
+    for (const result of results) if (result.status === "fulfilled") result.value();
+    watchingSaved = null;
+    throw failure.reason;
+  });
 }
 
-export const useSourcesStore = create<SourcesState>((set, get) => ({
-  config: DEFAULT_SOURCES_CONFIG,
-  toggles: DEFAULT_SOURCE_TOGGLES,
-  loaded: false,
-  pushError: null,
-
-  load: async () => {
-    try {
-      const store = await getStore();
-      // Loading never writes: an old config.json keeps exactly what it had.
-      const config = normalizeSourcesConfig(await store.get<unknown>(CONFIG_KEY));
-      const toggles = normalizeToggles(await store.get<unknown>(TOGGLES_KEY));
-      set({ config, toggles, loaded: true });
-      await watchSaved();
-      // The backend is the source of truth for answers: give it what we have.
-      await pushToBackend(config);
-    } catch (e) {
-      console.error("[sourcesStore] Failed to load:", e);
-      set({ loaded: true });
-    }
-  },
-
-  setConfig: (c) => {
-    const config = normalizeSourcesConfig(c);
-    set({ config });
-    // Save first so a window that opens next sees it, then tell the backend.
-    return persist(CONFIG_KEY, config).then(() => pushToBackend(config));
-  },
-
-  setConfigDurably: async (c, afterSave) => {
-    const config = normalizeSourcesConfig(c);
-    const previous = get().config;
-    set({ config });
-    try {
-      await persist(CONFIG_KEY, config, true);
-    } catch (e) {
-      // Put the old config back, unless something else has changed it meanwhile.
-      if (get().config === config) set({ config: previous });
-      throw e;
-    }
-    await afterSave?.();
-    await pushToBackend(config);
-  },
-
-  setToggles: (t) => {
-    let toggles: SourceToggles = { notes: false, tools: false };
-    set((state) => {
-      const next = typeof t === "function" ? t(state.toggles) : t;
-      toggles = { notes: next.notes === true, tools: next.tools === true };
-      return { toggles };
+export const useSourcesStore = create<SourcesState>((set, get) => {
+  const saveConfig = (edit: SourcesConfigEdit, { durable = false, pendingIds, canCommit }: SourcesWriteOptions = {}) =>
+    enqueueConfigWrite(async () => {
+      try {
+        const store = await getStore();
+        for (let attempt = 1; ; attempt++) {
+          const expected = await store.get(CONFIG_KEY);
+          const visible = get().config;
+          const previous = expected == null ? visible : normalizeSourcesConfig(expected);
+          const config = normalizeSourcesConfig(typeof edit === "function" ? edit(previous) : edit);
+          try {
+            await sendWhenReady(config, pendingIds, { expected: expected ?? null, durable }, canCommit);
+            set((state) => ({
+              config: state.config === visible ? config : state.config,
+              pushError: null,
+            }));
+            return;
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            if (message !== SOURCE_CONFIG_CHANGED) throw e;
+            if (attempt >= MAX_WRITE_ATTEMPTS) throw new Error("The source settings changed in another window. Try again.");
+          }
+        }
+      } catch (e) {
+        if (canCommit?.() !== false) showBackendError(e);
+        if (durable) throw e;
+      }
     });
-    void persist(TOGGLES_KEY, toggles);
-  },
-}));
+
+  return {
+    config: DEFAULT_SOURCES_CONFIG,
+    toggles: DEFAULT_SOURCE_TOGGLES,
+    loaded: false,
+    pushError: null,
+
+    load: () => enqueueConfigWrite(async () => {
+      try {
+        const store = await getStore();
+        await watchSaved();
+        const before = get();
+        // Loading never writes: an old config.json keeps exactly what it had.
+        const config = normalizeSourcesConfig(await store.get<unknown>(CONFIG_KEY));
+        const toggles = normalizeToggles(await store.get<unknown>(TOGGLES_KEY));
+        set((state) => ({
+          config: state.config === before.config ? config : state.config,
+          toggles: state.toggles === before.toggles ? toggles : state.toggles,
+          loaded: true,
+        }));
+        // The backend is the source of truth for answers: give it what we have.
+        await sendWhenReady(get().config).then(() => set({ pushError: null }), showBackendError);
+      } catch (e) {
+        console.error("[sourcesStore] Failed to load:", e);
+        set({ loaded: true });
+      }
+    }),
+
+    setConfig: saveConfig,
+    setConfigDurably: (c) => saveConfig(c, { durable: true }),
+
+    setToggles: (t) => {
+      let toggles: SourceToggles = { notes: false, tools: false };
+      set((state) => {
+        const next = typeof t === "function" ? t(state.toggles) : t;
+        toggles = { notes: next.notes === true, tools: next.tools === true };
+        return { toggles };
+      });
+      void persistToggles(toggles);
+    },
+  };
+});
 
 /**
  * The pills as they are right now, for a request the user makes. `undefined`

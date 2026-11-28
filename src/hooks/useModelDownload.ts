@@ -1,91 +1,94 @@
-// Hook for tracking local STT model download progress.
-// Listens to `model_download_progress` Tauri events and provides
-// download state + control functions.
-
-import { useState, useEffect, useCallback } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { listen, type Event } from "@tauri-apps/api/event";
+import { createEventScope } from "../lib/eventScope";
 import type { ModelDownloadProgress } from "../lib/types";
-import { downloadLocalSTTModel, cancelModelDownload } from "../lib/ipc";
+import { downloadLocalSTTModel, cancelModelDownload, listLocalSTTEngines } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
 import { t } from "../i18n";
 
-interface DownloadState {
-  [key: string]: ModelDownloadProgress;
-}
+type DownloadState = Record<string, ModelDownloadProgress>;
 
-export function useModelDownload() {
+export function useModelDownload(restoreSttDownloads = false) {
   const [downloads, setDownloads] = useState<DownloadState>({});
+  const listenerReady = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
+    const scope = createEventScope("Model downloads");
+    const updated = new Set<string>();
+    const timeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
-    listen<ModelDownloadProgress>("model_download_progress", (event) => {
-      const progress = event.payload;
-      const key = `${progress.engine}:${progress.model_id}`;
+    const subscription = scope.add<Event<ModelDownloadProgress>>(
+      (callback) => listen("model_download_progress", callback),
+      ({ payload }) => {
+        const key = `${payload.engine}:${payload.model_id}`;
+        updated.add(key);
+        clearTimeout(timeouts.get(key));
+        timeouts.delete(key);
+        setDownloads((prev) => ({ ...prev, [key]: payload }));
 
-      setDownloads((prev) => {
-        // Auto-clear terminal states after a brief delay
-        if (
-          progress.status === "complete" ||
-          progress.status === "error" ||
-          progress.status === "cancelled"
-        ) {
-          const next = { ...prev, [key]: progress };
-          setTimeout(() => {
-            setDownloads((current) => {
-              const entry = current[key];
-              // Only clear if still in a terminal state (not overwritten by e.g. "extracting")
-              if (
-                entry &&
-                (entry.status === "complete" ||
-                  entry.status === "error" ||
-                  entry.status === "cancelled")
-              ) {
-                const updated = { ...current };
-                delete updated[key];
-                return updated;
-              }
-              return current;
+        const terminal = payload.status === "complete" || payload.status === "cancelled"
+          || (payload.status === "error" && payload.engine === "opus_mt");
+        if (terminal) {
+          timeouts.set(key, setTimeout(() => {
+            timeouts.delete(key);
+            setDownloads((prev) => {
+              if (prev[key] !== payload) return prev;
+              const next = { ...prev };
+              delete next[key];
+              return next;
             });
-          }, 3000);
-          return next;
+          }, 3000));
         }
-        return { ...prev, [key]: progress };
-      });
-    })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => console.warn("Failed to listen for model downloads:", err));
+      },
+    );
+    listenerReady.current = subscription;
+
+    if (restoreSttDownloads) {
+      void subscription.then(async (registered) => {
+        if (!registered) return;
+        const engines = await listLocalSTTEngines();
+        if (!scope.active()) return;
+        const snapshot: DownloadState = {};
+        for (const engine of engines) {
+          for (const model of engine.models) {
+            const key = `${engine.engine}:${model.id}`;
+            if (model.download_progress && !updated.has(key)) {
+              snapshot[key] = model.download_progress;
+            }
+          }
+        }
+        setDownloads((prev) => ({ ...snapshot, ...prev }));
+      }).catch((err) => console.warn("Failed to restore model downloads:", err));
+    }
 
     return () => {
-      unlisten?.();
+      listenerReady.current = null;
+      scope.dispose();
+      for (const timer of timeouts.values()) clearTimeout(timer);
     };
+  }, [restoreSttDownloads]);
+
+  const waitForDownloadEvents = useCallback(async () => {
+    await listenerReady.current;
   }, []);
 
-  const startDownload = useCallback(
-    async (engine: string, modelId: string) => {
-      try {
-        await downloadLocalSTTModel(engine, modelId);
-      } catch (err: any) {
-        const msg = typeof err === "string" ? err : err?.message ?? t("common:errors.unknown");
-        console.error("Failed to start download:", msg);
-        showToast(t("stt:localModels.toasts.downloadFailed", { detail: msg }), "error");
-      }
-    },
-    []
-  );
+  const startDownload = useCallback(async (engine: string, modelId: string) => {
+    try {
+      await waitForDownloadEvents();
+      await downloadLocalSTTModel(engine, modelId);
+    } catch (err: unknown) {
+      const detail = typeof err === "string" ? err : err instanceof Error ? err.message : t("common:errors.unknown");
+      showToast(t("stt:localModels.toasts.downloadFailed", { detail }), "error");
+    }
+  }, [waitForDownloadEvents]);
 
-  const cancelDownloadFn = useCallback(
-    async (engine: string, modelId: string) => {
-      try {
-        await cancelModelDownload(engine, modelId);
-      } catch (err) {
-        console.error("Failed to cancel download:", err);
-      }
-    },
-    []
-  );
+  const cancelDownloadFn = useCallback(async (engine: string, modelId: string) => {
+    try {
+      await cancelModelDownload(engine, modelId);
+    } catch (err) {
+      console.error("Failed to cancel download:", err);
+    }
+  }, []);
 
-  return { downloads, startDownload, cancelDownload: cancelDownloadFn };
+  return { downloads, startDownload, cancelDownload: cancelDownloadFn, waitForDownloadEvents };
 }

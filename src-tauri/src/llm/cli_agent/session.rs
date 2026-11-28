@@ -20,7 +20,7 @@ use super::protocol::{
     ImageAttachment, McpServerState, ToolResult, ToolUse, TurnResult,
 };
 use crate::llm::provider::CancelToken;
-use crate::sources::private_files::{private_dir, remove_private_file, write_private_file};
+use crate::sources::private_files::{private_dir, PrivateFile};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -280,9 +280,16 @@ impl Shared {
         log::warn!("claude session unresponsive ({reason}); killing it");
         *self.exit_status.lock().unwrap() = Some(reason.to_string());
         self.alive.store(false, Ordering::SeqCst);
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        self.kill_and_reap();
+    }
+
+    fn kill_and_reap(&self) {
+        let child = self.child.lock().unwrap().take();
+        if let Some(mut child) = child {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -302,10 +309,10 @@ pub struct ClaudeSession {
     stdin_tx: Mutex<Option<std_mpsc::Sender<String>>>,
     /// The FIFO turn lock; the holder owns the current turn's events.
     turn: Arc<AsyncMutex<mpsc::UnboundedReceiver<AgentEvent>>>,
-    prompt_file: PathBuf,
+    prompt_file: PrivateFile,
     /// The private mcp-config file (holds secrets): deleted when `system/init`
     /// arrives, and on close and drop if it never did.
-    mcp_config_file: Option<PathBuf>,
+    mcp_config_file: Option<PrivateFile>,
     timeouts: SessionTimeouts,
 }
 
@@ -328,59 +335,36 @@ impl ClaudeSession {
         cfg: SessionConfig,
         timeouts: SessionTimeouts,
     ) -> Result<ClaudeSession, AgentError> {
-        let prompt_file =
-            std::env::temp_dir().join(format!("nexq-claude-sp-{}.txt", uuid::Uuid::new_v4()));
-        std::fs::write(&prompt_file, &cfg.system_prompt).map_err(|e| {
-            AgentError::Spawn(format!(
-                "cannot write system prompt file {}: {e}",
-                prompt_file.display()
-            ))
-        })?;
-
-        // The mcp-config holds each server's own secret values, so it goes in
-        // the private folder (never the sandbox the model can read) and never
-        // in the process env.
-        let mcp_config_file = match cfg.sources.as_ref().and_then(|s| s.mcp_config_json.as_deref()) {
-            Some(json) => match write_private_file(&private_dir(), json) {
-                Ok(path) => Some(path),
-                Err(e) => {
-                    let _ = std::fs::remove_file(&prompt_file);
-                    return Err(AgentError::Spawn(format!("cannot write the sources config: {e}")));
-                }
-            },
-            None => None,
-        };
-        let args = build_args(&cfg, &prompt_file, mcp_config_file.as_deref());
-        let thinking = cfg.thinking;
         // `None` for a plain session, else whether a notes folder is among its sources.
         let sources_folders = cfg.sources.as_ref().map(|s| !s.add_dirs.is_empty());
         let server_labels = cfg.sources.as_ref().map(|s| s.server_labels.clone()).unwrap_or_default();
         // `Some(MCP_TIMEOUT override)` for a with-sources session.
         let with_sources = cfg.sources.as_ref().map(|s| s.mcp_startup_timeout_ms);
-        let started = tokio::task::spawn_blocking(move || start_process(&bin, &args, thinking, with_sources))
-            .await
-            .map_err(|e| AgentError::Spawn(format!("spawn task failed: {e}")))
-            .and_then(|r| r);
-        let (shared, stdin_tx, events) = match started {
-            Ok(parts) => parts,
-            Err(e) => {
-                let _ = std::fs::remove_file(&prompt_file);
-                if let Some(file) = &mcp_config_file {
-                    remove_private_file(file);
-                }
-                return Err(e);
-            }
-        };
-
-        let session = ClaudeSession {
-            model: cfg.model,
-            shared,
-            stdin_tx: Mutex::new(Some(stdin_tx)),
-            turn: Arc::new(AsyncMutex::new(events)),
-            prompt_file,
-            mcp_config_file,
-            timeouts,
-        };
+        // The blocking task owns the files and returns a guarded session.
+        // Dropping the caller while launch is in progress still drops both.
+        let session = tokio::task::spawn_blocking(move || {
+            let dir = private_dir();
+            let prompt_file = PrivateFile::new(&dir, &cfg.system_prompt)
+                .map_err(|e| AgentError::Spawn(format!("cannot write the system prompt: {e}")))?;
+            let mcp_config_file = cfg.sources.as_ref()
+                .and_then(|s| s.mcp_config_json.as_deref())
+                .map(|json| PrivateFile::new(&dir, json))
+                .transpose()
+                .map_err(|e| AgentError::Spawn(format!("cannot write the sources config: {e}")))?;
+            let args = build_args(&cfg, prompt_file.path(), mcp_config_file.as_ref().map(PrivateFile::path));
+            let (shared, stdin_tx, events) = start_process(&bin, &args, cfg.thinking, with_sources)?;
+            Ok::<_, AgentError>(ClaudeSession {
+                model: cfg.model,
+                shared,
+                stdin_tx: Mutex::new(Some(stdin_tx)),
+                turn: Arc::new(AsyncMutex::new(events)),
+                prompt_file,
+                mcp_config_file,
+                timeouts,
+            })
+        })
+        .await
+        .map_err(|e| AgentError::Spawn(format!("spawn task failed: {e}")))??;
 
         let init = tokio::time::timeout(timeouts.init, session.prime())
             .await
@@ -518,17 +502,14 @@ impl ClaudeSession {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if let Some(mut child) = self.shared.child.lock().unwrap().take() {
-            if matches!(child.try_wait(), Ok(None)) {
-                log::warn!("claude session did not exit within 2 s of stdin close; killing");
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if self.is_alive() {
+            log::warn!("claude session did not exit within 2 s of stdin close; killing");
         }
+        self.shared.kill_and_reap();
         self.shared.alive.store(false, Ordering::SeqCst);
-        remove_prompt_file(&self.prompt_file);
+        self.prompt_file.remove();
         if let Some(file) = &self.mcp_config_file {
-            remove_private_file(file);
+            file.remove();
         }
     }
 
@@ -540,7 +521,7 @@ impl ClaudeSession {
     /// Where this session's private mcp-config file is (only the path: its
     /// content holds secrets). `None` for a session without MCP servers.
     pub fn mcp_config_path(&self) -> Option<&Path> {
-        self.mcp_config_file.as_deref()
+        self.mcp_config_file.as_ref().map(PrivateFile::path)
     }
 
     /// The model this session was started with (as configured, e.g. `haiku`).
@@ -563,7 +544,7 @@ impl ClaudeSession {
                     // restarts a dead server without re-reading the file), so
                     // the file with the secrets in it goes now, not at close.
                     if let Some(file) = &self.mcp_config_file {
-                        remove_private_file(file);
+                        file.remove();
                     }
                 }
                 Some(AgentEvent::TurnComplete(result)) if init_seen => {
@@ -626,16 +607,8 @@ impl Drop for ClaudeSession {
     fn drop(&mut self) {
         self.shared.closed.store(true, Ordering::SeqCst);
         self.stdin_tx.lock().unwrap().take();
-        if let Some(mut child) = self.shared.child.lock().unwrap().take() {
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-            }
-        }
+        self.shared.kill_and_reap();
         self.shared.alive.store(false, Ordering::SeqCst);
-        remove_prompt_file(&self.prompt_file);
-        if let Some(file) = &self.mcp_config_file {
-            remove_private_file(file);
-        }
     }
 }
 
@@ -715,14 +688,6 @@ fn into_outcome(result: Result<TurnResult, AgentError>) -> Result<TurnResult, Ag
     }
 }
 
-fn remove_prompt_file(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            log::warn!("cannot remove system prompt file {}: {e}", path.display());
-        }
-    }
-}
-
 type Started = (
     Arc<Shared>,
     std_mpsc::Sender<String>,
@@ -778,10 +743,7 @@ fn start_process(
             .spawn(f)
             .map(|_| ())
             .map_err(|e| {
-                if let Some(mut child) = kill_shared.child.lock().unwrap().take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+                kill_shared.kill_and_reap();
                 kill_shared.alive.store(false, Ordering::SeqCst);
                 AgentError::Spawn(format!("cannot start {name} thread: {e}"))
             })
@@ -898,6 +860,33 @@ fn record_exit(shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_started_session_reaps_the_child_and_removes_both_files() {
+        let dir = std::env::temp_dir().join(format!("nexq-session-test-{}", uuid::Uuid::new_v4()));
+        let prompt_file = PrivateFile::new(&dir, "test prompt").unwrap();
+        let mcp_config_file = PrivateFile::new(&dir, "{}").unwrap();
+        let paths = [prompt_file.path().to_owned(), mcp_config_file.path().to_owned()];
+        let (shared, stdin_tx, events) = start_process(Path::new("/bin/cat"), &[], false, None).unwrap();
+        let pid = shared.child.lock().unwrap().as_ref().unwrap().id() as libc::pid_t;
+        let session = ClaudeSession {
+            model: "test".into(),
+            shared,
+            stdin_tx: Mutex::new(Some(stdin_tx)),
+            turn: Arc::new(AsyncMutex::new(events)),
+            prompt_file,
+            mcp_config_file: Some(mcp_config_file),
+            timeouts: SessionTimeouts::default(),
+        };
+        drop(session);
+        // SAFETY: signal zero queries whether the child PID still exists.
+        let result = unsafe { libc::kill(pid, 0) };
+        assert_eq!(result, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        assert!(paths.iter().all(|path| !path.exists()));
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn kind_maps_spawn_crash_and_cli_errors() {

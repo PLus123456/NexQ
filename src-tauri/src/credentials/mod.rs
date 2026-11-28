@@ -43,10 +43,33 @@ impl CredentialManager {
         backend::credential_write(&provider, key)
     }
 
+    /// Call under the shared credential lock so readers see a tested key and region together.
+    pub fn store_key_with_region(
+        &self,
+        key_slot: &str,
+        key: &str,
+        region_slot: &str,
+        region: &str,
+    ) -> Result<(), String> {
+        let previous_key = self.get_key(key_slot)?;
+        self.store_key(key_slot, key)?;
+        if let Err(error) = self.store_key(region_slot, region) {
+            let rollback = match previous_key {
+                Some(previous) => self.store_key(key_slot, &previous),
+                None => self.delete_key(key_slot),
+            };
+            return match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!("{error}. Could not restore the previous key: {rollback_error}")),
+            };
+        }
+        Ok(())
+    }
+
     /// Retrieve an API key for the given provider. Returns None if not stored.
     pub fn get_key(&self, provider: &str) -> Result<Option<String>, String> {
         let provider = Self::normalize_provider(provider);
-        backend::credential_read(&provider)
+        backend::credential_read(&provider).map(|key| key.filter(|value| !value.is_empty()))
     }
 
     /// Delete the API key for the given provider.
@@ -57,13 +80,11 @@ impl CredentialManager {
 
     /// Check whether an API key exists for the given provider.
     pub fn has_key(&self, provider: &str) -> Result<bool, String> {
-        let provider = Self::normalize_provider(provider);
-        let key = backend::credential_read(&provider)?;
-        Ok(key.is_some())
+        Ok(self.get_key(provider)?.is_some())
     }
 
     /// Normalize provider name to lowercase for consistent key naming.
-    fn normalize_provider(provider: &str) -> String {
+    pub(crate) fn normalize_provider(provider: &str) -> String {
         provider.to_lowercase().trim().to_string()
     }
 }

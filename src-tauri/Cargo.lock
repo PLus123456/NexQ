@@ -3232,6 +3232,7 @@ dependencies = [
  "futures",
  "hound",
  "image",
+ "libc",
  "libopus_sys",
  "log",
  "lopdf 0.46.0",

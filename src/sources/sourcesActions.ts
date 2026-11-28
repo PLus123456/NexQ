@@ -4,28 +4,28 @@ import { useSourcesStore } from "../stores/sourcesStore";
 // Small edits of the saved config, always made on the latest copy (a Check or a
 // save can finish long after the user clicked), then saved and given to the backend.
 
-function update(edit: (c: PersonalSourcesConfig) => PersonalSourcesConfig): Promise<void> {
-  return useSourcesStore.getState().setConfig(edit(current()));
-}
-
-function current(): PersonalSourcesConfig {
-  return useSourcesStore.getState().config;
+function update(edit: (c: PersonalSourcesConfig) => PersonalSourcesConfig, pendingIds?: string[], canCommit?: () => boolean): Promise<void> {
+  return useSourcesStore.getState().setConfig(edit, pendingIds ? { durable: true, pendingIds, canCommit } : undefined);
 }
 
 /** Add servers the backend has already taken in (they come back with no secret values). */
-export function addMcpServers(servers: McpServer[]): Promise<void> {
+export function addMcpServers(servers: McpServer[], canCommit?: () => boolean): Promise<void> {
   return update((c) => {
     const known = new Set(c.mcp_servers.map((s) => s.id));
     return { ...c, mcp_servers: [...c.mcp_servers, ...servers.filter((s) => !known.has(s.id))] };
-  });
+  }, servers.map((server) => server.id), canCommit);
 }
 
 /** Swap in a server's new state (after an edit or a Check). A server removed meanwhile stays removed. */
-export function replaceMcpServer(server: McpServer): Promise<void> {
+export function replaceMcpServer(server: McpServer, canCommit?: () => boolean): Promise<void> {
   return update((c) => ({
     ...c,
-    mcp_servers: c.mcp_servers.map((s) => (s.id === server.id ? server : s)),
-  }));
+    mcp_servers: c.mcp_servers.map((saved) => {
+      if (saved.id !== server.id) return saved;
+      if (launchSignature(saved) !== launchSignature(server)) return server;
+      return { ...server, enabled: saved.enabled, tools: saved.tools };
+    }),
+  }), [server.id], canCommit);
 }
 
 /** What starts a server: a change here makes an older Check's answer about something else. */
@@ -76,14 +76,12 @@ export function removeMcpServer(id: string): Promise<void> {
 
 /**
  * Remove a server and save that for good first: rejects, and the server stays,
- * when the save fails. `afterSave` (forgetting its secrets) runs only then,
- * before the backend is told.
+ * when the save fails. The backend removes its credentials after saving.
  */
-export function removeMcpServerDurably(id: string, afterSave?: () => Promise<void>): Promise<void> {
-  const c = current();
+export function removeMcpServerDurably(id: string): Promise<void> {
   return useSourcesStore
     .getState()
-    .setConfigDurably({ ...c, mcp_servers: c.mcp_servers.filter((s) => s.id !== id) }, afterSave);
+    .setConfigDurably((c) => ({ ...c, mcp_servers: c.mcp_servers.filter((s) => s.id !== id) }));
 }
 
 export function addNotesFolder(folder: NotesFolder): Promise<void> {

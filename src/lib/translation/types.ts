@@ -51,6 +51,8 @@ export interface TranslationErrorEvent {
   segment_id?: string;
   /** The meeting of the line (live and batch requests). */
   meeting_id?: string;
+  /** Target of the failed line request. */
+  target_lang?: string;
   /** The text whose translation failed (to ignore failures of replaced requests). */
   original_text?: string;
   error: string;
@@ -67,3 +69,5 @@ export interface BatchTranslationOutcome {
   /** Every line the batch translated or failed on. */
   handledIds?: string[];
 }
+
+export type TranslationExportFormat = "translated_txt" | "bilingual_txt" | "bilingual_md";

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Play, X } from "lucide-react";
 import { dismissMeetingPrompt, getDetectedMeeting } from "../lib/ipc";
 import { emitStartDetectedMeeting, onDetectedMeetingEnded, onMeetingDetected } from "../lib/events";
+import { createEventScope } from "../lib/eventScope";
 import { composeMeetingTitle } from "../lib/meetingTitle";
 import { scenarioDescription, scenarioName } from "../lib/scenarios";
 import { useMeetingScenarios, useScenarioStore } from "../stores/scenarioStore";
@@ -257,23 +258,28 @@ export function MeetingPromptWindow() {
       setInfo({ meeting: { app: "zoom", app_name: "Zoom", title: "Weekly design sync" }, auto_dismiss_secs: 60, default_scenario: "team_meeting" }); // i18n-ignore: 仅开发预览用的演示数据
       return;
     }
-    // This window stays open between calls, and the scenarios can change meanwhile.
-    const readScenarios = () => useScenarioStore.getState().loadScenarioConfig();
-    getDetectedMeeting()
-      .then(async (current) => {
-        if (!current) return;
-        await readScenarios();
-        setInfo(current);
-      })
-      .catch(() => {});
-    const unlisteners: Array<() => void> = [];
-    onMeetingDetected(async (next) => {
-      await readScenarios();
+    const scope = createEventScope("Meeting prompt");
+    let revision = 0;
+    const show = async (next: MeetingPromptInfo, request: number) => {
+      // This window stays open between calls, and the scenarios can change meanwhile.
+      await useScenarioStore.getState().loadScenarioConfig();
+      if (!scope.active() || revision !== request) return;
       setInfo(next);
       setGeneration((g) => g + 1);
-    }).then((fn) => unlisteners.push(fn));
-    onDetectedMeetingEnded(() => setInfo(null)).then((fn) => unlisteners.push(fn));
-    return () => unlisteners.forEach((fn) => fn());
+    };
+    const initialRevision = revision;
+    void Promise.all([
+      scope.add(onMeetingDetected, (next) => { void show(next, ++revision).catch(() => {}); }),
+      scope.add<void>((onEvent) => onDetectedMeetingEnded(() => onEvent()), () => {
+        revision += 1;
+        setInfo(null);
+      }),
+    ]).then(async () => {
+      if (!scope.active() || revision !== initialRevision) return;
+      const current = await getDetectedMeeting();
+      if (current && scope.active() && revision === initialRevision) await show(current, initialRevision);
+    }).catch(() => {});
+    return scope.dispose;
   }, []);
 
   // The window is just the card's size; it grows downward while the menu is open.

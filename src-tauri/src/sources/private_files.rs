@@ -1,46 +1,113 @@
-//! The per-session mcp-config files, which hold each server's own secret
-//! values inline (stdio servers inherit the whole `claude.exe` environment, so
-//! secrets must not go in the process env).
+//! Private per-session files for the prompt and the MCP config. The config
+//! contains each server's secrets separately from the CLI's process env.
 //!
-//! The folder is `%LOCALAPPDATA%\NexQPlus\agent-private`: inside the user's own
-//! profile (the default ACL there is user, SYSTEM and administrators only) and
-//! deliberately NOT under `agent-sandbox`, which is the CLI's working directory
-//! and so readable by the model's Read, Grep and Glob tools.
+//! The folder is in the user's local app data on Windows and in the system
+//! temp directory on Unix. In both cases it is outside the CLI's sandbox.
 //!
 //! Files are named `nexq-mcp-<pid>-<uuid>.json`, written when a session starts,
-//! deleted as soon as the CLI's `system/init` arrives (it keeps the config in
-//! memory from then on; close and drop delete it too if init never came), and
-//! any a crashed run left behind are deleted at app start. Their content is never logged or returned over IPC.
+//! and cleaned up on close, drop or the next app start after a crash. The MCP
+//! config is deleted earlier, when the CLI's `system/init` arrives.
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const PREFIX: &str = "nexq-mcp-";
 const SUFFIX: &str = ".json";
 
-/// `%LOCALAPPDATA%\NexQPlus\agent-private`.
+/// The app's private directory for CLI session data.
 pub fn private_dir() -> PathBuf {
+    #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(windows))]
+    let base = std::env::temp_dir();
     base.join("NexQPlus").join("agent-private")
 }
 
+/// Owns a session file from its creation through launch and teardown.
+pub struct PrivateFile(PathBuf);
+
+impl PrivateFile {
+    pub fn new(dir: &Path, content: &str) -> io::Result<Self> {
+        write_private_file(dir, content).map(Self)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn remove(&self) {
+        remove_private_file(self.path());
+    }
+}
+
+impl Drop for PrivateFile {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
 /// Write `content` to a new, uniquely named file in `dir` (created if missing).
-pub fn write_private_file(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+pub fn write_private_file(dir: &Path, content: &str) -> io::Result<PathBuf> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(dir)?;
+    secure_directory(dir)?;
+
     let path = dir.join(format!(
         "{PREFIX}{}-{}{SUFFIX}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path)?;
     if let Err(e) = file.write_all(content.as_bytes()).and_then(|_| file.flush()) {
         drop(file);
         let _ = std::fs::remove_file(&path);
         return Err(e);
     }
     Ok(path)
+}
+
+#[cfg(unix)]
+fn secure_directory(dir: &Path) -> io::Result<()> {
+    let ownership_error = || io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "session files require a private directory owned by this user",
+    );
+    // SAFETY: geteuid has no inputs or memory preconditions.
+    let owner = unsafe { libc::geteuid() };
+    let parent = std::fs::symlink_metadata(dir.parent().ok_or_else(ownership_error)?)?;
+    let owner_writable_only = parent.uid() == owner && parent.mode() & 0o022 == 0;
+    let system_sticky = parent.uid() == 0 && parent.mode() & 0o1000 != 0;
+    if !parent.is_dir() || !(owner_writable_only || system_sticky) {
+        return Err(ownership_error());
+    }
+
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir() || metadata.uid() != owner {
+        return Err(ownership_error());
+    }
+    // Tighten directories created by earlier versions before writing or
+    // examining any session files.
+    if metadata.mode() & 0o777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_directory(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Delete one private file; a missing file is fine.
@@ -56,6 +123,9 @@ pub fn remove_private_file(path: &Path) {
 /// kill left them). Files of this process and of another running NexQ stay.
 /// Returns how many were deleted.
 pub fn cleanup_leftovers(dir: &Path) -> usize {
+    if secure_directory(dir).is_err() {
+        return 0;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     let me = std::process::id();
     let mut removed = 0;
@@ -80,26 +150,37 @@ fn owner_pid(file_name: &str) -> Option<u32> {
 
 #[cfg(windows)]
 fn pid_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     const STILL_ACTIVE: u32 = 259;
     // SAFETY: plain Win32 calls; the handle is closed before returning.
     unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
+        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(handle) => handle,
+            Err(e) => return e.code() != ERROR_INVALID_PARAMETER.into(),
         };
         let mut code = 0u32;
-        let alive = GetExitCodeProcess(handle, &mut code).is_ok() && code == STILL_ACTIVE;
+        let alive = GetExitCodeProcess(handle, &mut code).is_err() || code == STILL_ACTIVE;
         let _ = CloseHandle(handle);
         alive
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal zero queries existence without sending a signal.
+    unsafe { libc::kill(pid, 0) == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn pid_alive(_pid: u32) -> bool {
-    false
+    true
 }
 
 #[cfg(test)]
@@ -128,6 +209,40 @@ mod tests {
         assert!(!a.exists() && b.exists());
         remove_private_file(&a); // already gone: no panic
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_and_their_directory_are_private_even_after_upgrading() {
+        let dir = temp_dir("mode");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = PrivateFile::new(&dir, "{}").unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(file.path()).unwrap().mode() & 0o077, 0);
+        let path = file.path().to_owned();
+        drop(file);
+        assert!(!path.exists());
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_cleanup_keeps_files_owned_by_another_live_process() {
+        use std::process::{Command, Stdio};
+
+        let dir = temp_dir("live-owner");
+        let mut child = Command::new("/bin/cat").stdin(Stdio::piped()).spawn().unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let live = dir.join(format!("{PREFIX}{}-live{SUFFIX}", child.id()));
+        std::fs::write(&live, "{}").unwrap();
+        let removed = cleanup_leftovers(&dir);
+        let kept = live.exists();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(removed, 0);
+        assert!(kept);
     }
 
     #[test]

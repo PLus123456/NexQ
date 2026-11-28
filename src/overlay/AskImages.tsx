@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { ImageAttachment } from "../lib/types";
 import {
@@ -42,6 +42,11 @@ export function useAskImages() {
   // Slots taken so far, including images still being prepared. A slot is reserved
   // before the (async) work starts, so a quick second paste sees it.
   const count = useRef(0);
+  const revision = useRef(0);
+
+  useEffect(() => () => {
+    ++revision.current;
+  }, []);
 
   /**
    * Attaches image files: from a paste, or the screen-capture shortcut. The
@@ -66,8 +71,10 @@ export function useAskImages() {
       accepted.push(file);
     }
     if (accepted.length === 0) return false;
+    const version = revision.current;
     void (async () => {
       const prepared = await Promise.allSettled(accepted.map(prepareImage));
+      if (revision.current !== version) return;
       const added: ImageAttachment[] = [];
       for (const result of prepared) {
         if (result.status === "fulfilled") {
@@ -116,8 +123,10 @@ export function useAskImages() {
   }, []);
 
   const clear = useCallback(() => {
+    ++revision.current;
     count.current = 0;
     setImages([]);
+    setSending(false);
     setAnnouncement("");
   }, []);
 

@@ -1,7 +1,7 @@
 // First-run / quick setup for the AI model: pick a provider template, fill in
-// the address, key and model, and test with one tiny request. A connection
-// that answers is kept and becomes the default; one that fails is removed
-// again (unless the user keeps it anyway). Used by the first-run wizard
+// the address, key and model, and test with one tiny request. A successful
+// draft is saved and made the default. The user can also save a failed draft
+// explicitly to test it later. Used by the first-run wizard
 // (variant "wizard") and reusable on a settings page.
 //
 // Reports "ok" once the default model works (tested), "error" with the
@@ -80,8 +80,16 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<TestConnectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const testVersion = useRef(0);
+  const fetchVersion = useRef(0);
+
+  useEffect(() => () => {
+    testVersion.current += 1;
+    fetchVersion.current += 1;
+  }, []);
 
   // ── Status for the wizard: reported on change only (callers often pass an inline function) ──
   const failure = error ?? (result && !result.ok ? failureDetail(result) ?? "" : null);
@@ -105,11 +113,25 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
     setError(null);
   };
 
+  const editDraft = (resetModels = false) => {
+    testVersion.current += 1;
+    setBusy(false);
+    clearOutcome();
+    if (resetModels) {
+      fetchVersion.current += 1;
+      setFetching(false);
+      setFetched(null);
+      setFetchError(null);
+    }
+  };
+
   const fetchModels = async (draft: LlmConnection, key: string | null) => {
+    const version = ++fetchVersion.current;
     setFetching(true);
     setFetchError(null);
     try {
       const outcome = await useLlmConnectionsStore.getState().fetchModels({ draft: toInput(draft), secret: key });
+      if (version !== fetchVersion.current) return;
       if (outcome.ok) {
         setFetched(outcome.models.filter((m) => !isEmbeddingModel(m.id)));
         if (outcome.models.length === 0) setFetchError(t("editor.models.emptyList"));
@@ -117,68 +139,83 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
         setFetchError(outcome.error || outcome.error_body || (outcome.status ? `HTTP ${outcome.status}` : t("common:errors.unknown")));
       }
     } catch (err) {
-      setFetchError(errorMessage(err));
+      if (version === fetchVersion.current) setFetchError(errorMessage(err));
     } finally {
-      setFetching(false);
+      if (version === fetchVersion.current) setFetching(false);
     }
   };
 
   const choose = (next: ProviderTemplate) => {
+    editDraft(true);
     const created = connectionFromTemplate(next, connectionNameFrom(templateName(next.id)), view.connections.map((c) => c.name));
     setConnection(created);
     setSecret(null);
-    setFetched(null);
-    setFetchError(null);
-    clearOutcome();
     // A local server answers right away: fetching its models shows it's running.
     if (next.kind === "ollama" || next.id === "lmstudio") void fetchModels(created, null);
   };
 
-  /**
-   * Saves the connection (with its key), tests it by id so Rust records the
-   * success, and makes it the default. A failing connection is removed again
-   * unless `keep`.
-   */
   const saveAndTest = async (keep: boolean) => {
-    if (!connection) return;
+    if (!connection || busy) return;
+    const version = ++testVersion.current;
+    const current = () => version === testVersion.current;
+    const draft = {
+      ...connection,
+      id: "",
+      name: connection.name.trim() || templateName(template?.id ?? "custom"),
+    };
+    const expectedDefault = view.routing.default;
     setBusy(true);
     clearOutcome();
     const store = useLlmConnectionsStore.getState();
-    let id: string | null = null;
     try {
-      id = await store.upsertConnection(
-        { ...connection, name: connection.name.trim() || templateName(template?.id ?? "custom") },
-        { isNew: true, secret: secret ?? undefined },
-      );
-      const outcome = keep ? null : await store.testConnection({ id, model: connection.default_model, mode: "chat" });
+      const outcome = keep ? null : await store.testConnection({
+        draft: toInput(draft),
+        secret,
+        model: draft.default_model,
+        mode: "chat",
+      });
+      if (!current()) return;
       if (outcome && !outcome.ok) {
         setResult(outcome);
-        await store.deleteConnection(id);
         return;
       }
-      await store.setDefaultRoute({ connection_id: id, model: null });
+      if (outcome && !outcome.test_receipt) throw new Error(t("quickSetup.loadFailed"));
+      setSaving(true);
+      await store.upsertConnection(draft, {
+        isNew: true,
+        secret: secret ?? undefined,
+        quickSetup: { expected_default: expectedDefault, test_receipt: outcome?.test_receipt ?? null },
+      });
+      if (!current()) return;
       setResult(outcome);
       setChanging(false);
       setConnection(null);
     } catch (err) {
-      setError(errorMessage(err));
-      // Don't leave a half-made connection behind.
-      if (id && !keep) await store.deleteConnection(id).catch(() => {});
+      if (current()) setError(errorMessage(err));
     } finally {
-      setBusy(false);
+      if (current()) {
+        setBusy(false);
+        setSaving(false);
+      }
     }
   };
 
   const retest = async () => {
     if (!defaultConnection) return;
+    const version = ++testVersion.current;
     setBusy(true);
     clearOutcome();
     try {
-      setResult(await useLlmConnectionsStore.getState().testConnection({ id: defaultConnection.id, model: effective.model, mode: "chat" }));
+      const result = await useLlmConnectionsStore.getState().testConnection({ id: defaultConnection.id, model: effective.model, mode: "chat" });
+      const latest = useLlmConnectionsStore.getState().view;
+      const route = latest && effectiveRoute(latest, "default");
+      if (version === testVersion.current && route?.connection_id === defaultConnection.id && route.model === effective.model) {
+        setResult(result);
+      }
     } catch (err) {
-      setError(errorMessage(err));
+      if (version === testVersion.current) setError(errorMessage(err));
     } finally {
-      setBusy(false);
+      if (version === testVersion.current) setBusy(false);
     }
   };
 
@@ -268,9 +305,12 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
           <button
             type="button"
             onClick={() => {
-              clearOutcome();
+              editDraft(true);
+              setConnection(null);
+              setSecret(null);
               setChanging(false);
             }}
+            disabled={saving}
             className={LINK_BUTTON}
           >
             {t("common:actions.cancel")}
@@ -291,6 +331,7 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
                 key={id}
                 type="button"
                 aria-pressed={selected}
+                disabled={saving}
                 onClick={() => choose(item)}
                 className={cn(
                   "flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors duration-150 cursor-pointer",
@@ -311,7 +352,7 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
             idPrefix="llm-quick"
             value={fields}
             onChange={(next) => {
-              clearOutcome();
+              editDraft(true);
               setConnection({ ...connection, base_url: next.baseUrl, auth: next.auth, headers: next.headers.map((h) => ({ secret: false, ...h })) });
             }}
             path={chatPath(connection.kind, connection.base_url, connection.default_model) ?? ""}
@@ -323,9 +364,10 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
             baseUrlPlaceholder={template?.baseUrlPlaceholder}
             secretStatus={secret ? { saved: true, hint: secret.slice(-4) } : { saved: false }}
             onSecretChange={(value) => {
-              clearOutcome();
+              editDraft(true);
               setSecret(value);
             }}
+            disabled={saving}
             showHeaders={false}
           />
           <div>
@@ -336,11 +378,12 @@ function QuickSetupBody({ variant, onStatusChange }: QuickSetupProps) {
               id="llm-quick-model"
               value={connection.default_model ?? ""}
               onChange={(model) => {
-                clearOutcome();
+                editDraft();
                 setConnection({ ...connection, default_model: model || null });
               }}
               options={options}
               loading={fetching}
+              disabled={saving}
               error={fetchError}
               onRefresh={() => void fetchModels(connection, secret)}
               placeholder={t("editor.models.default.placeholder")}

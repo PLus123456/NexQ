@@ -8,7 +8,13 @@
       "newStartFailed": "Failed to start",
       "deleted": "Meeting deleted",
       "deleteFailed": "Couldn't delete meeting",
-      "allDeleted": "All meetings deleted",
+      "recordingCleanupPending": "Meeting removed from history. Recording cleanup is pending.",
+      "allDeleted": "Meeting history deleted",
+      "historyLoadFailed": "Couldn't load meeting history",
+      "deleteAllFailed": "Couldn't delete meeting history",
+      "deleteAllPartial": "Deleted {{deleted}} meetings. Couldn't delete {{failed}}.",
+      "historyCleanupPending_one": "Recording cleanup is pending for {{count}} deleted meeting.",
+      "historyCleanupPending_other": "Recording cleanup is pending for {{count}} deleted meetings.",
       "renameFailed": "Couldn't rename meeting"
     },
     "activeMeeting": {
@@ -63,10 +69,10 @@
       "title": "Personal sources"
     },
     "deleteAll": {
-      "ariaLabel": "Delete all meetings",
-      "dialogAriaLabel": "Delete all meetings confirmation",
-      "title": "Delete All Meetings",
-      "body": "This will permanently delete all <strong>{{total}}</strong> meetings and their transcripts. This action cannot be undone.",
+      "ariaLabel": "Delete meeting history",
+      "dialogAriaLabel": "Delete meeting history confirmation",
+      "title": "Delete Meeting History",
+      "body": "This will permanently delete <strong>{{total}}</strong> meetings from your history, including their transcripts and recordings.",
       "confirmButton": "Delete All {{total}} Meetings",
       "deleting": "Deleting..."
     },

@@ -211,7 +211,7 @@ pub async fn capture_screen_under_cursor(
 
 #[cfg(windows)]
 mod platform {
-    use super::{pick_monitor, Frame, Rect, FAILED};
+    use super::{failed, pick_monitor, Frame, Rect};
     use std::ffi::c_void;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{LPARAM, POINT, RECT};

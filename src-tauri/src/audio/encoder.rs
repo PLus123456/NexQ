@@ -53,6 +53,9 @@ pub fn encode_wav_to_opus(wav_path: &Path, opus_path: &Path) -> Result<u64, Stri
         .samples::<i16>()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read WAV samples: {}", e))?;
+    if samples.is_empty() {
+        return Err("WAV contains no audio samples".to_string());
+    }
 
     // ── 2. Create Opus encoder ────────────────────────────────────────────────
     let mut error: i32 = 0;
@@ -193,6 +196,25 @@ pub fn encode_wav_to_opus(wav_path: &Path, opus_path: &Path) -> Result<u64, Stri
     Ok(metadata.len())
 }
 
+/// Read the playback length from the final granule of a single Opus stream.
+pub fn opus_duration_ms(path: &Path) -> Option<u64> {
+    use ogg::reading::PacketReader;
+    use std::io::BufReader;
+
+    let mut reader = PacketReader::new(BufReader::new(File::open(path).ok()?));
+    let header = reader.read_packet().ok()??;
+    if !header.data.starts_with(b"OpusHead") {
+        return None;
+    }
+    let pre_skip = u64::from(u16::from_le_bytes([*header.data.get(10)?, *header.data.get(11)?]));
+    while let Some(packet) = reader.read_packet().ok()? {
+        if packet.stream_serial() == header.stream_serial() && packet.last_in_stream() {
+            return Some(packet.absgp_page().saturating_sub(pre_skip) / 48);
+        }
+    }
+    None
+}
+
 // ── OGG/Opus header builders ──────────────────────────────────────────────────
 
 /// Build the OpusHead binary packet (RFC 7845 §5.1).
@@ -229,4 +251,21 @@ fn build_opus_tags(vendor: &str) -> Vec<u8> {
     buf.extend_from_slice(vendor_bytes);
     buf.extend_from_slice(&0u32.to_le_bytes()); // zero user comments
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_wav_does_not_create_an_unplayable_ogg() {
+        let wav = std::env::temp_dir().join(format!("nexq-no-samples-{}.wav", uuid::Uuid::new_v4()));
+        let opus = wav.with_extension("ogg");
+        let spec = hound::WavSpec { channels: 1, sample_rate: 16_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        hound::WavWriter::create(&wav, spec).unwrap().finalize().unwrap();
+        assert!(encode_wav_to_opus(&wav, &opus).is_err());
+        assert!(!opus.exists());
+        assert!(wav.exists());
+        let _ = std::fs::remove_file(wav);
+    }
 }

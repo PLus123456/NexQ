@@ -3,12 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServer, NotesFolderInfo, PersonalSourcesConfig } from "../lib/types";
 
-const storeFlags = vi.hoisted(() => ({ failSet: false }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({
-    set: async () => {
-      if (storeFlags.failSet) throw new Error("disk full");
-    },
+    set: async () => {},
     get: async () => undefined,
     onKeyChange: async () => () => {},
   }),
@@ -21,7 +18,6 @@ const ipc = vi.hoisted(() => ({
   inspectNotesFolder: vi.fn(),
   setPersonalSources: vi.fn(),
   checkMcpServer: vi.fn(),
-  deleteMcpSecrets: vi.fn(),
   importMcpServersJson: vi.fn(),
   saveMcpServerForm: vi.fn(),
   listClaudeCodeMcpServers: vi.fn(),
@@ -66,9 +62,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   ipc.inspectNotesFolder.mockResolvedValue(info());
   ipc.setPersonalSources.mockResolvedValue(undefined);
-  ipc.deleteMcpSecrets.mockResolvedValue(undefined);
   ipc.checkMcpServer.mockImplementation(async (id: string) => server({ id }));
-  storeFlags.failSet = false;
   useToastStore.setState({ toasts: [] });
   useConfigStore.setState({ llmProvider: "claude_cli" });
   useSourcesStore.setState({ config: DEFAULT_SOURCES_CONFIG, toggles: { notes: false, tools: false }, pushError: null });
@@ -263,27 +257,27 @@ describe("PersonalSourcesEditor", () => {
     expect(screen.getByRole("switch", { name: "Use Mira" })).toBeDisabled();
   });
 
-  it("removing a server forgets its secrets once the removal is saved, before the backend hears of it", async () => {
+  it("requests a durable backend settings write when removing a server", async () => {
     setConfig({ mcp_servers: [server()] });
     render(<PersonalSourcesEditor variant="full" />);
     fireEvent.click(screen.getByRole("button", { name: "Remove Mira" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm removing Mira" }));
     await waitFor(() => expect(useSourcesStore.getState().config.mcp_servers).toHaveLength(0));
     await waitFor(() => expect(ipc.setPersonalSources).toHaveBeenCalled());
-    expect(ipc.deleteMcpSecrets).toHaveBeenCalledWith("s1");
-    expect(ipc.deleteMcpSecrets.mock.invocationCallOrder[0]).toBeLessThan(ipc.setPersonalSources.mock.invocationCallOrder[0]);
+    expect(ipc.setPersonalSources).toHaveBeenCalledWith(
+      expect.objectContaining({ mcp_servers: [] }), undefined, { durable: true, expected: null },
+    );
   });
 
   it("a removal that can't be saved keeps the server, keeps its secrets and says so", async () => {
-    storeFlags.failSet = true;
+    ipc.setPersonalSources.mockRejectedValueOnce(new Error("disk full"));
     setConfig({ mcp_servers: [server()] });
     render(<PersonalSourcesEditor variant="full" />);
     fireEvent.click(screen.getByRole("button", { name: "Remove Mira" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm removing Mira" }));
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.type === "error")).toBe(true));
     expect(useToastStore.getState().toasts.find((t) => t.type === "error")?.message).toContain("Couldn't remove Mira: disk full");
-    expect(ipc.deleteMcpSecrets).not.toHaveBeenCalled();
-    expect(ipc.setPersonalSources).not.toHaveBeenCalled();
+    expect(ipc.setPersonalSources).toHaveBeenCalledTimes(1);
     expect(useSourcesStore.getState().config.mcp_servers.map((s) => s.id)).toEqual(["s1"]);
     expect(screen.getByText("Mira")).toBeInTheDocument();
   });

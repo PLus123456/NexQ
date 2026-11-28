@@ -3,7 +3,6 @@
 //! `contract-llm.md` in the shared notes. Every change answers with the new
 //! config and emits `llm_config_changed`, so both windows follow.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -16,7 +15,7 @@ use crate::llm::compat::truncate_chars;
 use crate::llm::connections::{self, EndpointsPreview, LlmConnection, TaskRoute};
 use crate::llm::http::{Failure, FailureKind, HttpLlmClient, StreamOutput};
 use crate::llm::provider::{GenerationParams, LLMMessage, ModelInfo};
-use crate::llm::registry::{self, LlmConfigView, LlmRegistry, SecretStatus};
+use crate::llm::registry::{self, LlmConfigView, LlmRegistry, QuickSetupSave, SecretStatus};
 use crate::net::endpoint;
 
 /// Longest answer sample a chat test returns (characters).
@@ -59,6 +58,8 @@ pub struct TestConnectionResult {
     pub error: Option<String>,
     pub error_body: Option<String>,
     pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_receipt: Option<String>,
 }
 
 /// [`connections::EndpointsPreview`] plus the base URL as it will be saved.
@@ -84,10 +85,14 @@ pub async fn llm_get_config(app: AppHandle, registry: State<'_, LlmRegistry>) ->
 pub async fn llm_upsert_connection(
     connection: Value,
     secret: Option<String>,
+    quick_setup: Option<QuickSetupSave>,
     app: AppHandle,
     registry: State<'_, LlmRegistry>,
 ) -> Result<UpsertResult, String> {
-    let (id, _) = registry.upsert(connection, secret)?;
+    let (id, _) = match quick_setup {
+        Some(setup) => registry.save_quick_setup(connection, secret, setup)?,
+        None => registry.upsert(connection, secret)?,
+    };
     registry::after_change(&app);
     Ok(UpsertResult { id, config: view(&app, &registry) })
 }
@@ -170,23 +175,8 @@ fn probe_client(
                 .connection(&id)
                 .cloned()
                 .ok_or_else(|| Failure::config(format!("Unknown LLM connection \"{id}\"")))?;
-            let secret = match secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-                Some(secret) => Some(secret),
-                None => registry.secret_for(&conn).map_err(Failure::config)?,
-            };
-            // Secret headers come from the keychain through the saved connection.
-            let headers = registry.request_headers(&conn).unwrap_or_default();
-            let header_secrets: HashMap<String, String> = conn
-                .headers
-                .iter()
-                .filter(|h| h.secret)
-                .filter_map(|h| {
-                    headers
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(h.name.trim()))
-                        .map(|(_, value)| (h.name.trim().to_ascii_lowercase(), value.clone()))
-                })
-                .collect();
+            let (secret, header_secrets) = registry.connection_secrets(&conn, secret)
+                .map_err(Failure::config)?;
             (conn, secret, header_secrets)
         }
     };
@@ -223,7 +213,8 @@ pub async fn llm_fetch_models(
     app: AppHandle,
     registry: State<'_, LlmRegistry>,
 ) -> Result<FetchModelsResult, String> {
-    let saved_id = if draft.is_none() { id.clone() } else { None };
+    let generation = (draft.is_none() && secret.is_none())
+        .then(|| registry.credential_generation()).transpose()?;
     let start = Instant::now();
     let (client, conn) = match probe_client(&registry, id, draft, secret) {
         Ok(found) => found,
@@ -258,11 +249,12 @@ pub async fn llm_fetch_models(
             hint: hint_for(&failure, Some(&conn)),
         },
     };
-    if let Some(id) = saved_id {
+    if let Some(generation) = generation {
         let recorded = if out.ok { Ok(out.models.clone()) } else { Err(out.error.clone().unwrap_or_default()) };
-        match registry.record_models(&id, out.url.clone(), recorded) {
-            Ok(_) => registry::after_change(&app),
-            Err(e) => log::warn!("Could not store the model list of {id}: {e}"),
+        match registry.record_models(&conn, generation, out.url.clone(), recorded) {
+            Ok(true) => registry::after_change(&app),
+            Ok(false) => {}
+            Err(e) => log::warn!("Could not store the model list of {}: {e}", conn.id),
         }
     }
     Ok(out)
@@ -297,8 +289,11 @@ pub async fn llm_test_connection(
     app: AppHandle,
     registry: State<'_, LlmRegistry>,
 ) -> Result<TestConnectionResult, String> {
-    let saved_id = if draft.is_none() { id.clone() } else { None };
-    let typed_secret = secret.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let candidate = draft.as_ref().filter(|input| registry::is_new_connection(input)).and_then(|input| {
+        let model = input.get("default_model")?.as_str()?.trim();
+        (!model.is_empty()).then(|| (registry::draft_test_digest(input, secret.as_deref()), model.to_string()))
+    });
+    let generation = secret.is_none().then(|| registry.credential_generation()).transpose()?;
     let start = Instant::now();
     let (client, conn) = match probe_client(&registry, id, draft, secret) {
         Ok(found) => found,
@@ -310,7 +305,7 @@ pub async fn llm_test_connection(
             })
         }
     };
-    let out = if mode.as_deref() == Some("models") {
+    let mut out = if mode.as_deref() == Some("models") {
         match client.check().await {
             Ok(url) => TestConnectionResult {
                 ok: true,
@@ -361,12 +356,15 @@ pub async fn llm_test_connection(
     };
     // A draft that is the saved connection, tested with its saved key, marks
     // the saved connection as tested too.
-    let saved_id = saved_id.or_else(|| (!typed_secret && registry.matches_saved(&conn)).then(|| conn.id.clone()));
     if out.ok {
-        if let Some(id) = saved_id {
-            match registry.mark_verified(&id) {
-                Ok(_) => registry::after_change(&app),
-                Err(e) => log::warn!("Could not mark {id} as tested: {e}"),
+        if let Some((digest, _)) = candidate.filter(|(_, model)| out.model.as_ref() == Some(model)) {
+            out.test_receipt = Some(registry.remember_draft_test(digest)?);
+        }
+        if let Some(generation) = generation {
+            match registry.mark_verified(&conn, generation) {
+                Ok(true) => registry::after_change(&app),
+                Ok(false) => {}
+                Err(e) => log::warn!("Could not mark {} as tested: {e}", conn.id),
             }
         }
     }
@@ -384,6 +382,7 @@ fn failed(failure: &Failure, conn: &LlmConnection, start: Instant, model: Option
         error: Some(failure.message.clone()),
         error_body: failure.body.clone(),
         hint: hint_for(failure, Some(conn)),
+        test_receipt: None,
     }
 }
 

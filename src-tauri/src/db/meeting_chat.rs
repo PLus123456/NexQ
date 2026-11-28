@@ -20,10 +20,10 @@ pub struct MeetingChatMessage {
 }
 
 pub fn insert_chat_message(conn: &Connection, msg: &MeetingChatMessage) -> rusqlite::Result<()> {
-    conn.execute(
+    let rows = conn.execute(
         "INSERT INTO meeting_chat
             (id, meeting_id, role, content, model, input_tokens, output_tokens, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         SELECT ?1, id, ?3, ?4, ?5, ?6, ?7, ?8 FROM meetings WHERE id = ?2",
         params![
             msg.id,
             msg.meeting_id,
@@ -35,7 +35,11 @@ pub fn insert_chat_message(conn: &Connection, msg: &MeetingChatMessage) -> rusql
             msg.created_at,
         ],
     )?;
-    Ok(())
+    if rows == 0 {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    } else {
+        Ok(())
+    }
 }
 
 /// The meeting's chat, oldest first (insert order breaks ties).
@@ -72,6 +76,12 @@ mod tests {
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO meetings (id, title, start_time) VALUES
+                ('m1', 'Chat meeting', '2026-11-27T00:00:00Z'),
+                ('other', 'Other meeting', '2026-11-27T01:00:00Z')",
+            [],
+        ).unwrap();
         conn
     }
 
@@ -120,8 +130,7 @@ mod tests {
 
     #[test]
     fn migration_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrations::run(&conn).unwrap();
+        let conn = db();
         migrations::run(&conn).unwrap();
         insert_chat_message(&conn, &msg("q1", "m1", "user", "Still works?", 1)).unwrap();
         assert_eq!(list_chat_messages(&conn, "m1").unwrap().len(), 1);
@@ -135,5 +144,6 @@ mod tests {
         insert_chat_message(&conn, &msg("a1", &meeting.id, "assistant", "A", 2)).unwrap();
         meetings::delete_meeting(&conn, &meeting.id).unwrap();
         assert!(list_chat_messages(&conn, &meeting.id).unwrap().is_empty());
+        assert!(insert_chat_message(&conn, &msg("late", &meeting.id, "assistant", "Late reply", 3)).is_err());
     }
 }

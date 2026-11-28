@@ -52,7 +52,7 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
   const roomLevel = isInPerson ? Math.max(micLevel, systemLevel) : 0;
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const scrollAnimRef = useRef<number>(0);
   const isAnimatingRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -101,8 +101,9 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
     if (!el) return;
     cancelAnimationFrame(scrollAnimRef.current);
 
-    const target = el.scrollHeight - el.clientHeight;
+    const target = Math.max(0, el.scrollHeight - el.clientHeight);
     const start = el.scrollTop;
+    lastScrollTopRef.current = start;
     const distance = target - start;
     if (Math.abs(distance) < 2) {
       isAnimatingRef.current = false;
@@ -127,7 +128,9 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
       if (progress < 1) {
         scrollAnimRef.current = requestAnimationFrame(step);
       } else {
-        isAnimatingRef.current = false;
+        scrollAnimRef.current = requestAnimationFrame(() => {
+          isAnimatingRef.current = false;
+        });
       }
     };
     scrollAnimRef.current = requestAnimationFrame(step);
@@ -165,6 +168,19 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
     }
   }, [segments, autoScroll, scrollToBottom, cancelScrollAnimation]);
 
+  const hasSegments = segments.length > 0;
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    const content = contentRef.current;
+    if (!hasSegments || !scroll || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (useTranscriptStore.getState().autoScroll) scrollToBottom();
+    });
+    observer.observe(content);
+    observer.observe(scroll);
+    return () => observer.disconnect();
+  }, [hasSegments, scrollToBottom]);
+
   // Detect manual scroll: if user scrolls up, pause auto-scroll.
   // If they scroll back to the bottom, resume it.
   // Ignores scroll events during programmatic animation to prevent false triggers.
@@ -183,7 +199,7 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
       if (el.scrollTop >= prevTop && !isAutoScrollJumpActive()) {
         setAutoScroll(true);
       }
-    } else if (!isAtBottom && autoScroll) {
+    } else if (!isAtBottom && autoScroll && el.scrollTop < prevTop) {
       setAutoScroll(false);
     }
   }, [autoScroll, setAutoScroll]);
@@ -412,16 +428,17 @@ export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } 
         onWheel={handleUserScroll}
         onTouchMove={handleUserScroll}
         data-scroll-container
-        className="absolute inset-0 overflow-y-auto px-1 pt-1 pb-6"
+        className="absolute inset-0 overflow-y-auto px-1 pt-1 pb-6 [overflow-anchor:none]"
       >
-        {filteredSegments.map((seg) => (
-          <TranscriptLine
-            key={seg.id}
-            segment={seg}
-            searchQuery={searchQuery}
-          />
-        ))}
-        <div ref={bottomRef} />
+        <div ref={contentRef} className="flow-root">
+          {filteredSegments.map((seg) => (
+            <TranscriptLine
+              key={seg.id}
+              segment={seg}
+              searchQuery={searchQuery}
+            />
+          ))}
+        </div>
       </div>
       </div>
 

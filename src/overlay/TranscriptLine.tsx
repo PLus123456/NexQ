@@ -370,10 +370,10 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
         {/* Hover translation tooltip — rendered via portal to bypass transform containing block */}
         {showTranslationTooltip && hasHoverTranslation && createPortal(
           <div
-            className="fixed z-[9999] max-w-[420px] rounded-lg border border-white/15 px-3.5 py-2.5 shadow-2xl pointer-events-none"
+            className="fixed z-[9999] max-w-[min(420px,calc(100vw-16px))] break-words rounded-lg border border-white/15 px-3.5 py-2.5 shadow-2xl pointer-events-none"
             style={{
               backgroundColor: '#1a1a2e',
-              left: `${Math.min(mousePos.x + 16, window.innerWidth - 440)}px`,
+              left: `${Math.max(8, Math.min(mousePos.x + 16, window.innerWidth - 428))}px`,
               top: `${Math.max(8, mousePos.y - 90)}px`,
             }}
           >

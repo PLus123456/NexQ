@@ -2,11 +2,12 @@
 // NexQ Export Utilities — multi-format meeting export
 // ============================================================================
 
-import type { Meeting, TranscriptSegment, AIScenario, SpeakerIdentity } from "./types";
+import type { Meeting, TranscriptSegment, AIScenario, SpeakerIdentity, TopicSection } from "./types";
 import { formatTimestamp, formatDurationLong, getSpeakerLabel, getModeLabel } from "./utils";
 import { showToast } from "../stores/toastStore";
 import { useScenarioStore } from "../stores/scenarioStore";
 import { defaultRemoteSpeakerName, remoteKeyOf } from "./speakerLabels";
+import { toElapsedMs } from "./bookmarkTarget";
 import { formatDate, t } from "../i18n";
 
 /** Strip LLM thinking tags from text (Qwen3, DeepSeek, etc.) */
@@ -90,7 +91,19 @@ function scenarioLabel(scenario: AIScenario): string {
 }
 
 function segmentTime(seg: TranscriptSegment, startMs: number): string {
-  return formatTimestamp(Math.max(0, seg.timestamp_ms - startMs));
+  return formatTimestamp(toElapsedMs(seg.timestamp_ms, startMs));
+}
+
+function segmentsInTopic(segments: TranscriptSegment[], topic: TopicSection, startMs: number): TranscriptSegment[] {
+  const topicEnd = topic.end_ms ?? Infinity;
+  return segments.filter((segment) => {
+    const elapsedMs = toElapsedMs(segment.timestamp_ms, startMs);
+    return elapsedMs >= topic.start_ms && elapsedMs < topicEnd;
+  });
+}
+
+function markdownActionText(text: string): string {
+  return text.split(/\r\n?|\n/).map((line) => line.trim()).filter(Boolean).join(" ");
 }
 
 function safeFilename(title: string): string {
@@ -138,16 +151,18 @@ export function exportToMarkdown(meeting: Meeting): string {
   if (meeting.action_items && meeting.action_items.length > 0) {
     md += `## ${t("misc:export.headings.actionItems")}\n\n`;
     for (const item of meeting.action_items) {
-      md += `- [${item.completed ? "x" : " "}] ${item.text}\n`;
+      md += `- [${item.completed ? "x" : " "}] ${markdownActionText(item.text)}\n`;
     }
     md += "\n";
   }
 
   if (meeting.bookmarks && meeting.bookmarks.length > 0) {
     md += `## ${t("misc:export.headings.bookmarks")}\n\n`;
-    const sortedBookmarks = [...meeting.bookmarks].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+    const sortedBookmarks = [...meeting.bookmarks].sort(
+      (a, b) => toElapsedMs(a.timestamp_ms, startMs) - toElapsedMs(b.timestamp_ms, startMs),
+    );
     for (const b of sortedBookmarks) {
-      const ts = formatTimestamp(Math.max(0, b.timestamp_ms - startMs));
+      const ts = formatTimestamp(toElapsedMs(b.timestamp_ms, startMs));
       md += b.note ? `- **[${ts}]** ${b.note}\n` : `- **[${ts}]** *${t("misc:export.noNote")}*\n`;
     }
     md += "\n";
@@ -163,7 +178,7 @@ export function exportToMarkdown(meeting: Meeting): string {
   if (meeting.ai_interactions.length > 0) {
     md += `## ${t("misc:export.headings.aiInteractions")}\n\n`;
     for (const ai of meeting.ai_interactions) {
-      md += `### ${getModeLabel(ai.mode)} (${ai.provider}/${ai.model})\n\n${ai.response}\n\n---\n\n`;
+      md += `### ${getModeLabel(ai.mode)} (${ai.provider}/${ai.model})\n\n${stripThinkTags(ai.response)}\n\n---\n\n`;
     }
   }
 
@@ -191,11 +206,11 @@ export function exportToSRT(segments: TranscriptSegment[], startMs: number = 0, 
   const lines: string[] = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const segStart = Math.max(0, seg.timestamp_ms - startMs);
+    const segStart = toElapsedMs(seg.timestamp_ms, startMs);
     // Estimate end: next segment start or +3 seconds
     const nextSeg = segments[i + 1];
     const segEnd = nextSeg
-      ? Math.max(0, nextSeg.timestamp_ms - startMs)
+      ? toElapsedMs(nextSeg.timestamp_ms, startMs)
       : segStart + 3000;
 
     lines.push(`${i + 1}`);
@@ -248,12 +263,7 @@ export function exportStudyNotes(meeting: Meeting): string {
     for (const topic of meeting.topic_sections) {
       md += `### ${topic.title}\n`;
       md += `*${t("misc:export.startsAt", { time: formatTimestamp(topic.start_ms) })}*\n\n`;
-      // Segments within this topic
-      const topicEnd = topic.end_ms ?? Infinity;
-      const topicSegs = meeting.transcript.filter(
-        (s) => s.timestamp_ms >= topic.start_ms && s.timestamp_ms < topicEnd
-      );
-      for (const seg of topicSegs) {
+      for (const seg of segmentsInTopic(meeting.transcript, topic, startMs)) {
         md += `- **[${segmentTime(seg, startMs)}]** ${seg.text}\n`;
       }
       md += "\n";
@@ -269,7 +279,7 @@ export function exportStudyNotes(meeting: Meeting): string {
   if (meeting.action_items && meeting.action_items.length > 0) {
     md += `## ${t("misc:export.headings.followUpActions")}\n\n`;
     for (const item of meeting.action_items) {
-      md += `- [${item.completed ? "x" : " "}] ${item.text}\n`;
+      md += `- [${item.completed ? "x" : " "}] ${markdownActionText(item.text)}\n`;
     }
     md += "\n";
   }
@@ -300,11 +310,7 @@ export function exportMeetingMinutes(meeting: Meeting): string {
     md += `## ${t("misc:export.headings.agendaItems")}\n\n`;
     for (const topic of meeting.topic_sections) {
       md += `### ${topic.title}\n\n`;
-      const topicEnd = topic.end_ms ?? Infinity;
-      const topicSegs = meeting.transcript.filter(
-        (s) => s.timestamp_ms >= topic.start_ms && s.timestamp_ms < topicEnd
-      );
-      for (const seg of topicSegs) {
+      for (const seg of segmentsInTopic(meeting.transcript, topic, startMs)) {
         md += `**${resolveSpeaker(seg, speakerMap)}** *(${segmentTime(seg, startMs)})*: ${seg.text}\n\n`;
       }
     }
@@ -319,7 +325,7 @@ export function exportMeetingMinutes(meeting: Meeting): string {
     md += `## ${t("misc:export.headings.actionItems")}\n\n`;
     for (const item of meeting.action_items) {
       const assignee = meeting.speakers?.find((s) => s.id === item.assignee_speaker_id);
-      md += `- [${item.completed ? "x" : " "}] ${item.text}`;
+      md += `- [${item.completed ? "x" : " "}] ${markdownActionText(item.text)}`;
       if (assignee) md += ` *(${assignee.display_name})*`;
       md += "\n";
     }

@@ -91,92 +91,140 @@ pub async fn set_stt_provider(app: AppHandle, provider: String) -> Result<(), St
     Ok(())
 }
 
-/// Test whether a given STT provider is available and configured correctly.
+const STT_TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Tests temporary credentials when supplied, otherwise reads the saved settings.
 #[command]
-pub async fn test_stt_connection(app: AppHandle, provider: String) -> Result<bool, String> {
+pub async fn test_stt_connection(
+    app: AppHandle,
+    provider: String,
+    key: Option<String>,
+    region: Option<String>,
+) -> Result<bool, String> {
     let provider_type = STTProviderType::from_str(&provider)
         .ok_or_else(|| format!("Unknown STT provider: {}", provider))?;
+    tokio::time::timeout(STT_TEST_BUDGET, test_configured_stt(&app, provider_type, key, region))
+        .await
+        .map_err(|_| format!("STT connection test timed out after {} s", STT_TEST_BUDGET.as_secs()))?
+}
 
-    // NexQ Plus engines: run their probe (the router has no copy of them).
+async fn test_configured_stt(
+    app: &AppHandle,
+    provider_type: STTProviderType,
+    key: Option<String>,
+    region: Option<String>,
+) -> Result<bool, String> {
+    let state = app.state::<AppState>();
     match provider_type {
         STTProviderType::OpenAICompat => {
             let cfg = app.state::<SttPlusState>().openai_compat_snapshot();
-            let key = read_key(&app.state::<AppState>(), OPENAI_COMPAT_STT_KEY_SLOT);
+            let key = key.or_else(|| read_key(&state, OPENAI_COMPAT_STT_KEY_SLOT));
             let result = crate::stt::openai_compat::probe(&cfg, key.as_deref()).await;
             return if result.ok { Ok(true) } else { Err(probe_error(&result)) };
         }
         STTProviderType::Soniox => {
-            let cfg = app.state::<SttPlusState>().soniox_snapshot();
-            let key = soniox_region_key(&app, cfg.fixed_region());
+            let mut cfg = app.state::<SttPlusState>().soniox_snapshot();
+            let key = if let Some(key) = key {
+                if let Some(region) = region {
+                    cfg.region = crate::stt::plus_config::soniox_region(&region).to_string();
+                }
+                Some(key)
+            } else {
+                soniox_test_target(&cfg, |slot| read_key(&state, slot)).map(|(region, key)| {
+                    cfg.region = region.to_string();
+                    key
+                })
+            };
             let result = crate::stt::soniox::probe(&cfg, key.as_deref()).await;
             return if result.ok { Ok(true) } else { Err(probe_error(&result)) };
         }
         _ => {}
     }
 
-    let state = app.state::<AppState>();
-
-    // Initialize STTRouter if needed
-    ensure_stt_initialized(&app, &state)?;
-
-    let stt_arc = state
-        .stt
-        .as_ref()
-        .ok_or("STT router not initialized")?
-        .clone();
-
-    let mut router = stt_arc
-        .lock()
-        .map_err(|_| "STT state lock poisoned".to_string())?;
-
-    // Load API keys from credentials before testing
-    if let Some(ref cred_arc) = state.credentials {
-        if let Ok(cred) = cred_arc.lock() {
-            match provider_type {
-                STTProviderType::Deepgram => {
-                    if let Ok(Some(key)) = cred.get_key("deepgram") {
-                        router.set_deepgram_api_key(&key);
-                    }
-                }
-                STTProviderType::WhisperApi => {
-                    if let Ok(Some(key)) = cred.get_key("whisper_api") {
-                        router.set_whisper_api_key(&key);
-                    }
-                }
-                STTProviderType::AzureSpeech => {
-                    if let Ok(Some(key)) = cred.get_key("azure_speech") {
-                        router.set_azure_speech_key(&key);
-                    }
-                    if let Ok(Some(region)) = cred.get_key("azure_speech_region") {
-                        router.set_azure_speech_region(&region);
-                    }
-                }
-                STTProviderType::GroqWhisper => {
-                    if let Ok(Some(key)) = cred.get_key("groq_whisper") {
-                        router.set_groq_whisper_api_key(&key);
-                    }
-                }
-                STTProviderType::Cartesia => {
-                    if let Ok(Some(key)) = cred.get_key("cartesia") {
-                        router.set_cartesia_api_key(&key);
-                    }
-                }
-                STTProviderType::WindowsNative | STTProviderType::WhisperCpp => {}
-                STTProviderType::WebSpeech => {}
-                STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
-                    // Local providers — no API key needed
-                }
-                STTProviderType::OpenAICompat | STTProviderType::Soniox => {}
-            }
+    let (key, region) = match provider_type {
+        STTProviderType::AzureSpeech => azure_credentials(&state, key, region),
+        STTProviderType::Deepgram | STTProviderType::WhisperApi | STTProviderType::GroqWhisper | STTProviderType::Cartesia => {
+            (key.or_else(|| read_key(&state, provider_type.as_str())), None)
         }
+        _ => (None, None),
+    };
+
+    let probe = {
+        ensure_stt_initialized(app, &state)?;
+        let router = state.stt.as_ref().ok_or("STT router not initialized")?
+            .lock().map_err(|_| "STT state lock poisoned".to_string())?;
+        router.connection_test_provider(&provider_type, key.as_deref(), region.as_deref())?
+    };
+
+    match probe {
+        Some(provider) => provider.test_connection().await.map_err(|e| format!("Connection test failed: {e}")),
+        None => Ok(true),
+    }
+}
+
+/// Use the first enabled region with a key. A custom gateway uses its
+/// configured region's key, including the legacy key if assigned there.
+fn soniox_test_target(
+    config: &SonioxConfig,
+    read: impl Fn(&str) -> Option<String>,
+) -> Option<(&'static str, String)> {
+    crate::stt::soniox_regions::RegionKeys::slots_needed(config)
+        .into_iter()
+        .find_map(|(region, slot)| {
+            let key = read(&slot).or_else(|| {
+                (region == config.legacy_region()).then(|| read(SONIOX_KEY_SLOT)).flatten()
+            })?;
+            Some((region, key))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stt::plus_config::{SonioxRegionMode, SonioxRegionSetting};
+    use crate::stt::STTRouter;
+
+    #[tokio::test]
+    async fn candidate_key_and_region_belong_to_the_probe_only() {
+        let mut router = STTRouter::new();
+        router.set_azure_speech_key("saved");
+        router.set_azure_speech_region("eastus");
+        let router = std::sync::Mutex::new(router);
+        let probe = router.lock().unwrap()
+            .connection_test_provider(&STTProviderType::AzureSpeech, Some("candidate"), Some("invalid region"))
+            .unwrap().unwrap();
+        assert!(probe.test_connection().await.unwrap_err().to_string().contains("Invalid Azure region"));
+        let probe = router.lock().unwrap()
+            .connection_test_provider(&STTProviderType::AzureSpeech, Some(""), None)
+            .unwrap().unwrap();
+        assert!(probe.test_connection().await.unwrap_err().to_string().contains("No subscription key"));
+        let router = router.try_lock().unwrap();
+        assert_eq!(router.azure_speech_key.as_deref(), Some("saved"));
+        assert_eq!(router.azure_speech_region.as_deref(), Some("eastus"));
     }
 
-    let result = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { router.test_provider_connection(&provider_type).await })
-    })?;
-
-    Ok(result)
+    #[test]
+    fn soniox_legacy_test_uses_enabled_regions_and_keeps_gateway_key_selection() {
+        let mut cfg = SonioxConfig {
+            region_mode: SonioxRegionMode::Auto,
+            regions: vec![
+                SonioxRegionSetting { id: "us".into(), enabled: false },
+                SonioxRegionSetting { id: "jp".into(), enabled: true },
+                SonioxRegionSetting { id: "eu".into(), enabled: true },
+            ],
+            ..SonioxConfig::default()
+        };
+        let read = |slot: &str| match slot {
+            SONIOX_KEY_SLOT => Some("legacy-us".to_string()),
+            "soniox_eu" => Some("new-eu".to_string()),
+            _ => None,
+        };
+        assert_eq!(soniox_test_target(&cfg, read), Some(("eu", "new-eu".into())));
+        cfg.region_mode = SonioxRegionMode::Ordered;
+        assert_eq!(soniox_test_target(&cfg, read), Some(("eu", "new-eu".into())));
+        cfg.ws_url = "wss://gateway.test/transcribe".to_string();
+        assert_eq!(soniox_test_target(&cfg, read), Some(("us", "legacy-us".into())));
+    }
 }
 
 /// Update whisper.cpp dual-pass configuration. Takes effect immediately,
@@ -373,6 +421,23 @@ fn read_key(state: &AppState, slot: &str) -> Option<String> {
         .and_then(|cred| cred.lock().ok())
         .and_then(|cred| cred.get_key(slot).ok().flatten())
         .filter(|key| !key.trim().is_empty())
+}
+
+/// Snapshot Azure's key and region together so a concurrent settings save
+/// cannot pair the previous key with the next region.
+pub(super) fn azure_credentials(
+    state: &AppState,
+    key: Option<String>,
+    region: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if key.is_some() && region.is_some() {
+        return (key, region);
+    }
+    let Some(cred) = state.credentials.as_ref().and_then(|cred| cred.lock().ok()) else {
+        return (key, region);
+    };
+    let read = |slot| cred.get_key(slot).ok().flatten().filter(|value| !value.trim().is_empty());
+    (key.or_else(|| read("azure_speech")), region.or_else(|| read("azure_speech_region")))
 }
 
 /// A failed probe as one line for callers that only take a string.

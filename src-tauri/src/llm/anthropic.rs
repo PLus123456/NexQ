@@ -148,6 +148,9 @@ pub fn chat_body(model: &str, messages: &[LLMMessage], params: &EffectiveParams,
 pub struct AnthropicDecoder {
     lines: LineBuffer,
     event_type: Option<String>,
+    event_data: String,
+    saw_sse: bool,
+    raw_body: String,
     reasoning: ReasoningMode,
     think: ThinkStripper,
     input_tokens: u64,
@@ -158,6 +161,9 @@ impl AnthropicDecoder {
         Self {
             lines: LineBuffer::new(),
             event_type: None,
+            event_data: String::new(),
+            saw_sse: false,
+            raw_body: String::new(),
             reasoning: compat.reasoning,
             think: ThinkStripper::new(compat.strip_think_tags),
             input_tokens: 0,
@@ -167,22 +173,48 @@ impl AnthropicDecoder {
     fn line(&mut self, line: &str, out: &mut Vec<StreamEvent>) {
         let line = line.trim();
         if line.is_empty() {
-            self.event_type = None;
+            self.flush_event(out);
             return;
         }
         if let Some(event_type) = line.strip_prefix("event:") {
+            self.saw_sse = true;
+            self.flush_event(out);
             self.event_type = Some(event_type.trim().to_string());
             return;
         }
-        let payload = match line.strip_prefix("data:") {
-            Some(data) => data.trim(),
-            // A plain JSON error body served as the stream.
-            None if line.starts_with('{') => line,
-            None => return,
-        };
-        let Ok(data) = serde_json::from_str::<Value>(payload) else {
+        if let Some(payload) = line.strip_prefix("data:") {
+            self.saw_sse = true;
+            if self.event_data.is_empty() {
+                if let Ok(data) = serde_json::from_str(payload) {
+                    self.data(&data, out);
+                    return;
+                }
+            }
+            push_fallback_line(&mut self.event_data, payload);
             return;
-        };
+        }
+        if !self.saw_sse && (!self.raw_body.is_empty() || line.starts_with('{')) {
+            if self.raw_body.is_empty() {
+                if let Ok(data) = serde_json::from_str(line) {
+                    self.data(&data, out);
+                    return;
+                }
+            }
+            push_fallback_line(&mut self.raw_body, line);
+        }
+    }
+
+    fn flush_event(&mut self, out: &mut Vec<StreamEvent>) {
+        let event_data = std::mem::take(&mut self.event_data);
+        if !event_data.is_empty() {
+            if let Ok(data) = serde_json::from_str(&event_data) {
+                self.data(&data, out);
+            }
+        }
+        self.event_type = None;
+    }
+
+    fn data(&mut self, data: &Value, out: &mut Vec<StreamEvent>) {
         let event_type = self
             .event_type
             .take()
@@ -222,15 +254,23 @@ impl AnthropicDecoder {
             }
             "message_stop" => out.push(StreamEvent::Done),
             "error" => {
-                let message = compat::error_message(&data).unwrap_or_else(|| "Unknown Anthropic error".to_string());
+                let message = compat::error_message(data).unwrap_or_else(|| "Unknown Anthropic error".to_string());
                 out.push(StreamEvent::Error(message));
             }
             _ => {
-                if let Some(message) = compat::error_message(&data) {
+                if let Some(message) = compat::error_message(data) {
                     out.push(StreamEvent::Error(message));
                 }
             }
         }
+    }
+}
+
+fn push_fallback_line(buffer: &mut String, line: &str) {
+    const MAX_FALLBACK_BYTES: usize = 4 * 1024 * 1024;
+    if buffer.len() + line.len() < MAX_FALLBACK_BYTES {
+        buffer.push_str(line);
+        buffer.push('\n');
     }
 }
 
@@ -248,6 +288,12 @@ impl EventDecoder for AnthropicDecoder {
         if let Some(rest) = self.lines.flush() {
             self.line(&rest, &mut out);
         }
+        self.flush_event(&mut out);
+        if !self.saw_sse && !self.raw_body.is_empty() {
+            if let Ok(data) = serde_json::from_str(&self.raw_body) {
+                self.data(&data, &mut out);
+            }
+        }
         out.extend(self.think.finish());
         out
     }
@@ -259,6 +305,7 @@ mod tests {
     use crate::llm::api::LlmKind;
     use crate::llm::connections::LlmConnection;
     use crate::llm::http::test_support::{serve, Canned, RecordingOutput};
+    use crate::llm::http::FailureKind;
     use crate::llm::provider::GenerationParams;
     use crate::net::endpoint::{AuthConfig, AuthMode};
     use std::collections::HashMap;
@@ -330,6 +377,28 @@ mod tests {
         let mut decoder = AnthropicDecoder::new(&CompatFlags::default());
         let events = decoder.push(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n");
         assert_eq!(events, vec![StreamEvent::Error("Overloaded (overloaded_error)".into())]);
+    }
+
+    #[tokio::test]
+    async fn multiline_error_bodies_return_the_provider_error() {
+        let cases = [
+            Canned::json(200, "{\n  \"type\": \"error\",\n  \"error\": {\"message\": \"Request rejected\"}\n}"),
+            Canned::sse(&[
+                "event: error\ndata: {\ndata: \"type\": \"error\",\n",
+                "data: \"error\": {\"message\": \"Request rejected\"}\ndata: }\n\n",
+            ]),
+        ];
+        for answer in cases {
+            let (base, _) = serve(vec![answer]).await;
+            let conn = LlmConnection { kind: LlmKind::Anthropic, base_url: base, ..Default::default() };
+            let client = HttpLlmClient::new(&conn, Some("key"), &HashMap::new()).unwrap();
+            let out = RecordingOutput::default();
+            let messages = vec![LLMMessage { role: "user".into(), content: "hi".into() }];
+            let failure = client.stream_with(&messages, "model", &GenerationParams::default(), &out).await.unwrap_err();
+            assert_eq!(failure.kind, FailureKind::Stream);
+            assert!(failure.message.contains("Request rejected"));
+            assert!(out.text().is_empty());
+        }
     }
 
     #[tokio::test]

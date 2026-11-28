@@ -24,7 +24,6 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 vi.mock("../stores/toastStore", () => ({ showToast: (...args: unknown[]) => toast(...args) }));
 // The meeting's other hooks aren't under test.
-vi.mock("./useMeetingTimer", () => ({ useMeetingTimer: () => {} }));
 vi.mock("./useTranscriptPersistence", () => ({ useTranscriptPersistence: () => {} }));
 vi.mock("./useTranscript", () => ({ useTranscript: () => {} }));
 vi.mock("./useSpeechRecognition", () => ({ useSpeechRecognition: () => {} }));

@@ -3,6 +3,47 @@ use crate::state::AppState;
 use crate::tray::{TrayState, tooltip};
 use std::time::Instant;
 
+/// Write from a tray click even when neither webview has focus.
+#[command]
+pub async fn write_tray_clipboard(text: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || write_clipboard(&text))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn write_clipboard(text: &str) -> Result<(), String> {
+    use std::{io::Write, process::{Command, Stdio}};
+    #[cfg(target_os = "macos")]
+    let (mut command, input) = {
+        let mut command = Command::new("/usr/bin/pbcopy");
+        command.env("LC_CTYPE", "en_US.UTF-8");
+        (command, text.as_bytes().to_vec())
+    };
+    #[cfg(windows)]
+    let (mut command, input) = {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+        let root = std::env::var_os("SystemRoot").ok_or("Windows directory is unavailable")?;
+        let mut command = Command::new(std::path::PathBuf::from(root).join("System32").join("clip.exe"));
+        command.creation_flags(CREATE_NO_WINDOW.0);
+        let input: Vec<u8> = std::iter::once(0xfeff).chain(text.encode_utf16())
+            .flat_map(u16::to_le_bytes).collect();
+        (command, input)
+    };
+    let mut process = command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().map_err(|err| err.to_string())?;
+    let write = process.stdin.take().ok_or("Clipboard input is unavailable")?.write_all(&input);
+    let status = process.wait().map_err(|err| err.to_string())?;
+    write.map_err(|err| err.to_string())?;
+    if status.success() { Ok(()) } else { Err(format!("Clipboard command failed: {status}")) }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn write_clipboard(_text: &str) -> Result<(), String> {
+    Err("Tray clipboard is unavailable on this platform".into())
+}
+
 /// Update the tray icon to reflect a new state.
 #[command]
 pub async fn set_tray_state(

@@ -7,6 +7,7 @@ import type {
 } from "../lib/types";
 import { setTranslationLanguages } from "../lib/ipc";
 import { setTranslationProviderWithOptions } from "../lib/translation/ipc";
+import { matchesTranslationTarget } from "../lib/translation/nativeTranslation";
 import type {
   LlmTranslationSettings,
   TranslateParties,
@@ -26,6 +27,7 @@ import {
 import { AUTO_LANGUAGE, normalizeLanguageCode } from "../lib/languages";
 import { currentUiLanguage, t } from "../i18n";
 import { showToast } from "./toastStore";
+import { useConfigStore } from "./configStore";
 
 const STORE_FILE = "translation-config.json";
 
@@ -194,6 +196,19 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
     setTranslationLanguages(targetLang, sourceLang === AUTO_LANGUAGE ? undefined : sourceLang).catch(() => {});
   };
 
+  const targetLanguagePatch = (targetLang: string): Partial<TranslationState> => {
+    if (get().targetLang === targetLang) return {};
+    const audio = useConfigStore.getState().meetingAudioConfig;
+    liveRequests.clear();
+    return {
+      targetLang,
+      translations: new Map([...get().translations].filter(([, result]) => matchesTranslationTarget(result, targetLang, audio))),
+      translating: new Set(),
+      errors: new Map(),
+      batchProgress: null,
+    };
+  };
+
   return {
     // Persisted defaults
     provider: DEFAULT_PROVIDER,
@@ -226,7 +241,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
     setTargetLang: (lang) => {
       const code = readLanguage(lang, false);
       if (!code) return;
-      set({ targetLang: code });
+      set(targetLanguagePatch(code));
       persistValue("targetLang", code);
       // Sync to backend immediately so all windows + translate calls use it
       pushLanguages();
@@ -299,7 +314,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
         const translating = new Set(state.translating);
         const errors = new Map(state.errors);
         for (const r of results) {
-          if (r.segment_id && !isStale(r.segment_id, r.original_text)) {
+          if (r.segment_id && !updated.has(r.segment_id) && !isStale(r.segment_id, r.original_text)) {
             updated.set(r.segment_id, r);
             translating.delete(r.segment_id);
             errors.delete(r.segment_id);
@@ -353,7 +368,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
     setBatchProgress: (progress) => set({ batchProgress: progress }),
     clearTranslations: () => {
       liveRequests.clear();
-      set({ translations: new Map(), translating: new Set(), errors: new Map() });
+      set({ translations: new Map(), translating: new Set(), errors: new Map(), batchProgress: null });
     },
 
     syncBackend: async () => {
@@ -395,7 +410,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
         set({
           ...(isProvider(provider) && { provider }),
           // Never chosen: the UI language (not saved, so it keeps following it).
-          targetLang: readLanguage(targetLang, false) ?? defaultTargetLanguage(currentUiLanguage()),
+          ...targetLanguagePatch(readLanguage(targetLang, false) ?? defaultTargetLanguage(currentUiLanguage())),
           ...(savedSource && { sourceLang: savedSource }),
           ...(isDisplayMode(displayMode) && { displayMode }),
           ...(typeof autoTranslateEnabled === "boolean" && { autoTranslateEnabled }),
@@ -419,7 +434,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => {
         });
         store.onKeyChange<unknown>("targetLang", (val) => {
           const code = readLanguage(val, false);
-          if (code) set({ targetLang: code });
+          if (code) set(targetLanguagePatch(code));
         });
         store.onKeyChange<unknown>("sourceLang", (val) => {
           const code = readLanguage(val, true);

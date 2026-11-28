@@ -2,18 +2,20 @@
 // the status of the search (reranked, or fusion order kept and why), and
 // for reranked results the rerank score and the position before reranking.
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
 // The dialog's stream listeners, by event name, so a test can stream an answer.
 const listeners = vi.hoisted(() => new Map<string, (e: { payload: unknown }) => void>());
+const registration = vi.hoisted(() => ({ end: null as Promise<void> | null }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: unknown) => invoke(cmd, args) }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
+    if (event === "llm_stream_end" && registration.end) await registration.end;
     listeners.set(event, handler);
-    return () => listeners.delete(event);
+    return () => { if (listeners.get(event) === handler) listeners.delete(event); };
   },
 }));
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -59,7 +61,10 @@ async function handle(cmd: string): Promise<unknown> {
     case "test_rag_search":
       return JSON.stringify(outcome);
     case "test_rag_answer":
+    case "cancel_generation":
       return undefined;
+    case "llm_get_config":
+      return { revision: 1, connections: [], routing: { default: { target: null, params: {} }, tasks: {} } };
     case "rag_get_settings":
       return settings({ enabled: true, model: "loaded-reranker" });
     case "rag_get_index_info":
@@ -78,6 +83,7 @@ async function ask(query = "预算会议") {
 }
 
 beforeEach(() => {
+  registration.end = null;
   invoke.mockReset();
   invoke.mockImplementation(handle);
   useRagStore.setState({ settings: settings({ enabled: true, model: "BAAI/bge-reranker-v2-m3" }) });
@@ -154,6 +160,65 @@ describe("test search dialog: reranking", () => {
 });
 
 describe("test search dialog: answer", () => {
+  it("waits for stream listeners and ignores repeated Enter while the request is busy", async () => {
+    outcome = { chunks: fused, vector_used: true, degraded: null, rerank: null };
+    let registerEnd!: () => void;
+    registration.end = new Promise((resolve) => { registerEnd = resolve; });
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd !== "test_rag_answer") return handle(cmd);
+      const request_id = args.requestId;
+      listeners.get("llm_stream_token")?.({ payload: { token: "Immediate answer", request_id } });
+      listeners.get("llm_stream_end")?.({ payload: { total_tokens: 2, latency_ms: 1, request_id } });
+    });
+
+    render(<TestSearchDialog isOpen onClose={() => {}} />);
+    const input = screen.getByPlaceholderText("Ask a question about your documents...");
+    fireEvent.change(input, { target: { value: "budget" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText("b.txt");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "test_rag_search")).toHaveLength(1);
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "test_rag_answer")).toBe(false);
+
+    await act(async () => registerEnd());
+    expect(await screen.findByText("Immediate answer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+  });
+
+  it("cancels the specific running answer when closed", async () => {
+    outcome = { chunks: fused, vector_used: true, degraded: null, rerank: null };
+    const onClose = vi.fn();
+    const { rerender } = render(<TestSearchDialog isOpen onClose={onClose} />);
+    await ask();
+    const request = invoke.mock.calls.find(([cmd]) => cmd === "test_rag_answer")?.[1];
+    expect(request?.requestId).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("cancel_generation", { requestId: request.requestId });
+    rerender(<TestSearchDialog isOpen={false} onClose={onClose} />);
+    rerender(<TestSearchDialog isOpen onClose={onClose} />);
+    expect(screen.queryByText("b.txt")).not.toBeInTheDocument();
+  });
+
+  it("discards a search that returns after the dialog closes", async () => {
+    let finishSearch!: (value: string) => void;
+    const search = new Promise<string>((resolve) => { finishSearch = resolve; });
+    invoke.mockImplementation((cmd) => cmd === "test_rag_search" ? search : handle(cmd));
+    const { rerender } = render(<TestSearchDialog isOpen onClose={() => {}} />);
+    const input = screen.getByPlaceholderText("Ask a question about your documents...");
+    fireEvent.change(input, { target: { value: "budget" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(invoke).toHaveBeenCalledWith("test_rag_search", { query: "budget" });
+    rerender(<TestSearchDialog isOpen={false} onClose={() => {}} />);
+    rerender(<TestSearchDialog isOpen onClose={() => {}} />);
+
+    await act(async () => finishSearch(JSON.stringify({ chunks: fused, vector_used: true, degraded: null })));
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "test_rag_answer")).toBe(false);
+    expect(screen.queryByText("b.txt")).not.toBeInTheDocument();
+  });
+
   it("renders the streamed answer as Markdown", async () => {
     outcome = { chunks: fused, vector_used: true, degraded: null, rerank: null };
     const { container } = render(<TestSearchDialog isOpen onClose={() => {}} />);

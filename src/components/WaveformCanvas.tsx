@@ -9,6 +9,7 @@
 import React, { memo, useRef, useEffect, useCallback, useMemo, useState } from "react";
 import type { WaveformData, MeetingBookmark, TopicSection } from "@/lib/types";
 import { downsamplePeaks } from "@/lib/waveform";
+import { toElapsedMs } from "@/lib/bookmarkTarget";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -135,6 +136,8 @@ function WaveformCanvasImpl({
   liveTimeRef,
   isPlaying = false,
   durationMs,
+  meetingStartMs,
+  recordingOffsetMs,
   bookmarks = NO_BOOKMARKS,
   topicSections = NO_TOPIC_SECTIONS,
   onSeek,
@@ -247,8 +250,9 @@ function WaveformCanvasImpl({
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
       for (const section of topicSections) {
-        if (section.start_ms <= 0) continue; // skip if at very beginning
-        const x = (section.start_ms / durationMs) * logicalW;
+        const elapsed = section.start_ms - recordingOffsetMs;
+        if (!Number.isFinite(elapsed) || elapsed <= 0 || elapsed > durationMs) continue;
+        const x = (elapsed / durationMs) * logicalW;
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, logicalH);
@@ -265,7 +269,9 @@ function WaveformCanvasImpl({
       ctx.shadowBlur = BOOKMARK_GLOW_BLUR;
       ctx.fillStyle = COLOR_BOOKMARK;
       for (const bookmark of bookmarks) {
-        const x = (bookmark.timestamp_ms / durationMs) * logicalW;
+        const elapsed = toElapsedMs(bookmark.timestamp_ms, meetingStartMs) - recordingOffsetMs;
+        if (!Number.isFinite(bookmark.timestamp_ms) || elapsed < 0 || elapsed > durationMs) continue;
+        const x = (elapsed / durationMs) * logicalW;
         const y = BOOKMARK_RADIUS + 1; // sit just inside the top edge
         ctx.beginPath();
         ctx.arc(x, y, BOOKMARK_RADIUS, 0, Math.PI * 2);
@@ -287,7 +293,7 @@ function WaveformCanvasImpl({
     ctx.stroke();
     ctx.shadowBlur = 0;
     ctx.restore();
-  }, [layers, bars, size, durationMs, bookmarks, topicSections]);
+  }, [layers, bars, size, durationMs, meetingStartMs, recordingOffsetMs, bookmarks, topicSections]);
 
   // Static redraw whenever inputs (or the throttled time prop) change.
   useEffect(() => {

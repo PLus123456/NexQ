@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +16,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
+import { useTranslationStore } from "../stores/translationStore";
 import type { TranscriptSegment } from "../lib/types";
 
 const segment = (id: string, text: string): TranscriptSegment => ({
@@ -47,10 +48,51 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  useTranslationStore.getState().clearTranslations();
   useTranscriptStore.setState({ segments: [], searchQuery: "", autoScroll: true });
 });
 
 describe("TranscriptPanel", () => {
+  it("follows content that grows as a translation arrives, unless the user scrolled up", async () => {
+    vi.useFakeTimers();
+    let resize!: () => void;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    useTranslationStore.setState({ displayMode: "inline" });
+    const { container } = render(<TranscriptPanel />);
+    const scroll = container.querySelector<HTMLDivElement>("[data-scroll-container]")!;
+    let height = 200;
+    Object.defineProperty(scroll, "scrollHeight", { get: () => height });
+    Object.defineProperty(scroll, "clientHeight", { value: 100 });
+    scroll.scrollTop = 100;
+    fireEvent.scroll(scroll);
+
+    act(() => {
+      useTranslationStore.getState().addTranslation({
+        segment_id: "s1", original_text: "How did you handle rate limiting?", translated_text: "如何限流？",
+        source_lang: "en", target_lang: "zh-CN", provider: "soniox",
+      });
+    });
+    expect(screen.getByText("如何限流？")).toBeInTheDocument();
+    height += 60;
+    resize();
+    await act(async () => { await vi.advanceTimersByTimeAsync(450); });
+    expect(scroll.scrollTop).toBe(160);
+
+    scroll.scrollTop = 100;
+    fireEvent.scroll(scroll);
+    expect(useTranscriptStore.getState().autoScroll).toBe(false);
+    height += 80;
+    resize();
+    await act(async () => { await vi.advanceTimersByTimeAsync(450); });
+    expect(scroll.scrollTop).toBe(100);
+  });
+
   it("collapses typography controls into a popover while keeping search and audio bars", () => {
     render(<TranscriptPanel />);
     expect(screen.getByPlaceholderText("Search transcript...")).toBeInTheDocument();

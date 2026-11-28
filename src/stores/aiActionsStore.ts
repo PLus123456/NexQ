@@ -45,6 +45,13 @@ function fingerprint(value: unknown): string {
 // arrive after a newer edit) is never taken for another window's change.
 const ownSaves: string[] = [];
 const OWN_SAVES_KEPT = 20;
+let configWrites: Promise<void> = Promise.resolve();
+
+function enqueueConfigWrite(write: () => Promise<void>): Promise<void> {
+  const next = configWrites.then(write, write);
+  configWrites = next.catch(() => {});
+  return next;
+}
 
 // Default prompt templates (mirror of Rust prompt_templates.rs)
 const DEFAULT_PROMPTS: Record<string, string> = {
@@ -181,6 +188,13 @@ function composeInstructions(presets: InstructionPresets, custom: string): strin
   return prefix || custom;
 }
 
+async function syncBackend(configs: AllActionConfigs): Promise<void> {
+  await updateActionConfigs(configs).catch((e) =>
+    console.warn("[aiActionsStore] Failed to sync configs to backend:", e),
+  );
+  await ipcSetCustomInstructions(composeInstructions(configs.instructionPresets, configs.customInstructions)).catch(() => {});
+}
+
 interface AIActionsState {
   configs: AllActionConfigs;
   isLoaded: boolean;
@@ -202,27 +216,22 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
   isLoaded: false,
 
   loadConfigs: async () => {
+    const before = get().configs;
     try {
+      await configWrites;
       const store = await getStore();
       const saved = await store.get<AllActionConfigs>(STORE_KEY);
+      if (get().configs !== before) return;
       if (saved) {
         // Merge saved configs with defaults to handle new built-in actions and settings
         const merged = withDefaults(saved);
         set({ configs: merged, isLoaded: true });
-        // Sync to backend (action configs + composed instructions)
-        updateActionConfigs(merged).catch((e) =>
-          console.warn("[aiActionsStore] Failed to sync configs to backend:", e)
-        );
-        // Also sync composed instructions to ContextManager (belt-and-suspenders)
-        const composed = composeInstructions(merged.instructionPresets, merged.customInstructions);
-        if (composed) {
-          ipcSetCustomInstructions(composed).catch(() => {});
-        }
+        await enqueueConfigWrite(() => syncBackend(merged));
       } else {
         // No saved config — try loading from backend
         try {
           const backendConfigs = await getActionConfigs();
-          set({ configs: backendConfigs, isLoaded: true });
+          if (get().configs === before) set({ configs: backendConfigs ?? before, isLoaded: true });
         } catch {
           // Use defaults
           set({ isLoaded: true });
@@ -234,29 +243,29 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
     }
   },
 
-  saveConfigs: async () => {
+  saveConfigs: () => {
     const { configs } = get();
-    const mine = fingerprint(configs);
-    let recorded = false;
-    try {
-      const store = await getStore();
-      ownSaves.push(mine);
-      recorded = true;
-      if (ownSaves.length > OWN_SAVES_KEPT) ownSaves.shift();
-      await store.set(STORE_KEY, configs);
-    } catch (e) {
-      // Nothing was saved, so no notice of it will come back. Only take back
-      // the entry this call recorded: an equal one may belong to another save.
-      if (recorded) {
-        const at = ownSaves.lastIndexOf(mine);
-        if (at >= 0) ownSaves.splice(at, 1);
+    const openingStore = getStore().then((store) => ({ store }), (error) => ({ error }));
+    return enqueueConfigWrite(async () => {
+      const mine = fingerprint(configs);
+      let recorded = false;
+      try {
+        const opened = await openingStore;
+        if ("error" in opened) throw opened.error;
+        ownSaves.push(mine);
+        recorded = true;
+        if (ownSaves.length > OWN_SAVES_KEPT) ownSaves.shift();
+        await opened.store.set(STORE_KEY, configs);
+      } catch (e) {
+        // Nothing was saved, so no notice of it will come back.
+        if (recorded) {
+          const at = ownSaves.lastIndexOf(mine);
+          if (at >= 0) ownSaves.splice(at, 1);
+        }
+        console.error("[aiActionsStore] Failed to persist:", e);
       }
-      console.error("[aiActionsStore] Failed to persist:", e);
-    }
-    // Sync to backend
-    updateActionConfigs(configs).catch((e) =>
-      console.warn("[aiActionsStore] Failed to sync to backend:", e)
-    );
+      await syncBackend(configs);
+    });
   },
 
   updateGlobalDefaults: (defaults) => {
@@ -266,8 +275,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         globalDefaults: { ...state.configs.globalDefaults, ...defaults },
       },
     }));
-    // Auto-save after state update
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   updateActionConfig: (mode, patch) => {
@@ -284,7 +292,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         },
       };
     });
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   resetActionPrompt: (mode) => {
@@ -307,7 +315,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         },
       };
     });
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   addCustomAction: (name, prompt) => {
@@ -335,7 +343,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         actions: { ...state.configs.actions, [id]: newAction },
       },
     }));
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   removeCustomAction: (mode) => {
@@ -345,7 +353,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         configs: { ...state.configs, actions: rest },
       };
     });
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   setInstructionPresets: (presets) => {
@@ -355,10 +363,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         instructionPresets: presets,
       },
     }));
-    // Sync composed instructions (presets + custom text) to ContextManager
-    const composed = composeInstructions(presets, get().configs.customInstructions);
-    ipcSetCustomInstructions(composed).catch(() => {});
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   setCustomInstructions: (text) => {
@@ -368,10 +373,7 @@ export const useAIActionsStore = create<AIActionsState>((set, get) => ({
         customInstructions: text,
       },
     }));
-    // Sync composed instructions (presets + custom text) to ContextManager
-    const composed = composeInstructions(get().configs.instructionPresets, text);
-    ipcSetCustomInstructions(composed).catch(() => {});
-    setTimeout(() => get().saveConfigs(), 0);
+    void get().saveConfigs();
   },
 
   getComposedInstructions: () => {

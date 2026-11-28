@@ -59,6 +59,22 @@ describe("AIResponsePanel", () => {
     expect(container.textContent).toContain("[Image: x]");
   });
 
+  it("renders only absolute HTTP and HTTPS grounding links", () => {
+    render(<AIResponsePanel />);
+    act(() => {
+      s().startStream("Assist", "gemini", "Google Gemini");
+      s().appendToken("An answer");
+      s().setSources([
+        { title: "Web source", url: "https://example.org/source" },
+        { title: "Local file", url: "file:///notes.txt" },
+        { title: "Relative source", url: "/source" },
+      ]);
+      s().endStream(5);
+    });
+    expect(screen.getByRole("link", { name: "Web source" })).toHaveAttribute("href", "https://example.org/source");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
   it("Current is the newest answer and is not repeated as a tab", () => {
     render(<AIResponsePanel />);
     answer("Assist", "first");

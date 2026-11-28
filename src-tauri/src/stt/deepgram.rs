@@ -25,10 +25,12 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
+use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::{http, Error as WebSocketError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::audio::AudioChunk;
+use crate::stt::cloud_http;
 use crate::stt::deepgram_flux::{self, FluxMessage, FluxTurns};
 use crate::stt::provider::{diarized_speaker_id, STTProviderType, STTProvider, TranscriptResult};
 
@@ -96,12 +98,62 @@ const PENDING_AUDIO_MAX_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
 
 /// How long stop_stream waits for Deepgram's last results after CloseStream.
 const FINAL_RESULTS_WAIT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const INITIAL_CONNECT_BUDGET: Duration = Duration::from_secs(12);
+const INITIAL_CONNECT_ATTEMPTS: u32 = 3;
 
 /// Audio piled up while "connected" (writer stuck on a half-open socket):
 /// treat the connection as lost and reconnect (5 s).
 const STALLED_AUDIO_SAMPLES: usize = 5 * SAMPLE_RATE as usize;
 
 type DeepgramSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug, thiserror::Error)]
+enum ConnectError {
+    #[error("Deepgram connection timed out")]
+    Timeout,
+    #[error("Deepgram rejected the API key (HTTP 401). Check the key at https://console.deepgram.com/.")]
+    Unauthorized,
+    #[error("Deepgram denied access (HTTP 403). Check the API key's permissions.")]
+    Forbidden,
+    #[error("Deepgram rate limit reached (HTTP 429). Wait a moment and try again.")]
+    RateLimited,
+    #[error("Deepgram refused the connection (HTTP {0})")]
+    Refused(http::StatusCode),
+    #[error("Invalid Deepgram connection request: {0}")]
+    Request(#[from] http::Error),
+    #[error("Deepgram WebSocket handshake failed: {0}")]
+    WebSocket(#[from] WebSocketError),
+}
+
+impl ConnectError {
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Unauthorized | Self::Forbidden | Self::Request(_))
+    }
+}
+
+struct ConnectionTasks {
+    reader: JoinHandle<()>,
+    writer: JoinHandle<()>,
+}
+
+impl ConnectionTasks {
+    async fn finish(mut self) {
+        let closed = tokio::time::timeout(FINAL_RESULTS_WAIT, async {
+            let _ = tokio::join!(&mut self.reader, &mut self.writer);
+        }).await;
+        if closed.is_err() {
+            log::warn!("DeepgramSTT: no close from Deepgram within {:?}; last results may be missing", FINAL_RESULTS_WAIT);
+        }
+    }
+}
+
+impl Drop for ConnectionTasks {
+    fn drop(&mut self) {
+        self.reader.abort();
+        self.writer.abort();
+    }
+}
 
 /// Delay before reconnect attempt `attempt` (1-based): 1, 2, 4, 8, then every 15 s.
 fn reconnect_backoff(attempt: u32) -> Duration {
@@ -195,10 +247,10 @@ pub struct DeepgramSTT {
     app_handle: Option<tauri::AppHandle>,
     /// Connection state: 0=disconnected, 1=connecting, 2=connected, 3=error
     connection_state: Arc<AtomicU8>,
-    /// Reader of the current connection; stop_stream waits for its last results.
-    reader_task: Option<tokio::task::JoinHandle<()>>,
+    /// Tasks of the current connection; stop_stream waits for its last results.
+    connection_tasks: Option<ConnectionTasks>,
     /// Background reconnect attempt while the meeting goes on (socket, when connected).
-    reconnect_task: Option<tokio::task::JoinHandle<Result<(DeepgramSocket, Instant), String>>>,
+    reconnect_task: Option<JoinHandle<Result<(DeepgramSocket, Instant), ConnectError>>>,
     reconnect_attempt: u32,
     next_reconnect_at: Option<Instant>,
     /// Audio captured while offline (or while the writer was busy), oldest first.
@@ -215,6 +267,17 @@ pub struct DeepgramSTT {
     closing_reader: Option<tokio::task::JoinHandle<()>>,
     /// Tests point the provider at a local WebSocket server.
     url_override: Option<String>,
+}
+
+impl Drop for DeepgramSTT {
+    fn drop(&mut self) {
+        if let Some(task) = &self.reconnect_task {
+            task.abort();
+        }
+        if let Some(task) = &self.closing_reader {
+            task.abort();
+        }
+    }
 }
 
 /// Deepgram WebSocket JSON response structures.
@@ -265,7 +328,7 @@ impl DeepgramSTT {
             party: "Them".to_string(),
             app_handle: None,
             connection_state: Arc::new(AtomicU8::new(0)),
-            reader_task: None,
+            connection_tasks: None,
             reconnect_task: None,
             reconnect_attempt: 0,
             next_reconnect_at: None,
@@ -281,10 +344,9 @@ impl DeepgramSTT {
 
     /// Create with an API key.
     pub fn with_api_key(api_key: &str) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            ..Self::new()
-        }
+        let mut provider = Self::new();
+        provider.set_api_key(api_key);
+        provider
     }
 
     /// Set the API key.
@@ -408,15 +470,13 @@ impl DeepgramSTT {
         }
     }
 
-    /// Attempt to connect to Deepgram WebSocket. Returns the split stream.
+    /// Bound DNS, TCP, TLS and the WebSocket upgrade together.
     async fn connect(
         api_key: &str,
         url: &str,
-    ) -> Result<
-        WebSocketStream<MaybeTlsStream<TcpStream>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        limit: Duration,
+    ) -> Result<DeepgramSocket, ConnectError> {
+        let request = http::Request::builder()
             .uri(url)
             .header("Authorization", format!("Token {}", api_key))
             .header("Host", "api.deepgram.com")
@@ -429,8 +489,38 @@ impl DeepgramSTT {
             )
             .body(())?;
 
-        let (ws_stream, _response) = tokio_tungstenite::connect_async(request).await?;
-        Ok(ws_stream)
+        match tokio::time::timeout(limit, tokio_tungstenite::connect_async(request)).await {
+            Ok(Ok((socket, _))) => Ok(socket),
+            Ok(Err(WebSocketError::Http(response))) => Err(match response.status() {
+                http::StatusCode::UNAUTHORIZED => ConnectError::Unauthorized,
+                http::StatusCode::FORBIDDEN => ConnectError::Forbidden,
+                http::StatusCode::TOO_MANY_REQUESTS => ConnectError::RateLimited,
+                status => ConnectError::Refused(status),
+            }),
+            Ok(Err(e)) => Err(ConnectError::WebSocket(e)),
+            Err(_) => Err(ConnectError::Timeout),
+        }
+    }
+
+    async fn connect_initial(&self, url: &str) -> Result<DeepgramSocket, ConnectError> {
+        let mut attempt = 1;
+        loop {
+            let outcome = Self::connect(&self.api_key, url, CONNECT_TIMEOUT).await;
+            let Err(e) = &outcome else { return outcome };
+            if attempt >= INITIAL_CONNECT_ATTEMPTS || e.is_terminal() || matches!(e, ConnectError::RateLimited) {
+                return outcome;
+            }
+            let backoff = reconnect_backoff(attempt);
+            log::warn!("DeepgramSTT: Connection attempt {attempt} failed: {e}. Retrying in {backoff:?}");
+            Self::emit_status(
+                &self.app_handle,
+                &self.party,
+                "reconnecting",
+                Some(format!("Connection attempt {attempt} failed, retrying in {} s", backoff.as_secs())),
+            );
+            tokio::time::sleep(backoff).await;
+            attempt += 1;
+        }
     }
 
     /// Parse a Deepgram JSON response into a TranscriptResult.
@@ -642,7 +732,7 @@ impl DeepgramSTT {
         party: String,
         connection_state: Arc<AtomicU8>,
         flux_timeline: Option<Arc<Mutex<AudioTimeline>>>,
-    ) {
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             // Send KeepAlive every 5s (Deepgram disconnects after ~10s idle)
             let mut keepalive_interval = tokio::time::interval(Duration::from_secs(5));
@@ -744,7 +834,7 @@ impl DeepgramSTT {
                 .await;
 
             log::info!("DeepgramSTT: Writer task exiting");
-        });
+        })
     }
 }
 
@@ -795,48 +885,15 @@ impl STTProvider for DeepgramSTT {
         self.connection_state.store(1, Ordering::SeqCst);
         Self::emit_status(&self.app_handle, &self.party, "connecting", None);
 
-        // Connect with retry logic
-        let mut retry_count = 0u32;
-        let max_retries = 5;
-        let ws_stream = loop {
-            match Self::connect(&self.api_key, &url).await {
-                Ok(stream) => break stream,
-                Err(e) => {
-                    retry_count += 1;
-                    if retry_count > max_retries {
-                        self.connection_state.store(3, Ordering::SeqCst);
-                        Self::emit_status(
-                            &self.app_handle,
-                            &self.party,
-                            "error",
-                            Some(format!("Failed after {} retries: {}", max_retries, e)),
-                        );
-
-                        // Provide specific error messages
-                        let err_str = e.to_string();
-                        if err_str.contains("401") || err_str.contains("Unauthorized") {
-                            return Err("Invalid Deepgram API key. Please check your key at https://console.deepgram.com/".into());
-                        } else if err_str.contains("429") {
-                            return Err("Deepgram rate limit exceeded. Please wait a moment and try again.".into());
-                        }
-                        return Err(format!("Failed to connect to Deepgram after {} retries: {}", max_retries, e).into());
-                    }
-
-                    let backoff = Duration::from_secs(
-                        (1u64 << (retry_count - 1)).min(30)
-                    );
-                    log::warn!(
-                        "DeepgramSTT: Connection attempt {} failed: {}. Retrying in {:?}",
-                        retry_count, e, backoff
-                    );
-                    Self::emit_status(
-                        &self.app_handle,
-                        &self.party,
-                        "reconnecting",
-                        Some(format!("Retry {} of {}", retry_count, max_retries)),
-                    );
-                    tokio::time::sleep(backoff).await;
-                }
+        let outcome = tokio::time::timeout(INITIAL_CONNECT_BUDGET, self.connect_initial(&url))
+            .await
+            .unwrap_or(Err(ConnectError::Timeout));
+        let ws_stream = match outcome {
+            Ok(stream) => stream,
+            Err(e) => {
+                self.connection_state.store(3, Ordering::SeqCst);
+                Self::emit_status(&self.app_handle, &self.party, "error", Some(e.to_string()));
+                return Err(e.into());
             }
         };
 
@@ -853,16 +910,22 @@ impl STTProvider for DeepgramSTT {
         if self.paused {
             return Ok(());
         }
-        // Deepgram needs audio containing a pause to detect an endpoint. Send a
-        // bounded tail after speech, then suppress prolonged digital silence.
-        if !self.should_forward_audio(&chunk) {
-            self.timeline.lock().unwrap_or_else(|e| e.into_inner()).skipped();
-            return Ok(());
-        }
-
         // The connection died under us (server close, read or write error).
         if self.is_streaming && matches!(self.connection_state.load(Ordering::SeqCst), 0 | 3) {
             self.mark_disconnected();
+        }
+
+        // Send a bounded silence tail for endpointing. Even when we drop a
+        // silent chunk, pick up completed reconnects and report rejected keys.
+        if !self.should_forward_audio(&chunk) {
+            self.timeline.lock().unwrap_or_else(|e| e.into_inner()).skipped();
+            if !self.is_streaming {
+                self.drive_reconnect();
+                if self.is_streaming {
+                    self.flush_pending_nonblocking();
+                }
+            }
+            return Ok(());
         }
 
         // Offline: keep the audio and reconnect in the background, never blocking
@@ -925,11 +988,20 @@ impl STTProvider for DeepgramSTT {
         // Dropping the audio sender makes the writer send CloseStream; Deepgram
         // then sends the results for the last audio and closes. Wait for them.
         self.audio_tx = None;
-        if let Some(reader) = self.reader_task.take() {
-            if tokio::time::timeout(FINAL_RESULTS_WAIT, reader).await.is_err() {
-                log::warn!("DeepgramSTT: no close from Deepgram within {:?}; last results may be missing", FINAL_RESULTS_WAIT);
-            }
-        }
+        let tasks = self.connection_tasks.take();
+        let closing = self.closing_reader.take();
+        tokio::join!(
+            async {
+                if let Some(tasks) = tasks {
+                    tasks.finish().await;
+                }
+            },
+            async {
+                if let Some(closing) = closing {
+                    let _ = closing.await;
+                }
+            },
+        );
 
         self.stop_flag.store(true, Ordering::SeqCst);
         self.result_tx = None;
@@ -950,11 +1022,9 @@ impl STTProvider for DeepgramSTT {
         log::info!("DeepgramSTT: Testing connection...");
 
         // Test by making a simple HTTP request to the Deepgram API
-        let client = reqwest::Client::new();
-        let response = client
+        let response = cloud_http::client()?
             .get("https://api.deepgram.com/v1/projects")
             .header("Authorization", format!("Token {}", self.api_key))
-            .timeout(Duration::from_secs(10))
             .send()
             .await?;
 
@@ -962,9 +1032,11 @@ impl STTProvider for DeepgramSTT {
         if status.is_success() {
             log::info!("DeepgramSTT: Connection test passed");
             Ok(true)
-        } else if status.as_u16() == 401 {
-            Err("Invalid API key. Please check your Deepgram API key.".into())
-        } else if status.as_u16() == 429 {
+        } else if status == http::StatusCode::UNAUTHORIZED {
+            Err(ConnectError::Unauthorized.into())
+        } else if status == http::StatusCode::FORBIDDEN {
+            Err(ConnectError::Forbidden.into())
+        } else if status == http::StatusCode::TOO_MANY_REQUESTS {
             Err("Rate limited. Please wait a moment and try again.".into())
         } else {
             log::warn!(
@@ -1025,7 +1097,7 @@ impl DeepgramSTT {
         self.audio_tx = Some(audio_tx);
         self.result_tx = Some(result_tx.clone());
 
-        self.reader_task = Some(Self::spawn_reader_task(
+        let reader = Self::spawn_reader_task(
             read_half,
             result_tx,
             self.party.clone(),
@@ -1035,9 +1107,9 @@ impl DeepgramSTT {
             self.app_handle.clone(),
             self.diarize_active() && !self.is_flux(),
             self.is_flux(),
-        ));
+        );
 
-        Self::spawn_writer_task(
+        let writer = Self::spawn_writer_task(
             write_half,
             audio_rx,
             Arc::clone(&self.stop_flag),
@@ -1046,6 +1118,7 @@ impl DeepgramSTT {
             Arc::clone(&self.connection_state),
             self.is_flux().then(|| Arc::clone(&self.timeline)),
         );
+        self.connection_tasks = Some(ConnectionTasks { reader, writer });
 
         self.is_streaming = true;
         self.reconnect_attempt = 0;
@@ -1061,7 +1134,7 @@ impl DeepgramSTT {
         self.is_streaming = false;
         self.stop_flag.store(true, Ordering::SeqCst);
         self.audio_tx = None;
-        self.reader_task = None;
+        self.connection_tasks = None;
         self.connection_state.store(0, Ordering::SeqCst);
         self.reconnect_attempt = 0;
         self.next_reconnect_at = None;
@@ -1089,12 +1162,8 @@ impl DeepgramSTT {
             self.audio_tx = None;
             self.stop_flag = Arc::new(AtomicBool::new(false));
             self.connection_state = Arc::new(AtomicU8::new(0));
-            if let Some(mut reader) = self.reader_task.take() {
-                self.closing_reader = Some(tokio::spawn(async move {
-                    if tokio::time::timeout(FINAL_RESULTS_WAIT, &mut reader).await.is_err() {
-                        reader.abort();
-                    }
-                }));
+            if let Some(tasks) = self.connection_tasks.take() {
+                self.closing_reader = Some(tokio::spawn(tasks.finish()));
             }
             self.is_streaming = false;
             log::info!("DeepgramSTT: paused ({}): Flux stream closed while muted", self.party);
@@ -1151,8 +1220,18 @@ impl DeepgramSTT {
                     self.install_session(ws, result_tx);
                     return;
                 }
+                Some(Ok(Err(e))) if e.is_terminal() => {
+                    log::warn!("DeepgramSTT: reconnect stopped: {e}");
+                    self.connection_state.store(3, Ordering::SeqCst);
+                    self.result_tx = None;
+                    self.pending_audio.clear();
+                    self.pending_samples = 0;
+                    self.resuming_since = None;
+                    Self::emit_status(&self.app_handle, &self.party, "error", Some(e.to_string()));
+                    return;
+                }
                 Some(Ok(Err(e))) => {
-                    log::warn!("DeepgramSTT: reconnect failed: {}", e);
+                    log::warn!("DeepgramSTT: reconnect failed: {e}");
                     true
                 }
                 other => {
@@ -1176,11 +1255,8 @@ impl DeepgramSTT {
         let (key, url) = (self.api_key.clone(), self.build_ws_url());
         self.connection_state.store(1, Ordering::SeqCst);
         self.reconnect_task = Some(tokio::spawn(async move {
-            match tokio::time::timeout(Duration::from_secs(10), Self::connect(&key, &url)).await {
-                Ok(Ok(ws)) => Ok((ws, Instant::now())),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(_) => Err("connect timed out after 10 s".to_string()),
-            }
+            let socket = Self::connect(&key, &url, CONNECT_TIMEOUT).await?;
+            Ok((socket, Instant::now()))
         }));
     }
 
@@ -1534,6 +1610,78 @@ mod tests {
         AudioChunk { pcm_data: vec![value; 1600], source: crate::audio::AudioSource::System, timestamp_ms: ts, is_speech: true }
     }
 
+    async fn reject_handshake(socket: TcpStream, status: http::StatusCode) {
+        use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+        let rejected = tokio_tungstenite::accept_hdr_async(socket, move |_: &Request, _: Response| {
+            let mut response = ErrorResponse::new(None);
+            *response.status_mut() = status;
+            Err(response)
+        }).await;
+        assert!(rejected.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_websocket_upgrade_times_out_after_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/listen", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let outcome = DeepgramSTT::connect("test", &url, Duration::from_millis(40)).await;
+        assert!(matches!(outcome, Err(ConnectError::Timeout)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_credentials_and_rate_limit_fail_initial_connect_without_retries() {
+        for status in [http::StatusCode::UNAUTHORIZED, http::StatusCode::FORBIDDEN, http::StatusCode::TOO_MANY_REQUESTS] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/v1/listen", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                reject_handshake(socket, status).await;
+            });
+            let mut provider = DeepgramSTT::with_api_key("test");
+            provider.url_override = Some(url);
+            let (tx, _) = mpsc::channel(8);
+            let error = tokio::time::timeout(Duration::from_millis(900), provider.start_stream(tx))
+                .await.expect("initial connect must return before the first retry").unwrap_err();
+            assert!(error.to_string().contains(&status.as_u16().to_string()));
+            assert_eq!(provider.connection_state.load(Ordering::SeqCst), 3);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_reconnect_is_terminal_even_during_silence() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/listen", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (initial, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(initial).await.unwrap();
+            ws.close(None).await.unwrap();
+            let (reconnect, _) = listener.accept().await.unwrap();
+            reject_handshake(reconnect, http::StatusCode::FORBIDDEN).await;
+        });
+        let mut provider = DeepgramSTT::with_api_key("test");
+        provider.url_override = Some(url);
+        let (tx, mut rx) = mpsc::channel(8);
+        provider.start_stream(tx).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while provider.result_tx.is_some() {
+                provider.feed_audio(chunk(0, epoch_now_ms())).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("the 403 must stop the reconnect loop");
+        provider.feed_audio(chunk(1000, epoch_now_ms())).await.unwrap();
+        assert!(provider.reconnect_task.is_none());
+        assert!(provider.pending_audio.is_empty());
+        assert_eq!(provider.connection_state.load(Ordering::SeqCst), 3);
+        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap().is_none());
+        server.await.unwrap();
+    }
+
     /// The server dropped the session. The provider must
     /// reconnect in the background, never block the shared audio loop, keep the
     /// result channel and replay the audio captured while offline.
@@ -1645,7 +1793,7 @@ mod tests {
         provider.url_override = Some(format!("ws://{address}/v1/listen"));
         let (result_tx, _result_rx) = mpsc::channel(8);
         provider.start_stream(result_tx.clone()).await.unwrap();
-        let ws2 = DeepgramSTT::connect("test", &provider.build_ws_url()).await.unwrap();
+        let ws2 = DeepgramSTT::connect("test", &provider.build_ws_url(), CONNECT_TIMEOUT).await.unwrap();
         provider.install_session(ws2, result_tx);
         drop_first_tx.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;

@@ -216,11 +216,12 @@ describe("live translation requests", () => {
 
     // Soniox's translation arrives later and is displayed as is.
     await dispatch("translation_result", {
+      meeting_id: "m1",
       segment_id: "them_s_sx1_1",
       original_text: "Bonjour à tous.",
       translated_text: "大家好。",
       source_lang: "fr",
-      target_lang: "zh",
+      target_lang: "zh-CN",
       provider: "soniox",
     });
     expect(useTranslationStore.getState().translations.get("them_s_sx1_1")?.translated_text).toBe("大家好。");
@@ -357,6 +358,7 @@ describe("results and failures", () => {
 
     const answer = (original: string, translated: string) =>
       dispatch("translation_result", {
+        meeting_id: "m1",
         segment_id: "them_1",
         original_text: original,
         translated_text: translated,
@@ -393,8 +395,40 @@ describe("results and failures", () => {
 
   it("a translation_error event marks the line", async () => {
     await mount(<AppLevel />);
-    await dispatch("translation_error", { segment_id: "them_9", original_text: "x", error: "HTTP 403: quota" });
+    await dispatch("translation_error", {
+      meeting_id: "m1", target_lang: "zh-CN", segment_id: "them_9", original_text: "x", error: "HTTP 403: quota",
+    });
     expect(useTranslationStore.getState().errors.get("them_9")).toBe("HTTP 403: quota");
+  });
+
+  it("ignores late preload, results, failures and progress from another language or meeting", async () => {
+    let resolvePreload: (value: unknown) => void = () => {};
+    invoke.mockImplementation(async (name, args) => {
+      if (name === "get_meeting_translations" && args?.targetLang === "zh-CN") {
+        return new Promise((resolve) => { resolvePreload = resolve; });
+      }
+      return [];
+    });
+    await mount(<AppLevel />);
+    await dispatch("batch_translation_progress", { meetingId: "m1", targetLang: "zh-CN", completed: 1, total: 3 });
+    expect(useTranslationStore.getState().batchProgress?.completed).toBe(1);
+    await act(async () => useTranslationStore.getState().setTargetLang("fr"));
+    expect(useTranslationStore.getState().batchProgress).toBeNull();
+    const result = (meeting_id: string, target_lang: string, translated_text: string) => ({
+      meeting_id, target_lang, translated_text, segment_id: "them_1", original_text: "Good morning",
+      source_lang: "en", provider: "DeepL",
+    });
+    await dispatch("translation_result", result("m1", "fr", "Bonjour"));
+    await act(async () => resolvePreload([result("m1", "zh-CN", "早上好")]));
+    await dispatch("translation_result", result("m1", "zh-CN", "早上好"));
+    await dispatch("translation_result", result("old-meeting", "fr", "Ancienne"));
+    await dispatch("translation_error", { meeting_id: "m1", target_lang: "zh-CN", segment_id: "them_1", error: "late" });
+    await dispatch("batch_translation_progress", { meetingId: "old-meeting", targetLang: "fr", completed: 2, total: 3 });
+
+    const state = useTranslationStore.getState();
+    expect(state.translations.get("them_1")?.translated_text).toBe("Bonjour");
+    expect(state.errors.size).toBe(0);
+    expect(state.batchProgress).toBeNull();
   });
 
   it("the backend's provider status reaches the store", async () => {

@@ -10,7 +10,6 @@ import type {
 import {
   getRagStatus as ipcGetRagStatus,
   rebuildRagIndex as ipcRebuildRagIndex,
-  rebuildFileIndex as ipcRebuildFileIndex,
   removeFileRagIndex as ipcRemoveFileRagIndex,
   clearRagIndex as ipcClearRagIndex,
   testRagSearch as ipcTestRagSearch,
@@ -112,14 +111,13 @@ interface RagState {
   rebuildIndex: () => Promise<void>;
   clearIndex: () => Promise<void>;
   pullModel: (model: string) => Promise<void>;
-  testSearch: (query: string) => Promise<void>;
+  testSearch: (query: string) => Promise<boolean>;
   setIndexProgress: (progress: IndexProgress | null) => void;
   setPullProgress: (progress: PullProgress | null) => void;
   setIsIndexing: (indexing: boolean) => void;
   setIsPullingModel: (pulling: boolean) => void;
   markSourcesChanged: () => void;
   resetTestSearch: () => void;
-  autoIndexFile: (resourceId: string) => Promise<void>;
   autoRemoveFileIndex: (resourceId: string) => Promise<void>;
 }
 
@@ -128,6 +126,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 // Each window subscribes once, on first use: settings saved in the other
 // window and indexing progress reach this one.
 let listening: Promise<void> | null = null;
+let testSearchVersion = 0;
 function ensureListeners() {
   if (listening) return;
   listening = Promise.all([
@@ -413,10 +412,12 @@ export const useRagStore = create<RagState>((set, get) => ({
   },
 
   testSearch: async (query: string) => {
+    const version = ++testSearchVersion;
     try {
       const start = performance.now();
       set({ isSearching: true, error: null, testSearchResults: [], testSearchRerank: null, testSearchRewrite: null, searchLatencyMs: null });
       const outcome = await ipcTestRagSearch(query);
+      if (version !== testSearchVersion) return false;
       const latency = Math.round(performance.now() - start);
       set({
         testSearchResults: outcome.chunks,
@@ -425,13 +426,16 @@ export const useRagStore = create<RagState>((set, get) => ({
         isSearching: false,
         searchLatencyMs: latency,
       });
+      return outcome.chunks.length > 0;
     } catch (e) {
+      if (version !== testSearchVersion) return false;
       console.error("[ragStore] Failed to test search:", e);
       set({
         isSearching: false,
         searchLatencyMs: null,
         error: message(e),
       });
+      return false;
     }
   },
 
@@ -446,28 +450,16 @@ export const useRagStore = create<RagState>((set, get) => ({
     }
   },
 
-  resetTestSearch: () => set({
-    testSearchResults: [],
-    testSearchRerank: null,
-    testSearchRewrite: null,
-    error: null,
-    isSearching: false,
-    searchLatencyMs: null,
-  }),
-
-  // Index a newly added file now and wait for it (the backend also queues
-  // it on its own; unchanged text is not chunked or embedded twice).
-  autoIndexFile: async (resourceId: string) => {
-    set({ isAutoIndexing: true });
-    try {
-      await ipcRebuildFileIndex(resourceId);
-      await get().refreshIndexStatus();
-    } catch (e) {
-      // Non-critical — index can be rebuilt manually; just log it
-      console.warn("[ragStore] Auto-index failed for", resourceId, e);
-    } finally {
-      set({ isAutoIndexing: false });
-    }
+  resetTestSearch: () => {
+    ++testSearchVersion;
+    set({
+      testSearchResults: [],
+      testSearchRerank: null,
+      testSearchRewrite: null,
+      error: null,
+      isSearching: false,
+      searchLatencyMs: null,
+    });
   },
 
   // Remove a single file's chunks from the index when the file is removed

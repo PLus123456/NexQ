@@ -29,6 +29,9 @@ const LIST_MARKER = /^([-*+]|(\d{1,9})[.)])(?=[ \t]|$)/;
 const THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const ATX_HEADING = /^#{1,6}(?:[ \t]|$)/;
 const SETEXT_UNDERLINE = /^(?:=+|-+)[ \t]*$/;
+// A price followed by ordinary words can run right up to a second opener
+// when the formula sits in parentheses or follows text without spaces.
+const PRICE_BEFORE_PROSE = /^\d+(?:[,.]\d+)*(?:[\t \p{P}]+\p{L}{2}|[\t \p{P}]*[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])/u;
 
 type Container = { kind: "quote" } | { kind: "list"; indent: number };
 
@@ -435,7 +438,9 @@ function convertText(text: string): string {
       }
       // A single `$`: math only by Pandoc's rule, so amounts of money stay text.
       const close = findDollarCloser(text, i, end);
-      if (close === -1) {
+      const startsNewFormula = close !== -1 && PRICE_BEFORE_PROSE.test(text.slice(i + 1, close)) &&
+        findDollarCloser(text, close, end) !== -1;
+      if (close === -1 || startsNewFormula) {
         out += "$";
         i += 1;
         continue;
@@ -462,8 +467,9 @@ function findDollarCloser(text: string, open: number, end: number): number {
       continue;
     }
     if (c !== "$") continue;
-    if (text[j + 1] === "$") return -1;
-    if (!/\s/.test(text[j - 1]) && !/[0-9]/.test(text[j + 1] ?? "")) return j;
+    // A delimiter that cannot close may open the next formula. Do not look
+    // past it and pair a price with that formula's closing delimiter.
+    return text[j + 1] !== "$" && !/\s/.test(text[j - 1]) && !/[0-9]/.test(text[j + 1] ?? "") ? j : -1;
   }
   return -1;
 }

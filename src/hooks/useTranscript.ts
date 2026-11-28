@@ -3,9 +3,9 @@ import { countWords } from "../lib/wordCount";
 // Connects the Tauri IPC event stream to the Zustand transcript store.
 // Also processes speaker_id through speakerStore for enrichment and stats.
 
-import { useEffect, useRef } from "react";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import { onTranscriptUpdate, onTranscriptFinal } from "../lib/events";
+import { createEventScope } from "../lib/eventScope";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useSpeakerStore } from "../stores/speakerStore";
 import { useConfigStore } from "../stores/configStore";
@@ -76,8 +76,7 @@ export function processSpeaker(
       speakerStore.ensureRemoteSpeaker(segment.speaker_tag);
     }
   } else if (segment.speaker_id) {
-    // Diarized segment from Deepgram — use the speaker_id directly
-    speakerId = segment.speaker_id;
+    speakerId = speakerStore.resolveSpeakerId(segment.speaker_id);
   } else {
     // In-person mode interim without diarization data
     const diarizationEnabled = useConfigStore.getState().diarizationEnabled;
@@ -107,18 +106,19 @@ export function processSpeaker(
       // its current words (including downward corrections), and the line once.
       const wordCount = countWords(segment.text);
       const counted = countedWords.get(segment.id);
+      const previousId = counted && speakerStore.resolveSpeakerId(counted.speakerId);
       if (counted === undefined) {
         speakerStore.updateStats(speakerId, wordCount, 0);
-      } else if (counted.speakerId !== speakerId) {
+      } else if (previousId !== undefined && previousId !== speakerId) {
         // Diarization can correct the owner of an already-final line. Move
         // this line's contribution rather than subtracting from its new owner.
         useSpeakerStore.setState((state) => {
-          const previous = state.speakers[counted.speakerId];
+          const previous = state.speakers[previousId];
           if (!previous) return state;
           return {
             speakers: {
               ...state.speakers,
-              [counted.speakerId]: {
+              [previousId]: {
                 ...previous,
                 stats: {
                   ...previous.stats,
@@ -151,24 +151,12 @@ export function processSpeaker(
  * In in-person mode, "User" segments from mic are discarded.
  */
 export function useTranscript() {
-  const appendSegment = useTranscriptStore((s) => s.appendSegment);
-  const updateInterimSegment = useTranscriptStore(
-    (s) => s.updateInterimSegment
-  );
+  const [ready, setReady] = useState(false);
 
   // Lazy-load meetingStore reference for mode-aware speaker processing
   if (!_meetingStoreRef) {
     import("../stores/meetingStore").then((mod) => { _meetingStoreRef = mod; });
   }
-
-  // Use refs to avoid re-subscribing when store actions change reference
-  const appendRef = useRef(appendSegment);
-  const updateRef = useRef(updateInterimSegment);
-
-  useEffect(() => {
-    appendRef.current = appendSegment;
-    updateRef.current = updateInterimSegment;
-  }, [appendSegment, updateInterimSegment]);
 
   // Runs in each window: the launcher and the overlay keep their own transcript.
   useEffect(() => {
@@ -180,48 +168,20 @@ export function useTranscript() {
   }, []);
 
   useEffect(() => {
-    let unlistenUpdate: UnlistenFn | null = null;
-    let unlistenFinal: UnlistenFn | null = null;
-    let mounted = true;
-
-    const setup = async () => {
-      // Subscribe to interim transcript updates — upsert by id
-      const unlisten1 = await onTranscriptUpdate(
-        (event: TranscriptUpdateEvent) => {
-          if (!mounted) return;
-          const enriched = processSpeaker(event.segment);
-          if (!enriched) return; // Discarded (e.g., "User" in in-person mode)
-          updateRef.current(enriched);
-        }
-      );
-
-      // Subscribe to final transcript results — replace interim in-place (same id)
-      const unlisten2 = await onTranscriptFinal(
-        (event: TranscriptUpdateEvent) => {
-          if (!mounted) return;
-          const enriched = processSpeaker(event.segment);
-          if (!enriched) return; // Discarded
-          // Use updateInterimSegment so it replaces the interim with same id,
-          // or appends if no interim existed (e.g., very short utterance)
-          updateRef.current(enriched);
-        }
-      );
-
-      if (mounted) {
-        unlistenUpdate = unlisten1;
-        unlistenFinal = unlisten2;
-      } else {
-        unlisten1();
-        unlisten2();
-      }
+    const scope = createEventScope("transcript");
+    const handle = ({ segment, meeting_id }: TranscriptUpdateEvent) => {
+      if (meeting_id && _meetingStoreRef && _meetingStoreRef.useMeetingStore.getState().activeMeeting?.id !== meeting_id) return;
+      const enriched = processSpeaker(segment);
+      if (enriched) useTranscriptStore.getState().updateInterimSegment(enriched);
     };
-
-    setup();
-
-    return () => {
-      mounted = false;
-      if (unlistenUpdate) unlistenUpdate();
-      if (unlistenFinal) unlistenFinal();
-    };
+    void Promise.all([
+      scope.add(onTranscriptUpdate, handle),
+      scope.add(onTranscriptFinal, handle),
+    ]).then((results) => {
+      if (scope.active()) setReady(results.every(Boolean));
+    });
+    return scope.dispose;
   }, []);
+
+  return ready;
 }

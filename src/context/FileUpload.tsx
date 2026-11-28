@@ -1,75 +1,79 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { CloudUpload, Loader2 } from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useContextStore } from "../stores/contextStore";
-import { useConfigStore } from "../stores/configStore";
-import { useRagStore } from "../stores/ragStore";
+import { isWindows } from "../lib/platform";
 import { useT } from "../i18n";
 
 export function FileUpload() {
   const { t } = useT("rag");
   const loadFile = useContextStore((s) => s.loadFile);
-  const contextStrategy = useConfigStore((s) => s.contextStrategy);
-  const autoIndexFile = useRagStore((s) => s.autoIndexFile);
+  const dropZone = useRef<HTMLButtonElement>(null);
+  const busy = useRef(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const processFile = useCallback(
-    async (filePath: string) => {
-      setIsProcessing(true);
+  useEffect(() => {
+    if (!errorMessage) return;
+    const timeout = setTimeout(() => setErrorMessage(null), 5000);
+    return () => clearTimeout(timeout);
+  }, [errorMessage]);
+
+  const upload = useCallback(
+    async (choosePaths: () => Promise<string[]>) => {
+      if (busy.current) return;
+      busy.current = true;
       setErrorMessage(null);
       try {
-        const resource = await loadFile(filePath);
-        // Auto-index if RAG is active — fire and forget, doesn't block UI
-        if (contextStrategy === "local_rag") {
-          autoIndexFile(resource.id);
+        const paths = await choosePaths();
+        if (!paths.length) return;
+        setIsProcessing(true);
+        for (const path of paths) {
+          try {
+            // load_context_file owns background indexing and observes auto_index.
+            await loadFile(path);
+          } catch (error) {
+            setErrorMessage(error instanceof Error ? error.message : String(error));
+          }
         }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setErrorMessage(msg);
-        setTimeout(() => setErrorMessage(null), 5000);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
       } finally {
+        busy.current = false;
         setIsProcessing(false);
       }
     },
-    [loadFile, contextStrategy, autoIndexFile]
+    [loadFile]
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragOver(false);
-
-      const files = e.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = (file as File & { path?: string }).path;
-        if (filePath) {
-          await processFile(filePath);
-        }
+  useEffect(() => {
+    if (!isTauri()) return;
+    let mounted = true;
+    const subscription = getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (!mounted) return;
+      if (payload.type === "leave") {
+        setIsDragOver(false);
+        return;
       }
-    },
-    [processFile]
-  );
+      // Wry 0.57 forwards Win32 client pixels, AppKit points and GTK widget coordinates.
+      const scale = isWindows() ? window.devicePixelRatio : 1;
+      const target = document.elementFromPoint(payload.position.x / scale, payload.position.y / scale);
+      const inside = dropZone.current?.contains(target) ?? false;
+      setIsDragOver(payload.type !== "drop" && inside && !busy.current);
+      if (payload.type === "drop" && inside) void upload(async () => payload.paths);
+    });
+    void subscription.catch((error) => console.warn("[FileUpload] Drag and drop unavailable:", error));
+    return () => {
+      mounted = false;
+      void subscription.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [upload]);
 
-  const handleBrowse = useCallback(async () => {
-    try {
+  const handleBrowse = useCallback(() => {
+    void upload(async () => {
       const selected = await open({
         multiple: true,
         filters: [
@@ -79,40 +83,20 @@ export function FileUpload() {
           },
         ],
       });
-
-      if (selected) {
-        const paths = Array.isArray(selected) ? selected : [selected];
-        for (const filePath of paths) {
-          if (filePath) {
-            await processFile(filePath);
-          }
-        }
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrorMessage(msg);
-      setTimeout(() => setErrorMessage(null), 5000);
-    }
-  }, [processFile, t]);
+      return Array.isArray(selected) ? selected : selected ? [selected] : [];
+    });
+  }, [upload, t]);
 
   return (
     <div className="w-full">
       {/* Drop zone */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+      <button
+        ref={dropZone}
+        type="button"
+        disabled={isProcessing}
         onClick={handleBrowse}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleBrowse();
-          }
-        }}
-        role="button"
-        tabIndex={0}
         aria-label={t("context.fileUpload.dropZone.ariaLabel")}
-        className={`relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all duration-200 ${
+        className={`relative flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all duration-200 ${
           isDragOver
             ? "border-primary/60 bg-primary/5 scale-[1.01]"
             : "border-muted-foreground/20 bg-secondary/20 hover:border-muted-foreground/30 hover:bg-secondary/30"
@@ -121,9 +105,9 @@ export function FileUpload() {
         {isProcessing ? (
           <>
             <Loader2 className="mb-2 h-8 w-8 animate-spin text-primary/60" />
-            <p className="text-sm font-medium text-muted-foreground">
+            <span className="text-sm font-medium text-muted-foreground">
               {t("context.fileUpload.dropZone.processing")}
-            </p>
+            </span>
           </>
         ) : (
           <>
@@ -132,23 +116,20 @@ export function FileUpload() {
                 isDragOver ? "text-primary" : "text-primary/30"
               }`}
             />
-            <p className="text-sm font-medium text-muted-foreground">
+            <span className="text-sm font-medium text-muted-foreground">
               {isDragOver
                 ? t("context.fileUpload.dropZone.dropToUpload")
                 : t("context.fileUpload.dropZone.dragHere")}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            </span>
+            <span className="mt-1 text-xs text-muted-foreground">
               {t("context.fileUpload.dropZone.supportedTypes")}
-            </p>
-            <button
-              onClick={handleBrowse}
-              className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10 hover:text-primary"
-            >
+            </span>
+            <span className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-1.5 text-xs font-medium text-primary">
               {t("context.fileUpload.browse")}
-            </button>
+            </span>
           </>
         )}
-      </div>
+      </button>
 
       {/* Error toast */}
       {errorMessage && (

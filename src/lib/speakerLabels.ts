@@ -71,6 +71,13 @@ export function remoteKeyOf(seg: SpeakerFields): string | null {
   return id === "them" ? remoteSpeakerId(seg.speaker_tag) : null;
 }
 
+/** The history speaker row that corresponds to this line. */
+export function speakerKeyOf(seg: SpeakerFields): string {
+  return remoteKeyOf(seg)
+    ?? seg.speaker_id
+    ?? (seg.speaker === "User" ? "you" : seg.speaker === "Them" || seg.speaker === "Interviewer" ? "them" : seg.speaker);
+}
+
 /**
  * Speaker label for AI context: a diarized line goes by its person's name
  * ("Erin", else "Speaker 2") so the model can attribute statements; every

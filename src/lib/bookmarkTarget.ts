@@ -1,19 +1,18 @@
 import { mergeConsecutiveSegments } from "./mergeSegments";
 import type { MeetingBookmark, TranscriptSegment } from "./types";
 
-const EPOCH_MS_FLOOR = 1e11;
-const CLOCK_SKEW_TOLERANCE_MS = 60_000;
+const EPOCH_MS_FLOOR = 1_000_000_000_000;
 
 /**
  * Convert a meeting timestamp (either an epoch timestamp >= meetingStartTime,
  * or a legacy in-meeting elapsed offset) into elapsed milliseconds since start.
  */
 export function toElapsedMs(timestampMs: number, meetingStartTime: number | null): number {
-  if (!meetingStartTime) return Math.max(0, timestampMs);
-  if (timestampMs >= meetingStartTime) return timestampMs - meetingStartTime;
-  // Guard against slight clock skew where an epoch timestamp lands just before meetingStartTime.
-  if (timestampMs > EPOCH_MS_FLOOR && meetingStartTime - timestampMs < CLOCK_SKEW_TOLERANCE_MS) {
-    return 0;
+  if (!Number.isFinite(timestampMs)) return 0;
+  if (meetingStartTime && Number.isFinite(meetingStartTime)) {
+    if (timestampMs >= EPOCH_MS_FLOOR || timestampMs >= meetingStartTime) {
+      return Math.max(0, timestampMs - meetingStartTime);
+    }
   }
   return Math.max(0, timestampMs);
 }

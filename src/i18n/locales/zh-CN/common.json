@@ -47,7 +47,8 @@
     "saving": "保存中…",
     "success": "成功",
     "testing": "测试中…",
-    "copiedToClipboard": "已复制到剪贴板"
+    "copiedToClipboard": "已复制到剪贴板",
+    "nothingToCopy": "暂无可复制的内容"
   },
   "labels": {
     "advanced": "高级",

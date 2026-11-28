@@ -101,14 +101,17 @@ export function useAutoAnswerRunning(): boolean {
 }
 
 /** Before an answer you asked for: stop a running automatic one. */
-export async function makeWayForYou(): Promise<void> {
+export async function makeWayForYou(keepQuestionId?: string): Promise<void> {
   const store = useQuestionStore.getState();
   const ref = store.autoAnswer;
   if (!ref || !useStreamStore.getState().isRunning(ref.requestId)) return;
   store.setAutoAnswer(null);
   // Its answer is dropped, so the question goes back to a card to click.
-  if (ref.questionId) store.holdBackCard(ref.questionId);
-  else store.holdBack(ref.segmentId, ref.question);
+  if (ref.questionId) {
+    if (ref.questionId !== keepQuestionId) store.holdBackCard(ref.questionId);
+  } else {
+    store.holdBack(ref.segmentId, ref.question, keepQuestionId);
+  }
   logAutoAnswer("stoppedForYou");
   await stopAutoAnswer(ref);
 }
@@ -118,12 +121,19 @@ export async function makeWayForYou(): Promise<void> {
  * stops for it; an answer you asked for earlier doesn't, so this one is refused.
  * Settles with your answer, without holding up the Auto-Answer steps meanwhile.
  */
-export function runYourAction(mode: string, question?: string, images?: ImageAttachment[]): Promise<void> {
+export function runYourAction(
+  mode: string,
+  question?: string,
+  images?: ImageAttachment[],
+  card?: { id: string; isCurrent: () => boolean },
+): Promise<void> {
   let answer: Promise<void> = Promise.resolve();
   // The pills as they are when you ask: a flip while this answer streams is for the next one.
   const sources = requestToggles();
   return inTurn(async () => {
-    if (autoAnswerRunning()) await makeWayForYou();
+    if (card && !card.isCurrent()) return;
+    if (autoAnswerRunning()) await makeWayForYou(card?.id);
+    if (card && !card.isCurrent()) return;
     const opts = {
       ...(images && images.length > 0 ? { images } : {}),
       ...(sources ? { sources } : {}),

@@ -1,42 +1,24 @@
-// Dual-pass local Whisper.cpp STT provider.
-//
-// Two passes on the same audio stream:
-//   Fast pass  (~1s chunks): immediate speculative words as interim
-//   Correction (full line audio): higher-accuracy result, word-level diff patches
-//
-// Key design:
-//   - Energy gate: only queue inference when audio has actual speech
-//   - Hallucination filter: strip [BLANK_AUDIO], brackets, common whisper artifacts
-//   - Correction uses ALL audio for the current line (not a rolling window)
-//   - Pause detection is word-based (no new words for N secs), robust to noise
-//   - Aggressive stop: drop channels immediately, don't block on pending tasks
-//   - Queue limit: drop stale fast passes if inference falls behind
+// Dual-pass local Whisper.cpp STT. Fast passes preview short chunks, while
+// correction passes and finalization decode the entire current line.
 
 use async_trait::async_trait;
-use std::collections::BinaryHeap;
-use std::cmp::Ordering;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc as inference_channel, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::audio::AudioChunk;
-use crate::stt::push_joined;
 use crate::stt::provider::{DualPassConfig, STTProvider, STTProviderType, TranscriptResult};
-use crate::stt::word_diff;
+use crate::stt::{push_joined, word_diff};
 
-const SAMPLE_RATE: u32 = 16000;
-
-/// Maximum line duration in seconds before force-finalize.
-const MAX_LINE_SECS: f32 = 30.0;
-
-/// Minimum RMS for audio to be considered "speech" (energy gate).
-/// Below this, chunks are accumulated but NOT sent to inference.
+const SAMPLE_RATE: u64 = 16_000;
+const MAX_LINE_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
 const SPEECH_RMS_THRESHOLD: f64 = 200.0;
-
-/// Maximum number of pending tasks before we start dropping old fast passes.
-const MAX_QUEUE_SIZE: usize = 6;
+const MAX_PENDING_PREVIEWS: usize = 6;
+const MAX_PENDING_FINALS: usize = 4;
+const MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(8);
 
 // ── Hallucination filter ──
 
@@ -55,9 +37,15 @@ fn clean_whisper_text(text: &str) -> String {
     for ch in trimmed.chars() {
         match ch {
             '[' => in_bracket += 1,
-            ']' if in_bracket > 0 => { in_bracket -= 1; continue; }
+            ']' if in_bracket > 0 => {
+                in_bracket -= 1;
+                continue;
+            }
             '(' => in_paren += 1,
-            ')' if in_paren > 0 => { in_paren -= 1; continue; }
+            ')' if in_paren > 0 => {
+                in_paren -= 1;
+                continue;
+            }
             _ if in_bracket > 0 || in_paren > 0 => continue,
             _ => result.push(ch),
         }
@@ -105,77 +93,13 @@ fn has_speech_energy(samples: &[i16]) -> bool {
     rms > SPEECH_RMS_THRESHOLD
 }
 
-// ── Inference task types ──
-
-enum InferenceTask {
-    FastPass {
-        samples: Vec<f32>,
-        segment_id: String,
-        timestamp_ms: u64,
-    },
-    CorrectionPass {
-        samples: Vec<f32>,
-        segment_id: String,
-        timestamp_ms: u64,
-        fast_words: Vec<String>,
-    },
-    Finalize {
-        segment_id: String,
-        text: String,
-        timestamp_ms: u64,
-    },
-    Shutdown,
-}
-
-impl InferenceTask {
-    fn priority(&self) -> u8 {
-        match self {
-            InferenceTask::FastPass { .. } => 10,
-            InferenceTask::CorrectionPass { .. } => 8,
-            InferenceTask::Finalize { .. } => 5,
-            InferenceTask::Shutdown => 0,
-        }
-    }
-}
-
-struct PrioritizedTask {
-    task: InferenceTask,
-    seq: u64,
-}
-
-impl PartialEq for PrioritizedTask {
-    fn eq(&self, other: &Self) -> bool {
-        self.task.priority() == other.task.priority() && self.seq == other.seq
-    }
-}
-impl Eq for PrioritizedTask {}
-
-impl PartialOrd for PrioritizedTask {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for PrioritizedTask {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.task
-            .priority()
-            .cmp(&other.task.priority())
-            .then_with(|| other.seq.cmp(&self.seq))
-    }
-}
-
-/// Feedback from inference thread back to the provider.
-struct FastPassFeedback {
-    text: String,
-}
-
 /// Load the model and a decoding state, on the GPU when asked (Metal on
 /// macOS builds) and on the CPU when that fails. Returns whether it is on the GPU.
 fn load_model(
     model: &str,
     use_gpu: bool,
-) -> Result<(whisper_rs::WhisperContext, whisper_rs::WhisperState, bool), whisper_rs::WhisperError> {
+) -> Result<(whisper_rs::WhisperContext, whisper_rs::WhisperState, bool), whisper_rs::WhisperError>
+{
     use whisper_rs::{WhisperContext, WhisperContextParameters};
 
     let load = |gpu: bool| {
@@ -188,58 +112,193 @@ fn load_model(
     if use_gpu {
         match load(true) {
             Ok((ctx, state)) => return Ok((ctx, state, true)),
-            Err(e) => log::warn!("WhisperCppSTT: GPU initialization failed ({}), using the CPU", e),
+            Err(e) => log::warn!(
+                "WhisperCppSTT: GPU initialization failed ({}), using the CPU",
+                e
+            ),
         }
     }
     load(false).map(|(ctx, state)| (ctx, state, false))
 }
 
-// ── WhisperCppSTT ──
+#[derive(Clone, Copy)]
+struct Line {
+    number: u64,
+    timestamp_ms: u64,
+}
+
+enum Pass {
+    Fast(OwnedSemaphorePermit),
+    Correction(OwnedSemaphorePermit),
+    Final(OwnedSemaphorePermit),
+}
+
+struct InferenceTask {
+    line: Line,
+    samples: Vec<i16>,
+    pass: Pass,
+}
+
+#[derive(Default)]
+struct Recognized {
+    text: String,
+    language: Option<String>,
+}
+
+fn recognize(state: &mut whisper_rs::WhisperState, samples: &[i16], language: &str) -> Recognized {
+    use whisper_rs::{FullParams, SamplingStrategy};
+
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let detect = language.eq_ignore_ascii_case("auto");
+    params.set_language((!detect).then_some(language));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_n_threads(4);
+    params.set_no_context(true);
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+    params.set_no_speech_thold(0.6);
+
+    let samples: Vec<f32> = samples
+        .iter()
+        .map(|&sample| sample as f32 / 32768.0)
+        .collect();
+    if let Err(e) = state.full(params, &samples) {
+        log::error!("WhisperCppSTT: Inference failed: {e}");
+        return Recognized::default();
+    }
+
+    let mut text = String::new();
+    for i in 0..state.full_n_segments() {
+        if let Some(segment) = state.get_segment(i) {
+            if let Ok(content) = segment.to_str() {
+                text.push_str(content);
+            }
+        }
+    }
+    Recognized {
+        text: clean_whisper_text(&text),
+        language: if detect {
+            whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string)
+        } else {
+            Some(language.to_string())
+        },
+    }
+}
+
+/// Tasks for each line end with its final pass in FIFO order. The worker owns
+/// that line's text, so a delayed preview cannot change another line's final.
+fn process_passes(
+    tasks: inference_channel::Receiver<InferenceTask>,
+    feedback: inference_channel::Sender<u64>,
+    results: mpsc::Sender<TranscriptResult>,
+    aborted: &AtomicBool,
+    skip_previews_through: &AtomicU64,
+    mut infer: impl FnMut(&[i16]) -> Recognized,
+) {
+    let mut recognized = Recognized::default();
+    let mut corrected_samples = None;
+
+    while let Ok(task) = tasks.recv() {
+        if aborted.load(Ordering::Relaxed) || results.is_closed() {
+            break;
+        }
+        let (is_final, is_fast, _queue_slot) = match task.pass {
+            Pass::Fast(slot) => (false, true, slot),
+            Pass::Correction(slot) => (false, false, slot),
+            Pass::Final(slot) => (true, false, slot),
+        };
+        if !is_final && task.line.number <= skip_previews_through.load(Ordering::Acquire) {
+            continue;
+        }
+
+        // Reuse the full correction when the final pass covers the same audio.
+        if !is_final || corrected_samples != Some(task.samples.len()) {
+            let inference = infer(&task.samples);
+            if inference.text.is_empty() && !is_final {
+                continue;
+            }
+            if aborted.load(Ordering::Relaxed) {
+                break;
+            }
+            if !inference.text.is_empty() {
+                if is_fast {
+                    push_joined(&mut recognized.text, &inference.text);
+                    let _ = feedback.send(task.line.number);
+                } else {
+                    recognized.text = word_diff::merge_correction(
+                        &recognized.text.split_whitespace().collect::<Vec<_>>(),
+                        &inference.text.split_whitespace().collect::<Vec<_>>(),
+                    );
+                    corrected_samples = Some(task.samples.len());
+                }
+                recognized.language = inference.language;
+            }
+        }
+
+        let result = if is_final {
+            corrected_samples = None;
+            std::mem::take(&mut recognized)
+        } else {
+            Recognized {
+                text: recognized.text.clone(),
+                language: recognized.language.clone(),
+            }
+        };
+        if !result.text.is_empty()
+            && results
+                .blocking_send(TranscriptResult {
+                    text: result.text,
+                    is_final,
+                    confidence: if is_fast { 0.80 } else { 0.92 },
+                    timestamp_ms: task.line.timestamp_ms,
+                    speaker: None,
+                    language: result.language,
+                    segment_id: Some(format!("line_{}", task.line.number)),
+                    duration_ms: None,
+                    speaker_tag: None,
+                    turn: None,
+                })
+                .is_err()
+        {
+            break;
+        }
+    }
+}
+
+struct InferenceWorker {
+    tasks: Option<inference_channel::Sender<InferenceTask>>,
+    feedback: Mutex<inference_channel::Receiver<u64>>,
+    previews: Arc<Semaphore>,
+    finals: Arc<Semaphore>,
+    skip_previews_through: Arc<AtomicU64>,
+    aborted: Arc<AtomicBool>,
+    finished: oneshot::Receiver<()>,
+}
+
+impl Drop for InferenceWorker {
+    fn drop(&mut self) {
+        self.aborted.store(true, Ordering::Release);
+    }
+}
 
 pub struct WhisperCppSTT {
     model_path: PathBuf,
     language: String,
-    /// Run on the GPU (Metal on macOS builds); falls back to the CPU if that fails.
     use_gpu: bool,
-    is_streaming: bool,
-    result_tx: Option<mpsc::Sender<TranscriptResult>>,
-    stop_flag: Arc<AtomicBool>,
-    start_time: Option<Instant>,
     config: Arc<RwLock<DualPassConfig>>,
-
-    // Fast-pass buffer: drain when short_chunk_secs reached
-    fast_buffer: Vec<i16>,
-
-    // ALL audio for the current line (for correction pass)
+    worker: Option<InferenceWorker>,
+    line_number: u64,
+    line: Option<Line>,
+    closing_line: bool,
     line_audio: Vec<i16>,
-
-    // Whether the current fast_buffer has speech energy
+    fast_buffer: Vec<i16>,
     buffer_has_speech: bool,
-
-    // Accumulated fast-pass text for current line (fed by feedback channel)
-    fast_text_this_line: String,
-
-    // Previous snapshot for detecting new content
-    prev_fast_text: String,
-
-    // Line counter for segment IDs
-    line_counter: u64,
-
-    // Whether any fast pass produced real content on the current line
-    has_content_this_line: bool,
-
-    // Word-based pause detection: last time new words were produced
-    last_new_content_time: Option<Instant>,
-
-    // Correction pass throttle
-    last_correction_time: Option<Instant>,
-
-    // Inference thread
-    inference_tx: Option<std::sync::mpsc::Sender<InferenceTask>>,
-    inference_thread: Option<std::thread::JoinHandle<()>>,
-
-    // Feedback channel
-    feedback_rx: Option<std::sync::Mutex<std::sync::mpsc::Receiver<FastPassFeedback>>>,
+    last_speech_sample: usize,
+    last_preview_sample: usize,
+    last_new_word: Option<Instant>,
 }
 
 impl WhisperCppSTT {
@@ -248,67 +307,78 @@ impl WhisperCppSTT {
             model_path,
             language: "en".to_string(),
             use_gpu: true,
-            is_streaming: false,
-            result_tx: None,
-            stop_flag: Arc::new(AtomicBool::new(false)),
-            start_time: None,
             config,
-            fast_buffer: Vec::new(),
+            worker: None,
+            line_number: 0,
+            line: None,
+            closing_line: false,
             line_audio: Vec::new(),
+            fast_buffer: Vec::new(),
             buffer_has_speech: false,
-            fast_text_this_line: String::new(),
-            prev_fast_text: String::new(),
-            line_counter: 0,
-            has_content_this_line: false,
-            last_new_content_time: None,
-            last_correction_time: None,
-            inference_tx: None,
-            inference_thread: None,
-            feedback_rx: None,
+            last_speech_sample: 0,
+            last_preview_sample: 0,
+            last_new_word: None,
         }
     }
 
-    /// Use the GPU when the build has one (Metal on macOS). Default on.
+    /// Use Metal when available. Fall back to CPU if loading fails.
     pub fn set_use_gpu(&mut self, use_gpu: bool) {
         self.use_gpu = use_gpu;
     }
 
-    fn current_segment_id(&self) -> String {
-        format!("line_{}", self.line_counter)
-    }
-
-    fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
-        samples.iter().map(|&s| s as f32 / 32768.0).collect()
-    }
-
-    fn send_task(&self, task: InferenceTask) {
-        if let Some(ref tx) = self.inference_tx {
-            let _ = tx.send(task);
+    fn queue_final(&mut self, permit: OwnedSemaphorePermit) -> Result<(), String> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or("Whisper worker is not running")?;
+        let tx = worker.tasks.as_ref().ok_or("Whisper stream is closing")?;
+        if let Some(line) = self.line.take() {
+            let samples = std::mem::take(&mut self.line_audio);
+            tx.send(InferenceTask {
+                line,
+                samples,
+                pass: Pass::Final(permit),
+            })
+            .map_err(|_| "Whisper worker stopped")?;
         }
+        self.clear_line();
+        Ok(())
     }
 
-    fn drain_feedback(&mut self) {
-        if let Some(ref rx_mutex) = self.feedback_rx {
-            if let Ok(rx) = rx_mutex.lock() {
-                while let Ok(fb) = rx.try_recv() {
-                    if !fb.text.is_empty() {
-                        push_joined(&mut self.fast_text_this_line, &fb.text);
-                    }
-                }
-            }
-        }
-    }
-
-    fn start_new_line(&mut self) {
-        self.line_counter += 1;
-        self.fast_text_this_line.clear();
-        self.prev_fast_text.clear();
-        self.fast_buffer.clear();
+    fn clear_line(&mut self) {
+        self.line = None;
         self.line_audio.clear();
+        self.closing_line = false;
+        self.fast_buffer.clear();
         self.buffer_has_speech = false;
-        self.has_content_this_line = false;
-        self.last_new_content_time = None;
-        self.last_correction_time = None;
+        self.last_speech_sample = 0;
+        self.last_preview_sample = 0;
+        self.last_new_word = None;
+    }
+
+    async fn finalize_when_ready(&mut self) -> Result<(), String> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or("Whisper worker is not running")?;
+        self.closing_line = true;
+        let slots = Arc::clone(&worker.finals);
+        let permit = match Arc::clone(&slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Let the earlier finals free a slot before accepting more
+                // audio. This blocks only this side's STT feed.
+                let finalized = self.line_number.saturating_sub(1);
+                worker
+                    .skip_previews_through
+                    .fetch_max(finalized, Ordering::Release);
+                slots
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "Whisper worker stopped")?
+            }
+        };
+        self.queue_final(permit)
     }
 }
 
@@ -326,288 +396,72 @@ impl STTProvider for WhisperCppSTT {
         &mut self,
         result_tx: mpsc::Sender<TranscriptResult>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.is_streaming {
+        if self.worker.is_some() {
             return Err("Stream already active".into());
         }
-
-        if !self.model_path.exists() {
-            return Err(format!(
-                "Whisper model not found at: {}",
-                self.model_path.display()
-            )
-            .into());
+        if !self.model_path.is_file() {
+            return Err(
+                format!("Whisper model not found at: {}", self.model_path.display()).into(),
+            );
         }
 
-        let config = self.config.read().unwrap().clone();
-        log::info!(
-            "WhisperCppSTT: Starting stream (model: {}, fast: {}s, correction: {}s, pause: {}s)",
-            self.model_path.display(),
-            config.short_chunk_secs,
-            config.long_chunk_secs,
-            config.pause_secs,
-        );
-
-        let (inf_tx, inf_rx) = std::sync::mpsc::channel::<InferenceTask>();
-        let (fb_tx, fb_rx) = std::sync::mpsc::channel::<FastPassFeedback>();
+        let (tasks, task_rx) = inference_channel::channel();
+        let (feedback_tx, feedback) = inference_channel::channel();
+        let (ready_tx, ready) = oneshot::channel::<Result<(), String>>();
+        let (finished_tx, finished) = oneshot::channel();
+        let aborted = Arc::new(AtomicBool::new(false));
+        let worker_aborted = Arc::clone(&aborted);
+        let skip_previews_through = Arc::new(AtomicU64::new(0));
+        let skip_previews = Arc::clone(&skip_previews_through);
         let model_path = self.model_path.clone();
-        let language = self.language.clone();
         let use_gpu = self.use_gpu;
-        let stop_flag = Arc::clone(&self.stop_flag);
-        let tx = result_tx.clone();
+        let language = self.language.clone();
 
-        let thread = std::thread::spawn(move || {
-            use whisper_rs::{FullParams, SamplingStrategy};
-
-            // Suppress whisper.cpp verbose output by setting log callback to no-op
-            // (whisper-rs 0.16 may not expose this; we rely on params instead)
-
-            let model_str = model_path.to_string_lossy().to_string();
-            let (_ctx, mut state, on_gpu) = match load_model(&model_str, use_gpu) {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    log::error!("WhisperCppSTT: Failed to load model: {}", e);
+        std::thread::Builder::new()
+            .name("whisper-inference".into())
+            .spawn(move || {
+                let (_context, mut state, on_gpu) =
+                    match load_model(&model_path.to_string_lossy(), use_gpu) {
+                        Ok(loaded) => loaded,
+                        Err(e) => {
+                            let _ =
+                                ready_tx.send(Err(format!("Failed to load Whisper model: {e}")));
+                            return;
+                        }
+                    };
+                if ready_tx.send(Ok(())).is_err() {
                     return;
                 }
-            };
+                log::info!(
+                    "WhisperCppSTT: Model loaded on the {}",
+                    if on_gpu { "GPU" } else { "CPU" }
+                );
+                process_passes(
+                    task_rx,
+                    feedback_tx,
+                    result_tx,
+                    &worker_aborted,
+                    &skip_previews,
+                    |samples| recognize(&mut state, samples, &language),
+                );
+                let _ = finished_tx.send(());
+            })?;
 
-            log::info!(
-                "WhisperCppSTT: Model loaded on the {}, inference thread ready",
-                if on_gpu { "GPU" } else { "CPU" }
-            );
-
-            let mut pending = BinaryHeap::<PrioritizedTask>::new();
-            let mut seq_counter = 0u64;
-            let mut last_emitted_text = String::new();
-
-            let run_whisper = |state: &mut whisper_rs::WhisperState,
-                               samples: &[f32],
-                               lang: &str|
-             -> (String, Option<String>) {
-                let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-                let lang_code = lang.split('-').next().unwrap_or(lang);
-                params.set_language(if lang_code.eq_ignore_ascii_case("auto") {
-                    None
-                } else {
-                    Some(lang_code)
-                });
-                params.set_print_special(false);
-                params.set_print_progress(false);
-                params.set_print_realtime(false);
-                params.set_print_timestamps(false);
-                params.set_n_threads(4);
-                params.set_no_context(true);
-                // Suppress blank/silence hallucinations
-                params.set_suppress_blank(true);
-                params.set_suppress_nst(true);
-                // Higher no-speech threshold to avoid transcribing silence
-                params.set_no_speech_thold(0.6);
-
-                match state.full(params, samples) {
-                    Ok(()) => {
-                        let n = state.full_n_segments();
-                        let mut text = String::new();
-                        for i in 0..n {
-                            if let Some(seg) = state.get_segment(i) {
-                                if let Ok(t) = seg.to_str() {
-                                    text.push_str(t);
-                                }
-                            }
-                        }
-                        // Apply hallucination filter
-                        let detected_language = if lang_code.eq_ignore_ascii_case("auto") {
-                            whisper_rs::get_lang_str(state.full_lang_id_from_state())
-                                .map(str::to_string)
-                        } else {
-                            Some(lang.to_string())
-                        };
-                        (clean_whisper_text(&text), detected_language)
-                    }
-                    Err(e) => {
-                        log::error!("WhisperCppSTT: Inference failed: {}", e);
-                        (String::new(), crate::stt::provider::reported_language(lang))
-                    }
-                }
-            };
-
-            loop {
-                // Check stop flag FIRST — exit immediately if stopped
-                if stop_flag.load(AtomicOrdering::SeqCst) {
-                    log::info!("WhisperCppSTT: Stop flag set, exiting inference thread");
-                    break;
-                }
-
-                // Drain all available tasks
-                while let Ok(task) = inf_rx.try_recv() {
-                    seq_counter += 1;
-                    pending.push(PrioritizedTask {
-                        task,
-                        seq: seq_counter,
-                    });
-                }
-
-                // If empty, block until one arrives (with timeout to check stop_flag)
-                if pending.is_empty() {
-                    match inf_rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(task) => {
-                            seq_counter += 1;
-                            pending.push(PrioritizedTask {
-                                task,
-                                seq: seq_counter,
-                            });
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
-                    // Drain any more that arrived
-                    while let Ok(task) = inf_rx.try_recv() {
-                        seq_counter += 1;
-                        pending.push(PrioritizedTask {
-                            task,
-                            seq: seq_counter,
-                        });
-                    }
-                }
-
-                // Queue limit: if too many tasks, drop older fast passes
-                while pending.len() > MAX_QUEUE_SIZE {
-                    // Peek — if it's a FastPass, drop it; otherwise keep it
-                    if let Some(ptask) = pending.peek() {
-                        match ptask.task {
-                            InferenceTask::FastPass { .. } => {
-                                pending.pop(); // drop stale fast pass
-                            }
-                            _ => break, // don't drop non-fast tasks
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                // Pop highest priority task
-                let ptask = match pending.pop() {
-                    Some(t) => t,
-                    None => continue,
-                };
-
-                // Check stop flag again before expensive inference
-                if stop_flag.load(AtomicOrdering::SeqCst) {
-                    break;
-                }
-
-                match ptask.task {
-                    InferenceTask::Shutdown => break,
-
-                    InferenceTask::FastPass {
-                        samples,
-                        segment_id,
-                        timestamp_ms,
-                    } => {
-                        let (text, detected_language) = run_whisper(&mut state, &samples, &language);
-                        if !text.is_empty() {
-                            let _ = fb_tx.send(FastPassFeedback {
-                                text: text.clone(),
-                            });
-
-                            if text != last_emitted_text {
-                                last_emitted_text = text.clone();
-                                let _ = tx.blocking_send(TranscriptResult {
-                                    text,
-                                    is_final: false,
-                                    confidence: 0.80,
-                                    timestamp_ms,
-                                    speaker: None,
-                                    language: detected_language,
-                                    segment_id: Some(segment_id),
-                                    duration_ms: None,
-                                    speaker_tag: None,
-                                    turn: None,
-                                });
-                            }
-                        }
-                    }
-
-                    InferenceTask::CorrectionPass {
-                        samples,
-                        segment_id,
-                        timestamp_ms,
-                        fast_words,
-                    } => {
-                        let (correction_text, detected_language) =
-                            run_whisper(&mut state, &samples, &language);
-                        if correction_text.is_empty() {
-                            continue;
-                        }
-
-                        let correction_words: Vec<&str> =
-                            correction_text.split_whitespace().collect();
-                        let old_words: Vec<&str> =
-                            fast_words.iter().map(|s| s.as_str()).collect();
-
-                        let merged = word_diff::merge_correction(&old_words, &correction_words);
-
-                        if !merged.is_empty() && merged != last_emitted_text {
-                            last_emitted_text = merged.clone();
-                            let _ = tx.blocking_send(TranscriptResult {
-                                text: merged,
-                                is_final: false,
-                                confidence: 0.92,
-                                timestamp_ms,
-                                speaker: None,
-                                language: detected_language,
-                                segment_id: Some(segment_id),
-                                duration_ms: None,
-                                speaker_tag: None,
-                                turn: None,
-                            });
-                        }
-                    }
-
-                    InferenceTask::Finalize {
-                        segment_id,
-                        text,
-                        timestamp_ms,
-                    } => {
-                        last_emitted_text.clear();
-
-                        if !text.is_empty() {
-                            let _ = tx.blocking_send(TranscriptResult {
-                                text,
-                                is_final: true,
-                                confidence: 0.92,
-                                timestamp_ms,
-                                speaker: None,
-                                language: crate::stt::provider::reported_language(&language),
-                                segment_id: Some(segment_id),
-                                duration_ms: None,
-                                speaker_tag: None,
-                                turn: None,
-                            });
-                        }
-                    }
-                }
-            }
-
-            log::info!("WhisperCppSTT: Inference thread exiting");
+        tokio::time::timeout(MODEL_LOAD_TIMEOUT, ready)
+            .await
+            .map_err(|_| "Timed out loading the Whisper model")?
+            .map_err(|_| "Whisper worker stopped before the model loaded")??;
+        self.worker = Some(InferenceWorker {
+            tasks: Some(tasks),
+            feedback: Mutex::new(feedback),
+            previews: Arc::new(Semaphore::new(MAX_PENDING_PREVIEWS)),
+            finals: Arc::new(Semaphore::new(MAX_PENDING_FINALS)),
+            skip_previews_through,
+            aborted,
+            finished,
         });
-
-        self.result_tx = Some(result_tx);
-        self.inference_tx = Some(inf_tx);
-        self.feedback_rx = Some(std::sync::Mutex::new(fb_rx));
-        self.inference_thread = Some(thread);
-        self.is_streaming = true;
-        self.stop_flag.store(false, AtomicOrdering::SeqCst);
-        self.start_time = Some(Instant::now());
-        self.fast_buffer.clear();
-        self.line_audio.clear();
-        self.buffer_has_speech = false;
-        self.fast_text_this_line.clear();
-        self.prev_fast_text.clear();
-        self.line_counter = 0;
-        self.has_content_this_line = false;
-        self.last_new_content_time = None;
-        self.last_correction_time = None;
-
-        log::info!("WhisperCppSTT: Stream started");
+        self.line_number = 0;
+        self.clear_line();
         Ok(())
     }
 
@@ -615,168 +469,132 @@ impl STTProvider for WhisperCppSTT {
         &mut self,
         chunk: AudioChunk,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming || self.stop_flag.load(AtomicOrdering::SeqCst) {
+        if self.closing_line {
+            self.finalize_when_ready().await?;
+        }
+        let Some(worker) = &self.worker else {
+            return Ok(());
+        };
+        let Some(tx) = &worker.tasks else {
+            return Ok(());
+        };
+        let config = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let short_samples = (SAMPLE_RATE as f32 * config.short_chunk_secs) as usize;
+        let correction_samples = (SAMPLE_RATE as f32 * config.long_chunk_secs) as usize;
+        let pause_samples = (SAMPLE_RATE as f32 * config.pause_secs) as usize;
+        let has_speech = has_speech_energy(&chunk.pcm_data);
+
+        if self.line.is_none() && !has_speech {
             return Ok(());
         }
+        let line = *self.line.get_or_insert_with(|| {
+            self.line_number += 1;
+            let duration_ms = chunk.pcm_data.len() as u64 * 1000 / SAMPLE_RATE;
+            Line {
+                number: self.line_number,
+                timestamp_ms: chunk.timestamp_ms.saturating_sub(duration_ms),
+            }
+        });
 
-        // Drain feedback
-        self.drain_feedback();
-
-        // Read live config
-        let config = self.config.read().unwrap().clone();
-        let short_samples = (SAMPLE_RATE as f32 * config.short_chunk_secs) as usize;
-        let max_line_samples = (SAMPLE_RATE as f32 * MAX_LINE_SECS) as usize;
-
-        // Track if this chunk has speech energy
-        if has_speech_energy(&chunk.pcm_data) {
-            self.buffer_has_speech = true;
+        {
+            let feedback = worker.feedback.lock().unwrap_or_else(|e| e.into_inner());
+            for number in feedback.try_iter() {
+                if number == line.number {
+                    self.last_new_word = Some(Instant::now());
+                }
+            }
         }
 
-        // Accumulate audio
-        self.fast_buffer.extend_from_slice(&chunk.pcm_data);
         self.line_audio.extend_from_slice(&chunk.pcm_data);
+        self.fast_buffer.extend_from_slice(&chunk.pcm_data);
+        if has_speech {
+            self.buffer_has_speech = true;
+            self.last_speech_sample = self.line_audio.len();
+        }
 
-        let timestamp_ms = self
-            .start_time
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(chunk.timestamp_ms);
+        let pause_by_silence = self.line_audio.len() - self.last_speech_sample >= pause_samples;
+        let pause_by_words = self
+            .last_new_word
+            .is_some_and(|at| at.elapsed().as_secs_f32() >= config.pause_secs);
+        if self.line_audio.len() >= MAX_LINE_SAMPLES || pause_by_silence || pause_by_words {
+            return self.finalize_when_ready().await.map_err(Into::into);
+        }
 
-        // ── Fast pass: fire when buffer full AND contains speech ──
         if self.fast_buffer.len() >= short_samples {
+            let samples = std::mem::take(&mut self.fast_buffer);
             if self.buffer_has_speech {
-                let samples_i16 = std::mem::take(&mut self.fast_buffer);
-                let samples_f32 = Self::i16_to_f32(&samples_i16);
-                let seg_id = self.current_segment_id();
-
-                self.send_task(InferenceTask::FastPass {
-                    samples: samples_f32,
-                    segment_id: seg_id,
-                    timestamp_ms,
-                });
-
-                self.has_content_this_line = true;
-            } else {
-                // No speech — discard the buffer, don't queue inference
-                self.fast_buffer.clear();
+                if let Ok(permit) = Arc::clone(&worker.previews).try_acquire_owned() {
+                    let _ = tx.send(InferenceTask {
+                        line,
+                        samples,
+                        pass: Pass::Fast(permit),
+                    });
+                }
             }
             self.buffer_has_speech = false;
+
+            // Correction snapshots end at fast-pass boundaries, so future
+            // fast passes append only previously uncovered audio.
+            if self.line_audio.len() - self.last_preview_sample >= correction_samples {
+                if let Ok(permit) = Arc::clone(&worker.previews).try_acquire_owned() {
+                    self.last_preview_sample = self.line_audio.len();
+                    let _ = tx.send(InferenceTask {
+                        line,
+                        samples: self.line_audio.clone(),
+                        pass: Pass::Correction(permit),
+                    });
+                }
+            }
         }
-
-        // ── Word-based pause detection ──
-        if self.fast_text_this_line != self.prev_fast_text {
-            self.last_new_content_time = Some(Instant::now());
-            self.prev_fast_text = self.fast_text_this_line.clone();
-        }
-
-        // ── Correction pass: transcribe FULL line audio, throttled ──
-        let min_correction_samples = (SAMPLE_RATE as f32 * config.long_chunk_secs) as usize;
-        let should_correct = self.has_content_this_line
-            && !self.fast_text_this_line.is_empty()
-            && self.line_audio.len() >= min_correction_samples
-            && match self.last_correction_time {
-                Some(last) => last.elapsed().as_secs_f32() >= config.long_chunk_secs,
-                None => true,
-            };
-
-        if should_correct {
-            let samples_f32 = Self::i16_to_f32(&self.line_audio);
-            let seg_id = self.current_segment_id();
-            let fast_words: Vec<String> = self
-                .fast_text_this_line
-                .split_whitespace()
-                .map(|w| w.to_string())
-                .collect();
-
-            self.send_task(InferenceTask::CorrectionPass {
-                samples: samples_f32,
-                segment_id: seg_id,
-                timestamp_ms,
-                fast_words,
-            });
-
-            self.last_correction_time = Some(Instant::now());
-        }
-
-        // ── Pause detection: finalize when no new words for pause_secs ──
-        let should_finalize = self.has_content_this_line
-            && !self.fast_text_this_line.is_empty()
-            && match self.last_new_content_time {
-                Some(last) => last.elapsed().as_secs_f32() >= config.pause_secs,
-                None => false,
-            };
-
-        let force_finalize =
-            self.has_content_this_line && self.line_audio.len() >= max_line_samples;
-
-        if should_finalize || force_finalize {
-            self.drain_feedback();
-
-            let seg_id = self.current_segment_id();
-            let text = self.fast_text_this_line.clone();
-
-            self.send_task(InferenceTask::Finalize {
-                segment_id: seg_id,
-                text,
-                timestamp_ms,
-            });
-
-            self.start_new_line();
-        }
-
         Ok(())
     }
 
     async fn stop_stream(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming {
+        let Some(worker) = &self.worker else {
             return Ok(());
-        }
-
-        log::info!("WhisperCppSTT: Stopping stream");
-
-        // Set stop flag IMMEDIATELY — inference thread checks this before each task
-        self.stop_flag.store(true, AtomicOrdering::SeqCst);
-
-        // Send shutdown signal
-        self.send_task(InferenceTask::Shutdown);
-
-        // Drop channels immediately to prevent old results from leaking
-        // into new meetings. This closes the mpsc channels, causing
-        // blocking_send to fail and recv to return None.
-        self.inference_tx = None;
-        self.feedback_rx = None;
-        self.result_tx = None;
-
-        // Join with timeout — don't block forever if inference is stuck
-        if let Some(thread) = self.inference_thread.take() {
-            let join_deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                if thread.is_finished() {
-                    let _ = thread.join();
-                    break;
-                }
-                if Instant::now() >= join_deadline {
-                    log::warn!("WhisperCppSTT: Inference thread didn't stop in 2s, detaching");
-                    // Thread will exit eventually when it checks stop_flag
-                    // or when the channel is closed
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
+        };
+        let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+        // Preview work is superseded by the complete audio queued for each final.
+        worker
+            .skip_previews_through
+            .store(self.line_number, Ordering::Release);
+        if self.line.is_some() {
+            let permit =
+                match tokio::time::timeout_at(deadline, Arc::clone(&worker.finals).acquire_owned())
+                    .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    _ => {
+                        self.worker.take();
+                        self.clear_line();
+                        return Err("Timed out queuing the final Whisper transcript".into());
+                    }
+                };
+            if let Err(e) = self.queue_final(permit) {
+                self.worker.take();
+                self.clear_line();
+                return Err(e.into());
             }
         }
 
-        self.is_streaming = false;
-        self.start_time = None;
-
-        log::info!("WhisperCppSTT: Stream stopped");
+        let mut worker = self.worker.take().expect("running worker");
+        worker.tasks.take();
+        tokio::time::timeout_at(deadline, &mut worker.finished)
+            .await
+            .map_err(|_| "Timed out draining the final Whisper transcript")?
+            .map_err(|_| "Whisper worker stopped before the stream was drained")?;
         Ok(())
     }
 
     async fn test_connection(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self.model_path.exists())
+        Ok(self.model_path.is_file())
     }
 
     fn set_language(&mut self, language: &str) {
-        // Two-letter code, or "auto" to detect per chunk.
         self.language = crate::stt::language::whisper_cpp_language(language);
         log::info!("WhisperCppSTT: Language set to {}", self.language);
     }
@@ -805,6 +623,199 @@ mod tests {
         assert_eq!(mixed, "NexQ很好用");
     }
 
+    fn sample_inference(text: &str) -> Recognized {
+        Recognized {
+            text: text.to_string(),
+            language: Some("en".into()),
+        }
+    }
+
+    #[test]
+    fn corrected_line_is_final_before_the_next_preview_even_if_final_decode_is_blank() {
+        let (tasks, task_rx) = inference_channel::channel();
+        let (feedback, words) = inference_channel::channel();
+        let (results, mut outputs) = mpsc::channel(8);
+        let slots = Arc::new(Semaphore::new(5));
+        let first = Line {
+            number: 1,
+            timestamp_ms: 1_800_000_000_000,
+        };
+        let second = Line {
+            number: 2,
+            timestamp_ms: first.timestamp_ms + 1_000,
+        };
+        let permit = || Arc::clone(&slots).try_acquire_owned().unwrap();
+
+        for (line, samples, pass) in [
+            (first, vec![1], Pass::Fast(permit())),
+            (first, vec![2, 1], Pass::Correction(permit())),
+            (first, vec![3, 1, 2], Pass::Final(permit())),
+            (second, vec![4], Pass::Fast(permit())),
+            (second, vec![4], Pass::Final(permit())),
+        ] {
+            tasks
+                .send(InferenceTask {
+                    line,
+                    samples,
+                    pass,
+                })
+                .unwrap();
+        }
+        drop(tasks);
+
+        process_passes(
+            task_rx,
+            feedback,
+            results,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            |audio| {
+                sample_inference(match audio[0] {
+                    1 => "meeting tomarrow",
+                    2 => "Meeting tomorrow.",
+                    3 => "",
+                    _ => "New topic.",
+                })
+            },
+        );
+
+        let mut outputs = std::iter::from_fn(|| outputs.try_recv().ok());
+        assert!(!outputs.next().unwrap().is_final);
+        assert_eq!(outputs.next().unwrap().text, "Meeting tomorrow.");
+        let corrected = outputs.next().unwrap();
+        assert!(corrected.is_final);
+        assert_eq!(corrected.text, "Meeting tomorrow.");
+        assert_eq!(corrected.timestamp_ms, first.timestamp_ms);
+        let preview = outputs.next().unwrap();
+        assert_eq!(preview.text, "New topic.");
+        assert_eq!(preview.timestamp_ms, second.timestamp_ms);
+        assert_eq!(preview.segment_id.as_deref(), Some("line_2"));
+        assert!(outputs.next().unwrap().is_final);
+        assert!(outputs.next().is_none());
+        assert_eq!(words.try_iter().collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_decodes_the_short_tail_with_the_capture_clock() {
+        let mut stt = WhisperCppSTT::new(
+            PathBuf::new(),
+            Arc::new(RwLock::new(DualPassConfig::default())),
+        );
+        let (tasks, task_rx) = inference_channel::channel();
+        let (feedback_tx, feedback) = inference_channel::channel();
+        let (results, mut outputs) = mpsc::channel(4);
+        let (done, finished) = oneshot::channel();
+        let aborted = Arc::new(AtomicBool::new(false));
+        let skip_previews_through = Arc::new(AtomicU64::new(0));
+        let worker_abort = Arc::clone(&aborted);
+        let worker_skip = Arc::clone(&skip_previews_through);
+        let worker = std::thread::spawn(move || {
+            process_passes(
+                task_rx,
+                feedback_tx,
+                results,
+                &worker_abort,
+                &worker_skip,
+                |samples| {
+                    assert_eq!(samples.len(), 1_600);
+                    sample_inference("Tail words.")
+                },
+            );
+            let _ = done.send(());
+        });
+        stt.worker = Some(InferenceWorker {
+            tasks: Some(tasks),
+            feedback: Mutex::new(feedback),
+            previews: Arc::new(Semaphore::new(MAX_PENDING_PREVIEWS)),
+            finals: Arc::new(Semaphore::new(MAX_PENDING_FINALS)),
+            aborted,
+            skip_previews_through,
+            finished,
+        });
+
+        let capture_start = 1_800_000_000_000;
+        stt.feed_audio(AudioChunk {
+            pcm_data: vec![1000; 1_600],
+            source: crate::audio::AudioSource::Mic,
+            timestamp_ms: capture_start + 100,
+            is_speech: true,
+        })
+        .await
+        .unwrap();
+        stt.stop_stream().await.unwrap();
+        worker.join().unwrap();
+
+        let tail = outputs.try_recv().unwrap();
+        assert!(tail.is_final);
+        assert_eq!(tail.text, "Tail words.");
+        assert_eq!(tail.timestamp_ms, capture_start);
+        assert!(outputs.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn saturated_final_queue_retains_the_line_and_bounds_pending_audio() {
+        let mut stt = WhisperCppSTT::new(
+            PathBuf::new(),
+            Arc::new(RwLock::new(DualPassConfig::default())),
+        );
+        let (tx, tasks) = inference_channel::channel();
+        let (_feedback_tx, feedback) = inference_channel::channel();
+        let (_done, finished) = oneshot::channel();
+        let finals = Arc::new(Semaphore::new(0));
+        stt.worker = Some(InferenceWorker {
+            tasks: Some(tx),
+            feedback: Mutex::new(feedback),
+            previews: Arc::new(Semaphore::new(MAX_PENDING_PREVIEWS)),
+            finals: Arc::clone(&finals),
+            aborted: Arc::new(AtomicBool::new(false)),
+            skip_previews_through: Arc::new(AtomicU64::new(0)),
+            finished,
+        });
+
+        let capture_start = 1_800_000_000_000;
+        let chunk = |samples, time| AudioChunk {
+            pcm_data: vec![1000; samples],
+            source: crate::audio::AudioSource::Mic,
+            timestamp_ms: capture_start + time,
+            is_speech: true,
+        };
+        {
+            let saturated = stt.feed_audio(chunk(MAX_LINE_SAMPLES, 30_000));
+            tokio::pin!(saturated);
+            assert!(futures::poll!(&mut saturated).is_pending());
+            finals.add_permits(1);
+            saturated.await.unwrap();
+        }
+        stt.feed_audio(chunk(160, 30_020)).await.unwrap();
+        let final_task = tasks.try_recv().unwrap();
+        assert!(matches!(final_task.pass, Pass::Final(_)));
+        assert_eq!(final_task.samples.len(), MAX_LINE_SAMPLES);
+        assert_eq!(final_task.line.timestamp_ms, capture_start);
+        assert_eq!(stt.line_audio.len(), 160);
+        assert_eq!(stt.line.unwrap().number, 2);
+    }
+
+    #[tokio::test]
+    async fn corrupt_model_fails_start_before_reporting_ready() {
+        let path =
+            std::env::temp_dir().join(format!("nexq-whisper-test-{}.bin", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"invalid").unwrap();
+        let mut stt = WhisperCppSTT::new(
+            path.clone(),
+            Arc::new(RwLock::new(DualPassConfig::default())),
+        );
+        stt.set_use_gpu(false);
+        let (outputs, _) = mpsc::channel(1);
+        let result = stt.start_stream(outputs).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to load Whisper model"));
+        assert!(stt.worker.is_none());
+    }
+
     /// Metal vs CPU on the same audio (reads files only, never the app's data):
     ///
     /// `NEXQ_WHISPER_MODEL=<ggml-*.bin> NEXQ_TEST_WAV=<16 kHz mono 16-bit wav> cargo test --lib whisper_cpp::tests::gpu_vs_cpu -- --ignored --nocapture`
@@ -820,7 +831,11 @@ mod tests {
         let wav = std::env::var("NEXQ_TEST_WAV").expect("set NEXQ_TEST_WAV");
         let reader = hound::WavReader::open(&wav).expect("wav");
         let spec = reader.spec();
-        assert_eq!((spec.sample_rate, spec.channels), (16_000, 1), "the WAV must be 16 kHz mono");
+        assert_eq!(
+            (spec.sample_rate, spec.channels),
+            (16_000, 1),
+            "the WAV must be 16 kHz mono"
+        );
         let samples: Vec<f32> = reader
             .into_samples::<i16>()
             .map(|s| s.expect("sample") as f32 / 32768.0)
@@ -841,7 +856,11 @@ mod tests {
                 let t = Instant::now();
                 state.full(params, audio).expect("transcribe");
                 let text: String = (0..state.full_n_segments())
-                    .filter_map(|i| state.get_segment(i).and_then(|seg| seg.to_str().ok().map(str::to_string)))
+                    .filter_map(|i| {
+                        state
+                            .get_segment(i)
+                            .and_then(|seg| seg.to_str().ok().map(str::to_string))
+                    })
                     .collect();
                 (t.elapsed().as_millis(), text)
             };

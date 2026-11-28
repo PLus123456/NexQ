@@ -19,6 +19,7 @@ import type { ParseKeys } from "i18next";
 import { Trans, useT } from "../i18n";
 import { getModeLabel } from "../lib/utils";
 import type { AIResponse, StreamSource } from "../lib/types";
+import { webAddress } from "../lib/answerMarkdown";
 import { useConfigStore } from "../stores/configStore";
 import { ColorPickerButton } from "../components/ColorPickerButton";
 import { ResponseProgress } from "./ResponseProgress";
@@ -576,20 +577,24 @@ export function AIResponsePanel() {
 // --- Sub-components ---
 
 function SourcesList({ sources }: { sources?: StreamSource[] }) {
-  if (!sources || sources.length === 0) return null;
+  const links = sources?.flatMap(({ title, url }) => {
+    const href = webAddress(url);
+    return href ? [{ title, href }] : [];
+  });
+  if (!links?.length) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/10 pt-2">
       <Globe className="h-3 w-3 shrink-0 text-muted-foreground/40" aria-hidden="true" />
-      {sources.map((source, idx) => (
+      {links.map(({ title, href }, idx) => (
         <a
-          key={`${source.url}-${idx}`}
-          href={source.url}
+          key={`${href}-${idx}`}
+          href={href}
           target="_blank"
           rel="noopener noreferrer"
-          title={source.url}
+          title={href}
           className="max-w-[14rem] truncate rounded-full bg-accent/30 px-2 py-0.5 text-meta text-muted-foreground/70 hover:bg-accent/50 hover:text-foreground/80 transition-colors"
         >
-          {source.title}
+          {title}
         </a>
       ))}
     </div>

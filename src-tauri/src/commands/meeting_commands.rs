@@ -430,25 +430,29 @@ pub async fn save_meeting_ai_interactions(
         .lock()
         .map_err(|e| format!("Failed to lock database: {}", e))?;
 
-    let ai_interactions: serde_json::Value = serde_json::from_str(&ai_interactions_json)
+    let ai_interactions: Vec<serde_json::Value> = serde_json::from_str(&ai_interactions_json)
         .map_err(|e| format!("Failed to parse AI interactions: {}", e))?;
 
-    let update = MeetingUpdate {
-        title: None,
-        end_time: None,
-        duration_seconds: None,
-        transcript: None,
-        ai_interactions: Some(ai_interactions),
-        summary: None,
-        config_snapshot: None,
-        recording_path: None,
-        recording_size: None,
-        waveform_path: None,
-        recording_offset_ms: None,
-    };
-
-    meetings::update_meeting(db.connection(), &meeting_id, &update)
+    meetings::merge_meeting_ai_interactions(db.connection(), &meeting_id, ai_interactions)
         .map_err(|e| format!("Failed to save AI interactions: {}", e))
+}
+
+fn clear_meeting_caches(app: &AppHandle, state: &AppState, meeting_id: Option<&str>) {
+    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session(app);
+    app.state::<crate::intelligence::question_prediction::QuestionPredictionService>()
+        .reset_session(app, meeting_id.map(str::to_owned));
+    if let Some(intel) = state.intelligence.as_ref() {
+        if let Ok(mut engine) = intel.lock() {
+            engine.clear_session();
+        }
+    }
+    if let Some(rag) = state.rag.as_ref() {
+        if let Ok(mut manager) = rag.lock() {
+            if let Some(indexer) = manager.transcript_indexer_mut() {
+                indexer.reset();
+            }
+        }
+    }
 }
 
 #[command]
@@ -457,6 +461,11 @@ pub async fn start_meeting(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
+    let _lifecycle = state.meeting_lifecycle.try_lock()
+        .map_err(|_| "A meeting or update is already in progress".to_string())?;
+    if super::updater_commands::quit_pending() || state.meeting_active.load(Ordering::SeqCst) {
+        return Err("A meeting is already active or NexQ is quitting".into());
+    }
     let db = state
         .database
         .as_ref()
@@ -475,27 +484,9 @@ pub async fn start_meeting(
 
     let meeting = meetings::create_meeting(db.connection(), &title)
         .map_err(|e| format!("Failed to create meeting: {}", e))?;
-    state.meeting_active.store(true, Ordering::SeqCst);
 
-    // Clear per-meeting state so the new meeting starts fresh.
-    // The intelligence buffer and last detected question persist across
-    // meetings otherwise, leaking the previous meeting's transcript into
-    // the first AI call of the new meeting.
-    drop(db); // release DB lock before acquiring other locks
-    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session(&app);
-    app.state::<crate::intelligence::question_prediction::QuestionPredictionService>().reset_session(&app, Some(meeting.id.clone()));
-    if let Some(intel_arc) = state.intelligence.as_ref() {
-        if let Ok(mut engine) = intel_arc.lock() {
-            engine.clear_session();
-        }
-    }
-    if let Some(rag_arc) = state.rag.as_ref() {
-        if let Ok(mut rag_mgr) = rag_arc.lock() {
-            if let Some(indexer) = rag_mgr.transcript_indexer_mut() {
-                indexer.reset();
-            }
-        }
-    }
+    drop(db);
+    clear_meeting_caches(&app, &state, Some(&meeting.id));
 
     // Live Claude session: start the Fast session now so the first request
     // finds it warm (the frontend pushes the scenario before this call).
@@ -508,6 +499,7 @@ pub async fn start_meeting(
             start_ms,
         });
     }
+    state.meeting_active.store(true, Ordering::SeqCst);
     if routing::claude_is_active(&state) {
         let key = SessionKey::plain(SessionScope::Live(meeting.id.clone()), Tier::Fast);
         start_session_in_background(&app, key, |state| {
@@ -533,25 +525,13 @@ pub async fn end_meeting(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    state.meeting_active.store(false, Ordering::SeqCst);
-    if let Some(captions) = app.get_webview_window("captions") {
-        if let Err(e) = captions.hide() {
-            log::warn!("Couldn't hide captions at meeting end: {e}");
-        } else {
-            let _ = app.emit("nexq:captions_visibility", serde_json::json!({ "visible": false }));
-        }
-        if let Err(e) = captions.set_ignore_cursor_events(false) {
-            log::warn!("Couldn't unlock captions at meeting end: {e}");
-        }
+    let _lifecycle = state.meeting_lifecycle.lock().await;
+    let ending_live = state.live_meeting.lock()
+        .map_err(|_| "Live meeting lock poisoned".to_string())?
+        .as_ref().is_some_and(|meeting| meeting.id == meeting_id);
+    if ending_live {
+        super::audio_commands::stop_capture(app.clone(), Some(false), Some(meeting_id.clone())).await?;
     }
-    app.state::<crate::intelligence::llm_question::QuestionDetectionService>().reset_session(&app);
-    app.state::<crate::intelligence::question_prediction::QuestionPredictionService>().reset_session(&app, None);
-    if let Ok(mut live) = state.live_meeting.lock() {
-        if live.as_ref().map(|m| m.id == meeting_id).unwrap_or(true) {
-            *live = None;
-        }
-    }
-    close_scope_in_background(&state, SessionScope::Live(meeting_id.clone()));
 
     let db_arc = state
         .database
@@ -559,7 +539,21 @@ pub async fn end_meeting(
         .ok_or_else(|| "Database not initialized".to_string())?
         .clone();
 
-    let (meeting_start_time, end_time, duration_seconds) = {
+    let pending = if ending_live {
+        state.pending_recordings.lock().map_err(|_| "Pending recording lock poisoned")?
+            .get(&meeting_id).cloned()
+    } else {
+        None
+    };
+    let recording_size = pending.as_ref().and_then(|recording| match std::fs::metadata(&recording.wav_path) {
+        Ok(file) => Some(file.len() as i64),
+        Err(err) => {
+            log::warn!("Couldn't read the finalized recording size: {err}");
+            None
+        }
+    });
+
+    let recording_offset_ms = {
         let db = db_arc
             .lock()
             .map_err(|e| format!("Failed to lock database: {}", e))?;
@@ -568,6 +562,9 @@ pub async fn end_meeting(
         let meeting = meetings::get_meeting(db.connection(), &meeting_id)
             .map_err(|e| format!("Failed to get meeting: {}", e))?;
 
+        if meeting.end_time.is_some() && !ending_live {
+            return Ok(());
+        }
         let end_time = chrono::Utc::now().to_rfc3339();
 
         // Calculate duration
@@ -579,49 +576,40 @@ pub async fn end_meeting(
                     .map(|start| (end - start).num_seconds())
             });
 
+        let recording_offset_ms = pending.as_ref().map(|recording| {
+            let start_ms = chrono::DateTime::parse_from_rfc3339(&meeting.start_time)
+                .map(|start| start.timestamp_millis())
+                .unwrap_or(recording.start_time_ms as i64);
+            (recording.start_time_ms as i64).saturating_sub(start_ms).max(0)
+        });
         let update = MeetingUpdate {
             title: None,
-            end_time: Some(end_time.clone()),
+            end_time: Some(end_time),
             duration_seconds,
             transcript: None,
             ai_interactions: None,
             summary: None,
             config_snapshot: None,
-            recording_path: None,
-            recording_size: None,
+            recording_path: pending.as_ref().map(|recording| recording.wav_path.to_string_lossy().into_owned()),
+            recording_size,
             waveform_path: None,
-            recording_offset_ms: None,
+            recording_offset_ms,
         };
 
         meetings::update_meeting(db.connection(), &meeting_id, &update)
             .map_err(|e| format!("Failed to end meeting: {}", e))?;
 
-        (meeting.start_time, end_time, duration_seconds)
+        recording_offset_ms
     };
 
-    // ── Post-meeting recording pipeline ───────────────────────────────────────
-    // Take the pending recording info stored by stop_capture (if any).
-    // This is populated when recording_enabled was true for this meeting.
-    let pending = {
-        let mut lock = state
-            .pending_recording
-            .lock()
-            .map_err(|_| "Pending recording lock poisoned".to_string())?;
-        lock.take()
-    };
+    // A recovered database record can be closed while a different meeting is live.
+    if !ending_live {
+        return Ok(());
+    }
 
-    if let Some(recording) = pending {
-        // Calculate offset: how many ms into the meeting did recording start?
-        // meeting_start_epoch_ms is parsed from the ISO 8601 start_time.
-        let recording_offset_ms: i64 = chrono::DateTime::parse_from_rfc3339(&meeting_start_time)
-            .ok()
-            .map(|start| {
-                let start_ms = start.timestamp_millis();
-                recording.start_time_ms as i64 - start_ms
-            })
-            .unwrap_or(0)
-            .max(0); // clamp to 0 if recording started before the meeting (shouldn't happen)
-
+    // The WAV already belongs to the meeting and can play even if compressing fails.
+    if let (Some(recording), Some(recording_offset_ms)) = (pending, recording_offset_ms) {
+        state.pending_recordings.lock().map_err(|_| "Pending recording lock poisoned")?.remove(&meeting_id);
         log::info!(
             "Spawning post-meeting pipeline for meeting {} (offset={}ms)",
             meeting_id,
@@ -631,17 +619,28 @@ pub async fn end_meeting(
         // Spawn the pipeline — don't await, return the IPC response immediately.
         // Counted so an update restart can wait for it (install_update_now).
         let jobs = state.recording_jobs.clone();
+        struct ArchiveJob(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for ArchiveJob {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
         jobs.fetch_add(1, Ordering::SeqCst);
+        let job = ArchiveJob(jobs);
+        let archive_app = app.clone();
+        let archive_meeting_id = meeting_id.clone();
+        let recording_artifacts = state.recording_artifacts.clone();
         tokio::spawn(async move {
+            let _job = job;
+            let _artifacts = recording_artifacts.lock().await;
             crate::audio::process_recording(
                 recording.wav_path,
-                meeting_id,
+                archive_meeting_id,
                 recording_offset_ms,
                 db_arc,
-                app,
+                archive_app,
             )
             .await;
-            jobs.fetch_sub(1, Ordering::SeqCst);
         });
     } else {
         log::info!(
@@ -650,7 +649,21 @@ pub async fn end_meeting(
         );
     }
 
-    let _ = (end_time, duration_seconds); // suppress unused warnings
+    if let Some(captions) = app.get_webview_window("captions") {
+        if let Err(error) = captions.hide() {
+            log::warn!("Couldn't hide captions at meeting end: {error}");
+        } else {
+            let _ = app.emit("nexq:captions_visibility", serde_json::json!({ "visible": false }));
+        }
+        if let Err(error) = captions.set_ignore_cursor_events(false) {
+            log::warn!("Couldn't unlock captions at meeting end: {error}");
+        }
+    }
+    clear_meeting_caches(&app, &state, None);
+    close_scope_in_background(&state, SessionScope::Live(meeting_id));
+    *state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned".to_string())? = None;
+    // Publish idle only after the archive work has been counted and handed off.
+    state.meeting_active.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -702,7 +715,13 @@ pub async fn get_meeting(
 pub async fn delete_meeting(
     meeting_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<MeetingDeletion, String> {
+    let _lifecycle = state.meeting_lifecycle.lock().await;
+    if active_meeting_id(&state)?.as_deref() == Some(meeting_id.as_str()) {
+        return Err("Cannot delete the active meeting".to_string());
+    }
+    let _artifacts = state.recording_artifacts.lock().await;
+
     let db = state
         .database
         .as_ref()
@@ -712,8 +731,98 @@ pub async fn delete_meeting(
         .lock()
         .map_err(|e| format!("Failed to lock database: {}", e))?;
 
-    meetings::delete_meeting(db.connection(), &meeting_id)
-        .map_err(|e| format!("Failed to delete meeting: {}", e))
+    delete_history_meeting(db.connection(), &meeting_id)
+        .map_err(|e| format!("Failed to delete meeting: {e}"))
+}
+
+#[derive(serde::Serialize)]
+pub struct MeetingDeletion {
+    cleanup_pending: bool,
+}
+
+fn delete_history_meeting(
+    conn: &rusqlite::Connection,
+    meeting_id: &str,
+) -> Result<MeetingDeletion, crate::db::DatabaseError> {
+    match meetings::delete_meeting(conn, meeting_id) {
+        Ok(()) => {}
+        Err(error @ crate::db::DatabaseError::NotFound(_)) => {
+            if meetings::pending_recording_file_deletion(conn, meeting_id)?.is_none() {
+                return Err(error);
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    let cleanup_pending =
+        match super::recording_commands::complete_recording_file_deletion(conn, meeting_id) {
+            Ok(()) => false,
+            Err(error) => {
+                log::warn!("Recording cleanup pending for meeting {meeting_id}: {error}");
+                true
+            }
+        };
+    Ok(MeetingDeletion { cleanup_pending })
+}
+
+pub(super) fn active_meeting_id(state: &AppState) -> Result<Option<String>, String> {
+    state
+        .live_meeting
+        .lock()
+        .map(|live| live.as_ref().map(|meeting| meeting.id.clone()))
+        .map_err(|_| "Live meeting lock poisoned".to_string())
+}
+
+#[command]
+pub async fn list_meeting_history_ids(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let _lifecycle = state.meeting_lifecycle.lock().await;
+    let active_id = active_meeting_id(&state)?;
+    let db = state.database.as_ref().ok_or("Database not initialized")?;
+    let db = db.lock().map_err(|e| format!("Failed to lock database: {e}"))?;
+    meetings::list_meeting_history_ids(db.connection(), active_id.as_deref())
+        .map_err(|e| format!("Failed to list meeting history: {e}"))
+}
+
+#[derive(serde::Serialize)]
+pub struct MeetingHistoryDeletion {
+    deleted_ids: Vec<String>,
+    failed: usize,
+    cleanup_pending: usize,
+}
+
+#[command]
+pub async fn delete_meeting_history(
+    meeting_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<MeetingHistoryDeletion, String> {
+    let _lifecycle = state.meeting_lifecycle.lock().await;
+    let active_id = active_meeting_id(&state)?;
+    let _artifacts = state.recording_artifacts.lock().await;
+    let db = state.database.as_ref().ok_or("Database not initialized")?;
+    let db = db.lock().map_err(|e| format!("Failed to lock database: {e}"))?;
+    let mut result = MeetingHistoryDeletion {
+        deleted_ids: Vec::new(),
+        failed: 0,
+        cleanup_pending: 0,
+    };
+    for id in meeting_ids {
+        if active_id.as_deref() == Some(id.as_str()) {
+            result.failed += 1;
+            continue;
+        }
+        match delete_history_meeting(db.connection(), &id) {
+            Ok(deletion) => {
+                result.deleted_ids.push(id);
+                result.cleanup_pending += usize::from(deletion.cleanup_pending);
+            }
+            Err(crate::db::DatabaseError::NotFound(_)) => result.deleted_ids.push(id),
+            Err(error) => {
+                result.failed += 1;
+                log::warn!("Failed to delete meeting {id}: {error}");
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[command]

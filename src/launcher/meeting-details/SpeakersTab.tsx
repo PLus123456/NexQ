@@ -4,10 +4,13 @@ import type { Meeting, SpeakerIdentity } from "../../lib/types";
 import { Users, Mic, Volume2, Check, X, Pencil } from "lucide-react";
 import { formatNumber, useT } from "../../i18n";
 import { formatDurationLong } from "../../lib/utils";
+import { defaultRemoteSpeakerName, speakerKeyOf } from "../../lib/speakerLabels";
+import { toElapsedMs } from "../../lib/bookmarkTarget";
 import { SpeakerTimeline } from "./SpeakerTimeline";
 
 interface SpeakersTabProps {
   meeting: Meeting;
+  onRename: (id: string, newName: string) => void;
   onSegmentClick?: (segmentIndex: number) => void;
 }
 
@@ -45,6 +48,7 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(speaker.display_name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editing = useRef(false);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -55,11 +59,14 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
 
   const handleStartEdit = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    editing.current = true;
     setEditName(speaker.display_name);
     setIsEditing(true);
   }, [speaker.display_name]);
 
   const handleSave = useCallback(() => {
+    if (!editing.current) return;
+    editing.current = false;
     const trimmed = editName.trim();
     if (trimmed && trimmed !== speaker.display_name) {
       onRename(speaker.id, trimmed);
@@ -68,6 +75,7 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
   }, [editName, speaker.id, speaker.display_name, onRename]);
 
   const handleCancel = useCallback(() => {
+    editing.current = false;
     setEditName(speaker.display_name);
     setIsEditing(false);
   }, [speaker.display_name]);
@@ -98,14 +106,18 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
       {/* Name + edit */}
       <div className="min-w-0 flex-1">
         {isEditing ? (
-          <div className="flex items-center gap-1.5">
+          <div
+            className="flex items-center gap-1.5"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) handleSave();
+            }}
+          >
             <input
               ref={inputRef}
               type="text"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onKeyDown={handleKeyDown}
-              onBlur={handleSave}
               maxLength={80}
               className="flex-1 rounded-md border border-primary/30 bg-background px-2 py-0.5 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
             />
@@ -179,32 +191,30 @@ function SpeakerRow({ speaker, color, allSpeakers, onRename }: SpeakerRowProps) 
   );
 }
 
-/** Resolve a segment to its speaker ID — normalises "User"→"you", "Them"→"them" */
-function resolveSpeakerId(seg: { speaker: string; speaker_id?: string }): string {
-  if (seg.speaker_id) return seg.speaker_id;
-  if (seg.speaker === "User") return "you";
-  if (seg.speaker === "Them") return "them";
-  return seg.speaker;
-}
-
 /** Synthesise speaker stats from the actual transcript segments */
 function syntheticSpeakersFromTranscript(
   meeting: Meeting,
   names: { you: string; them: string },
 ): SpeakerIdentity[] {
-  const counts: Record<string, { segments: number; words: number; talkMs: number; speaker: string }> = {};
+  const counts = new Map<string, { segments: number; words: number; talkMs: number; speaker: string; tagged: boolean }>();
   for (const seg of meeting.transcript) {
-    const key = resolveSpeakerId(seg);
-    if (!counts[key]) counts[key] = { segments: 0, words: 0, talkMs: 0, speaker: seg.speaker };
-    counts[key].segments++;
+    const key = speakerKeyOf(seg);
+    const tag = key.startsWith("them:") ? seg.speaker_tag : undefined;
+    const stats = counts.get(key) ?? {
+      segments: 0, words: 0, talkMs: 0,
+      speaker: tag ? defaultRemoteSpeakerName(tag) : seg.speaker,
+      tagged: !!tag,
+    };
+    stats.segments++;
     const wordCount = countWords(seg.text);
-    counts[key].words += wordCount;
-    counts[key].talkMs += wordCount * 200;
+    stats.words += wordCount;
+    stats.talkMs += wordCount * 200;
+    counts.set(key, stats);
   }
-  return Object.entries(counts).map(([id, stats]) => ({
+  return Array.from(counts, ([id, stats]) => ({
     id,
     display_name: id === "you" ? names.you : id === "them" ? names.them : stats.speaker,
-    source: "fixed" as const,
+    source: stats.tagged ? "remote_tag" : "fixed",
     stats: {
       segment_count: stats.segments,
       word_count: stats.words,
@@ -214,18 +224,18 @@ function syntheticSpeakersFromTranscript(
   }));
 }
 
-export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
+export function SpeakersTab({ meeting, onRename, onSegmentClick }: SpeakersTabProps) {
   const { t } = useT(["launcher", "common"]);
   // Always recompute stats from transcript (stored talk_time_ms may be 0),
   // then merge display names/colors from stored speakers for renamed speakers.
-  const [speakersState, setSpeakersState] = useState<SpeakerIdentity[]>(() => {
+  const speakers = useMemo<SpeakerIdentity[]>(() => {
     const synthetic = meeting.transcript.length > 0
       ? syntheticSpeakersFromTranscript(meeting, {
           you: t("common:labels.you"),
           them: t("common:labels.them"),
         })
       : [];
-    if (synthetic.length === 0) return (meeting.speakers ?? []).filter((s) => s.source !== "remote_tag");
+    if (synthetic.length === 0) return meeting.speakers ?? [];
     if (meeting.speakers && meeting.speakers.length > 0) {
       const storedMap = new Map(meeting.speakers.map(s => [s.id, s]));
       return synthetic.map(s => {
@@ -237,14 +247,7 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
       });
     }
     return synthetic;
-  });
-
-  const handleRename = useCallback((id: string, newName: string) => {
-    setSpeakersState((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, display_name: newName } : s))
-    );
-    // Note: persisting to DB requires a future IPC command (Task 23+)
-  }, []);
+  }, [meeting.transcript, meeting.speakers, t]);
 
   // Compute meeting timing for the temporal timeline
   const meetingStartMs = useMemo(
@@ -256,14 +259,14 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
     if (meeting.duration_seconds) return meeting.duration_seconds * 1000;
     // Fallback: derive from transcript timestamps
     if (meeting.transcript.length >= 2) {
-      const first = meeting.transcript[0].timestamp_ms;
-      const last = meeting.transcript[meeting.transcript.length - 1].timestamp_ms;
-      if (last > first) return last - first;
+      return meeting.transcript.reduce(
+        (lastMs, segment) => Math.max(lastMs, toElapsedMs(segment.timestamp_ms, meetingStartMs)), 0,
+      );
     }
     return 0;
-  }, [meeting.duration_seconds, meeting.transcript]);
+  }, [meeting.duration_seconds, meeting.transcript, meetingStartMs]);
 
-  if (speakersState.length === 0) {
+  if (speakers.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-muted-foreground/50">
         <Users className="mb-3 h-6 w-6" />
@@ -281,7 +284,7 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
       {meeting.transcript.length >= 2 && meetingDurationMs > 0 && (
         <SpeakerTimeline
           segments={meeting.transcript}
-          speakers={speakersState}
+          speakers={speakers}
           meetingStartMs={meetingStartMs}
           meetingDurationMs={meetingDurationMs}
           onSegmentClick={onSegmentClick}
@@ -289,16 +292,16 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
       )}
 
       <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-        {t("speakers.count", { count: speakersState.length })}
+        {t("speakers.count", { count: speakers.length })}
       </div>
       <div className="space-y-0.5">
-        {speakersState.map((speaker, i) => (
+        {speakers.map((speaker, i) => (
           <SpeakerRow
             key={speaker.id}
             speaker={speaker}
             color={speaker.color ?? speakerColorFor(i)}
-            allSpeakers={speakersState}
-            onRename={handleRename}
+            allSpeakers={speakers}
+            onRename={onRename}
           />
         ))}
       </div>

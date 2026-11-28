@@ -26,6 +26,7 @@ import type { TranslationParty } from "../lib/translation/types";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { isCurrentTranslationScope } from "./useTranslationEvents";
 import {
   errorMessage,
   notifyTranslationError,
@@ -50,6 +51,7 @@ function requestTranslation(line: SettleLine): Promise<boolean> {
   const translation = useTranslationStore.getState();
   const meetingId = line.meetingId ?? useMeetingStore.getState().activeMeeting?.id;
   if (!meetingId) return Promise.resolve(false);
+  const { targetLang } = translation;
   const config = useConfigStore.getState();
   const source = partySourceLanguage(
     partyOfSpeaker(line.speaker),
@@ -57,13 +59,14 @@ function requestTranslation(line: SettleLine): Promise<boolean> {
     config.meetingAudioConfig,
     config.sttLanguage,
   );
-  translation.startLiveRequest(line.id, line.text);
-  return translateSegments([line.id], [line.text], meetingId, translation.targetLang, source).then(
+  if (isCurrentTranslationScope(meetingId, targetLang)) translation.startLiveRequest(line.id, line.text);
+  return translateSegments([line.id], [line.text], meetingId, targetLang, source).then(
     () => true,
     (err) => {
       const message = errorMessage(err);
       console.error("[useAutoTranslate] Auto-translate failed:", message);
-      if (useTranslationStore.getState().failLiveRequest(line.id, line.text, message)) {
+      if (isCurrentTranslationScope(meetingId, targetLang)
+        && useTranslationStore.getState().failLiveRequest(line.id, line.text, message)) {
         notifyTranslationError(message);
       }
       return false;
@@ -83,7 +86,9 @@ export async function translateUntranslatedLines(
   skipIds: ReadonlySet<string> = new Set(),
 ): Promise<{ translated: number; failed: number }> {
   const translation = useTranslationStore.getState();
-  const inPerson = useMeetingStore.getState().audioMode === "in_person";
+  const meeting = useMeetingStore.getState();
+  const meetingId = meeting.activeMeeting?.id;
+  const inPerson = meeting.audioMode === "in_person";
   const lines = useTranscriptStore.getState().segments.filter((segment) => {
     if (!segment.is_final || !segment.text.trim() || skipIds.has(segment.id)) return false;
     const party = partyOfSpeaker(segment.speaker);
@@ -94,7 +99,8 @@ export async function translateUntranslatedLines(
   let translated = 0;
   let failed = 0;
   for (const segment of lines) {
-    if (await requestTranslation({ id: segment.id, text: segment.text, speaker: segment.speaker })) translated += 1;
+    if (!isCurrentTranslationScope(meetingId, translation.targetLang)) break;
+    if (await requestTranslation({ id: segment.id, text: segment.text, speaker: segment.speaker, meetingId })) translated += 1;
     else failed += 1;
   }
   return { translated, failed };

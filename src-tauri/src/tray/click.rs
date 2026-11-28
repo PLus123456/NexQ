@@ -31,7 +31,7 @@ pub fn handle_left_click(app: &AppHandle) {
         // The overlay window switches to the meeting view, then shows itself
         // (showing it first flashed an empty window).
         ClickTarget::MeetingOverlay => {
-            let _ = app.emit("tray_show_overlay", ());
+            let _ = app.emit_to("overlay", "tray_show_overlay", ());
         }
         ClickTarget::Dashboard => crate::show_launcher(app),
     }
@@ -45,7 +45,7 @@ pub fn handle_middle_click(app: &AppHandle) {
     let mgr = tray_mgr.lock().unwrap();
     if let Some(ref manager) = *mgr {
         if manager.meeting_active {
-            let _ = app.emit("tray_toggle_mic", ());
+            let _ = app.emit_to("launcher", "tray_toggle_mic", ());
         }
     }
 }

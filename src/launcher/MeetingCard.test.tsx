@@ -52,6 +52,15 @@ describe("MeetingCard scenario", () => {
   });
 });
 
+it("keeps the delete action out of a live meeting's history card", () => {
+  const props = { meeting: makeMeeting(), onSelect: vi.fn(), onDelete: vi.fn(), onRename: vi.fn() };
+  const { rerender } = render(<MeetingCard {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Delete meeting" }));
+  rerender(<MeetingCard {...props} isLive />);
+  expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+  expect(props.onDelete).not.toHaveBeenCalled();
+});
+
 describe("MeetingCard rename", () => {
   it("clicking save commits the edited title once", async () => {
     const { onRename, user } = setup();

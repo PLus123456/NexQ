@@ -3,6 +3,7 @@
 // tokenizer.json, and config.json.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,29 +40,52 @@ impl OpusMtManager {
 
         // Load persisted active model
         let active_file = models_dir.join("active_model.txt");
-        let active_model_id = std::fs::read_to_string(&active_file)
+        let saved_model_id = std::fs::read_to_string(&active_file)
             .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+            .map(|s| s.trim().to_string());
 
-        Self {
+        let mut manager = Self {
             models_dir,
             active_downloads: HashMap::new(),
-            active_model_id,
-        }
+            active_model_id: None,
+        };
+        manager.active_model_id = saved_model_id.filter(|id| manager.is_downloaded(id));
+        manager
     }
 
-    /// Get the directory path for a given model.
-    pub fn model_dir(&self, model_id: &str) -> PathBuf {
-        self.models_dir.join(model_id)
+    /// Resolves only registered models stored in a real child directory.
+    fn installed_model_dir(&self, model_id: &str) -> Result<Option<PathBuf>, String> {
+        let model = opus_mt_registry::get_model(model_id).ok_or("Unknown OPUS-MT model")?;
+        let dir = self.models_dir.join(model.model_id);
+        let metadata = match std::fs::symlink_metadata(&dir) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("Failed to inspect model directory: {e}")),
+        };
+        if !metadata.is_dir() {
+            return Err("Invalid OPUS-MT model directory".into());
+        }
+
+        let base = self.models_dir.canonicalize()
+            .map_err(|e| format!("Failed to resolve OPUS-MT models directory: {e}"))?;
+        let dir = dir.canonicalize()
+            .map_err(|e| format!("Failed to resolve OPUS-MT model directory: {e}"))?;
+        if dir != base.join(model.model_id) {
+            return Err("Invalid OPUS-MT model directory".into());
+        }
+
+        Ok(Some(dir))
     }
 
     /// Check if all required files for a model exist on disk.
     pub fn is_downloaded(&self, model_id: &str) -> bool {
-        let dir = self.model_dir(model_id);
-        dir.join("encoder_model.onnx").exists()
-            && dir.join("decoder_model_merged.onnx").exists()
-            && dir.join("tokenizer.json").exists()
+        self.installed_model_dir(model_id).is_ok_and(|dir| {
+            dir.is_some_and(|dir| {
+                ["encoder_model.onnx", "decoder_model_merged.onnx", "tokenizer.json"]
+                    .iter()
+                    .all(|name| dir.join(name).is_file())
+            })
+        })
     }
 
     /// Get the currently active model ID.
@@ -94,21 +118,16 @@ impl OpusMtManager {
         if !self.is_downloaded(model_id) {
             return Err(format!("Model {} is not downloaded", model_id));
         }
-        if opus_mt_registry::get_model(model_id).is_none() {
-            return Err(format!("Unknown model: {}", model_id));
-        }
-
-        self.active_model_id = Some(model_id.to_string());
         let active_file = self.models_dir.join("active_model.txt");
-        if let Err(e) = std::fs::write(&active_file, model_id) {
-            log::error!("Failed to persist active model: {}", e);
-        }
+        std::fs::write(&active_file, model_id)
+            .map_err(|e| format!("Failed to persist active model: {e}"))?;
+        self.active_model_id = Some(model_id.to_string());
         log::info!("OPUS-MT model activated: {}", model_id);
         Ok(())
     }
 
     /// Deactivate the current model.
-    pub fn deactivate(&mut self) {
+    fn deactivate(&mut self) {
         self.active_model_id = None;
         let active_file = self.models_dir.join("active_model.txt");
         let _ = std::fs::remove_file(&active_file);
@@ -287,8 +306,7 @@ impl OpusMtManager {
 
     /// Delete a downloaded model from disk.
     pub fn delete_model(&mut self, model_id: &str) -> Result<(), String> {
-        let dir = self.model_dir(model_id);
-        if dir.is_dir() {
+        if let Some(dir) = self.installed_model_dir(model_id)? {
             std::fs::remove_dir_all(&dir)
                 .map_err(|e| format!("Failed to delete model: {}", e))?;
         }
@@ -300,6 +318,42 @@ impl OpusMtManager {
 
         log::info!("Deleted OPUS-MT model: {}", model_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODEL_ID: &str = "opus-mt-en-es";
+
+    #[test]
+    fn delete_accepts_only_registered_model_directories() {
+        let root = std::env::temp_dir().join(format!("nexq-opus-mt-{}", uuid::Uuid::new_v4()));
+        let mut manager = OpusMtManager::new(root.clone());
+        assert_eq!(manager.installed_model_dir(MODEL_ID).unwrap(), None);
+        assert!(manager.installed_model_dir("unknown-model").is_err());
+
+        let model = root.join(MODEL_ID);
+        std::fs::create_dir(&model).unwrap();
+        for name in ["encoder_model.onnx", "decoder_model_merged.onnx", "tokenizer.json"] {
+            std::fs::write(model.join(name), b"").unwrap();
+        }
+        manager.activate_model(MODEL_ID).unwrap();
+        assert_eq!(manager.active_model_id(), Some(MODEL_ID));
+        manager.delete_model(MODEL_ID).unwrap();
+        assert!(!model.exists());
+        assert_eq!(manager.active_model_id(), None);
+        assert!(!root.join("active_model.txt").exists());
+
+        #[cfg(unix)]
+        {
+            let other = root.join("other");
+            std::fs::create_dir(&other).unwrap();
+            std::os::unix::fs::symlink(&other, &model).unwrap();
+            assert!(manager.installed_model_dir(MODEL_ID).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

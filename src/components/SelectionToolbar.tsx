@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { errorMessage, useTranslationStore } from "../stores/translationStore";
 import { showToast } from "../stores/toastStore";
 import { translateText } from "../lib/ipc";
@@ -14,44 +15,43 @@ export function SelectionToolbar() {
   const sourceLang = useTranslationStore((s) => s.sourceLang);
 
   const [selectedText, setSelectedText] = useState("");
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [translationResult, setTranslationResult] = useState<TranslationResult | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  const revision = useRef(0);
+
+  const resetTranslation = useCallback(() => {
+    revision.current += 1;
+    setTranslationResult(null);
+    setIsTranslating(false);
+  }, []);
+
+  const dismiss = useCallback(() => {
+    setAnchor(null);
+    resetTranslation();
+  }, [resetTranslation]);
 
   // Handle text selection
-  const handleMouseUp = useCallback(() => {
-    if (!enabled) return;
+  const handleMouseUp = useCallback((event: MouseEvent) => {
+    if (!enabled || toolbarRef.current?.contains(event.target as Node)) return;
     const sel = window.getSelection();
     const text = sel?.toString().trim();
-    if (!text || text.length < 2) {
-      // Don't dismiss immediately — let click-outside handle it
-      return;
-    }
-    const range = sel?.getRangeAt(0);
-    if (!range) return;
-    const rect = range.getBoundingClientRect();
+    if (!sel?.rangeCount || !text || text.length < 2) return;
     setSelectedText(text);
-    setPosition({
-      top: rect.top + window.scrollY - 40,
-      left: rect.left + window.scrollX + rect.width / 2,
-    });
-    setTranslationResult(null);
-  }, [enabled]);
+    setAnchor(sel.getRangeAt(0).getBoundingClientRect());
+    resetTranslation();
+  }, [enabled, resetTranslation]);
 
   // Dismiss on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
-        setPosition(null);
-        setTranslationResult(null);
+        dismiss();
       }
     };
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setPosition(null);
-        setTranslationResult(null);
-      }
+      if (e.key === "Escape") dismiss();
     };
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
@@ -59,16 +59,45 @@ export function SelectionToolbar() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [dismiss]);
 
   useEffect(() => {
     document.addEventListener("mouseup", handleMouseUp);
     return () => document.removeEventListener("mouseup", handleMouseUp);
   }, [handleMouseUp]);
 
+  useEffect(() => {
+    if (enabled) resetTranslation();
+    else dismiss();
+    return () => { revision.current += 1; };
+  }, [enabled, targetLang, sourceLang, dismiss, resetTranslation]);
+
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar || !anchor) return;
+    const placeToolbar = () => {
+      const { width, height } = toolbar.getBoundingClientRect();
+      const margin = 8;
+      const center = anchor.left + anchor.width / 2;
+      const above = anchor.top - height - margin;
+      const top = above >= margin ? above : anchor.bottom + margin;
+      toolbar.style.left = `${Math.max(margin, Math.min(center - width / 2, window.innerWidth - width - margin))}px`;
+      toolbar.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`;
+    };
+    placeToolbar();
+    window.addEventListener("resize", placeToolbar);
+    return () => window.removeEventListener("resize", placeToolbar);
+  }, [anchor, enabled, isTranslating, translationResult]);
+
   const handleTranslate = async () => {
     if (!selectedText) return;
     const lang = targetLang || "en";
+    const request = ++revision.current;
+    const isCurrent = () => {
+      const config = useTranslationStore.getState();
+      return request === revision.current && config.selectionToolbarEnabled
+        && targetLang === config.targetLang && sourceLang === config.sourceLang;
+    };
     setIsTranslating(true);
     try {
       const result = await translateText(
@@ -76,30 +105,30 @@ export function SelectionToolbar() {
         lang,
         sourceLang === "auto" ? undefined : sourceLang
       );
-      setTranslationResult(result);
+      if (isCurrent()) setTranslationResult(result);
     } catch (err) {
+      if (!isCurrent()) return;
       console.error("[SelectionToolbar] Translation failed:", err);
       showToast(t("errors.translateFailed", { detail: errorMessage(err) }), "error");
     } finally {
-      setIsTranslating(false);
+      if (isCurrent()) setIsTranslating(false);
     }
   };
 
   const handleCopy = () => {
     navigator.clipboard.writeText(selectedText);
-    setPosition(null);
+    dismiss();
   };
 
-  if (!position || !enabled) return null;
+  if (!anchor || !enabled) return null;
 
-  return (
+  return createPortal(
     <div
       ref={toolbarRef}
-      className="fixed z-[9999]"
-      style={{ top: position.top, left: position.left, transform: "translateX(-50%)" }}
+      className="fixed z-[9999] w-max max-w-[calc(100vw-16px)]"
     >
       {/* Mini toolbar */}
-      <div className="flex gap-0.5 rounded-lg border border-border/40 bg-popover p-1 shadow-xl">
+      <div className="flex w-fit gap-0.5 rounded-lg border border-border/40 bg-popover p-1 shadow-xl">
         <button
           onClick={handleTranslate}
           disabled={isTranslating}
@@ -123,6 +152,7 @@ export function SelectionToolbar() {
           onClose={() => setTranslationResult(null)}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

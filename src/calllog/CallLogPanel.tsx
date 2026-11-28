@@ -3,8 +3,10 @@ import { useT } from "../i18n";
 import { useCallLogStore } from "../stores/callLogStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useTranslationStore } from "../stores/translationStore";
-import { exportTranslatedTranscript } from "../lib/ipc";
+import { exportTranslatedTranscript, writeClipboardText } from "../lib/ipc";
+import { saveExportFile } from "../lib/export";
 import { showToast } from "../stores/toastStore";
+import { useTranscriptStore } from "../stores/transcriptStore";
 import { CallLogEntry } from "./CallLogEntry";
 import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
 import { useAgentStore } from "../stores/agentStore";
@@ -12,6 +14,7 @@ import { formatUsageSummary, formatCostEstimate, formatDuration, isApiBilled } f
 import { PromptViewer } from "./PromptViewer";
 import { callLogStats, filterLabel, formatCompactTokens } from "./stats";
 import type { LogFilterKind } from "../lib/types";
+import type { TranslationExportFormat } from "../lib/translation/types";
 import {
   X,
   Trash2,
@@ -113,27 +116,34 @@ export function CallLogPanel() {
   }, [showExportMenu]);
 
   // Export translated transcript
-  const handleExport = useCallback(async (format: string) => {
-    if (!meetingId) return;
+  const handleExport = useCallback(async (format: TranslationExportFormat | "clipboard") => {
+    if (!meetingId || useMeetingStore.getState().activeMeeting?.id !== meetingId) return;
+    setShowExportMenu(false);
     try {
-      const content = await exportTranslatedTranscript(meetingId, targetLang, format);
+      const liveSegments = useTranscriptStore.getState().segments.filter((segment) => segment.is_final)
+        .map(({ id, text, speaker, timestamp_ms }) => ({ id, text, speaker, timestamp_ms }));
+      const content = await exportTranslatedTranscript(
+        meetingId, targetLang, format === "clipboard" ? "bilingual_txt" : format, liveSegments,
+      );
       if (format === "clipboard") {
-        await navigator.clipboard.writeText(content);
+        if (!content.trim()) {
+          showToast(t("common:status.nothingToCopy"), "info");
+          return;
+        }
+        await writeClipboardText(content);
         showToast(t("panel.export.copied"), "success");
       } else {
-        const blob = new Blob([content], { type: "text/plain" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `transcript-${format.replace("_", "-")}.${format.includes("md") ? "md" : "txt"}`; // i18n-ignore: 下载的文件名
-        a.click();
-        URL.revokeObjectURL(url);
-        showToast(t("panel.export.downloaded"), "success");
+        const extension = format === "bilingual_md" ? "md" : "txt";
+        await saveExportFile({
+          defaultName: `transcript-${format.replace("_", "-")}`, // i18n-ignore: 下载的文件名
+          extension,
+          filterLabel: extension.toUpperCase(),
+          content,
+        });
       }
     } catch (err) {
       showToast(t("panel.export.failed", { detail: String(err) }), "error");
     }
-    setShowExportMenu(false);
   }, [meetingId, targetLang, t]);
 
   const handleClose = useCallback(() => setOpen(false), [setOpen]);
@@ -162,7 +172,7 @@ export function CallLogPanel() {
               </div>
               <div className="flex items-center gap-1">
                 {/* Export dropdown */}
-                {meetingId && entries.length > 0 && (
+                {meetingId && (
                   <div className="relative" ref={exportMenuRef}>
                     <button
                       onClick={() => setShowExportMenu((v) => !v)}

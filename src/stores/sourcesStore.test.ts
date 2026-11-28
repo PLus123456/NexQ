@@ -39,6 +39,17 @@ vi.mock("@tauri-apps/api/core", () => ({
       throw "state not managed for field `state` on command `set_personal_sources`. You must call `.manage()` before using this command";
     }
     if (cmd === "set_personal_sources" && backend.reject) throw new Error(backend.reject);
+    if (cmd === "set_personal_sources") {
+      const { config, write } = args as { config: PersonalSourcesConfig; write?: { expected: unknown } };
+      if (write) {
+        if (JSON.stringify(write.expected) !== JSON.stringify(saved.get("personalSources") ?? null)) {
+          throw "SOURCE_CONFIG_CHANGED";
+        }
+        writes.count++;
+        saved.set("personalSources", structuredClone(config));
+        for (const l of keyListeners) if (l.key === "personalSources") l.cb(structuredClone(config));
+      }
+    }
     return null;
   }),
 }));
@@ -209,6 +220,18 @@ describe("sourcesStore", () => {
     expect(w.useSourcesStore.getState().config.notes_folders).toHaveLength(1);
     const last = pushes()[pushes().length - 1].args as { config: PersonalSourcesConfig };
     expect(last.config.notes_folders).toHaveLength(1);
+  });
+
+  it("retries conflicting edits and keeps both independent changes across windows", async () => {
+    const a = await openWindow();
+    const b = await openWindow();
+    const before = pushes().length;
+    await Promise.all([
+      a.useSourcesStore.getState().setConfig((current) => ({ ...current, notes_folders: config().notes_folders })),
+      b.useSourcesStore.getState().setConfig((current) => ({ ...current, mcp_servers: [server()] })),
+    ]);
+    expect(saved.get("personalSources")).toMatchObject({ notes_folders: config().notes_folders, mcp_servers: [server()] });
+    expect(pushes().length - before).toBe(3);
   });
 
   it("enabledKinds: tools means an enabled, signed-in server with an allowed tool", async () => {

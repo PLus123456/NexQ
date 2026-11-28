@@ -129,7 +129,7 @@ export function LLMSettings() {
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
   const activateLLMProvider = useConfigStore((s) => s.activateLLMProvider);
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
-  const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
+  const setCloudProviderVerified = useConfigStore((s) => s.setCloudProviderVerified);
   const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
   const claudeModels = useConfigStore((s) => s.claudeModels) ?? undefined;
   const claudeStatus = useAgentStore((s) => s.status);
@@ -320,9 +320,7 @@ export function LLMSettings() {
         setConnectionStatus("success");
         setConnectionMessage(t("legacy.connection.success"));
         // Mark as verified
-        if (!verifiedCloudProviders.includes(selectedProvider)) {
-          setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
-        }
+        setCloudProviderVerified(selectedProvider, true);
         setKeyStatusMap((prev) => ({ ...prev, [selectedProvider]: true }));
       } else {
         setConnectionStatus("error");

@@ -71,16 +71,19 @@ pub fn credential_read(provider: &str) -> Result<Option<String>, String> {
                 let blob_size = cred.CredentialBlobSize as usize;
                 let blob_ptr = cred.CredentialBlob;
 
-                let key = if blob_size > 0 && !blob_ptr.is_null() {
-                    let blob_slice = slice::from_raw_parts(blob_ptr, blob_size);
-                    String::from_utf8(blob_slice.to_vec())
-                        .map_err(|e| format!("Invalid UTF-8 in credential: {}", e))?
+                let result = if blob_size == 0 {
+                    Ok(None)
+                } else if blob_ptr.is_null() {
+                    Err("Invalid credential: missing credential data".to_string())
                 } else {
-                    String::new()
+                    let blob_slice = slice::from_raw_parts(blob_ptr, blob_size);
+                    std::str::from_utf8(blob_slice)
+                        .map(|key| Some(key.to_owned()))
+                        .map_err(|e| format!("Invalid UTF-8 in credential: {e}"))
                 };
 
                 CredFree(pcred as *const std::ffi::c_void);
-                Ok(Some(key))
+                result
             }
             Err(e) => {
                 if e.code() == ERROR_NOT_FOUND.into() {

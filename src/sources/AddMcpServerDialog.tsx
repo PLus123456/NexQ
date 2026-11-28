@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Trans, useT } from "../i18n";
 import type { ClaudeCodeMcpServer, FormPair, McpServer, McpServerForm } from "../lib/types";
@@ -73,6 +73,31 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
   const [busy, setBusy] = useState<"json" | "form" | "check" | "claude" | null>(null);
+  const operation = useRef<typeof busy>(null);
+  const closed = useRef(false);
+  const committing = useRef(false);
+  useEffect(() => {
+    closed.current = false;
+    return () => { closed.current = true; };
+  }, []);
+
+  const start = (kind: NonNullable<typeof busy>) => {
+    if (operation.current || closed.current) return false;
+    operation.current = kind;
+    setBusy(kind);
+    return true;
+  };
+
+  const stop = () => {
+    operation.current = null;
+    if (!closed.current) setBusy(null);
+  };
+
+  const close = () => {
+    if (committing.current) return;
+    closed.current = true;
+    onClose();
+  };
 
   useEffect(() => {
     if (tab !== "claude" || ccServers || ccError) return;
@@ -107,28 +132,38 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
   }, [envNamesKey]);
 
   const finish = async (servers: McpServer[], replace = false) => {
-    try {
-      if (replace) for (const s of servers) await replaceMcpServer(s);
-      else await addMcpServers(servers);
-    } catch (e) {
-      // Not saved: the backend must not keep their keys.
-      if (!replace) void discardPendingMcpServers(servers.map((s) => s.id)).catch(() => {});
-      throw e;
+    const discard = () => discardPendingMcpServers(servers.map((s) => s.id));
+    if (closed.current) {
+      await discard();
+      return;
     }
+    committing.current = true;
+    try {
+      const canCommit = () => !closed.current;
+      if (replace) for (const s of servers) await replaceMcpServer(s, canCommit);
+      else await addMcpServers(servers, canCommit);
+    } catch (e) {
+      await discard().catch((error) => console.warn("Could not discard pending MCP credentials:", error));
+      throw e;
+    } finally {
+      committing.current = false;
+    }
+    if (closed.current) return;
     onAdded?.(servers);
+    closed.current = true;
     onClose();
   };
 
   const submitJson = async () => {
-    setBusy("json");
+    if (!start("json")) return;
     setJsonError(null);
     try {
       const servers = await importMcpServersJson(json);
       await finish(servers);
     } catch (e) {
-      setJsonError(errorText(e));
+      if (!closed.current) setJsonError(errorText(e));
     } finally {
-      setBusy(null);
+      stop();
     }
   };
 
@@ -143,30 +178,37 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
     env: env.filter((p) => p.name.trim()).map((p) => ({ name: p.name.trim(), value: p.value })),
     headers: kind === "http" ? headers.filter((p) => p.name.trim()).map((p) => ({ name: p.name.trim(), value: p.value })) : [],
   });
+  const latestForm = useRef(buildForm);
+  latestForm.current = buildForm;
+  useEffect(() => { setCheckResult(null); }, [label, kind, command, argsText, url, env, headers]);
 
   const formReady = label.trim() !== "" && (kind === "stdio" ? command.trim() !== "" : url.trim() !== "");
 
   const submitForm = async () => {
-    setBusy("form");
+    if (!start("form")) return;
     setFormError(null);
     setSecretsError(null);
     try {
       const saved = await saveMcpServerForm(buildForm());
       await finish([saved], !!editing);
     } catch (e) {
+      if (closed.current) return;
       const text = errorText(e);
       if (SECRETS_AGAIN.test(text)) setSecretsError(text);
       else setFormError(text);
     } finally {
-      setBusy(null);
+      stop();
     }
   };
 
   const checkForm = async () => {
-    setBusy("check");
+    if (!start("check")) return;
     setCheckResult(null);
+    const form = buildForm();
+    const isCurrent = () => !closed.current && JSON.stringify(latestForm.current()) === JSON.stringify(form);
     try {
-      const result = await checkMcpServer(edit?.id ?? null, buildForm());
+      const result = await checkMcpServer(edit?.id ?? null, form);
+      if (!isCurrent()) return;
       const c = result.last_check;
       setCheckResult(
         c?.ok
@@ -174,22 +216,22 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
           : { ok: false, text: t("mcp.status.failed", { detail: c?.error ?? t("mcp.status.failedDefault") }) },
       );
     } catch (e) {
-      setCheckResult({ ok: false, text: t("mcp.status.failed", { detail: errorText(e) }) });
+      if (isCurrent()) setCheckResult({ ok: false, text: t("mcp.status.failed", { detail: errorText(e) }) });
     } finally {
-      setBusy(null);
+      stop();
     }
   };
 
   const submitClaude = async () => {
-    setBusy("claude");
+    if (!start("claude")) return;
     setCcError(null);
     try {
       const servers = await importClaudeCodeMcpServers([...picked]);
       await finish(servers);
     } catch (e) {
-      setCcError(errorText(e));
+      if (!closed.current) setCcError(errorText(e));
     } finally {
-      setBusy(null);
+      stop();
     }
   };
 
@@ -197,7 +239,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
     "cursor-pointer rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground transition-all duration-150 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <SourcesModal title={editing ? t("dialog.titleEdit", { name: editing.label }) : t("dialog.titleAdd")} onClose={onClose} wide>
+    <SourcesModal title={editing ? t("dialog.titleEdit", { name: editing.label }) : t("dialog.titleAdd")} onClose={close} wide>
       {!editing && (
         <div role="tablist" aria-label={t("dialog.tabsAria")} className="mb-4 flex rounded-lg border border-border/50 bg-secondary/30 p-0.5">
           {tabs.map((item) => (
@@ -206,6 +248,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
               type="button"
               role="tab"
               aria-selected={tab === item.id}
+              disabled={busy !== null}
               onClick={() => setTab(item.id)}
               className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-150 ${
                 tab === item.id ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:text-foreground"
@@ -237,7 +280,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
             </p>
           )}
           <div className="flex justify-end">
-            <button type="button" onClick={submitJson} disabled={!json.trim() || busy === "json"} className={primaryButton}>
+            <button type="button" onClick={submitJson} disabled={!json.trim() || busy !== null} className={primaryButton}>
               {busy === "json" ? t("dialog.json.adding") : t("dialog.json.add")}
             </button>
           </div>
@@ -400,7 +443,7 @@ export function AddMcpServerDialog({ onClose, onAdded, editing }: AddMcpServerDi
             </p>
           )}
           <div className="flex justify-end">
-            <button type="button" onClick={submitClaude} disabled={picked.size === 0 || busy === "claude"} className={primaryButton}>
+            <button type="button" onClick={submitClaude} disabled={picked.size === 0 || busy !== null} className={primaryButton}>
               {busy === "claude" ? t("dialog.claude.importing") : t("dialog.claude.import")}
             </button>
           </div>

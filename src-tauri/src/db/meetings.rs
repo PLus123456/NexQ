@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -172,6 +172,45 @@ pub fn create_meeting(conn: &Connection, title: &str) -> Result<Meeting, Databas
     })
 }
 
+/// Merge completed or interrupted answers by ID without replacing earlier history.
+pub fn merge_meeting_ai_interactions(
+    conn: &Connection,
+    meeting_id: &str,
+    incoming: Vec<serde_json::Value>,
+) -> Result<(), DatabaseError> {
+    let transaction = conn.unchecked_transaction()?;
+    let previous: String = transaction.query_row(
+        "SELECT ai_interactions FROM meetings WHERE id = ?1",
+        [meeting_id],
+        |row| row.get(0),
+    )?;
+    let mut entries: Vec<serde_json::Value> = serde_json::from_str(&previous).unwrap_or_default();
+    let mut positions: std::collections::HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| Some((entry.get("id")?.as_str()?.to_owned(), index)))
+        .collect();
+    for entry in incoming {
+        let id = entry.get("id").and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| DatabaseError::Query("AI interaction requires an ID".into()))?;
+        if let Some(&index) = positions.get(id) {
+            entries[index] = entry;
+        } else {
+            positions.insert(id.to_owned(), entries.len());
+            entries.push(entry);
+        }
+    }
+    let timestamp = |entry: &serde_json::Value| {
+        entry.get("timestamp").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned()
+    };
+    entries.sort_by_cached_key(|entry| std::cmp::Reverse(timestamp(entry)));
+    let json = serde_json::to_string(&entries).map_err(|err| DatabaseError::Query(err.to_string()))?;
+    transaction.execute("UPDATE meetings SET ai_interactions = ?1 WHERE id = ?2", params![json, meeting_id])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 /// Get a single meeting by ID, with its transcript segments joined in.
 pub fn get_meeting(conn: &Connection, id: &str) -> Result<Meeting, DatabaseError> {
     let mut stmt = conn.prepare(
@@ -217,10 +256,24 @@ pub fn get_meeting(conn: &Connection, id: &str) -> Result<Meeting, DatabaseError
         })?;
 
     // Also fetch and merge transcript segments into the transcript array
-    let segments = list_transcript_segments(conn, id)?;
     let mut meeting = meeting;
+    let start_ms = chrono::DateTime::parse_from_rfc3339(&meeting.start_time)
+        .map(|time| time.timestamp_millis())
+        .unwrap_or_default();
+    let mut segments = list_transcript_segments(conn, id)?;
     if !segments.is_empty() {
+        for segment in &mut segments {
+            segment.timestamp_ms = absolute_meeting_time_ms(segment.timestamp_ms, start_ms);
+        }
+        segments.sort_by_key(|segment| segment.timestamp_ms);
         meeting.transcript = serde_json::to_value(&segments).unwrap_or(serde_json::json!([]));
+    } else if let Some(legacy_segments) = meeting.transcript.as_array_mut() {
+        for segment in legacy_segments.iter_mut() {
+            if let Some(timestamp_ms) = segment["timestamp_ms"].as_i64() {
+                segment["timestamp_ms"] = absolute_meeting_time_ms(timestamp_ms, start_ms).into();
+            }
+        }
+        legacy_segments.sort_by_key(|segment| segment["timestamp_ms"].as_i64());
     }
 
     // Load feature tables
@@ -374,48 +427,114 @@ pub fn update_meeting_recording(
     id: &str,
     recording_path: &str,
     recording_size: i64,
-    waveform_path: &str,
+    waveform_path: Option<&str>,
     recording_offset_ms: i64,
-) -> Result<(), DatabaseError> {
-    let rows = conn.execute(
+) -> rusqlite::Result<usize> {
+    conn.execute(
         "UPDATE meetings SET recording_path = ?1, recording_size = ?2, waveform_path = ?3, recording_offset_ms = ?4 WHERE id = ?5",
         params![recording_path, recording_size, waveform_path, recording_offset_ms, id],
-    )?;
+    )
+}
 
-    if rows == 0 {
-        return Err(DatabaseError::NotFound(format!(
-            "Meeting {} not found",
-            id
-        )));
-    }
+fn recording_paths(
+    conn: &Connection,
+    id: &str,
+) -> Result<(Option<String>, Option<String>), DatabaseError> {
+    conn.query_row(
+        "SELECT recording_path, waveform_path FROM meetings WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => DatabaseError::NotFound(format!("Meeting {id} not found")),
+        other => other.into(),
+    })
+}
+
+/// Delete a meeting and queue its files for cleanup in the same transaction.
+/// The segment and translation foreign keys cascade.
+pub fn delete_meeting(conn: &Connection, id: &str) -> Result<(), DatabaseError> {
+    let transaction = conn.unchecked_transaction()?;
+    queue_recording_file_deletion(&transaction, id)?;
+    transaction.execute("DELETE FROM meeting_speakers WHERE meeting_id = ?1", [id])?;
+    transaction.execute("DELETE FROM meeting_bookmarks WHERE meeting_id = ?1", [id])?;
+    transaction.execute("DELETE FROM meeting_action_items WHERE meeting_id = ?1", [id])?;
+    transaction.execute("DELETE FROM meeting_topic_sections WHERE meeting_id = ?1", [id])?;
+    super::meeting_chat::delete_chat_messages(&transaction, id)?;
+    transaction.execute("DELETE FROM meetings WHERE id = ?1", [id])?;
+    transaction.commit()?;
 
     Ok(())
 }
 
-/// Delete a meeting and all its related data (feature tables + segments).
-pub fn delete_meeting(conn: &Connection, id: &str) -> Result<(), DatabaseError> {
-    // Delete from feature tables first
-    conn.execute("DELETE FROM meeting_speakers WHERE meeting_id = ?1", params![id])?;
-    conn.execute("DELETE FROM meeting_bookmarks WHERE meeting_id = ?1", params![id])?;
-    conn.execute("DELETE FROM meeting_action_items WHERE meeting_id = ?1", params![id])?;
-    conn.execute("DELETE FROM meeting_topic_sections WHERE meeting_id = ?1", params![id])?;
-    super::meeting_chat::delete_chat_messages(conn, id)?;
-
-    // Then existing deletes (segments + meeting)
-    conn.execute(
-        "DELETE FROM transcript_segments WHERE meeting_id = ?1",
-        params![id],
+/// Clear recording metadata and queue its files without removing the meeting.
+pub fn delete_recording(conn: &Connection, id: &str) -> Result<(), DatabaseError> {
+    let transaction = conn.unchecked_transaction()?;
+    queue_recording_file_deletion(&transaction, id)?;
+    transaction.execute(
+        "UPDATE meetings SET recording_path = NULL, recording_size = NULL,
+         waveform_path = NULL, recording_offset_ms = NULL WHERE id = ?1",
+        [id],
     )?;
-
-    let rows = conn.execute("DELETE FROM meetings WHERE id = ?1", params![id])?;
-    if rows == 0 {
-        return Err(DatabaseError::NotFound(format!(
-            "Meeting {} not found",
-            id
-        )));
-    }
-
+    transaction.commit()?;
     Ok(())
+}
+
+fn queue_recording_file_deletion(conn: &Connection, id: &str) -> Result<(), DatabaseError> {
+    let (recording, waveform) = recording_paths(conn, id)?;
+    conn.execute(
+        "INSERT INTO recording_file_deletions (meeting_id, recording_path, waveform_path)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(meeting_id) DO UPDATE SET
+            recording_path = COALESCE(recording_file_deletions.recording_path, excluded.recording_path),
+            waveform_path = COALESCE(recording_file_deletions.waveform_path, excluded.waveform_path)",
+        params![id, recording, waveform],
+    )?;
+    Ok(())
+}
+
+pub fn pending_recording_file_deletion(
+    conn: &Connection,
+    id: &str,
+) -> rusqlite::Result<Option<(Option<String>, Option<String>)>> {
+    conn.query_row(
+        "SELECT recording_path, waveform_path FROM recording_file_deletions WHERE meeting_id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()
+}
+
+pub fn pending_recording_file_deletion_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare("SELECT meeting_id FROM recording_file_deletions")?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub fn confirm_recording_file_deletion(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM recording_file_deletions WHERE meeting_id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn list_meeting_history_ids(
+    conn: &Connection,
+    active_meeting_id: Option<&str>,
+) -> Result<Vec<String>, DatabaseError> {
+    let mut statement = conn.prepare("SELECT id FROM meetings WHERE id IS NOT ?1")?;
+    let rows = statement.query_map([active_meeting_id], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn ensure_meeting_exists(conn: &Connection, meeting_id: &str) -> Result<(), DatabaseError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1)",
+        [meeting_id],
+        |row| row.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(DatabaseError::NotFound(format!("Meeting {meeting_id} not found")))
+    }
 }
 
 /// Search meetings by title and transcript segment text.
@@ -467,9 +586,18 @@ pub fn append_transcript_segment(
     segment: &TranscriptSegment,
 ) -> Result<(), DatabaseError> {
     conn.execute(
-        "INSERT OR REPLACE INTO transcript_segments
+        "INSERT INTO transcript_segments
             (id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at, speaker_tag)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(meeting_id, id) DO UPDATE SET
+            text = excluded.text,
+            speaker = excluded.speaker,
+            speaker_id = excluded.speaker_id,
+            timestamp_ms = excluded.timestamp_ms,
+            is_final = excluded.is_final,
+            confidence = excluded.confidence,
+            speaker_tag = excluded.speaker_tag
+         WHERE excluded.is_final OR NOT transcript_segments.is_final",
         params![
             segment.id,
             meeting_id,
@@ -487,7 +615,28 @@ pub fn append_transcript_segment(
     Ok(())
 }
 
-/// List all transcript segments for a given meeting, ordered by timestamp.
+/// Legacy captures used in-meeting offsets alongside Unix-millisecond timestamps.
+pub fn relative_meeting_time_ms(timestamp_ms: i64, meeting_start_ms: i64) -> i64 {
+    if is_epoch_timestamp(timestamp_ms) && meeting_start_ms > 0 {
+        timestamp_ms.saturating_sub(meeting_start_ms).max(0)
+    } else {
+        timestamp_ms.max(0)
+    }
+}
+
+fn is_epoch_timestamp(timestamp_ms: i64) -> bool {
+    timestamp_ms >= crate::stt::segment_accumulator::EPOCH_MS_FLOOR as i64
+}
+
+fn absolute_meeting_time_ms(timestamp_ms: i64, meeting_start_ms: i64) -> i64 {
+    if is_epoch_timestamp(timestamp_ms) || meeting_start_ms <= 0 {
+        timestamp_ms
+    } else {
+        meeting_start_ms.saturating_add(timestamp_ms.max(0))
+    }
+}
+
+/// List transcript segments in insertion order to break ties after time normalization.
 fn list_transcript_segments(
     conn: &Connection,
     meeting_id: &str,
@@ -496,7 +645,7 @@ fn list_transcript_segments(
         "SELECT id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at, speaker_tag
          FROM transcript_segments
          WHERE meeting_id = ?1
-         ORDER BY timestamp_ms ASC",
+         ORDER BY rowid",
     )?;
 
     let rows = stmt.query_map(params![meeting_id], |row| {
@@ -542,12 +691,14 @@ pub fn save_meeting_speakers(
     meeting_id: &str,
     speakers: &[MeetingSpeaker],
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, meeting_id)?;
+    transaction.execute(
         "DELETE FROM meeting_speakers WHERE meeting_id = ?1",
         params![meeting_id],
     )?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = transaction.prepare(
         "INSERT INTO meeting_speakers
             (id, meeting_id, speaker_id, display_name, source, color, segment_count, word_count, talk_time_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -567,6 +718,8 @@ pub fn save_meeting_speakers(
         ])?;
     }
 
+    drop(stmt);
+    transaction.commit()?;
     Ok(())
 }
 
@@ -578,17 +731,20 @@ pub fn rename_speaker(
     speaker_id: &str,
     new_name: &str,
 ) -> Result<(), DatabaseError> {
-    let updated = conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, meeting_id)?;
+    let updated = transaction.execute(
         "UPDATE meeting_speakers SET display_name = ?1 WHERE meeting_id = ?2 AND speaker_id = ?3",
         params![new_name, meeting_id, speaker_id],
     )?;
     if updated == 0 && speaker_id.starts_with("them:") {
-        conn.execute(
+        transaction.execute(
             "INSERT INTO meeting_speakers (id, meeting_id, speaker_id, display_name, source)
              VALUES (?1, ?2, ?3, ?4, 'remote_tag')",
             params![Uuid::new_v4().to_string(), meeting_id, speaker_id, new_name],
         )?;
     }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -642,12 +798,14 @@ pub fn save_meeting_bookmarks(
     meeting_id: &str,
     bookmarks: &[MeetingBookmark],
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, meeting_id)?;
+    transaction.execute(
         "DELETE FROM meeting_bookmarks WHERE meeting_id = ?1",
         params![meeting_id],
     )?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = transaction.prepare(
         "INSERT INTO meeting_bookmarks (id, meeting_id, timestamp_ms, segment_id, note, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
@@ -663,6 +821,8 @@ pub fn save_meeting_bookmarks(
         ])?;
     }
 
+    drop(stmt);
+    transaction.commit()?;
     Ok(())
 }
 
@@ -699,7 +859,9 @@ pub fn add_meeting_bookmark(
     conn: &Connection,
     bookmark: &MeetingBookmark,
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, &bookmark.meeting_id)?;
+    transaction.execute(
         "INSERT INTO meeting_bookmarks (id, meeting_id, timestamp_ms, segment_id, note, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
@@ -711,6 +873,7 @@ pub fn add_meeting_bookmark(
             bookmark.created_at,
         ],
     )?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -757,12 +920,14 @@ pub fn save_meeting_action_items(
     meeting_id: &str,
     items: &[MeetingActionItem],
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, meeting_id)?;
+    transaction.execute(
         "DELETE FROM meeting_action_items WHERE meeting_id = ?1",
         params![meeting_id],
     )?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = transaction.prepare(
         "INSERT INTO meeting_action_items (id, meeting_id, text, assignee_speaker_id, timestamp_ms, completed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
@@ -778,6 +943,8 @@ pub fn save_meeting_action_items(
         ])?;
     }
 
+    drop(stmt);
+    transaction.commit()?;
     Ok(())
 }
 
@@ -851,12 +1018,14 @@ pub fn save_meeting_topic_sections(
     meeting_id: &str,
     sections: &[MeetingTopicSection],
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    ensure_meeting_exists(&transaction, meeting_id)?;
+    transaction.execute(
         "DELETE FROM meeting_topic_sections WHERE meeting_id = ?1",
         params![meeting_id],
     )?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = transaction.prepare(
         "INSERT INTO meeting_topic_sections (id, meeting_id, title, start_ms, end_ms)
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
@@ -871,6 +1040,8 @@ pub fn save_meeting_topic_sections(
         ])?;
     }
 
+    drop(stmt);
+    transaction.commit()?;
     Ok(())
 }
 
@@ -928,6 +1099,32 @@ mod tests {
     }
 
     #[test]
+    fn ai_history_keeps_cancelled_and_older_answers_across_upserts() {
+        let conn = db();
+        let meeting = create_meeting(&conn, "Answers").unwrap();
+        let cancelled = serde_json::json!({
+            "id": "cancelled", "response": "Partial answer", "timestamp": "2026-11-27T08:00:00.000Z",
+        });
+        merge_meeting_ai_interactions(&conn, &meeting.id, vec![cancelled.clone()]).unwrap();
+        for index in 0..105 {
+            let answer = serde_json::json!({
+                "id": format!("answer-{index}"), "response": "Complete", "timestamp": "2026-11-27T08:01:00.000Z",
+            });
+            merge_meeting_ai_interactions(&conn, &meeting.id, vec![answer]).unwrap();
+        }
+        merge_meeting_ai_interactions(&conn, &meeting.id, vec![serde_json::json!({
+            "id": "answer-104", "response": "Updated", "timestamp": "2026-11-27T08:02:00.000Z",
+        })]).unwrap();
+
+        let stored = get_meeting(&conn, &meeting.id).unwrap().ai_interactions;
+        let entries = stored.as_array().unwrap();
+        assert_eq!(entries.len(), 106);
+        assert_eq!(entries[0]["response"], "Updated");
+        assert_eq!(entries.last(), Some(&cancelled));
+        assert!(entries.iter().any(|entry| entry["id"] == "answer-0"));
+    }
+
+    #[test]
     fn segments_keep_speaker_tag_and_latest_text() {
         let conn = db();
         migrations::run(&conn).unwrap(); // the v8 column migration is idempotent
@@ -944,6 +1141,98 @@ mod tests {
         let json = get_meeting(&conn, &meeting.id).unwrap().transcript;
         assert_eq!(json[0]["speaker_tag"], "S2");
         assert!(json[1].get("speaker_tag").is_none(), "untagged lines omit the field");
+    }
+
+    #[test]
+    fn history_orders_old_relative_and_absolute_segment_times() {
+        let conn = db();
+        let meeting = create_meeting(&conn, "Mixed recording").unwrap();
+        let start = chrono::DateTime::parse_from_rfc3339(&meeting.start_time).unwrap().timestamp_millis();
+        append_transcript_segment(
+            &conn, &meeting.id, &segment(&meeting.id, "relative", "later", None, 4000),
+        ).unwrap();
+        append_transcript_segment(
+            &conn, &meeting.id, &segment(&meeting.id, "absolute", "earlier", None, start + 1000),
+        ).unwrap();
+        let transcript = get_meeting(&conn, &meeting.id).unwrap().transcript;
+        assert_eq!(transcript[0]["id"], "absolute");
+        assert_eq!(transcript[0]["timestamp_ms"], start + 1000);
+        assert_eq!(transcript[1]["id"], "relative");
+        assert_eq!(transcript[1]["timestamp_ms"], start + 4000);
+    }
+
+    #[test]
+    fn failed_delete_commit_rolls_back_meeting_feature_and_translation_rows() {
+        let conn = db();
+        let meeting = create_meeting(&conn, "Recorded meeting").unwrap();
+        update_meeting_recording(&conn, &meeting.id, "voice.ogg", 25, Some("voice.waveform.json"), 0).unwrap();
+        let bookmark = MeetingBookmark {
+            id: "bookmark".into(),
+            meeting_id: meeting.id.clone(),
+            timestamp_ms: 50,
+            segment_id: Some("acc_1".into()),
+            note: None,
+            created_at: meeting.start_time.clone(),
+        };
+        add_meeting_bookmark(&conn, &bookmark).unwrap();
+        append_transcript_segment(
+            &conn, &meeting.id, &segment(&meeting.id, "acc_1", "Hello", None, 50),
+        ).unwrap();
+        super::super::translation::save_translation(
+            &conn, "acc_1", &meeting.id, "en", "es", "Hello", "Hola", "provider",
+        ).unwrap();
+
+        conn.execute_batch(
+            "CREATE TABLE force_bad_commit (
+                 meeting_id TEXT REFERENCES meetings(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER fail_meeting_delete_commit AFTER DELETE ON meetings BEGIN
+                INSERT INTO force_bad_commit VALUES ('missing');
+             END;",
+        ).unwrap();
+        assert!(delete_meeting(&conn, &meeting.id).is_err());
+        assert!(pending_recording_file_deletion(&conn, &meeting.id).unwrap().is_none());
+        let retained = get_meeting(&conn, &meeting.id).unwrap();
+        assert_eq!(retained.recording_path.as_deref(), Some("voice.ogg"));
+        assert_eq!(retained.waveform_path.as_deref(), Some("voice.waveform.json"));
+        assert_eq!(list_meeting_bookmarks(&conn, &meeting.id).unwrap().len(), 1);
+        assert_eq!(list_transcript_segments(&conn, &meeting.id).unwrap().len(), 1);
+        assert_eq!(super::super::translation::count_meeting_translations(&conn, &meeting.id, "es").unwrap(), 1);
+
+        conn.execute("DROP TRIGGER fail_meeting_delete_commit", []).unwrap();
+        delete_meeting(&conn, &meeting.id).unwrap();
+        assert_eq!(
+            pending_recording_file_deletion(&conn, &meeting.id).unwrap(),
+            Some((Some("voice.ogg".into()), Some("voice.waveform.json".into()))),
+        );
+        assert!(get_meeting(&conn, &meeting.id).is_err());
+        assert!(list_meeting_bookmarks(&conn, &meeting.id).unwrap().is_empty());
+        assert!(list_transcript_segments(&conn, &meeting.id).unwrap().is_empty());
+        assert_eq!(super::super::translation::count_meeting_translations(&conn, &meeting.id, "es").unwrap(), 0);
+        assert!(add_meeting_bookmark(&conn, &bookmark).is_err());
+    }
+
+    #[test]
+    fn replacement_rolls_back_on_a_duplicate_and_history_is_unpaginated() {
+        let conn = db();
+        let active = create_meeting(&conn, "Current meeting").unwrap();
+        let old = create_meeting(&conn, "Old meeting").unwrap();
+        for _ in 0..50 {
+            create_meeting(&conn, "More history").unwrap();
+        }
+        let ids = list_meeting_history_ids(&conn, Some(&active.id)).unwrap();
+        assert_eq!(ids.len(), 51);
+        assert!(ids.contains(&old.id));
+        assert!(!ids.contains(&active.id));
+
+        let topic = |id: &str| MeetingTopicSection {
+            id: id.into(), meeting_id: old.id.clone(), title: id.into(), start_ms: 0, end_ms: None,
+        };
+        save_meeting_topic_sections(&conn, &old.id, &[topic("original")]).unwrap();
+        assert!(save_meeting_topic_sections(&conn, &old.id, &[topic("same"), topic("same")]).is_err());
+        let loaded = list_meeting_topic_sections(&conn, &old.id).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "original");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // model list, fetching the list from the server, and a test chat with one
 // tiny request that shows the real address, status and answer or raw error.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, ChevronDown, Loader2, MessageSquare, Plus, RefreshCw, X, XCircle } from "lucide-react";
 import { formatDate, formatNumber, useT } from "../../i18n";
 import { ModelCombobox } from "../../components/ModelCombobox";
@@ -14,7 +14,7 @@ import type { ModelInfo, OpenRouterModel } from "../../lib/types";
 import { listOpenRouterModels } from "../../lib/ipc";
 import { OpenRouterModelCatalog } from "../openrouter/OpenRouterModelCatalog";
 import { useLlmConnectionsStore } from "../../stores/llmConnectionsStore";
-import { endpointFingerprint, type ConnectionDraft } from "./draft";
+import { endpointFingerprint, secretToSave, type ConnectionDraft, type DraftChange } from "./draft";
 import { BUTTON, HINT, INPUT, INPUT_INVALID, LABEL, PLAIN_TEXT } from "./ui";
 
 const HINTS: readonly ResultHint[] = ["check_version_prefix", "auth_failed", "no_model", "base_url_invalid", "looks_openai_compat"];
@@ -22,6 +22,10 @@ const HINTS: readonly ResultHint[] = ["check_version_prefix", "auth_failed", "no
 /** A failed fetch or test as one line: the error, else the status, else a generic word. */
 function failureText(result: Pick<FetchModelsResult, "error" | "error_body" | "status">): string | null {
   return result.error || result.error_body || (result.status ? `HTTP ${result.status}` : null);
+}
+
+function modelToTest({ default_model, manual_models }: LlmConnection): string {
+  return default_model?.trim() || manual_models[0] || "";
 }
 
 export function ModelSection({
@@ -34,7 +38,7 @@ export function ModelSection({
   saved: LlmConnection | null;
   /** Why requests can't be sent right now (e.g. the key must be re-entered); null when they can. */
   blockedReason: string | null;
-  onDraftChange: (next: ConnectionDraft) => void;
+  onDraftChange: (next: DraftChange) => void;
 }) {
   const { t } = useT(["llm", "common"]);
   const c = draft.connection;
@@ -44,8 +48,19 @@ export function ModelSection({
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestConnectionResult | null>(null);
   const [newModel, setNewModel] = useState("");
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
-  const update = (patch: Partial<LlmConnection>) => onDraftChange({ ...draft, connection: { ...c, ...patch } });
+  const update = (patch: Partial<LlmConnection>) => onDraftChange((current) => {
+    const connection = { ...current.connection, ...patch };
+    const changed = modelToTest(current.connection) !== modelToTest(connection);
+    return { ...current, connection, ...(changed ? { testedFingerprint: null, testedAt: null } : {}) };
+  });
 
   // The cache lives on the saved connection (it changes while the draft doesn't);
   // a list fetched here for unsaved edits replaces it.
@@ -54,11 +69,22 @@ export function ModelSection({
   const options = modelOptions(
     { ...c, model_cache: { models, fetched_at_ms: null, url: null, error: null } },
   );
-  const testModel = c.default_model?.trim() || c.manual_models[0] || "";
+  const testModel = modelToTest(c);
   const modelsOff = c.models_endpoint === "disabled";
+  const endpoint = endpointFingerprint(c);
+  const secret = secretToSave(draft) ?? null;
+  useEffect(() => {
+    setFetched(null);
+    setFetchError(null);
+  }, [endpoint, secret]);
+  useEffect(() => { setResult(null); }, [endpoint, secret, testModel]);
   // Unsaved address changes are tried as a draft; a clean saved connection by id (its list is cached).
   const clean =
-    !!saved && !draft.isNew && draft.pendingSecret === null && endpointFingerprint(saved) === endpointFingerprint(c);
+    !!saved && !draft.isNew && secret === null && endpointFingerprint(saved) === endpoint;
+
+  const sameEndpoint = (other: ConnectionDraft) => other.connection.id === c.id &&
+    endpointFingerprint(other.connection) === endpoint && (secretToSave(other) ?? null) === secret;
+  const sameTest = (other: ConnectionDraft) => sameEndpoint(other) && modelToTest(other.connection) === testModel;
 
   const fetchModels = async () => {
     if (blockedReason) return;
@@ -68,7 +94,8 @@ export function ModelSection({
       const store = useLlmConnectionsStore.getState();
       const outcome = clean
         ? await store.fetchModels({ id: c.id })
-        : await store.fetchModels({ draft: toInput(c), secret: draft.pendingSecret });
+        : await store.fetchModels({ draft: toInput(c), secret });
+      if (!mounted.current || !sameEndpoint(latestDraft.current)) return;
       if (outcome.ok) {
         setFetched({ models: outcome.models, at: Date.now() });
         if (outcome.models.length === 0) setFetchError(t("editor.models.emptyList"));
@@ -77,9 +104,9 @@ export function ModelSection({
         setFetchError([failureText(outcome), hint ? t(`editor.hints.${hint}`) : null].filter(Boolean).join(" — "));
       }
     } catch (err) {
-      setFetchError(errorMessage(err));
+      if (mounted.current && sameEndpoint(latestDraft.current)) setFetchError(errorMessage(err));
     } finally {
-      setFetching(false);
+      if (mounted.current) setFetching(false);
     }
   };
 
@@ -91,10 +118,15 @@ export function ModelSection({
       const store = useLlmConnectionsStore.getState();
       const outcome = clean
         ? await store.testConnection({ id: c.id, model: testModel || null, mode: "chat" })
-        : await store.testConnection({ draft: toInput(c), secret: draft.pendingSecret, model: testModel || null, mode: "chat" });
+        : await store.testConnection({ draft: toInput(c), secret, model: testModel || null, mode: "chat" });
+      if (!mounted.current || !sameTest(latestDraft.current)) return;
       setResult(outcome);
-      if (outcome.ok && !clean) onDraftChange({ ...draft, testedFingerprint: endpointFingerprint(c), testedAt: Date.now() });
+      if (outcome.ok && !clean) {
+        const testedAt = Date.now();
+        onDraftChange((current) => sameTest(current) ? { ...current, testedFingerprint: endpoint, testedAt } : current);
+      }
     } catch (err) {
+      if (!mounted.current || !sameTest(latestDraft.current)) return;
       setResult({
         ok: false,
         url: null,
@@ -107,7 +139,7 @@ export function ModelSection({
         hint: null,
       });
     } finally {
-      setTesting(false);
+      if (mounted.current) setTesting(false);
     }
   };
 
@@ -340,7 +372,8 @@ function ContextWindowRow({
 function isOpenRouter(connection: LlmConnection): boolean {
   if (connection.template === "openrouter") return true;
   try {
-    return new URL(connection.base_url.trim()).hostname.toLowerCase().endsWith("openrouter.ai");
+    const host = new URL(connection.base_url.trim()).hostname.toLowerCase().replace(/\.$/, "");
+    return host === "openrouter.ai" || (host.length > ".openrouter.ai".length && host.endsWith(".openrouter.ai"));
   } catch {
     return false;
   }

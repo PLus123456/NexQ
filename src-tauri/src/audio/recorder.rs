@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
+use super::recording_mixer::{wall_clock_ms, MixSide, RecordingMixer};
+
 /// Sample rate for recorded audio (matches our pipeline target)
 const RECORDING_SAMPLE_RATE: u32 = 16000;
 /// Number of bits per sample
@@ -122,21 +124,24 @@ pub fn start_recording_at(output_path: PathBuf) -> Result<RecorderHandle, String
         bits_per_sample: BITS_PER_SAMPLE,
         sample_format: SampleFormat::Int,
     };
+    // Report an unavailable recording path before the toggle succeeds.
+    let file = fs::File::create(&output_path)
+        .map_err(|err| format!("Failed to create WAV file: {err}"))?;
+    let writer = WavWriter::new(BufWriter::new(file), spec)
+        .map_err(|err| format!("Failed to open WAV writer: {err}"))?;
 
     let path_for_thread = output_path.clone();
     let (tx, rx) = std_mpsc::channel::<RecorderMessage>();
 
     let writer_thread = std::thread::Builder::new()
         .name("audio-recorder".into())
-        .spawn(move || {
-            recorder_thread_fn(path_for_thread, spec, rx)
-        })
-        .map_err(|e| format!("Failed to spawn recorder thread: {}", e))?;
+        .spawn(move || recorder_thread_fn(path_for_thread, writer, rx))
+        .map_err(|err| {
+            let _ = fs::remove_file(&output_path);
+            format!("Failed to spawn recorder thread: {err}")
+        })?;
 
-    let start_time_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let start_time_ms = wall_clock_ms();
 
     Ok(RecorderHandle {
         sample_tx: Some(tx),
@@ -149,40 +154,21 @@ pub fn start_recording_at(output_path: PathBuf) -> Result<RecorderHandle, String
 /// The background writer thread function.
 fn recorder_thread_fn(
     path: PathBuf,
-    spec: WavSpec,
+    mut writer: WavWriter<BufWriter<fs::File>>,
     rx: std_mpsc::Receiver<RecorderMessage>,
 ) -> Option<PathBuf> {
-    let file = match fs::File::create(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            log::error!("Failed to create WAV file: {}", e);
-            return None;
-        }
-    };
-
-    let buf_writer = BufWriter::new(file);
-    let mut writer = match WavWriter::new(buf_writer, spec) {
-        Ok(w) => w,
-        Err(e) => {
-            log::error!("Failed to create WAV writer: {}", e);
-            return None;
-        }
-    };
-
     let mut total_samples: u64 = 0;
 
-    loop {
+    'recording: loop {
         match rx.recv() {
             Ok(RecorderMessage::Samples(samples)) => {
                 for &sample in &samples {
                     if let Err(e) = writer.write_sample(sample) {
                         log::error!("Failed to write sample: {}", e);
-                        // Try to finalize what we have
-                        let _ = writer.finalize();
-                        return Some(path);
+                        break 'recording;
                     }
+                    total_samples += 1;
                 }
-                total_samples += samples.len() as u64;
             }
             Ok(RecorderMessage::Stop) => {
                 break;
@@ -213,54 +199,143 @@ fn recorder_thread_fn(
     }
 }
 
-/// A thread-safe wrapper for RecorderHandle that allows concurrent writes.
-pub struct SharedRecorder {
-    inner: Arc<Mutex<Option<RecorderHandle>>>,
-    /// Unix epoch ms when recording started (copied at construction for lock-free reads).
+#[derive(Clone)]
+pub struct FinishedRecording {
+    pub meeting_id: String,
+    pub wav_path: PathBuf,
     pub start_time_ms: u64,
 }
 
-impl SharedRecorder {
-    pub fn new(handle: RecorderHandle) -> Self {
-        let start_time_ms = handle.start_time_ms;
+/// The recorder and its timeline outlive any one capture pipeline. A disabled
+/// interval never reaches the writer as audio and is padded only upon resuming.
+#[derive(Clone, Default)]
+pub struct CaptureRecorder(Arc<Mutex<Option<RecordingTrack>>>);
+
+struct RecordingTrack {
+    meeting_id: String,
+    writer: RecorderHandle,
+    mixer: RecordingMixer,
+    enabled_since_ms: Option<u64>,
+    has_audio: bool,
+}
+
+impl RecordingTrack {
+    fn new(meeting_id: String, writer: RecorderHandle) -> Self {
+        let start = writer.start_time_ms;
         Self {
-            inner: Arc::new(Mutex::new(Some(handle))),
-            start_time_ms,
+            meeting_id,
+            writer,
+            mixer: RecordingMixer::starting_at(start),
+            enabled_since_ms: Some(start),
+            has_audio: false,
         }
     }
 
-    /// Write samples to the recording (thread-safe).
-    pub fn write_samples(&self, samples: &[i16]) {
-        if let Ok(guard) = self.inner.lock() {
-            if let Some(ref handle) = *guard {
-                handle.write_samples(samples);
+    fn finish_mix(&mut self) {
+        self.mixer.finish(&mut |samples| self.writer.write_samples(samples));
+    }
+
+    fn set_enabled(&mut self, enabled: bool, now_ms: u64) {
+        match (self.enabled_since_ms, enabled) {
+            (None, true) => {
+                self.mixer.pad_to(now_ms);
+                self.enabled_since_ms = Some(now_ms);
             }
+            (Some(_), false) => {
+                self.finish_mix();
+                self.enabled_since_ms = None;
+            }
+            _ => {}
         }
-    }
-
-    /// Stop the recording and return the file path.
-    pub fn stop(&self) -> Result<PathBuf, String> {
-        let mut guard = self.inner.lock().map_err(|_| "Recorder lock poisoned".to_string())?;
-        match guard.take() {
-            Some(handle) => handle.stop(),
-            None => Err("Recording already stopped".to_string()),
-        }
-    }
-
-    /// Check if the recording is still active.
-    pub fn is_active(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(false)
     }
 }
 
-impl Clone for SharedRecorder {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            start_time_ms: self.start_time_ms,
+impl CaptureRecorder {
+    #[cfg(test)]
+    pub(crate) fn for_test(meeting_id: &str, path: PathBuf) -> (Self, u64) {
+        let writer = start_recording_at(path).unwrap();
+        let start = writer.start_time_ms;
+        let track = RecordingTrack::new(meeting_id.to_owned(), writer);
+        (Self(Arc::new(Mutex::new(Some(track)))), start)
+    }
+
+    pub fn set_enabled(&self, enabled: bool, start_for_meeting: Option<&str>) -> Result<(), String> {
+        let mut slot = self.0.lock().map_err(|_| "Recording state lock poisoned")?;
+        if let Some(track) = slot.as_mut() {
+            track.set_enabled(enabled, wall_clock_ms());
+        } else if let (true, Some(meeting_id)) = (enabled, start_for_meeting) {
+            *slot = Some(RecordingTrack::new(meeting_id.to_owned(), start_recording(meeting_id)?));
         }
+        Ok(())
+    }
+
+    pub fn push(&self, side: MixSide, samples: &[i16], end_ms: u64) {
+        let Ok(mut slot) = self.0.lock() else { return };
+        let Some(track) = slot.as_mut() else { return };
+        let Some(start) = track.enabled_since_ms else { return };
+        // Clip a chunk straddling the toggle, including audio held by echo cancellation.
+        let count = (end_ms.saturating_sub(start).saturating_mul(16)).min(samples.len() as u64) as usize;
+        if count > 0 {
+            track.has_audio = true;
+            track.mixer.push(side, &samples[samples.len() - count..], end_ms, &mut |samples| {
+                track.writer.write_samples(samples);
+            });
+        }
+    }
+
+    pub fn tick(&self, now_ms: u64) {
+        let Ok(mut slot) = self.0.lock() else { return };
+        if let Some(track) = slot.as_mut().filter(|track| track.enabled_since_ms.is_some()) {
+            track.mixer.tick(now_ms, &mut |samples| track.writer.write_samples(samples));
+        }
+    }
+
+    pub fn stop(&self) -> Option<FinishedRecording> {
+        let mut track = self.0.lock().ok()?.take()?;
+        track.finish_mix();
+        let start_time_ms = track.writer.start_time_ms;
+        let wav_path = match track.writer.stop() {
+            Ok(path) => path,
+            Err(err) => {
+                log::error!("Failed to stop recording: {err}");
+                return None;
+            }
+        };
+        if !track.has_audio {
+            let _ = fs::remove_file(wav_path);
+            return None;
+        }
+        Some(FinishedRecording { meeting_id: track.meeting_id, wav_path, start_time_ms })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggling_recording_keeps_existing_audio_and_skips_the_disabled_interval() {
+        let path = std::env::temp_dir().join(format!("nexq-rec-{}.wav", uuid::Uuid::new_v4()));
+        let (recorder, start) = CaptureRecorder::for_test("owner", path.clone());
+        recorder.push(MixSide::Mic, &[100; 160], start + 10);
+        {
+            let mut slot = recorder.0.lock().unwrap();
+            slot.as_mut().unwrap().set_enabled(false, start + 10);
+        }
+        recorder.push(MixSide::Mic, &[900; 160], start + 20);
+        {
+            let mut slot = recorder.0.lock().unwrap();
+            slot.as_mut().unwrap().set_enabled(true, start + 20);
+        }
+        const CLIPPED: [i16; 240] = [300; 240];
+        recorder.push(MixSide::Mic, &CLIPPED, start + 30);
+        let saved = recorder.stop().unwrap();
+        assert_eq!(saved.meeting_id, "owner");
+        let samples: Vec<i16> = hound::WavReader::open(&saved.wav_path).unwrap()
+            .into_samples::<i16>().map(Result::unwrap).collect();
+        assert_eq!(&samples[..160], &[400; 160]);
+        assert_eq!(&samples[160..320], &[0; 160]);
+        assert_eq!(&samples[320..], &[1200; 160]);
+        let _ = fs::remove_file(path);
     }
 }

@@ -1,10 +1,12 @@
-use tauri::{command, AppHandle, Manager, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
 
 use crate::llm::api::LlmKind;
-use crate::llm::connections::resolve_route;
 use crate::llm::gemini_cache::GeminiCacheClient;
-use crate::llm::registry::LlmRegistry;
+use crate::llm::registry::{claude_context, resolve_task, LlmRegistry};
+use crate::net::endpoint::AuthMode;
 use crate::state::AppState;
+
+const CACHE_CHANGED: &str = "gemini_cache_changed";
 
 /// Where a context cache lives: `connection_id`'s Gemini connection, else the
 /// connection the AI assistant is routed to when it is Gemini, else the first
@@ -24,22 +26,27 @@ fn gemini_target(
                     .cloned()
                     .ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?,
             ),
-            None => resolve_route(&config, "assist")
+            None => resolve_task(&config, "assist", &claude_context(app))
                 .ok()
                 .map(|r| r.connection)
                 .filter(|c| c.kind == LlmKind::Gemini)
-                .or_else(|| config.connections.iter().find(|c| c.kind == LlmKind::Gemini && c.enabled).cloned()),
+                .or_else(|| config.connections.iter().find(|c| c.kind == LlmKind::Gemini && c.enabled && !c.base_url.trim().is_empty()).cloned()),
         };
         if let Some(conn) = conn {
             if conn.kind != LlmKind::Gemini {
                 return Err(format!("\"{}\" is not a Gemini connection", conn.display_name()));
             }
+            if !conn.enabled {
+                return Err(format!("\"{}\" is turned off", conn.display_name()));
+            }
             let headers = registry.request_headers(&conn)?;
-            if headers.is_empty() {
+            if conn.auth.mode != AuthMode::None && headers.is_empty() {
                 return Err(format!("No API key is saved for \"{}\"", conn.display_name()));
             }
-            return Ok((GeminiCacheClient::for_connection(&conn.base_url, headers), Some(conn.id)));
+            return Ok((GeminiCacheClient::for_connection(&conn.base_url, headers)?, Some(conn.id)));
         }
+    } else if let Some(id) = connection_id {
+        return Err(format!("Unknown LLM connection \"{id}\""));
     }
     let key = state
         .credentials
@@ -50,7 +57,7 @@ fn gemini_target(
         .get_key("gemini")
         .map_err(|e| format!("Credential error: {}", e))?
         .ok_or("Gemini API key not configured")?;
-    Ok((GeminiCacheClient::new(&key, None), None))
+    Ok((GeminiCacheClient::new(&key, None)?, None))
 }
 
 /// Create a Gemini context cache from all loaded context resources.
@@ -84,16 +91,16 @@ pub async fn create_gemini_context_cache(
 
     let (client, cache_connection) = gemini_target(&app, &state, connection_id.as_deref())?;
 
-    let mut cached = client
+    let cached = state.gemini_cache
         .create(
+            client,
+            cache_connection,
             &model,
             system_prompt.as_deref(),
             &context_text,
             ttl_secs,
         )
         .await?;
-    cached.connection_id = cache_connection;
-
     log::info!(
         "Gemini context cache created: {} ({} tokens, expires {})",
         cached.name,
@@ -101,53 +108,21 @@ pub async fn create_gemini_context_cache(
         cached.expire_time
     );
 
-    // Store in AppState
-    {
-        let mut cache_slot = state
-            .gemini_cache
-            .lock()
-            .map_err(|e| format!("Cache state lock failed: {}", e))?;
-        *cache_slot = Some(cached.clone());
-    }
-
+    let _ = app.emit(CACHE_CHANGED, ());
     serde_json::to_string(&cached).map_err(|e| format!("Serialize failed: {}", e))
 }
 
 /// Delete the active Gemini context cache and clear it from AppState.
 #[command]
 pub async fn delete_gemini_context_cache(
+    cache_name: Option<String>,
+    connection_id: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let cache = {
-        let slot = state
-            .gemini_cache
-            .lock()
-            .map_err(|e| format!("Cache state lock failed: {}", e))?;
-        slot.as_ref().map(|c| (c.name.clone(), c.connection_id.clone()))
-    };
-
-    let Some((name, cache_connection)) = cache else {
-        return Ok(()); // Nothing to delete
-    };
-
-    // On the connection it was made on. That connection may be gone: the
-    // cache then just expires on Google's side.
-    match gemini_target(&app, &state, cache_connection.as_deref()) {
-        Ok((client, _)) => client.delete(&name).await?,
-        Err(e) => log::warn!("Gemini context cache {name} not deleted on the server: {e}"),
-    }
-
-    // Clear from state
-    {
-        let mut slot = state
-            .gemini_cache
-            .lock()
-            .map_err(|e| format!("Cache state lock failed: {}", e))?;
-        *slot = None;
-    }
-
-    log::info!("Gemini context cache deleted: {}", name);
+    let expected = cache_name.as_deref().map(|name| (name, connection_id.as_deref()));
+    state.gemini_cache.delete(expected).await?;
+    let _ = app.emit(CACHE_CHANGED, ());
     Ok(())
 }
 
@@ -156,17 +131,7 @@ pub async fn delete_gemini_context_cache(
 pub async fn get_gemini_cache_status(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let slot = state
-        .gemini_cache
-        .lock()
-        .map_err(|e| format!("Cache state lock failed: {}", e))?;
-
-    match slot.as_ref() {
-        None => Ok(None),
-        Some(c) => {
-            let json = serde_json::to_string(c)
-                .map_err(|e| format!("Serialize failed: {}", e))?;
-            Ok(Some(json))
-        }
-    }
+    state.gemini_cache.status()?.map(|cache| {
+        serde_json::to_string(&cache).map_err(|e| format!("Serialize failed: {e}"))
+    }).transpose()
 }

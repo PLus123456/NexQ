@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import { load, Store } from "@tauri-apps/plugin-store";
 import type {
   ThemeMode,
@@ -263,6 +264,60 @@ export async function persistValue(key: string, value: unknown): Promise<void> {
   }
 }
 
+const CONFIG_LIST_KEYS = ["customPresets", "verifiedCloudProviders", "openrouterFavorites", "openrouterRecentlyUsed"] as const;
+type ConfigListKey = (typeof CONFIG_LIST_KEYS)[number];
+type ConfigListMutation =
+  | { type: "upsert"; item: string | MeetingAudioConfig }
+  | { type: "remove"; id: string }
+  | { type: "clear" };
+
+const listWrites = new Map<ConfigListKey, Promise<void>>();
+const listChanges = new Map<ConfigListKey, number>();
+let watchingConfig = false;
+
+const SYNCED_CONFIG_KEYS = [
+  "theme", "sttProvider", "sttLanguage", "llmProvider", "llmModel", "lastModelByProvider",
+  "claudeCliFallbackPinned", "customLlmBaseUrl", "customLlmAuthType", "activeModelPerEngine",
+  "contextStrategy", "whisperDualPass", "whisperUseGpu", "firstRunCompleted", "contextScopeSticky",
+  "autoTrigger", "autoSummary", "contextWindowSeconds", "startOnLogin", "dataDirectory", "hotkeys",
+  "diarizationEnabled", "echoCancellation", "pauseThresholdMs", "confidenceThreshold", "confidenceHighlightEnabled",
+  "recordingEnabled", "showPostMeetingTranslation", "transcriptFontSize", "translationFontSize", "transcriptTextColor",
+  "translationTextColor", "aiResponseTextColor", "aiResponseFontSize", "aiResponseLineHeight", "aiResponseHPad",
+  "aiResponseAlign", "overlayOpacity", "trayNotifications", "trayAutoStart", "trayStartMinimized",
+  "trayAutoDetectMeeting", "trayStealthEnabled", "stealthMode", "stealthShortcut", "assistShortcut", "captureShortcut",
+  "captionsEnabled", "captionsParties", "captionsShow", "captionsFontSize", "captionsTranslationFontSize",
+  "captionsTextColor", "captionsTranslationColor", "captionsBgOpacity", "captionsCueCount", "captionsFadeSeconds", "captionsLocked",
+] as const satisfies readonly (keyof ConfigState)[];
+
+const NULLABLE_SYNCED_CONFIG_KEYS = [
+  "micDeviceId", "systemDeviceId", "noisePreset", "rememberedMeetingSetup", "captionsBounds", "activeWhisperModel",
+] as const satisfies readonly (keyof ConfigState)[];
+
+function applySavedList(key: ConfigListKey, value: unknown): void {
+  if (Array.isArray(value)) useConfigStore.setState({ [key]: value });
+}
+
+async function refreshSavedList(key: ConfigListKey): Promise<void> {
+  const revision = listChanges.get(key);
+  const saved = await (await getStore()).get(key);
+  if (!listWrites.has(key) && listChanges.get(key) === revision) applySavedList(key, saved);
+}
+
+function persistListEdit(key: ConfigListKey, mutation: ConfigListMutation): Promise<void> {
+  const write = (listWrites.get(key) ?? Promise.resolve()).then(async () => {
+    await invoke("mutate_config_list", { key, mutation });
+  }).catch((error) => console.error(`[configStore] Failed to update "${key}":`, error));
+  listWrites.set(key, write);
+  // Keep the optimistic state while this window has more edits to send. Once
+  // they reach the shared store, pick up edits made by every window.
+  void write.then(async () => {
+    if (listWrites.get(key) !== write) return;
+    listWrites.delete(key);
+    await refreshSavedList(key);
+  }).catch((error) => console.error(`[configStore] Failed to read "${key}":`, error));
+  return write;
+}
+
 interface ConfigState extends CaptionsSettings {
   // Appearance
   theme: ThemeMode;
@@ -476,7 +531,7 @@ interface ConfigState extends CaptionsSettings {
   setDataDirectory: (dir: string) => void;
   setFirstRunCompleted: (completed: boolean) => void;
   setHotkeys: (hotkeys: HotkeyConfig) => void;
-  setVerifiedCloudProviders: (providers: string[]) => void;
+  setCloudProviderVerified: (provider: string, verified: boolean) => Promise<void>;
   setRememberedMeetingSetup: (setup: { audioMode: AudioMode; scenario: AIScenario } | null) => void;
   setDiarizationEnabled: (enabled: boolean) => void;
   setEchoCancellation: (enabled: boolean) => void;
@@ -543,6 +598,18 @@ function followFallback(provider: string): void {
   const cfg = state.claudeCliConfig;
   if (cfg.fallback_provider === provider && cfg.fallback_model === model) return;
   state.setClaudeCliConfig({ ...cfg, fallback_provider: provider, fallback_model: model });
+}
+
+async function toggleMeetingMute(source: "you" | "them"): Promise<void> {
+  try {
+    const [{ useMeetingStore }, { toggleSourceMuted }] = await Promise.all([
+      import("./meetingStore"), import("../lib/ipc"),
+    ]);
+    const { activeMeeting, isEndingMeeting } = useMeetingStore.getState();
+    if (activeMeeting && !isEndingMeeting) await toggleSourceMuted(source, activeMeeting.id);
+  } catch (error) {
+    console.warn(`[configStore] Could not toggle ${source} mute:`, error);
+  }
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
@@ -617,22 +684,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   _loaded: false,
   mutedYou: false,
   mutedThem: false,
-  toggleMuteYou: () => {
-    const next = !useConfigStore.getState().mutedYou;
-    set({ mutedYou: next });
-    import("../lib/ipc").then(({ setSourceMuted }) =>
-      setSourceMuted("you", next)
-        .catch((e) => console.warn("[configStore] Failed to set You muted:", e))
-    );
-  },
-  toggleMuteThem: () => {
-    const next = !useConfigStore.getState().mutedThem;
-    set({ mutedThem: next });
-    import("../lib/ipc").then(({ setSourceMuted }) =>
-      setSourceMuted("them", next)
-        .catch((e) => console.warn("[configStore] Failed to set Them muted:", e))
-    );
-  },
+  toggleMuteYou: () => { void toggleMeetingMute("you"); },
+  toggleMuteThem: () => { void toggleMeetingMute("them"); },
 
   setContextStrategy: (strategy) => {
     set({ contextStrategy: strategy });
@@ -673,8 +726,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
     await ipc.setLLMProvider(providerConfig);
     before.setLLMProvider(provider);
     // An activated provider counts as verified (the "Ready" badge in Settings).
-    const verified = useConfigStore.getState().verifiedCloudProviders;
-    if (!verified.includes(provider)) useConfigStore.getState().setVerifiedCloudProviders([...verified, provider]);
+    await useConfigStore.getState().setCloudProviderVerified(provider, true);
     // Claude ignores the model (Fast / Deep come from its settings) but the
     // backend needs one: its Fast model fills the slot.
     const model =
@@ -791,13 +843,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
     const existing = state.customPresets.filter((p) => p.preset_name !== name);
     const updated = [...existing, preset];
     set({ customPresets: updated });
-    persistValue("customPresets", updated);
+    persistListEdit("customPresets", { type: "upsert", item: preset });
   },
   deleteCustomPreset: (name) => {
     const state = useConfigStore.getState();
     const updated = state.customPresets.filter((p) => p.preset_name !== name);
     set({ customPresets: updated });
-    persistValue("customPresets", updated);
+    persistListEdit("customPresets", { type: "remove", id: name });
   },
   setActiveWhisperModel: (modelId) => {
     set({ activeWhisperModel: modelId });
@@ -947,9 +999,14 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ hotkeys });
     persistValue("hotkeys", hotkeys);
   },
-  setVerifiedCloudProviders: (providers) => {
-    set({ verifiedCloudProviders: providers });
-    persistValue("verifiedCloudProviders", providers);
+  setCloudProviderVerified: (provider, verified): Promise<void> => {
+    const { verifiedCloudProviders } = useConfigStore.getState();
+    if (verified && !verifiedCloudProviders.includes(provider)) {
+      set({ verifiedCloudProviders: [...verifiedCloudProviders, provider] });
+    } else if (!verified && verifiedCloudProviders.includes(provider)) {
+      set({ verifiedCloudProviders: verifiedCloudProviders.filter((value) => value !== provider) });
+    }
+    return persistListEdit("verifiedCloudProviders", verified ? { type: "upsert", item: provider } : { type: "remove", id: provider });
   },
   setRememberedMeetingSetup: (setup) => {
     set({ rememberedMeetingSetup: setup });
@@ -1083,27 +1140,28 @@ export const useConfigStore = create<ConfigState>((set) => ({
   },
   toggleOpenRouterFavorite: (id) => {
     const { openrouterFavorites } = useConfigStore.getState();
-    const next = openrouterFavorites.includes(id)
+    const isFavorite = openrouterFavorites.includes(id);
+    const next = isFavorite
       ? openrouterFavorites.filter((fav) => fav !== id)
       : [...openrouterFavorites, id];
     set({ openrouterFavorites: next });
-    persistValue("openrouterFavorites", next);
+    persistListEdit("openrouterFavorites", isFavorite ? { type: "remove", id } : { type: "upsert", item: id });
   },
   addOpenRouterRecentlyUsed: (id) => {
     const { openrouterRecentlyUsed } = useConfigStore.getState();
     const next = [id, ...openrouterRecentlyUsed.filter((r) => r !== id)].slice(0, 5);
     set({ openrouterRecentlyUsed: next });
-    persistValue("openrouterRecentlyUsed", next);
+    persistListEdit("openrouterRecentlyUsed", { type: "upsert", item: id });
   },
   removeOpenRouterRecentlyUsed: (id) => {
     const { openrouterRecentlyUsed } = useConfigStore.getState();
     const next = openrouterRecentlyUsed.filter((r) => r !== id);
     set({ openrouterRecentlyUsed: next });
-    persistValue("openrouterRecentlyUsed", next);
+    persistListEdit("openrouterRecentlyUsed", { type: "remove", id });
   },
   clearOpenRouterRecentlyUsed: () => {
     set({ openrouterRecentlyUsed: [] });
-    persistValue("openrouterRecentlyUsed", []);
+    persistListEdit("openrouterRecentlyUsed", { type: "clear" });
   },
   setTrayNotifications: (enabled) => {
     set({ trayNotifications: enabled });
@@ -1306,7 +1364,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
-        ...(resolvedMeetingConfig != null && { meetingAudioConfig: resolvedMeetingConfig }),
+        ...(resolvedMeetingConfig != null && {
+          meetingAudioConfig: resolvedMeetingConfig,
+          micDeviceId: resolvedMeetingConfig.you.device_id || null,
+          systemDeviceId: resolvedMeetingConfig.them.device_id || null,
+          recordingEnabled: resolvedMeetingConfig.recording_enabled,
+        }),
         ...(customPresets != null && { customPresets }),
         ...(autoTrigger != null && { autoTrigger }),
         ...(autoSummary != null && { autoSummary }),
@@ -1394,137 +1457,64 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
       // Set up cross-window sync: when another window changes the store,
       // update this window's Zustand state automatically.
-      store.onKeyChange<MeetingAudioConfig>("meetingAudioConfig", (val) => {
-        if (val != null) set({ meetingAudioConfig: val });
-      });
-      store.onKeyChange<string>("activeWhisperModel", (val) => {
-        if (val !== undefined) set({ activeWhisperModel: val ?? null });
-      });
-      store.onKeyChange<Record<string, string>>("activeModelPerEngine", (val) => {
-        if (val != null) set({ activeModelPerEngine: val });
-      });
-      store.onKeyChange<DeepgramConfig>("deepgramConfig", (val) => {
-        if (val != null) set({ deepgramConfig: { ...DEFAULT_DEEPGRAM_CONFIG, ...val } });
-      });
-      store.onKeyChange<STTProviderType>("sttProvider", (val) => {
-        if (val != null) set({ sttProvider: val });
-      });
-      store.onKeyChange<string>("sttLanguage", (val) => {
-        if (val != null) set({ sttLanguage: val });
-      });
-      store.onKeyChange<LLMProviderType>("llmProvider", (val) => {
-        if (val != null) set({ llmProvider: val });
-      });
-      store.onKeyChange<string>("llmModel", (val) => {
-        if (val != null) set({ llmModel: val });
-      });
-      store.onKeyChange<ClaudeCliConfig>("claudeCliConfig", (val) => {
-        if (val != null) set({ claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, ...val } });
-      });
-      store.onKeyChange<ClaudeModelInfo[]>("claudeModels", (val) => {
-        if (Array.isArray(val) && val.length > 0) set({ claudeModels: val });
-      });
-      store.onKeyChange<boolean>("claudeCliFallbackPinned", (val) => {
-        if (val != null) set({ claudeCliFallbackPinned: val });
-      });
-      store.onKeyChange<Record<string, string>>("lastModelByProvider", (val) => {
-        if (val != null) set({ lastModelByProvider: val });
-      });
-      store.onKeyChange<Record<string, ThinkingSetting>>("llmThinking", (val) => {
-        set({ llmThinking: normalizeThinkingMap(val) });
-      });
-      store.onKeyChange<Record<string, string>>("llmExtraRequestJson", (val) => {
-        set({ llmExtraRequestJson: normalizeExtraJsonMap(val) });
-      });
-      store.onKeyChange<ContextStrategy>("contextStrategy", (val) => {
-        if (val != null) set({ contextStrategy: val });
-      });
-      store.onKeyChange<WhisperDualPassConfig>("whisperDualPass", (val) => {
-        if (val != null) set({ whisperDualPass: val });
-      });
-      store.onKeyChange<boolean>("whisperUseGpu", (val) => {
-        if (val != null) set({ whisperUseGpu: val });
-      });
-      // Re-running the first-run setup from the overlay reaches the launcher.
-      store.onKeyChange<boolean>("firstRunCompleted", (val) => {
-        if (val != null) set({ firstRunCompleted: val });
-      });
-      store.onKeyChange<ContextScopeSetting>("contextScope", (val) => {
-        if (val != null) set({ contextScope: normalizeContextScope(val) });
-      });
-      store.onKeyChange<boolean>("contextScopeSticky", (val) => {
-        if (val != null) set({ contextScopeSticky: val });
-      });
-      store.onKeyChange<number>("overlayOpacity", (val) => {
-        if (val != null) set({ overlayOpacity: val });
-      });
-      // The caption strip is set up in Settings (launcher), switched from the
-      // answer window and moved in its own window: every window follows.
-      store.onKeyChange<boolean>("captionsEnabled", (val) => {
-        if (val != null) set({ captionsEnabled: val });
-      });
-      store.onKeyChange<CaptionsParties>("captionsParties", (val) => {
-        if (val != null) set({ captionsParties: val });
-      });
-      store.onKeyChange<CaptionsShow>("captionsShow", (val) => {
-        if (val != null) set({ captionsShow: val });
-      });
-      store.onKeyChange<number>("captionsFontSize", (val) => {
-        if (val != null) set({ captionsFontSize: val });
-      });
-      store.onKeyChange<number>("captionsTranslationFontSize", (val) => {
-        if (val != null) set({ captionsTranslationFontSize: val });
-      });
-      store.onKeyChange<string>("captionsTextColor", (val) => {
-        if (val != null) set({ captionsTextColor: val });
-      });
-      store.onKeyChange<string>("captionsTranslationColor", (val) => {
-        if (val != null) set({ captionsTranslationColor: val });
-      });
-      store.onKeyChange<number>("captionsBgOpacity", (val) => {
-        if (val != null) set({ captionsBgOpacity: val });
-      });
-      store.onKeyChange<number>("captionsCueCount", (val) => {
-        if (val != null) set({ captionsCueCount: val });
-      });
-      store.onKeyChange<number>("captionsFadeSeconds", (val) => {
-        if (val != null) set({ captionsFadeSeconds: val });
-      });
-      store.onKeyChange<boolean>("captionsLocked", (val) => {
-        if (val != null) set({ captionsLocked: val });
-      });
-      // Null is a value here: the strip goes back to its default place.
-      store.onKeyChange<CaptionsBounds | null>("captionsBounds", (val) => {
-        if (val !== undefined) set({ captionsBounds: val });
-      });
-      store.onKeyChange<string>("customLlmBaseUrl", (val) => {
-        if (val != null) set({ customLlmBaseUrl: val });
-      });
-      store.onKeyChange<CustomLlmAuthType>("customLlmAuthType", (val) => {
-        if (val != null) set({ customLlmAuthType: val });
-      });
-      store.onKeyChange<boolean>("stealthMode", (val) => {
-        if (val != null) set({ stealthMode: val });
-      });
-      store.onKeyChange<string>("stealthShortcut", (val) => {
-        if (val != null) set({ stealthShortcut: val });
-      });
-      store.onKeyChange<string>("assistShortcut", (val) => {
-        if (val != null) set({ assistShortcut: val });
-      });
-      store.onKeyChange<string>("captureShortcut", (val) => {
-        if (val != null) set({ captureShortcut: val });
-      });
-      store.onKeyChange<MeetingDetectionConfig>("meetingDetection", (val) => {
-        if (val != null) set({ meetingDetection: { ...DEFAULT_MEETING_DETECTION, ...val } });
-      });
-      // The window that changed these already pushed them to the backend.
-      store.onKeyChange<Partial<OpenAICompatSttConfig>>("openaiCompatSttConfig", (val) => {
-        if (val != null) set({ openaiCompatSttConfig: withDefaults(DEFAULT_OPENAI_COMPAT_STT_CONFIG, val) });
-      });
-      store.onKeyChange<Partial<SonioxConfig>>("sonioxConfig", (val) => {
-        if (val != null) set({ sonioxConfig: normalizeSonioxConfig(val) });
-      });
+      if (!watchingConfig) {
+        watchingConfig = true;
+        for (const key of SYNCED_CONFIG_KEYS) {
+          void store.onKeyChange<ConfigState[typeof key]>(key, (val) => {
+            if (val != null) set({ [key]: val });
+          });
+        }
+        for (const key of NULLABLE_SYNCED_CONFIG_KEYS) {
+          void store.onKeyChange<ConfigState[typeof key]>(key, (val) => {
+            if (val !== undefined) set({ [key]: val });
+          });
+        }
+        for (const key of CONFIG_LIST_KEYS) {
+          void store.onKeyChange<ConfigState[typeof key]>(key, (val) => {
+            listChanges.set(key, (listChanges.get(key) ?? 0) + 1);
+            if (!listWrites.has(key)) applySavedList(key, val);
+          }).then(() => refreshSavedList(key)).catch((error) =>
+            console.error(`[configStore] Failed to follow "${key}":`, error),
+          );
+        }
+        void store.onKeyChange<Partial<GroqConfig>>("groqConfig", (val) => {
+          if (val != null) set({ groqConfig: withDefaults(DEFAULT_GROQ_CONFIG, val) });
+        });
+        store.onKeyChange<MeetingAudioConfig>("meetingAudioConfig", (val) => {
+          if (val != null) set({
+            meetingAudioConfig: val,
+            micDeviceId: val.you.device_id || null,
+            systemDeviceId: val.them.device_id || null,
+            recordingEnabled: val.recording_enabled,
+          });
+        });
+        void store.onKeyChange<Partial<DeepgramConfig>>("deepgramConfig", (val) => {
+          if (val != null) set({ deepgramConfig: withDefaults(DEFAULT_DEEPGRAM_CONFIG, val) });
+        });
+        void store.onKeyChange<Partial<ClaudeCliConfig>>("claudeCliConfig", (val) => {
+          if (val != null) set({ claudeCliConfig: withDefaults(DEFAULT_CLAUDE_CLI_CONFIG, val) });
+        });
+        void store.onKeyChange<ClaudeModelInfo[]>("claudeModels", (val) => {
+          if (Array.isArray(val) && val.length > 0) set({ claudeModels: val });
+        });
+        void store.onKeyChange<unknown>("llmThinking", (val) => { set({ llmThinking: normalizeThinkingMap(val) }); });
+        void store.onKeyChange<unknown>("llmExtraRequestJson", (val) => {
+          set({ llmExtraRequestJson: normalizeExtraJsonMap(val) });
+        });
+        void store.onKeyChange<ContextScopeSetting>("contextScope", (val) => {
+          if (val != null) set({ contextScope: normalizeContextScope(val) });
+        });
+        void store.onKeyChange<Partial<MeetingDetectionConfig>>("meetingDetection", (val) => {
+          if (val != null) set({ meetingDetection: withDefaults(DEFAULT_MEETING_DETECTION, val) });
+        });
+        // The window that changed these already pushed them to the backend.
+        void store.onKeyChange<Partial<OpenAICompatSttConfig>>("openaiCompatSttConfig", (val) => {
+          if (val != null) set({ openaiCompatSttConfig: withDefaults(DEFAULT_OPENAI_COMPAT_STT_CONFIG, val) });
+        });
+        void store.onKeyChange<Partial<SonioxConfig>>("sonioxConfig", (val) => {
+          if (val != null) set({ sonioxConfig: normalizeSonioxConfig(val) });
+        });
+      }
 
       // The backend detector stays idle until it has the saved settings.
       pushMeetingDetection(meetingDetection);
@@ -1606,21 +1596,16 @@ export const useConfigStore = create<ConfigState>((set) => ({
       // Sync persisted LLM provider + model to Rust backend on startup.
       // The Rust side starts with Ollama as default; this pushes the user's saved provider.
       // Claude CLI ignores the model; its slot carries the Fast model.
-      const loadedLLMProvider = llmProvider ?? "ollama";
-      const loadedLLMModel = loadedLLMProvider === "claude_cli" ? claudeCliConfig.fast_model : (llmModel ?? "");
-      if (loadedLLMProvider) {
-        import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel }) => {
-          try {
-            await ipcSetLLM(await storedProviderConfig(loadedLLMProvider));
-            if (loadedLLMModel) {
-              await ipcSetModel(loadedLLMProvider, loadedLLMModel);
-            }
-            console.log(`[configStore] LLM synced to backend: ${loadedLLMProvider} / ${loadedLLMModel}`);
-          } catch (e) {
-            console.warn("[configStore] Failed to sync LLM to backend:", e);
-          }
-        });
-      }
+      void enqueueProviderChange(async () => {
+        const { llmProvider: provider } = useConfigStore.getState();
+        const { setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel } = await import("../lib/ipc");
+        const config = await storedProviderConfig(provider);
+        if (useConfigStore.getState().llmProvider !== provider) return;
+        await ipcSetLLM(config);
+        const latest = useConfigStore.getState();
+        const model = provider === "claude_cli" ? latest.claudeCliConfig.fast_model : latest.llmModel;
+        if (latest.llmProvider === provider && model) await ipcSetModel(provider, model);
+      }).catch((e) => console.warn("[configStore] Failed to sync LLM to backend:", e));
 
       console.log("[configStore] Config loaded from store (with cross-window sync)");
     } catch (err) {

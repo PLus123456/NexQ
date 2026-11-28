@@ -13,6 +13,8 @@ import { useTranscriptStore } from "./transcriptStore";
 import { useSpeakerStore } from "./speakerStore";
 import { useStreamStore } from "./streamStore";
 import { useConfigStore } from "./configStore";
+import { useStreamTimingStore } from "./streamTimingStore";
+import { useSttRegionStore } from "./sttRegionStore";
 
 describe("resetMeetingScopedStores", () => {
   it("clears the previous meeting's transcript, speakers and answers", async () => {
@@ -27,6 +29,8 @@ describe("resetMeetingScopedStores", () => {
     });
     useSpeakerStore.getState().addSpeaker("speaker_16");
     useStreamStore.setState({ currentContent: "old answer" });
+    useStreamTimingStore.setState({ requestId: "old", startedAt: 1, lastLatencyMs: 500 });
+    useSttRegionStore.getState().setRegion("You", "eu");
 
     await resetMeetingScopedStores();
     initMeetingSpeakers("online");
@@ -35,6 +39,8 @@ describe("resetMeetingScopedStores", () => {
     expect(useStreamStore.getState().currentContent).toBe("");
     expect(useStreamStore.getState().responseHistory).toEqual([]);
     expect(useSpeakerStore.getState().speakerOrder).toEqual(["you", "them"]);
+    expect(useStreamTimingStore.getState()).toMatchObject({ requestId: null, startedAt: null, lastLatencyMs: null });
+    expect(useSttRegionStore.getState().regions).toEqual({});
   });
 });
 

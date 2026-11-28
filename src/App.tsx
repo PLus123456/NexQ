@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from "react";
-import { useMeetingStore } from "./stores/meetingStore";
+import { attachMeetingWindow, persistOverlayMeetingData, useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
 import { useAIActionsStore, watchSavedActionConfigs } from "./stores/aiActionsStore";
 import { useSourcesStore } from "./stores/sourcesStore";
@@ -31,15 +31,18 @@ import { OverlayResizeHandles } from "./overlay/OverlayResizeHandles";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { ActiveMeetingProvider } from "./components/ActiveMeetingProvider";
 import { initMeetingSpeakers, resetMeetingScopedStores } from "./stores/resetMeeting";
-import { listen } from "@tauri-apps/api/event";
-import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
+import { emit, listen, type Event as TauriEvent } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { AppView, WindowMeetingEndedEvent } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { SCREENSHOT_EVENT, leaveSettingsForAsk } from "./lib/screenCapture";
-import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
-import { logToFile } from "./lib/logger";
-import { onWebSpeechStopRequest } from "./lib/webSpeechLifecycle";
+import { SHOW_MEETING_OVERLAY_EVENT, TOGGLE_OVERLAY_SETTINGS_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow, toggleWindowSettings } from "./lib/windows";
+import { createEventScope } from "./lib/eventScope";
+import { acknowledgeOverlaySave, MEETING_ENDED, MEETING_END_FAILED, MEETING_STARTED, MEETING_STOP_REQUEST, OVERLAY_PRESENT, OVERLAY_SAVE_REQUEST, type MeetingEndResult, type MeetingStarted, type OverlaySaveRequest } from "./lib/meetingWindowEvents";
+import { isQuitPending } from "./lib/ipc";
+import { copyFromTray, type TrayCopyKind } from "./lib/trayCopy";
 import { emitOverlayMeetingReady, onAudioCaptureStatus, onAudioCaptureStopped, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 import { createCaptureStatusHandler } from "./lib/captureStatus";
 import { useCaptionsMeeting } from "./lib/captions/useCaptionsMeeting";
@@ -50,11 +53,14 @@ function App() {
   const settingsOpen = useMeetingStore((s) => s.settingsOpen);
   const setSettingsOpen = useMeetingStore((s) => s.setSettingsOpen);
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
-  const startMeetingFlow = useMeetingStore((s) => s.startMeetingFlow);
   const loadRecentMeetings = useMeetingStore((s) => s.loadRecentMeetings);
   // Changes on every new meeting → used as a React key to remount overlay UI
   // so local component state (open panels, tabs, layout) is reset too.
   const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
+  const meetingListenersReadyId = useMeetingStore((s) => s.meetingListenersReadyId);
+  const [windowLabel] = useState(() => {
+    try { return getCurrentWebviewWindow().label; } catch { return ""; }
+  });
   const firstRunCompleted = useConfigStore((s) => s.firstRunCompleted);
   const configLoaded = useConfigStore((s) => s._loaded);
   const loadConfig = useConfigStore((s) => s.loadConfig);
@@ -72,7 +78,7 @@ function App() {
   useAutoTranslate();
 
   // Sync frontend state to system tray icon & menu
-  useTraySync();
+  useTraySync(windowLabel === "launcher");
 
   // Background updates — the loop runs only in the launcher window
   useUpdater();
@@ -118,73 +124,130 @@ function App() {
     loadRecentMeetings();
   }, [loadRecentMeetings]);
 
-  // Detect which Tauri window we're in ("launcher" or "overlay")
-  const [windowLabel, setWindowLabel] = useState<string>("");
   useEffect(() => {
-    import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) => {
-      const label = getCurrentWebviewWindow().label;
-      setWindowLabel(label);
-      // Overlay window: transparent CSS (tauri.conf.json already sets transparent:true)
-      if (label === "overlay") {
-        document.body.style.background = "transparent";
-        document.documentElement.style.background = "transparent";
-      }
-    });
-  }, []);
-  // OVERLAY window: stealth mode keeps the arrow cursor across the whole window.
+    if (windowLabel === "launcher") return attachMeetingWindow();
+    if (windowLabel === "overlay") {
+      document.body.style.background = "transparent";
+      document.documentElement.style.background = "transparent";
+    }
+  }, [windowLabel]);
   useStealthCursor(windowLabel);
 
-  // LAUNCHER window: the meeting runs in the overlay window. When a meeting
-  // starts (or anything asks this window for the meeting view), bring the
-  // overlay up and keep the dashboard here, so showing the launcher again
-  // never shows a second, unpinned copy of the meeting.
   useEffect(() => {
-    if (windowLabel !== "launcher") return;
-    if (currentView === "overlay") {
-      useMeetingStore.getState().setCurrentView("launcher");
-      showMeetingOverlay().catch(() => {});
-    }
+    if (windowLabel !== "launcher" || currentView !== "overlay") return;
+    useMeetingStore.getState().setCurrentView("launcher");
+    void showMeetingOverlay().catch(() => {});
   }, [currentView, windowLabel]);
 
-  // OVERLAY window: show the meeting overlay on request (launcher RETURN,
-  // Ctrl+B, tray "Show Overlay"). It renders only its own view, so switch to
-  // the meeting first; with no meeting running, show the launcher instead.
   useEffect(() => {
     if (windowLabel !== "overlay") return;
+    const scope = createEventScope("Meeting overlay");
+    let preparingMeetingId: string | undefined;
+    let lastEndedId: string | undefined;
+    let saving: Promise<[string, string][]> | undefined;
+    const broadcastHidden = (hidden: boolean) => {
+      const store = useMeetingStore.getState();
+      if (!store.activeMeeting || store.overlayHidden === hidden) return;
+      store.setOverlayHidden(hidden);
+      void emit("nexq:overlay_hidden_changed", { meetingId: store.activeMeeting.id, hidden }).catch(() => {});
+    };
     const show = () => {
       const store = useMeetingStore.getState();
       if (!store.activeMeeting) {
-        showLauncherWindow().catch(() => {});
+        void showLauncherWindow().catch(() => {});
         return;
       }
       if (store.currentView !== "overlay" && store.currentView !== "settings") store.setCurrentView("overlay");
-      showOverlayWindow().catch(() => {});
+      broadcastHidden(false);
+      void showOverlayWindow().catch(() => {});
     };
-    const unlisteners: Array<() => void> = [];
-    listen(SHOW_MEETING_OVERLAY_EVENT, show).then((fn) => unlisteners.push(fn));
-    listen("tray_show_overlay", show).then((fn) => unlisteners.push(fn));
-    return () => unlisteners.forEach((fn) => fn());
-  }, [windowLabel]);
+    void scope.add((onEvent) => listen(SHOW_MEETING_OVERLAY_EVENT, onEvent), show);
+    void scope.add((onEvent) => listen("tray_show_overlay", onEvent, { target: windowLabel }), show);
+    void scope.add((onEvent) => listen(TOGGLE_OVERLAY_SETTINGS_EVENT, onEvent), toggleWindowSettings);
+    void scope.add((onEvent) => listen("tray_toggle_stealth", onEvent, { target: windowLabel }), () => {
+      const store = useMeetingStore.getState();
+      if (!store.activeMeeting) return;
+      if (store.overlayHidden) show();
+      else {
+        broadcastHidden(true);
+        void getCurrentWebviewWindow().hide().catch(() => {});
+      }
+    });
 
-  // Keep the stop service alive after meeting hooks unmount: the overlay may
-  // still need the acknowledgement while finishing its own save.
-  useEffect(() => {
-    if (windowLabel !== "launcher") return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void onWebSpeechStopRequest((meetingId) => {
-      if (useMeetingStore.getState().activeMeeting?.id !== meetingId) return false;
+    void scope.add<TauriEvent<MeetingStarted>>((onEvent) => listen(MEETING_STARTED, onEvent), ({ payload }) => {
+      const { meeting, audioMode, aiScenario } = payload;
+      const state = useMeetingStore.getState();
+      if (state.activeMeeting?.id === meeting.id) {
+        void emit(OVERLAY_PRESENT, { meetingId: meeting.id }).catch(() => {});
+        if (state.meetingListenersReadyId === meeting.id) void emitOverlayMeetingReady(meeting.id).catch(() => {});
+        return;
+      }
+      if (lastEndedId === meeting.id || preparingMeetingId || state.activeMeeting) return;
+      preparingMeetingId = meeting.id;
+      void (async () => {
+        await resetMeetingScopedStores();
+        if (!scope.active() || lastEndedId === meeting.id) return;
+        initMeetingSpeakers(audioMode);
+        useConfigStore.setState({ mutedYou: audioMode === "in_person", mutedThem: false });
+        await useScenarioStore.getState().loadScenarioConfig();
+        if (!scope.active() || lastEndedId === meeting.id) return;
+        useScenarioStore.setState({ activeScenarioId: aiScenario });
+        const parsedTime = Date.parse(meeting.start_time);
+        useMeetingStore.setState({
+          activeMeeting: meeting,
+          currentView: "overlay",
+          audioMode,
+          aiScenario,
+          isRecording: true,
+          isEndingMeeting: false,
+          meetingStartTime: Number.isFinite(parsedTime) ? parsedTime : Date.now(),
+          elapsedMs: 0,
+          meetingListenersReadyId: null,
+          lastPersistedIndex: 0,
+          selectedMeetingId: null,
+          unfinishedMeeting: null,
+          overlayHidden: false,
+          settingsOpen: false,
+        });
+        useMeetingStore.getState().startTimer();
+        void emit(OVERLAY_PRESENT, { meetingId: meeting.id }).catch(() => {});
+      })().catch((error) => console.warn("[App] Could not prepare meeting overlay:", error)).finally(() => {
+        preparingMeetingId = undefined;
+      });
+    });
+    void scope.add<TauriEvent<OverlaySaveRequest>>((onEvent) => listen(OVERLAY_SAVE_REQUEST, onEvent), ({ payload }) => {
+      if (useMeetingStore.getState().activeMeeting?.id !== payload.meetingId) return;
       useMeetingStore.setState({ isEndingMeeting: true });
-      return true;
-    }).then((remove) => {
-      if (disposed) remove();
-      else unlisten = remove;
-    }).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
+      if (!saving) {
+        saving = persistOverlayMeetingData(payload.meetingId);
+        void saving.finally(() => { saving = undefined; }).catch(() => {});
+      }
+      void saving.then(
+        (speakerAliases) => ({ ...payload, speakerAliases }),
+        (error) => ({ ...payload, message: error instanceof Error ? error.message : String(error) }),
+      ).then((result) => {
+        if (scope.active()) return acknowledgeOverlaySave(result);
+      }).catch(() => {});
+    });
+    void scope.add<TauriEvent<WindowMeetingEndedEvent>>((onEvent) => listen(MEETING_ENDED, onEvent), ({ payload }) => {
+      if (payload.window !== "launcher") return;
+      lastEndedId = payload.meetingId;
+      useMeetingStore.getState().clearEndedMeeting(payload.meetingId);
+    });
+    void scope.add<TauriEvent<MeetingEndResult>>((onEvent) => listen(MEETING_END_FAILED, onEvent), ({ payload }) => {
+      if (useMeetingStore.getState().activeMeeting?.id === payload.meetingId) {
+        useMeetingStore.setState({ isEndingMeeting: false });
+      }
+    });
+    return scope.dispose;
   }, [windowLabel]);
 
-  // OVERLAY window: a captured screenshot goes to the Ask box, which Settings
-  // covers: go back to the meeting view first.
+  useEffect(() => {
+    if (windowLabel === "overlay" && activeMeetingId && meetingListenersReadyId === activeMeetingId) {
+      void emitOverlayMeetingReady(activeMeetingId).catch(() => {});
+    }
+  }, [activeMeetingId, meetingListenersReadyId, windowLabel]);
+
   useEffect(() => {
     if (windowLabel !== "overlay") return;
     const onScreenshot = (e: Event) => {
@@ -194,104 +257,49 @@ function App() {
     return () => window.removeEventListener(SCREENSHOT_EVENT, onScreenshot);
   }, [windowLabel]);
 
-  // LAUNCHER window: listen for nexq:meeting_ended from overlay, show self + reset state
   useEffect(() => {
     if (windowLabel !== "launcher") return;
-    let unlisten: (() => void) | undefined;
-    listen("nexq:meeting_ended", () => {
-      useMeetingStore.setState({
-        currentView: "launcher",
-        activeMeeting: null,
-        isRecording: false,
-        isEndingMeeting: false,
-        meetingStartTime: null,
-        elapsedMs: 0,
+    const scope = createEventScope("Meeting launcher");
+    const start = (title?: string, scenario?: MeetingStarted["aiScenario"]) => {
+      void useMeetingStore.getState().startMeetingFlow(title, title ? "online" : undefined, scenario).catch((error) => {
+        console.error("[App] Could not start the meeting:", error);
       });
-      useMeetingStore.getState().loadRecentMeetings().catch(() => {});
-      showLauncherWindow().catch(() => {});
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, [windowLabel]);
-
-  // LAUNCHER window: start the meeting the meeting-detection prompt asked for
-  useEffect(() => {
-    if (windowLabel !== "launcher") return;
-    let unlisten: (() => void) | undefined;
-    onStartDetectedMeeting(({ title, scenario }) => {
-      if (useMeetingStore.getState().activeMeeting) return;
-      useMeetingStore.getState().startMeetingFlow(title, "online", scenario).catch((err) => {
-        console.error("[App] Starting the detected meeting failed:", err);
+    };
+    void scope.add(onStartDetectedMeeting, ({ title, scenario }) => start(title, scenario));
+    void scope.add(onOverlayMeetingReady, ({ meetingId }) => useMeetingStore.getState().setOverlayMeetingId(meetingId));
+    void scope.add<TauriEvent<{ meetingId: string }>>((onEvent) => listen(OVERLAY_PRESENT, onEvent), ({ payload }) => {
+      useMeetingStore.getState().setOverlayMeetingId(payload.meetingId);
+    });
+    void scope.add((onEvent) => listen("tray_start_meeting", onEvent, { target: windowLabel }), () => start());
+    void scope.add<TauriEvent<{ meetingId?: string } | null>>((onEvent) => listen(MEETING_STOP_REQUEST, onEvent, { target: windowLabel }), ({ payload }) => {
+      const store = useMeetingStore.getState();
+      if (!store.activeMeeting || (payload?.meetingId && payload.meetingId !== store.activeMeeting.id)) return;
+      if (store.isEndingMeeting) return;
+      void store.endMeetingFlow().catch((error) => {
+        console.error("[App] Could not end the meeting:", error);
+        showToast(error instanceof Error ? error.message : translate("onboarding:app.errors.endMeeting"), "error");
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, [windowLabel]);
-
-  // LAUNCHER window: record that the overlay took the meeting (decides which
-  // window persists overlay-edited data when the meeting ends)
-  useEffect(() => {
-    if (windowLabel !== "launcher") return;
-    let unlisten: (() => void) | undefined;
-    onOverlayMeetingReady(({ meetingId }) => {
-      useMeetingStore.getState().setOverlayMeetingId(meetingId);
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, [windowLabel]);
-
-  // OVERLAY window: when currentView->"launcher", hide self + show launcher
-  useEffect(() => {
-    if (windowLabel !== "overlay") return;
-    if (currentView === "launcher") {
-      showLauncherWindow().catch(() => {});
-    }
-  }, [currentView, windowLabel]);
-
-  // OVERLAY window: listen for nexq:meeting_started, initialize local state
-  useEffect(() => {
-    if (windowLabel !== "overlay") return;
-    let unlisten: (() => void) | undefined;
-    listen<{ meeting: Meeting; audioMode: AudioMode; aiScenario: AIScenario }>(
-      "nexq:meeting_started",
-      async (e) => {
-        const { meeting, audioMode, aiScenario } = e.payload;
-        const startedAt = Date.now();
-        // Reset ALL per-meeting stores in THIS (overlay) window first. Each Tauri
-        // webview has its own Zustand instances, so the launcher clearing its
-        // copies is not enough. Publishing the meeting before the reset would let
-        // the overlay mount with the previous meeting's transcript (and detect its
-        // questions again).
-        try {
-          await resetMeetingScopedStores();
-          initMeetingSpeakers(audioMode);
-          // The launcher started the meeting with both sides unmuted, then muted
-          // "You" in person: this window shows (and later resets) the same state.
-          useConfigStore.setState({ mutedYou: audioMode === "in_person", mutedThem: false });
-        } catch (err) {
-          console.warn("[App] Failed to reset meeting stores in overlay:", err);
-        }
-        // This window read the scenarios at startup; the launcher may have changed
-        // them since, and only it saves the meeting's scenario as the active one.
-        await useScenarioStore.getState().loadScenarioConfig();
-        useScenarioStore.setState({ activeScenarioId: aiScenario });
-        useMeetingStore.setState({
-          activeMeeting: meeting,
-          currentView: "overlay",
-          audioMode,
-          aiScenario,
-          isRecording: true,
-          isEndingMeeting: false,
-          meetingStartTime: startedAt,
-          elapsedMs: 0,
-          lastPersistedIndex: 0,
-          selectedMeetingId: null,
-          unfinishedMeeting: null,
-          settingsOpen: false,
-        });
-        useMeetingStore.getState().startTimer();
-        // Then tell the launcher this window owns the meeting's speaker/bookmark data.
-        emitOverlayMeetingReady(meeting.id).catch(() => {});
-      }
-    ).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    });
+    void scope.add<TauriEvent<WindowMeetingEndedEvent>>((onEvent) => listen(MEETING_ENDED, onEvent), ({ payload }) => {
+      if (payload.window !== "launcher" || useMeetingStore.getState().activeMeeting) return;
+      void isQuitPending().catch(() => false).then((pending) => {
+        if (scope.active() && pending !== true && !useMeetingStore.getState().activeMeeting) return showLauncherWindow();
+      }).catch(() => {});
+    });
+    void scope.add((onEvent) => listen("tray_open_settings", onEvent, { target: windowLabel }), () => useMeetingStore.getState().openSettings());
+    void scope.add<TauriEvent<string>>((onEvent) => listen("tray_open_meeting", onEvent, { target: windowLabel }), ({ payload }) => {
+      const store = useMeetingStore.getState();
+      store.setSettingsOpen(false);
+      store.setCurrentView("launcher");
+      store.setSelectedMeetingId(payload);
+    });
+    void scope.add((onEvent) => listen("tray_toggle_mic", onEvent, { target: windowLabel }), () => useConfigStore.getState().toggleMuteYou());
+    void scope.add((onEvent) => listen("tray_toggle_system", onEvent, { target: windowLabel }), () => useConfigStore.getState().toggleMuteThem());
+    void scope.add<TauriEvent<{ meetingId: string; hidden: boolean }>>((onEvent) => listen("nexq:overlay_hidden_changed", onEvent), ({ payload }) => {
+      const store = useMeetingStore.getState();
+      if (store.activeMeeting?.id === payload.meetingId) store.setOverlayHidden(payload.hidden);
+    });
+    return scope.dispose;
   }, [windowLabel]);
 
   // Toast when Claude is unavailable and requests move to the fallback provider
@@ -328,88 +336,29 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  // Listen for tray menu events from Rust backend
   useEffect(() => {
-    const unlisteners: Array<() => void> = [];
-
-    listen("tray_start_meeting", () => {
-      startMeetingFlow().catch((err) => {
-        console.error("[App] Tray start meeting failed:", err);
-      });
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_open_settings", () => {
-      // Settings open in the launcher (the tray shows it)
-      if (windowLabel === "overlay") return;
-      // Use getState() to avoid stale closure captures
-      const view = useMeetingStore.getState().currentView;
-      if (view === "overlay") {
-        useMeetingStore.getState().setSettingsOpen(true);
-      } else {
-        useMeetingStore.getState().setCurrentView("settings");
-      }
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_stop_meeting", () => {
-      useMeetingStore.getState().endMeetingFlow().catch((err) => {
-        console.error("[App] Tray stop meeting failed:", err);
-        // The meeting stays open (e.g. transcript lines not saved yet): say why.
-        showToast(err instanceof Error ? err.message : translate("onboarding:app.errors.endMeeting"), "error");
-      });
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_toggle_mic", () => {
-      useConfigStore.getState().toggleMuteYou();
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_toggle_system", () => {
-      useConfigStore.getState().toggleMuteThem();
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_toggle_stealth", () => {
-      const store = useMeetingStore.getState();
-      const willHide = !store.overlayHidden;
-      store.toggleOverlayHidden();
-      // Hide/show the overlay window (screen-share stealth is a separate setting)
-      import("@tauri-apps/api/webviewWindow").then(async ({ WebviewWindow }) => {
-        const overlay = await WebviewWindow.getByLabel("overlay");
-        if (overlay) {
-          if (willHide) {
-            await overlay.hide().catch(() => {});
-          } else {
-            logToFile("info", "tray", "Hide Overlay toggled: showing the overlay window");
-            await overlay.show().catch(() => {});
-          }
-        }
-      }).catch(() => {});
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    onCaptureWarning((message) => {
-      showToast(message, "warning");
-    }).then((unlisten) => unlisteners.push(unlisten));
-
+    if (!windowLabel) return;
+    const scope = createEventScope("App");
+    void scope.add((onEvent) => listen("nexq:quit_failed", onEvent), () => {
+      showToast(translate("onboarding:app.errors.endMeeting"), "error");
+    });
+    void scope.add(onCaptureWarning, (message) => showToast(message, "warning"));
     const captureStatus = createCaptureStatusHandler();
-    onAudioCaptureStatus(captureStatus.handle).then((unlisten) => unlisteners.push(unlisten));
-    onAudioCaptureStopped(captureStatus.reset).then((unlisten) => unlisteners.push(unlisten));
-    unlisteners.push(captureStatus.reset);
-
-    onStealthModeChanged((enabled) => {
-      useConfigStore.getState().stealthModeApplied(enabled);
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen<string>("tray_copy", (e) => {
-      console.log("[App] Tray copy requested:", e.payload);
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen<string>("tray_open_meeting", (e) => {
-      console.log("[App] Tray open meeting requested:", e.payload);
-    }).then((unlisten) => unlisteners.push(unlisten));
-
+    void scope.add(onAudioCaptureStatus, captureStatus.handle);
+    void scope.add<void>((onEvent) => onAudioCaptureStopped(() => onEvent()), captureStatus.reset);
+    void scope.add(onStealthModeChanged, (enabled) => useConfigStore.getState().stealthModeApplied(enabled));
+    void scope.add<TauriEvent<{ source: "you" | "them"; muted: boolean; meetingId?: string }>>((onEvent) => listen("source_mute_changed", onEvent), ({ payload }) => {
+      if (payload.meetingId && payload.meetingId !== useMeetingStore.getState().activeMeeting?.id) return;
+      useConfigStore.setState(payload.source === "you" ? { mutedYou: payload.muted } : { mutedThem: payload.muted });
+    });
+    void scope.add<TauriEvent<{ kind: TrayCopyKind; window: string }>>((onEvent) => listen("tray_copy", onEvent, { target: windowLabel }), ({ payload }) => {
+      if (payload.window === windowLabel) void copyFromTray(payload.kind);
+    });
     return () => {
-      unlisteners.forEach((fn) => fn());
+      scope.dispose();
+      captureStatus.reset();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startMeetingFlow]);
+  }, [windowLabel]);
 
   // Don't render until config is loaded from disk — prevents false wizard trigger
   if (!configLoaded) {
@@ -456,6 +405,7 @@ function App() {
         </ErrorBoundary>
         <ActiveMeetingProvider isLauncherWindow={false} />
         <ToastContainer />
+        <SelectionToolbar key={activeMeetingId} />
         {/* Settings -> About can open here too */}
         <UpdateDialog />
         {/* macOS + stealth only: resize the overlay without macOS's resize cursors */}

@@ -9,6 +9,7 @@ pub mod word_diff;
 // Sub-PRD 9: Additional providers
 pub mod azure_speech;
 pub mod cartesia;
+mod cloud_http;
 pub mod groq_whisper;
 pub mod whisper_api;
 // STT Engine Overhaul: New streaming providers
@@ -521,97 +522,50 @@ impl STTRouter {
         }
     }
 
-    /// Test the connection for a given provider type.
-    pub async fn test_provider_connection(
+    /// Build a standalone probe while holding the router lock briefly. The
+    /// returned provider owns its configuration and can do I/O after unlocking.
+    pub(crate) fn connection_test_provider(
         &self,
         provider_type: &STTProviderType,
-    ) -> Result<bool, String> {
-        match provider_type {
-            STTProviderType::WebSpeech => {
-                // WebSpeech is always available in Chromium-based WebView
-                Ok(true)
+        key: Option<&str>,
+        region: Option<&str>,
+    ) -> Result<Option<Box<dyn STTProvider>>, String> {
+        let provider: Box<dyn STTProvider> = match provider_type {
+            STTProviderType::WebSpeech
+            | STTProviderType::WhisperCpp
+            | STTProviderType::SherpaOnnx
+            | STTProviderType::OrtStreaming
+            | STTProviderType::ParakeetTdt => {
+                // Model availability for local engines is checked at capture time.
+                return Ok(None);
             }
-            STTProviderType::WhisperCpp => {
-                // WhisperCpp engine is always available; model availability
-                // is checked at capture time.
-                Ok(true)
-            }
-            STTProviderType::WindowsNative => {
-                let provider = windows_native::WindowsNativeSTT::new();
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
-            }
+            STTProviderType::WindowsNative => Box::new(windows_native::WindowsNativeSTT::new()),
             STTProviderType::Deepgram => {
-                let key = self
-                    .deepgram_api_key
-                    .as_deref()
-                    .ok_or("No Deepgram API key configured")?;
-                let provider = deepgram::DeepgramSTT::with_api_key(key);
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
+                let key = key.or(self.deepgram_api_key.as_deref()).ok_or("No Deepgram API key configured")?;
+                Box::new(deepgram::DeepgramSTT::with_api_key(key))
             }
             STTProviderType::WhisperApi => {
-                let key = self
-                    .whisper_api_key
-                    .as_deref()
-                    .ok_or("No OpenAI API key configured")?;
-                let provider = whisper_api::WhisperApiSTT::with_api_key(key);
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
+                let key = key.or(self.whisper_api_key.as_deref()).ok_or("No OpenAI API key configured")?;
+                Box::new(whisper_api::WhisperApiSTT::with_api_key(key))
             }
             STTProviderType::AzureSpeech => {
-                let key = self
-                    .azure_speech_key
-                    .as_deref()
-                    .ok_or("No Azure subscription key configured")?;
-                let region = self
-                    .azure_speech_region
-                    .as_deref()
-                    .ok_or("No Azure region configured")?;
-                let provider = azure_speech::AzureSpeechSTT::with_config(key, region);
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
+                let key = key.or(self.azure_speech_key.as_deref()).ok_or("No Azure subscription key configured")?;
+                let region = region.or(self.azure_speech_region.as_deref()).ok_or("No Azure region configured")?;
+                Box::new(azure_speech::AzureSpeechSTT::with_config(key, region))
             }
             STTProviderType::GroqWhisper => {
-                let key = self
-                    .groq_whisper_api_key
-                    .as_deref()
-                    .ok_or("No Groq API key configured")?;
-                let provider = groq_whisper::GroqWhisperSTT::with_api_key(key);
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
-            }
-            STTProviderType::OpenAICompat | STTProviderType::Soniox => {
-                // Configured and tested in their own settings cards (probe commands).
-                Err(format!("Test {} from its settings card", provider_type.as_str()))
+                let key = key.or(self.groq_whisper_api_key.as_deref()).ok_or("No Groq API key configured")?;
+                Box::new(groq_whisper::GroqWhisperSTT::with_api_key(key))
             }
             STTProviderType::Cartesia => {
-                let key = self
-                    .cartesia_api_key
-                    .as_deref()
-                    .ok_or("No Cartesia API key configured")?;
-                let provider = cartesia::CartesiaSTT::with_api_key(key);
-                provider
-                    .test_connection()
-                    .await
-                    .map_err(|e| format!("Connection test failed: {}", e))
+                let key = key.or(self.cartesia_api_key.as_deref()).ok_or("No Cartesia API key configured")?;
+                Box::new(cartesia::CartesiaSTT::with_api_key(key))
             }
-            STTProviderType::SherpaOnnx | STTProviderType::OrtStreaming | STTProviderType::ParakeetTdt => {
-                // Local engines — always "available" if a model is downloaded.
-                // Model availability is checked at capture time in create_stt_provider_for_party.
-                Ok(true)
+            STTProviderType::OpenAICompat | STTProviderType::Soniox => {
+                return Err(format!("Test {} from its settings card", provider_type.as_str()));
             }
-        }
+        };
+        Ok(Some(provider))
     }
 
     /// Check if currently processing.

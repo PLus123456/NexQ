@@ -1,5 +1,4 @@
-// Translation commands with the arguments NexQ Plus added (all optional on
-// the Rust side, so the plain wrappers in src/lib/ipc.ts keep working).
+// Translation provider configuration and batching commands.
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TranslationConnectionStatus, TranslationProviderType } from "../types";
@@ -23,15 +22,20 @@ export function testTranslationProvider(
   provider: TranslationProviderType,
   options?: TranslationBackendOptions,
   region?: string,
+  apiKey?: string,
 ): Promise<TranslationConnectionStatus> {
-  return invoke<TranslationConnectionStatus>("test_translation_connection", { provider, region, options });
+  return invoke<TranslationConnectionStatus>("test_translation_connection", { provider, region, options, apiKey });
 }
 
-/** "Translate all" for the given parties only. */
-export function translateBatchForParties(
+export function storeMicrosoftTranslationCredentials(key: string, region: string): Promise<void> {
+  return invoke("store_microsoft_translation_credentials", { key, region });
+}
+
+/** "Translate all", optionally restricted to the given parties. */
+export function translateBatch(
   meetingId: string,
   targetLang: string,
-  parties: TranslationParty[],
+  parties?: TranslationParty[],
 ): Promise<BatchTranslationOutcome> {
   return invoke<BatchTranslationOutcome>("translate_batch", { meetingId, targetLang, parties });
 }

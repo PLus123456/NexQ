@@ -5,7 +5,7 @@ import { useT } from "../i18n";
 import { SourcesModal } from "../sources/SourcesModal";
 
 /** The address of a link the user may be sent to, or `null` for anything else. */
-function webAddress(href: string | undefined): string | null {
+export function webAddress(href: string | undefined): string | null {
   if (!href) return null;
   try {
     const url = new URL(href);

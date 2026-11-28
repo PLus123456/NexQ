@@ -4,6 +4,8 @@
 // ============================================================================
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { TranslationExportFormat } from "./translation/types";
 import type {
   MeetingDetectionConfig,
   MeetingPromptInfo,
@@ -29,6 +31,7 @@ import type {
   RagSearchOutcome,
   RecordingInfo,
   TokenBudget,
+  TranscriptSegment,
   TranslationResult,
   TranslationLanguage,
   TranslationConnectionStatus,
@@ -57,11 +60,13 @@ export async function listAudioDevices(): Promise<AudioDeviceList> {
 
 export async function startCapture(
   micDeviceId: string,
-  systemDeviceId: string
+  systemDeviceId: string,
+  expectedMeetingId?: string,
 ): Promise<void> {
   return invoke("start_capture", {
     micDeviceId,
     systemDeviceId,
+    ...(expectedMeetingId ? { expectedMeetingId } : {}),
   });
 }
 
@@ -109,8 +114,8 @@ export async function getAudioPeakLevels(): Promise<DevicePeakLevel[]> {
   return invoke("get_audio_peak_levels");
 }
 
-export async function setRecordingEnabled(enabled: boolean): Promise<void> {
-  return invoke("set_recording_enabled", { enabled });
+export async function setRecordingEnabled(enabled: boolean, expectedMeetingId?: string): Promise<void> {
+  return invoke("set_recording_enabled", { enabled, ...(expectedMeetingId ? { expectedMeetingId } : {}) });
 }
 
 /** Start the Live Monitor background thread (pushes `device_levels` events at ~60 fps). */
@@ -156,18 +161,23 @@ export async function startCapturePerParty(
 export async function setPartyLanguage(
   party: "you" | "them",
   config: PartyAudioConfig,
-  options: { skipYouStt?: boolean } = {}
+  options: { skipYouStt?: boolean; expectedMeetingId?: string } = {}
 ): Promise<boolean> {
   return invoke<boolean>("set_party_language", {
     party,
     config: JSON.stringify(config),
     skipYouStt: options.skipYouStt ?? false,
+    ...(options.expectedMeetingId ? { expectedMeetingId: options.expectedMeetingId } : {}),
   });
 }
 
 /** Mute or unmute a specific audio source's STT feed. Audio levels + recording continue. */
-export async function setSourceMuted(source: "you" | "them", muted: boolean): Promise<void> {
-  return invoke("set_source_muted", { source, muted });
+export async function setSourceMuted(source: "you" | "them", muted: boolean, expectedMeetingId?: string): Promise<void> {
+  return invoke("set_source_muted", { source, muted, expectedMeetingId });
+}
+
+export async function toggleSourceMuted(source: "you" | "them", expectedMeetingId: string): Promise<void> {
+  return invoke("toggle_source_muted", { source, expectedMeetingId });
 }
 
 /** Echo cancellation for "You" (the speakers' sound removed from the mic). */
@@ -191,11 +201,23 @@ export async function setSTTLanguage(language: string): Promise<void> {
   return invoke("set_stt_language", { language });
 }
 
-export async function testSTTConnection(provider: string): Promise<boolean> {
-  return invoke("test_stt_connection", { provider });
+export async function testSTTConnection(provider: string, candidate?: { key: string; region?: string }): Promise<boolean> {
+  return invoke("test_stt_connection", { provider, ...candidate });
 }
 
-export async function getAvailableSTTProviders(): Promise<string[]> {
+export async function storeAzureSpeechCredentials(key: string, region: string): Promise<void> {
+  return invoke("store_azure_speech_credentials", { key, region });
+}
+
+export interface SttProviderInfo {
+  provider_type: string;
+  name: string;
+  requires_api_key: boolean;
+  is_local: boolean;
+  supported_languages: string[];
+}
+
+export async function getAvailableSTTProviders(): Promise<SttProviderInfo[]> {
   const result = await invoke<string>("get_available_stt_providers");
   return JSON.parse(result);
 }
@@ -222,7 +244,15 @@ export async function testLLMConnection(provider: string): Promise<boolean> {
   return invoke("test_llm_connection", { provider });
 }
 
-export async function getLLMProviders(): Promise<string[]> {
+export interface LlmProviderInfo {
+  type: string;
+  name: string;
+  base_url: string;
+  requires_api_key: boolean;
+  is_local: boolean;
+}
+
+export async function getLLMProviders(): Promise<LlmProviderInfo[]> {
   const result = await invoke<string>("get_llm_providers");
   return JSON.parse(result);
 }
@@ -308,9 +338,10 @@ export async function pushTranscript(
   text: string,
   speaker: string,
   timestampMs: number,
-  isFinal: boolean
+  isFinal: boolean,
+  meetingId?: string,
 ): Promise<void> {
-  return invoke("push_transcript", { text, speaker, timestampMs, isFinal });
+  return invoke("push_transcript", { text, speaker, timestampMs, isFinal, ...(meetingId ? { meetingId } : {}) });
 }
 
 // == IPC: Action Configs ==
@@ -404,8 +435,20 @@ export async function getMeeting(meetingId: string): Promise<Meeting> {
   return JSON.parse(result);
 }
 
-export async function deleteMeeting(meetingId: string): Promise<void> {
+export async function deleteMeeting(meetingId: string): Promise<{ cleanup_pending: boolean }> {
   return invoke("delete_meeting", { meetingId });
+}
+
+export async function listMeetingHistoryIds(): Promise<string[]> {
+  return invoke("list_meeting_history_ids");
+}
+
+export async function deleteMeetingHistory(meetingIds: string[]): Promise<{
+  deleted_ids: string[];
+  failed: number;
+  cleanup_pending: number;
+}> {
+  return invoke("delete_meeting_history", { meetingIds });
 }
 
 export async function searchMeetings(query: string): Promise<MeetingSummary[]> {
@@ -528,6 +571,7 @@ export async function listLocalSTTEngines(): Promise<LocalSTTEngineInfo[]> {
       speed_rating: m.definition.speed_rating,
       is_streaming: m.definition.is_streaming,
       is_downloaded: m.is_downloaded,
+      download_progress: m.download_progress,
     })),
   }));
 }
@@ -629,13 +673,8 @@ export async function pullEmbeddingModel(model: string): Promise<void> {
   return invoke("pull_embedding_model", { model });
 }
 
-export async function testRagAnswer(
-  query: string,
-  llmProvider?: string,
-  llmModel?: string,
-  requestId?: string
-): Promise<void> {
-  return invoke("test_rag_answer", { query, llmProvider, llmModel, requestId });
+export async function testRagAnswer(query: string, requestId: string): Promise<void> {
+  return invoke("test_rag_answer", { query, requestId });
 }
 
 export async function removeFileRagIndex(resourceId: string): Promise<void> {
@@ -668,6 +707,8 @@ export async function deleteRecording(meetingId: string): Promise<void> {
 
 // == IPC: Translation ==
 
+export { translateBatch } from "./translation/ipc";
+
 export async function setTranslationProvider(provider: string, region?: string): Promise<void> {
   return invoke("set_translation_provider", { provider, region });
 }
@@ -678,10 +719,6 @@ export async function translateText(text: string, targetLang: string, sourceLang
 
 export async function translateSegments(segmentIds: string[], texts: string[], meetingId: string, targetLang: string, sourceLang?: string): Promise<void> {
   return invoke("translate_segments", { segmentIds, texts, meetingId, targetLang, sourceLang });
-}
-
-export async function translateBatch(meetingId: string, targetLang: string): Promise<{ total: number; alreadyDone: number; newlyTranslated: number }> {
-  return invoke("translate_batch", { meetingId, targetLang });
 }
 
 export async function detectLanguage(text: string): Promise<{ lang: string; confidence: number }> {
@@ -704,8 +741,13 @@ export async function getAllMeetingTranslations(meetingId: string): Promise<Tran
   return invoke<TranslationResult[]>("get_all_meeting_translations", { meetingId });
 }
 
-export async function exportTranslatedTranscript(meetingId: string, targetLang: string, format: string): Promise<string> {
-  return invoke<string>("export_translated_transcript", { meetingId, targetLang, format });
+export async function exportTranslatedTranscript(
+  meetingId: string,
+  targetLang: string,
+  format: TranslationExportFormat,
+  liveSegments?: Array<Pick<TranscriptSegment, "id" | "text" | "speaker" | "timestamp_ms">>,
+): Promise<string> {
+  return invoke<string>("export_translated_transcript", { meetingId, targetLang, format, liveSegments });
 }
 
 export async function setTranslationLanguages(targetLang: string, sourceLang?: string): Promise<void> {
@@ -736,6 +778,10 @@ export async function activateOpusMtModel(modelId: string): Promise<void> {
 }
 
 // == IPC: Tray ==
+
+export async function writeClipboardText(text: string): Promise<void> {
+  return invoke("write_tray_clipboard", { text });
+}
 
 export async function setTrayState(state: TrayState): Promise<void> {
   return invoke("set_tray_state", { state });
@@ -807,29 +853,36 @@ export interface GeminiCacheInfo {
   model: string;
   expire_time: string;
   total_token_count: number;
+  connection_id?: string;
 }
 
 export async function createGeminiContextCache(
   model: string,
   ttlSecs: number,
-  systemPrompt?: string
+  systemPrompt?: string,
+  connectionId?: string,
 ): Promise<GeminiCacheInfo> {
   const result = await invoke<string>("create_gemini_context_cache", {
     model,
     ttlSecs,
     systemPrompt,
+    connectionId,
   });
   return JSON.parse(result);
 }
 
-export async function deleteGeminiContextCache(): Promise<void> {
-  return invoke("delete_gemini_context_cache");
+export async function deleteGeminiContextCache(cache?: Pick<GeminiCacheInfo, "name" | "connection_id">): Promise<void> {
+  return invoke("delete_gemini_context_cache", { cacheName: cache?.name, connectionId: cache?.connection_id });
 }
 
 export async function getGeminiCacheStatus(): Promise<GeminiCacheInfo | null> {
   const result = await invoke<string | null>("get_gemini_cache_status");
   if (!result) return null;
   return JSON.parse(result);
+}
+
+export function onGeminiCacheChanged(handler: () => void) {
+  return listen("gemini_cache_changed", handler);
 }
 
 // == IPC: Updater ==
@@ -910,17 +963,16 @@ export async function inspectNotesFolder(path: string): Promise<NotesFolderInfo>
 }
 
 /**
- * Add the servers in pasted `mcpServers` JSON. Secret values are stored in
- * Credential Manager and are not in the returned servers. New keys avoid the
- * keys the backend has saved (see `setPersonalSources`).
+ * Prepare servers from pasted `mcpServers` JSON. Credential values stay
+ * in the backend's pending drafts until `setPersonalSources` commits them.
  */
 export async function importMcpServersJson(json: string): Promise<McpServer[]> {
   return invoke<McpServer[]>("import_mcp_servers_json", { json });
 }
 
 /**
- * Save the add/edit server form; secrets go to Credential Manager, the result
- * holds names only. An edit (`form.id`) must name a server the backend has
+ * Prepare the add/edit server form; the result holds credential names only.
+ * An edit (`form.id`) must name a server the backend has
  * saved (`setPersonalSources`): its key comes from there, `form.key` is
  * ignored. If the edit changes the command, arguments, URL or plain
  * environment, stored secrets are not kept: it rejects with "Enter the secrets
@@ -979,8 +1031,13 @@ export async function deleteMcpSecrets(serverId: string): Promise<void> {
  * when something that goes into it changed. Removing a server here forgets
  * its saved secrets. Rejects on an invalid or duplicate server key.
  */
-export async function setPersonalSources(config: PersonalSourcesConfig): Promise<void> {
-  return invoke("set_personal_sources", { config });
+export interface SourceConfigWrite {
+  expected: unknown;
+  durable: boolean;
+}
+
+export async function setPersonalSources(config: PersonalSourcesConfig, pendingIds?: string[], write?: SourceConfigWrite): Promise<void> {
+  return invoke("set_personal_sources", { config, ...(pendingIds?.length ? { pendingIds } : {}), ...(write ? { write } : {}) });
 }
 
 /**

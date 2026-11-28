@@ -4,7 +4,7 @@
 // instead of reconstructing from frontend stores.
 // ============================================================================
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { PAST_MEETING_MODES } from "./useStreamBuffer";
 import {
   onStreamStart,
@@ -16,7 +16,9 @@ import {
 import { useCallLogStore } from "../stores/callLogStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { saveMeetingAiInteractions } from "../lib/ipc";
-import type { IntelligenceMode, LogEntry } from "../lib/types";
+import { createEventScope } from "../lib/eventScope";
+import { stripThinkTags } from "../lib/utils";
+import type { AIInteraction, IntelligenceMode, LogEntry } from "../lib/types";
 
 /**
  * With nothing at all arriving for this long, an entry shows "No response
@@ -24,15 +26,63 @@ import type { IntelligenceMode, LogEntry } from "../lib/types";
  */
 export const STALL_TIMEOUT_MS = 120_000;
 
-/** Entries worth keeping with the meeting: answered, or stopped part-way. */
-function isPersistable(e: LogEntry): boolean {
-  return !["question_detect", "question_predict", "question_prepare"].includes(e.mode) && !PAST_MEETING_MODES.has(e.mode) &&
-    (e.status === "complete" || (e.status === "cancelled" && !!(e.responseContentClean || e.responseContent)));
+type CapturedAnswer = { meetingId: string; mode: IntelligenceMode; entry: LogEntry; response: string };
+type PendingHistory = { entries: Map<string, AIInteraction>; write: Promise<void> };
+
+const activeAnswers = new Map<string, CapturedAnswer>();
+const pendingHistory = new Map<string, PendingHistory>();
+
+function queueAnswer({ meetingId, mode, entry, response }: CapturedAnswer, cancelled: boolean, latency: number) {
+  const clean = stripThinkTags(response) || response;
+  if (cancelled && !clean) return;
+  let history = pendingHistory.get(meetingId);
+  if (!history) {
+    history = { entries: new Map(), write: Promise.resolve() };
+    pendingHistory.set(meetingId, history);
+  }
+  history.entries.set(entry.id, {
+    id: entry.id,
+    meeting_id: meetingId,
+    mode,
+    question_context: entry.actualUserPrompt || "",
+    response: clean,
+    model: entry.model,
+    provider: entry.provider,
+    latency_ms: latency,
+    timestamp: new Date(entry.timestamp).toISOString(),
+  });
 }
 
-export function useCallLogCapture() {
+function writePendingHistory(meetingId: string): Promise<void> {
+  const history = pendingHistory.get(meetingId);
+  if (!history) return Promise.resolve();
+  const write = history.write.catch(() => {}).then(async () => {
+    const batch = [...history.entries.values()];
+    if (batch.length === 0) return;
+    await saveMeetingAiInteractions(meetingId, JSON.stringify(batch));
+    for (const interaction of batch) {
+      if (history.entries.get(interaction.id) === interaction) history.entries.delete(interaction.id);
+    }
+  });
+  history.write = write;
+  void write.then(() => {
+    if (history.write === write && history.entries.size === 0) pendingHistory.delete(meetingId);
+  }, () => {});
+  return write;
+}
+
+/** Flush writes already in flight and retain a partial answer if cancellation has yet to arrive. */
+export async function flushMeetingAiHistory(meetingId: string): Promise<void> {
+  for (const answer of activeAnswers.values()) {
+    if (answer.meetingId === meetingId) queueAnswer(answer, true, Date.now() - answer.entry.startedAt);
+  }
+  await writePendingHistory(meetingId);
+}
+
+export function useCallLogCapture(persistHistory = true) {
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    const unlisteners: Array<Promise<() => void>> = [];
+    const scope = createEventScope("Call Log");
     // request_id → log entry id, kept until the stream's end or error.
     const entryIds = new Map<string, string>();
     // request_id → "no response yet" timer
@@ -57,47 +107,25 @@ export function useCallLogCapture() {
       );
     };
 
-    const persist = () => {
-      const meetingId = useMeetingStore.getState().activeMeeting?.id;
-      if (!meetingId) return;
-      const interactions = useCallLogStore
-        .getState()
-        .entries.filter(isPersistable)
-        .map((e) => ({
-          id: e.id,
-          meeting_id: meetingId,
-          mode: e.mode,
-          question_context: e.actualUserPrompt || "",
-          response: e.responseContentClean || e.responseContent,
-          model: e.model,
-          provider: e.provider,
-          latency_ms: e.latencyMs ?? 0,
-          timestamp: new Date(e.timestamp).toISOString(),
-        }));
-      if (interactions.length > 0) {
-        saveMeetingAiInteractions(meetingId, JSON.stringify(interactions)).catch((err) =>
-          console.error("[callLogCapture] Failed to persist AI interactions:", err)
-        );
-      }
-    };
-
-    unlisteners.push(
-      onStreamStart((event) => {
+    void Promise.all([
+      scope.add(onStreamStart, (event) => {
+        if (event.mode === "RagTest") return;
         const requestId = event.request_id;
-        if (!requestId) return;
+        if (!requestId || entryIds.has(requestId)) return;
         const id = crypto.randomUUID();
         entryIds.set(requestId, id);
 
-        const mode = event.mode as IntelligenceMode;
+        const mode = event.mode;
+        const startedAt = Date.now();
 
         const entry: LogEntry = {
           id,
-          timestamp: Date.now(),
+          timestamp: startedAt,
           mode,
           provider: event.provider,
           model: event.model,
           status: "sending",
-          startedAt: Date.now(),
+          startedAt,
           firstTokenAt: null,
           completedAt: null,
           totalTokens: null,
@@ -131,33 +159,34 @@ export function useCallLogCapture() {
           errorMessage: null,
         };
 
+        const meetingId = useMeetingStore.getState().activeMeeting?.id;
+        if (persistHistory && meetingId && !PAST_MEETING_MODES.has(mode) &&
+            !["question_detect", "question_predict", "question_prepare"].includes(mode)) {
+          activeAnswers.set(requestId, { meetingId, mode, entry, response: "" });
+        }
         useCallLogStore.getState().beginEntry(entry);
         armStallTimer(requestId, id);
-      })
-    );
+      }),
 
-    unlisteners.push(
-      onStreamToken((event) => {
+      scope.add(onStreamToken, (event) => {
         if (!event.request_id) return;
         const entryId = entryIds.get(event.request_id);
         if (entryId) {
           clearStallTimer(event.request_id);
+          const answer = persistHistory ? activeAnswers.get(event.request_id) : undefined;
+          if (answer) answer.response += event.token;
           useCallLogStore.getState().appendToken(entryId, event.token);
         }
-      })
-    );
+      }),
 
-    // Thinking proves the model is working: the stall clock starts over.
-    unlisteners.push(
-      onStreamThinking((event) => {
+      // Thinking proves the model is working: the stall clock starts over.
+      scope.add(onStreamThinking, (event) => {
         if (!event.request_id) return;
         const entryId = entryIds.get(event.request_id);
         if (entryId && timers.has(event.request_id)) armStallTimer(event.request_id, entryId);
-      })
-    );
+      }),
 
-    unlisteners.push(
-      onStreamEnd((event) => {
+      scope.add(onStreamEnd, (event) => {
         if (!event.request_id) return;
         clearStallTimer(event.request_id);
         const entryId = entryIds.get(event.request_id);
@@ -169,28 +198,41 @@ export function useCallLogCapture() {
         } else {
           store.completeEntry(entryId, event.total_tokens, event.latency_ms, event.usage ?? null);
         }
-        // Immediately persist all answered AI interactions to DB (crash protection)
-        persist();
-      })
-    );
+        const answer = persistHistory ? activeAnswers.get(event.request_id) : undefined;
+        if (answer) {
+          activeAnswers.delete(event.request_id);
+          queueAnswer(answer, !!event.cancelled, event.latency_ms);
+          void writePendingHistory(answer.meetingId).catch((error) =>
+            console.error("[Call Log] Failed to persist AI interaction:", error),
+          );
+        }
+      }),
 
-    unlisteners.push(
-      onStreamError((event) => {
+      scope.add(onStreamError, (event) => {
         if (!event.request_id) return;
         clearStallTimer(event.request_id);
         const entryId = entryIds.get(event.request_id);
         if (entryId) {
           entryIds.delete(event.request_id);
+          if (persistHistory) activeAnswers.delete(event.request_id);
           useCallLogStore.getState().failEntry(entryId, event.message);
         }
-      })
-    );
+      }),
+    ]).then((results) => {
+      if (scope.active()) setReady(results.every(Boolean));
+    });
 
     return () => {
+      scope.dispose();
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();
-      entryIds.clear();
-      unlisteners.forEach((p) => p.then((unlisten) => unlisten()));
+      if (persistHistory) {
+        for (const [requestId, entryId] of entryIds) {
+          if (activeAnswers.get(requestId)?.entry.id === entryId) activeAnswers.delete(requestId);
+        }
+      }
     };
-  }, []);
+  }, [persistHistory]);
+
+  return ready;
 }

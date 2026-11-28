@@ -22,8 +22,14 @@ use tokio::sync::mpsc;
 use crate::audio::capture_supervisor::{
     CaptureCounters, CaptureKind, SideHandle, SideSpec, StatusSink, SystemClock, START_TIMEOUT,
 };
-use crate::audio::recorder::SharedRecorder;
+use crate::audio::recorder::{CaptureRecorder, FinishedRecording};
 use crate::audio::vad::VoiceActivityDetector;
+
+#[cfg(target_os = "windows")]
+pub struct DeviceMonitor {
+    pub running: Arc<AtomicBool>,
+    pub thread: std::thread::JoinHandle<()>,
+}
 
 // ── Two-Party Model Types ──
 
@@ -112,13 +118,12 @@ pub struct AudioCaptureManager {
     /// What didn't start as chosen (a missing device replaced by the default,
     /// or one side not captured at all). Taken by the caller to warn the user.
     warnings: Vec<String>,
-    /// Active recorder (if recording is enabled)
-    recorder: Option<SharedRecorder>,
-    /// When a device change paused capture with the recorder kept open: the
-    /// restart fills the gap with silence so the recording stays in time.
-    recording_paused_at: Option<std::time::Instant>,
+    /// Recording state shared with every audio consumer for this meeting.
+    recorder: CaptureRecorder,
     /// Current meeting ID for recording file naming
     meeting_id: Option<String>,
+    /// The meeting whose final stop already won over any in-flight settings update.
+    stopped_meeting_id: Option<String>,
     /// VAD for mic audio
     mic_vad: VoiceActivityDetector,
     /// VAD for system audio
@@ -150,9 +155,9 @@ impl AudioCaptureManager {
             sides: Vec::new(),
             counters: Default::default(),
             warnings: Vec::new(),
-            recorder: None,
-            recording_paused_at: None,
+            recorder: CaptureRecorder::default(),
             meeting_id: None,
+            stopped_meeting_id: None,
             mic_vad: VoiceActivityDetector::new(),
             system_vad: VoiceActivityDetector::new(),
             mic_level: 0.0,
@@ -192,6 +197,10 @@ impl AudioCaptureManager {
         log::info!("Starting audio capture pipeline");
         self.warnings.clear();
         self.counters = Default::default();
+        if let Err(err) = self.recorder.set_enabled(self.recording_enabled, self.meeting_id.as_deref()) {
+            log::error!("Failed to start recording: {err}");
+            self.warnings.push(format!("Couldn't start the recording: {err}"));
+        }
         // Why "You" isn't captured, if the mic (and the default mic) failed.
         let mut mic_error: Option<String> = None;
         // Why "Them" isn't captured, if their device failed.
@@ -323,8 +332,6 @@ impl AudioCaptureManager {
             (None, None) => {}
         }
 
-        self.resume_or_start_recording();
-
         self.is_capturing = true;
         log::info!("Audio capture pipeline started");
         Ok(())
@@ -381,24 +388,21 @@ impl AudioCaptureManager {
     }
 
     /// Stop all audio capture.
-    /// Returns (wav_path, start_time_ms) if a recording was active.
+    /// Returns the WAV with its originating meeting if a recording was active.
     ///
     /// `keep_recording` (a device change mid-meeting): the recorder stays
     /// open and the next `start_capture` keeps writing to it.
-    pub fn stop_capture(&mut self, keep_recording: bool) -> Option<(std::path::PathBuf, u64)> {
+    pub fn stop_capture(&mut self, keep_recording: bool) -> Option<FinishedRecording> {
         if self.is_capturing {
             self.stop_streams();
         }
         if keep_recording {
-            if self.recorder.is_some() && self.recording_paused_at.is_none() {
-                self.recording_paused_at = Some(std::time::Instant::now());
-            }
             return None;
         }
         // Also when the restart after a device change failed: the recording
         // kept open for it is finalized here.
-        self.recording_paused_at = None;
-        self.stop_recording_internal()
+        self.meeting_id = None;
+        self.recorder.stop()
     }
 
     fn stop_streams(&mut self) {
@@ -431,23 +435,25 @@ impl AudioCaptureManager {
     }
 
     /// Enable or disable recording to file.
-    pub fn set_recording_enabled(&mut self, enabled: bool) {
+    pub fn set_recording_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        let meeting = self.meeting_id.as_deref().filter(|_| self.is_capturing);
+        self.recorder.set_enabled(enabled, meeting)?;
         self.recording_enabled = enabled;
-
-        if self.is_capturing {
-            if enabled && self.recorder.is_none() {
-                self.start_recording_internal();
-            } else if !enabled && self.recorder.is_some() {
-                self.stop_recording_internal();
-            }
-        }
-
         log::info!("Recording {}", if enabled { "enabled" } else { "disabled" });
+        Ok(())
     }
 
     /// Set the meeting ID for file naming.
-    pub fn set_meeting_id(&mut self, meeting_id: String) {
-        self.meeting_id = Some(meeting_id);
+    pub fn set_meeting_id(&mut self, meeting_id: Option<String>) {
+        self.meeting_id = meeting_id;
+    }
+
+    pub fn note_stopped_meeting(&mut self, meeting_id: Option<String>) {
+        self.stopped_meeting_id = meeting_id;
+    }
+
+    pub fn stopped_meeting(&self, id: &str) -> bool {
+        self.stopped_meeting_id.as_deref() == Some(id)
     }
 
     /// Process an audio chunk through VAD and optionally record it.
@@ -505,7 +511,7 @@ impl AudioCaptureManager {
     }
 
     /// Get a clone of the shared recorder (for use in audio processing pipeline).
-    pub fn get_recorder(&self) -> Option<SharedRecorder> {
+    pub fn get_recorder(&self) -> CaptureRecorder {
         self.recorder.clone()
     }
 
@@ -569,51 +575,6 @@ impl AudioCaptureManager {
         detected
     }
 
-    /// Start recording if enabled, or keep writing the one a device change
-    /// kept open (a new recorder would replace the meeting's audio so far).
-    fn resume_or_start_recording(&mut self) {
-        if let (Some(rec), Some(paused_at)) = (&self.recorder, self.recording_paused_at.take()) {
-            rec.write_samples(&gap_silence(paused_at.elapsed()));
-        } else if self.recording_enabled && self.recorder.is_none() {
-            self.start_recording_internal();
-        }
-    }
-
-    fn start_recording_internal(&mut self) {
-        let meeting_id = self
-            .meeting_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        match recorder::start_recording(&meeting_id) {
-            Ok(handle) => {
-                self.recorder = Some(SharedRecorder::new(handle));
-                log::info!("Recording started for meeting: {}", meeting_id);
-            }
-            Err(e) => {
-                log::error!("Failed to start recording: {}", e);
-            }
-        }
-    }
-
-    /// Stop the active recorder and return (wav_path, start_time_ms) if one was running.
-    pub fn stop_recording_internal(&mut self) -> Option<(std::path::PathBuf, u64)> {
-        if let Some(rec) = self.recorder.take() {
-            let start_time_ms = rec.start_time_ms;
-            match rec.stop() {
-                Ok(path) => {
-                    log::info!("Recording saved to: {}", path.display());
-                    Some((path, start_time_ms))
-                }
-                Err(e) => {
-                    log::error!("Failed to stop recording: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
 }
 
 impl Drop for AudioCaptureManager {
@@ -622,18 +583,12 @@ impl Drop for AudioCaptureManager {
     }
 }
 
-/// Silence for the time capture was paused by a device change (16 kHz mono),
-/// at most a minute.
-fn gap_silence(gap: std::time::Duration) -> Vec<i16> {
-    let ms = gap.as_millis().min(60_000) as usize;
-    vec![0; ms * 16]
-}
-
 /// The output contract consumed by STT (Sub-PRD 4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioChunk {
     pub pcm_data: Vec<i16>,
     pub source: AudioSource,
+    /// Unix epoch milliseconds of the last sample in this chunk.
     pub timestamp_ms: u64,
     pub is_speech: bool,
 }
@@ -670,156 +625,140 @@ pub struct AudioLevel {
 /// Post-meeting recording pipeline.
 ///
 /// Steps:
-/// 1. Extract waveform peaks from WAV (CPU-bound, runs in spawn_blocking)
-/// 2. Encode WAV → OGG/Opus (CPU-bound, runs in spawn_blocking)
-/// 3. If Opus succeeds: delete WAV, use .ogg as recording_path
-///    If Opus fails: keep WAV, use .wav as recording_path (graceful fallback)
-/// 4. Write waveform JSON to <recordings_dir>/<meeting_id>.waveform.json
-/// 5. Update DB with recording_path, recording_size, waveform_path, recording_offset_ms
-/// 6. Emit "recording_ready" to frontend
-///
-/// Called via tokio::spawn from end_meeting — does NOT block the IPC response.
+/// Archive a finalized WAV and publish the paths once the meeting row owns them.
 pub async fn process_recording(
     wav_path: std::path::PathBuf,
     meeting_id: String,
     recording_offset_ms: i64,
-    db: std::sync::Arc<std::sync::Mutex<crate::db::DatabaseManager>>,
+    db: Arc<std::sync::Mutex<crate::db::DatabaseManager>>,
     app: tauri::AppHandle,
 ) {
     use tauri::Emitter;
 
-    log::info!(
-        "Post-meeting pipeline starting for meeting {} (wav: {}, offset: {}ms)",
-        meeting_id,
-        wav_path.display(),
-        recording_offset_ms
-    );
-
-    let wav_path_clone = wav_path.clone();
-    let meeting_id_clone = meeting_id.clone();
-
-    // ── Step 1: Extract waveform peaks ────────────────────────────────────────
-    let waveform_path = wav_path.with_extension("waveform.json");
-    let waveform_path_clone = waveform_path.clone();
-    let wav_for_waveform = wav_path.clone();
-
-    let waveform_result = tokio::task::spawn_blocking(move || {
-        match crate::audio::waveform::extract_peaks(&wav_for_waveform) {
-            Ok(data) => {
-                match crate::audio::waveform::write_waveform_json(&data, &waveform_path_clone) {
-                    Ok(()) => {
-                        log::info!("Waveform written to: {}", waveform_path_clone.display());
-                        Ok(waveform_path_clone)
-                    }
-                    Err(e) => {
-                        log::error!("Failed to write waveform JSON: {}", e);
-                        Err(e)
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to extract waveform peaks: {}", e);
-                Err(e)
+    let result = tokio::task::spawn_blocking(move || {
+        archive_recording(&wav_path, &meeting_id, recording_offset_ms, &db)
+    }).await;
+    match result {
+        Ok(Ok(Some(payload))) => {
+            if let Err(err) = app.emit("recording_ready", payload) {
+                log::error!("Failed to emit recording_ready: {err}");
             }
         }
-    })
-    .await;
+        Ok(Ok(None)) => {}
+        Ok(Err(err)) => log::error!("Could not archive recording: {err}"),
+        Err(err) => log::error!("Recording archive task failed: {err}"),
+    }
+}
 
-    let waveform_path_result = match waveform_result {
-        Ok(Ok(p)) => Some(p),
-        Ok(Err(_)) => None,
-        Err(e) => {
-            log::error!("Waveform task panicked: {:?}", e);
+fn archive_recording(
+    wav_path: &std::path::Path,
+    meeting_id: &str,
+    offset: i64,
+    db: &std::sync::Mutex<crate::db::DatabaseManager>,
+) -> Result<Option<serde_json::Value>, String> {
+    let wav_path_text = wav_path.to_string_lossy();
+    {
+        let guard = db.lock().map_err(|_| "Database lock poisoned")?;
+        if !recording_path_matches(guard.connection(), meeting_id, &wav_path_text)? {
+            return Ok(None);
+        }
+    }
+    let original_size = std::fs::metadata(wav_path).map_err(|err| err.to_string())?.len();
+    let reader = hound::WavReader::open(wav_path)
+        .map_err(|err| format!("Couldn't open recording for meeting {meeting_id}: {err}"))?;
+    let empty = reader.duration() == 0;
+    drop(reader);
+    if empty {
+        let guard = db.lock().map_err(|_| "Database lock poisoned")?;
+        let conn = guard.connection();
+        if recording_path_matches(conn, meeting_id, &wav_path_text)? {
+            crate::db::meetings::delete_recording(conn, meeting_id)
+                .map_err(|error| error.to_string())?;
+            crate::commands::recording_commands::complete_recording_file_deletion(conn, meeting_id)?;
+        }
+        return Ok(None);
+    }
+    let waveform_file = wav_path.with_extension("waveform.json");
+    let waveform = match waveform::extract_peaks(wav_path)
+        .and_then(|data| waveform::write_waveform_json(&data, &waveform_file))
+    {
+        Ok(()) => Some(waveform_file.to_string_lossy().into_owned()),
+        Err(err) => {
+            remove_archive_file(&waveform_file);
+            log::warn!("Waveform unavailable for meeting {meeting_id}: {err}");
             None
         }
     };
 
-    // ── Step 2: Encode WAV → Opus ──────────────────────────────────────────────
-    let opus_path = wav_path_clone.with_extension("ogg");
-    let opus_path_clone = opus_path.clone();
-    let wav_for_encode = wav_path_clone.clone();
-
-    let encode_result = tokio::task::spawn_blocking(move || {
-        crate::audio::encoder::encode_wav_to_opus(&wav_for_encode, &opus_path_clone)
-    })
-    .await;
-
-    let (recording_path, recording_size) = match encode_result {
-        Ok(Ok(size)) => {
-            // Opus encoding succeeded — delete the WAV to save space
-            if let Err(e) = std::fs::remove_file(&wav_path_clone) {
-                log::warn!("Failed to delete WAV after Opus encoding: {}", e);
-            }
-            log::info!("Opus encoding succeeded ({} bytes), WAV deleted", size);
-            (opus_path, size as i64)
-        }
-        Ok(Err(e)) => {
-            // Encoding failed — fall back to WAV
-            log::warn!("Opus encoding failed ({}), keeping WAV as fallback", e);
-            let wav_size = std::fs::metadata(&wav_path_clone)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
-            (wav_path_clone.clone(), wav_size)
-        }
-        Err(e) => {
-            log::error!("Opus encoding task panicked: {:?}", e);
-            let wav_size = std::fs::metadata(&wav_path_clone)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
-            (wav_path_clone.clone(), wav_size)
+    let opus_path = wav_path.with_extension("ogg");
+    let (recording_file, size) = match encoder::encode_wav_to_opus(wav_path, &opus_path) {
+        Ok(size) => (opus_path.as_path(), size),
+        Err(err) => {
+            remove_archive_file(&opus_path);
+            log::warn!("Opus encoding failed for meeting {meeting_id}, keeping WAV: {err}");
+            (wav_path, original_size)
         }
     };
-
-    // ── Step 3: Update DB ──────────────────────────────────────────────────────
-    let recording_path_str = recording_path.to_string_lossy().to_string();
-    let waveform_path_str = waveform_path_result
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let db_result = {
-        let db_guard = db.lock();
-        match db_guard {
-            Ok(guard) => {
-                crate::db::meetings::update_meeting_recording(
-                    guard.connection(),
-                    &meeting_id_clone,
-                    &recording_path_str,
-                    recording_size,
-                    &waveform_path_str,
-                    recording_offset_ms,
-                )
-                .map_err(|e| e.to_string())
+    let recording_path = recording_file.to_string_lossy();
+    let attached = {
+        let guard = db.lock().map_err(|_| "Database lock poisoned");
+        guard.map_err(str::to_string).and_then(|guard| {
+            let conn = guard.connection();
+            if !recording_path_matches(conn, meeting_id, &wav_path_text)? {
+                return Ok(0);
             }
-            Err(e) => Err(format!("DB lock poisoned: {}", e)),
-        }
+            crate::db::meetings::update_meeting_recording(
+                conn, meeting_id, &recording_path, size as i64, waveform.as_deref(), offset,
+            ).map_err(|err| err.to_string())
+        })
     };
-
-    if let Err(e) = db_result {
-        log::error!("Failed to update DB with recording info: {}", e);
-    } else {
-        log::info!(
-            "DB updated for meeting {}: path={}, size={}, offset={}ms",
-            meeting_id_clone,
-            recording_path_str,
-            recording_size,
-            recording_offset_ms
-        );
+    match attached {
+        Ok(0) => {
+            // History can delete the recording or its meeting during conversion.
+            remove_archive_file(wav_path);
+            remove_archive_file(&opus_path);
+            remove_archive_file(&waveform_file);
+            Ok(None)
+        }
+        Ok(_) => {
+            if recording_file != wav_path {
+                remove_archive_file(wav_path);
+            }
+            Ok(Some(serde_json::json!({
+                "meeting_id": meeting_id,
+                "recording_path": recording_path,
+                "recording_size": size,
+                "waveform_path": waveform,
+                "recording_offset_ms": offset,
+            })))
+        }
+        Err(err) => {
+            // The raw recording is recoverable even if the database write fails.
+            remove_archive_file(&opus_path);
+            remove_archive_file(&waveform_file);
+            Err(err)
+        }
     }
+}
 
-    // ── Step 4: Emit "recording_ready" to frontend ─────────────────────────────
-    let payload = serde_json::json!({
-        "meeting_id": meeting_id_clone,
-        "recording_path": recording_path_str,
-        "recording_size": recording_size,
-        "waveform_path": waveform_path_str,
-        "recording_offset_ms": recording_offset_ms,
-    });
+fn recording_path_matches(
+    conn: &rusqlite::Connection,
+    meeting_id: &str,
+    path: &str,
+) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1 AND recording_path = ?2)",
+        [meeting_id, path],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
 
-    if let Err(e) = app.emit("recording_ready", &payload) {
-        log::error!("Failed to emit recording_ready event: {}", e);
-    } else {
-        log::info!("Emitted recording_ready for meeting {}", meeting_id_clone);
+fn remove_archive_file(path: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("Couldn't remove {}: {error}", path.display());
+        }
     }
 }
 
@@ -833,6 +772,56 @@ mod tests {
         dir.join("meeting.wav")
     }
 
+    #[test]
+    fn archive_can_attach_valid_opus_with_no_waveform() {
+        let wav = temp_wav("optional-waveform");
+        let directory = wav.parent().unwrap();
+        let waveform = wav.with_extension("waveform.json");
+        let opus = wav.with_extension("ogg");
+        std::fs::create_dir(&waveform).unwrap(); // The waveform write will fail.
+        let writer = recorder::start_recording_at(wav.clone()).unwrap();
+        writer.write_samples(&[100; 1600]);
+        writer.stop().unwrap();
+
+        let database = crate::db::DatabaseManager::new(directory.to_path_buf()).unwrap();
+        let meeting = crate::db::meetings::create_meeting(database.connection(), "Recorded").unwrap();
+        crate::db::meetings::update_meeting_recording(
+            database.connection(), &meeting.id, wav.to_str().unwrap(), 0, None, 10,
+        ).unwrap();
+        let database = std::sync::Mutex::new(database);
+        assert!(archive_recording(&wav, &meeting.id, 10, &database).unwrap().is_some());
+        let saved = crate::db::meetings::get_meeting(database.lock().unwrap().connection(), &meeting.id).unwrap();
+        assert_eq!(saved.recording_path.as_deref(), opus.to_str());
+        assert_eq!(saved.waveform_path, None);
+        assert!(encoder::opus_duration_ms(&opus).unwrap() >= 100);
+        assert!(!wav.exists());
+        drop(database);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn queued_archive_skips_a_recording_deleted_before_it_starts() {
+        let wav = temp_wav("deleted-before-archive");
+        let directory = wav.parent().unwrap();
+        let writer = recorder::start_recording_at(wav.clone()).unwrap();
+        writer.write_samples(&[100; 1600]);
+        writer.stop().unwrap();
+
+        let database = crate::db::DatabaseManager::new(directory.to_path_buf()).unwrap();
+        let conn = database.connection();
+        let meeting = crate::db::meetings::create_meeting(conn, "Recorded").unwrap();
+        crate::db::meetings::update_meeting_recording(conn, &meeting.id, wav.to_str().unwrap(), 0, None, 0).unwrap();
+        crate::db::meetings::delete_recording(conn, &meeting.id).unwrap();
+        // Cleanup may have to retry and the old WAV may temporarily remain.
+        assert!(wav.exists());
+        let database = std::sync::Mutex::new(database);
+        assert!(archive_recording(&wav, &meeting.id, 0, &database).unwrap().is_none());
+        assert!(!wav.with_extension("ogg").exists());
+        assert!(!wav.with_extension("waveform.json").exists());
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     /// A device change mid-meeting must not replace the recording: the
     /// recorder stays open and the gap becomes silence.
     #[test]
@@ -840,23 +829,24 @@ mod tests {
         let path = temp_wav("keep");
         let mut mgr = AudioCaptureManager::new();
         mgr.recording_enabled = true;
-        let rec = SharedRecorder::new(recorder::start_recording_at(path.clone()).unwrap());
-        let started = rec.start_time_ms;
-        rec.write_samples(&[100; 16_000]); // 1 s before the change
-        mgr.recorder = Some(rec);
+        use recording_mixer::MixSide;
+        let (rec, started) = CaptureRecorder::for_test("meeting", path.clone());
+        rec.push(MixSide::Mic, &[100; 16_000], started + 1000);
+        mgr.recorder = rec.clone();
 
-        assert_eq!(mgr.stop_capture(true), None, "nothing to process yet");
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        mgr.resume_or_start_recording();
-        mgr.recorder.as_ref().unwrap().write_samples(&[100; 16_000]); // 1 s after
+        assert!(mgr.stop_capture(true).is_none(), "nothing to process yet");
+        rec.push(MixSide::Mic, &[100; 16_000], started + 2200);
 
-        let (saved, start_time_ms) = mgr.stop_capture(false).expect("recording info at End");
-        assert_eq!((saved.as_path(), start_time_ms), (path.as_path(), started));
+        let saved = mgr.stop_capture(false).expect("recording info at End");
+        assert_eq!(saved.wav_path, path);
+        assert_eq!(saved.start_time_ms, started);
+        assert_eq!(saved.meeting_id, "meeting");
         let reader = hound::WavReader::open(&path).unwrap();
         let samples: Vec<i16> = reader.into_samples::<i16>().map(Result::unwrap).collect();
-        assert!(samples.len() >= 32_000 + 3_200, "both parts and the gap: {}", samples.len());
-        assert_eq!(samples[0], 100, "audio from before the change is still there");
+        assert_eq!(samples.len(), 35_200, "both parts and the capture gap");
+        assert_eq!(samples[0], 400);
         assert_eq!(samples[16_000], 0, "the gap is silence");
+        assert_eq!(samples[19_200], 400);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -865,10 +855,12 @@ mod tests {
     fn end_finalizes_a_kept_recording_without_capture() {
         let path = temp_wav("end");
         let mut mgr = AudioCaptureManager::new();
-        mgr.recorder = Some(SharedRecorder::new(recorder::start_recording_at(path.clone()).unwrap()));
+        let (rec, start) = CaptureRecorder::for_test("meeting", path.clone());
+        rec.push(recording_mixer::MixSide::Mic, &[100; 160], start + 10);
+        mgr.recorder = rec;
         mgr.stop_capture(true);
         assert!(mgr.stop_capture(false).is_some());
-        assert!(mgr.recorder.is_none() && mgr.recording_paused_at.is_none());
+        assert!(mgr.stop_capture(false).is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -921,21 +913,21 @@ mod tests {
     fn a_rebuild_keeps_the_recording_open() {
         let path = temp_wav("rebuild");
         let mut mgr = AudioCaptureManager::new();
-        let rec = SharedRecorder::new(recorder::start_recording_at(path.clone()).unwrap());
-        mgr.recorder = Some(rec.clone());
+        use recording_mixer::MixSide;
+        let (rec, start) = CaptureRecorder::for_test("meeting", path.clone());
+        mgr.recorder = rec.clone();
         let rig = Rig::new(&["Mic"]);
         let errors = fake_side(&mut mgr, &rig, CaptureKind::Mic, "Mic");
 
-        rec.write_samples(&[100; 16_000]);
+        rec.push(MixSide::Mic, &[100; 16_000], start + 1000);
         errors.send(invalidated(CaptureSide::You)).unwrap();
         wait_until(|| rig.attempts(CaptureSide::You) == 2);
         assert_eq!(rig.attempts(CaptureSide::You), 2, "the mic was reopened");
         assert_eq!(rig.live(CaptureSide::You), 1);
-        assert!(mgr.recording_paused_at.is_none());
-        rec.write_samples(&[100; 16_000]);
+        rec.push(MixSide::Mic, &[100; 16_000], start + 2000);
 
-        let (saved, _) = mgr.stop_capture(false).expect("one recording at End");
-        assert_eq!(saved, path);
+        let saved = mgr.stop_capture(false).expect("one recording at End");
+        assert_eq!(saved.wav_path, path);
         let reader = hound::WavReader::open(&path).unwrap();
         let samples: Vec<i16> = reader.into_samples::<i16>().map(Result::unwrap).collect();
         assert_eq!(samples.len(), 32_000, "before and after the rebuild, in one file");
@@ -1089,12 +1081,6 @@ mod tests {
         );
         assert_eq!(counters.rebuilds(), 1);
         assert!(before >= 2 * 14_000 && after >= 2 * 14_000, "before {before}, after {after}");
-    }
-
-    #[test]
-    fn gap_silence_is_capped_at_a_minute() {
-        assert_eq!(gap_silence(std::time::Duration::from_millis(250)).len(), 4_000);
-        assert_eq!(gap_silence(std::time::Duration::from_secs(600)).len(), 60 * 16_000);
     }
 
     #[test]

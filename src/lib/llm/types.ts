@@ -142,6 +142,11 @@ export interface TaskRoute {
   params: LlmParams;
 }
 
+export interface QuickSetupSave {
+  expected_default: TaskRoute;
+  test_receipt: string | null;
+}
+
 export interface LlmRouting {
   /** The default route; its target null = nothing configured yet. */
   default: TaskRoute;
@@ -260,4 +265,5 @@ export interface TestConnectionResult {
   error: string | null;
   error_body: string | null;
   hint: ResultHint | (string & {}) | null;
+  test_receipt?: string;
 }

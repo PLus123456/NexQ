@@ -61,30 +61,32 @@ pub fn insert_chunks_batch(conn: &Connection, chunks: &[ChunkRecord]) -> Result<
 
 /// Delete all chunks and their embeddings for a specific file.
 pub fn delete_chunks_by_file(conn: &Connection, file_id: &str) -> Result<(), String> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    transaction.execute(
         "DELETE FROM rag_embeddings WHERE chunk_id IN (SELECT chunk_id FROM rag_chunks WHERE file_id = ?1)",
         params![file_id],
     )
     .map_err(|e| format!("Failed to delete embeddings for file {}: {}", file_id, e))?;
 
-    conn.execute(
+    transaction.execute(
         "DELETE FROM rag_chunks WHERE file_id = ?1",
         params![file_id],
     )
     .map_err(|e| format!("Failed to delete chunks for file {}: {}", file_id, e))?;
 
-    Ok(())
+    transaction.commit().map_err(|e| e.to_string())
 }
 
 /// Delete all chunks and embeddings from the RAG index.
 pub fn clear_all_chunks(conn: &Connection) -> Result<(), String> {
-    conn.execute("DELETE FROM rag_embeddings", [])
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    transaction.execute("DELETE FROM rag_embeddings", [])
         .map_err(|e| format!("Failed to delete all embeddings: {}", e))?;
 
-    conn.execute("DELETE FROM rag_chunks", [])
+    transaction.execute("DELETE FROM rag_chunks", [])
         .map_err(|e| format!("Failed to delete all chunks: {}", e))?;
 
-    Ok(())
+    transaction.commit().map_err(|e| e.to_string())
 }
 
 // ── Embedding CRUD ───────────────────────────────────────────────────────────

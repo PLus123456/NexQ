@@ -73,13 +73,17 @@ impl SSEParser {
                     .iter()
                     .filter_map(|chunk| {
                         let web = chunk.get("web")?;
-                        let uri = web.get("uri")?.as_str()?.to_string();
+                        let uri = web.get("uri")?.as_str()?;
+                        let address = url::Url::parse(uri).ok()?;
+                        if !matches!(address.scheme(), "http" | "https") || address.host_str().is_none() {
+                            return None;
+                        }
                         let title = web
                             .get("title")
                             .and_then(|t| t.as_str())
-                            .unwrap_or(&uri)
+                            .unwrap_or(uri)
                             .to_string();
-                        Some((title, uri))
+                        Some((title, uri.to_string()))
                     })
                     .collect()
             })
@@ -195,6 +199,24 @@ fn decode_line(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_grounding_only_accepts_absolute_web_addresses() {
+        let data = serde_json::json!({
+            "candidates": [{"groundingMetadata": {"groundingChunks": [
+                {"web": {"uri": "https://example.org/a?q=1", "title": "Source"}},
+                {"web": {"uri": "http://localhost:8080"}},
+                {"web": {"uri": "file:///notes.txt"}},
+                {"web": {"uri": "custom:resource"}},
+                {"web": {"uri": "//example.org/path"}},
+                {"web": {"uri": "/relative"}},
+            ]}}]
+        });
+        assert_eq!(SSEParser::extract_gemini_grounding(&data), vec![
+            ("Source".into(), "https://example.org/a?q=1".into()),
+            ("http://localhost:8080".into(), "http://localhost:8080".into()),
+        ]);
+    }
 
     #[test]
     fn line_buffer_keeps_a_character_split_across_chunks() {

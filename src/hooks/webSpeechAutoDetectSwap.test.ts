@@ -34,9 +34,9 @@ class FakeRecognition {
   lang = "";
   onresult = null;
   onerror = null;
-  onend = null;
+  onend: (() => void) | null = null;
   start = vi.fn(() => { started.push(this); });
-  stop = vi.fn();
+  stop = vi.fn(() => this.onend?.());
   abort = vi.fn();
 }
 

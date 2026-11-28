@@ -186,14 +186,13 @@ const HOVER_CHECK_MS = 120;
  */
 function useWindowHover(interactive: boolean) {
   const [hovered, setHovered] = useState(false);
-  /** True while dragging a resize edge or range slider (pointer capture). */
-  const draggingControl = useRef(false);
+  const draggingControl = useRef<"resize" | "range" | null>(null);
 
   // Locking stops cursor events from reaching the window: clear hover now so
   // unlocking later doesn't bring the frame back while the mouse is elsewhere.
   useEffect(() => {
     if (!interactive) {
-      draggingControl.current = false;
+      draggingControl.current = null;
       setHovered(false);
     }
   }, [interactive]);
@@ -207,7 +206,7 @@ function useWindowHover(interactive: boolean) {
       .then(async ({ listen }) => {
         const unlisten = await listen<{ visible: boolean }>(CAPTIONS_VISIBILITY_EVENT, () => {
           if (!mounted) return;
-          draggingControl.current = false;
+          draggingControl.current = null;
           setHovered(false);
         });
         if (mounted) stop = unlisten;
@@ -228,11 +227,12 @@ function useWindowHover(interactive: boolean) {
     let checking = false;
 
     const verifyCursor = () => {
-      if (cancelled || checking || draggingControl.current) return;
+      if (cancelled || checking || draggingControl.current === "resize") return;
       checking = true;
       void isCursorInsideWindow()
         .then((inside) => {
-          if (!cancelled && !draggingControl.current && inside === false) {
+          if (!cancelled && draggingControl.current !== "resize" && inside === false) {
+            draggingControl.current = null;
             setHovered(false);
           }
         })
@@ -241,18 +241,20 @@ function useWindowHover(interactive: boolean) {
         });
     };
 
-    const clearIfNotDragging = () => {
+    const clearIfNotDragging = (event: MouseEvent) => {
+      if (event.buttons === 0 && draggingControl.current === "range") draggingControl.current = null;
       if (!draggingControl.current) setHovered(false);
     };
+    const clear = () => {
+      draggingControl.current = null;
+      setHovered(false);
+    };
     const onVisibilityChange = () => {
-      if (document.hidden) {
-        draggingControl.current = false;
-        setHovered(false);
-      }
+      if (document.hidden) clear();
     };
     const onPointerRelease = (e: PointerEvent) => {
       if (!draggingControl.current) return;
-      draggingControl.current = false;
+      draggingControl.current = null;
       const insideViewport =
         e.clientX >= 0 && e.clientY >= 0 && e.clientX <= window.innerWidth && e.clientY <= window.innerHeight;
       if (!insideViewport) {
@@ -265,10 +267,11 @@ function useWindowHover(interactive: boolean) {
     const docEl = document.documentElement;
     docEl.addEventListener("mouseleave", clearIfNotDragging);
     docEl.addEventListener("pointerleave", clearIfNotDragging);
-    window.addEventListener("blur", clearIfNotDragging);
+    window.addEventListener("blur", clear);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pointerup", onPointerRelease, true);
     window.addEventListener("pointercancel", onPointerRelease, true);
+    window.addEventListener("lostpointercapture", onPointerRelease, true);
 
     const timer = setInterval(verifyCursor, HOVER_CHECK_MS);
     return () => {
@@ -276,10 +279,11 @@ function useWindowHover(interactive: boolean) {
       clearInterval(timer);
       docEl.removeEventListener("mouseleave", clearIfNotDragging);
       docEl.removeEventListener("pointerleave", clearIfNotDragging);
-      window.removeEventListener("blur", clearIfNotDragging);
+      window.removeEventListener("blur", clear);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pointerup", onPointerRelease, true);
       window.removeEventListener("pointercancel", onPointerRelease, true);
+      window.removeEventListener("lostpointercapture", onPointerRelease, true);
     };
   }, [hovered, interactive]);
 
@@ -290,7 +294,7 @@ function useWindowHover(interactive: boolean) {
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       if (!interactive) return;
-      if (e.buttons === 0) draggingControl.current = false;
+      if (e.buttons === 0) draggingControl.current = null;
       const inside =
         e.clientX >= 0 && e.clientY >= 0 && e.clientX <= window.innerWidth && e.clientY <= window.innerHeight;
       if (inside) {
@@ -309,13 +313,12 @@ function useWindowHover(interactive: boolean) {
   const onPointerDownCapture = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest('[data-resize-edge], input[type="range"]')) {
-      draggingControl.current = true;
-    }
+    if (target?.closest("[data-resize-edge]")) draggingControl.current = "resize";
+    else if (target?.closest('input[type="range"]')) draggingControl.current = "range";
   }, []);
 
   const clearHover = useCallback(() => {
-    draggingControl.current = false;
+    draggingControl.current = null;
     setHovered(false);
   }, []);
 

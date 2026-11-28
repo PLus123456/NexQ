@@ -467,8 +467,9 @@ async fn probe_lists_models_from_the_initialize_answer() {
     // and a `system/status` line; the probe must skip all three. After it,
     // the fake takes 3 s to exit once stdin closes: the catalog must not
     // wait for that (the process is cleaned up in the background).
+    let bin = fake_bin();
     let started = Instant::now();
-    let models = probe_models(&fake_bin()).await.expect("probe");
+    let models = probe_models(&bin).await.expect("probe");
     assert!(
         started.elapsed() < Duration::from_millis(1500),
         "probe waited for the process to exit: {:?}",

@@ -82,6 +82,7 @@ function restoreStores() {
  * data to disk via Tauri plugin-store.
  */
 export function launchDemo(scenario: DemoScenario, mode: 'play' | 'screenshot') {
+  if (useDemoStore.getState().isDemoActive) exitDemo();
   // 1. Snapshot current store state so we can restore later
   snapshotStores();
 

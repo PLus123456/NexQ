@@ -11,10 +11,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
+use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::audio::AudioChunk;
+use crate::stt::cloud_http::{self, BatchStatus, BatchTiming};
 use crate::stt::provider::{STTProvider, STTProviderType, TranscriptResult};
 
 /// Target segment duration in seconds before sending a batch to the API.
@@ -45,9 +47,10 @@ pub struct AzureSpeechSTT {
     is_streaming: bool,
     result_tx: Option<mpsc::Sender<TranscriptResult>>,
     stop_flag: Arc<AtomicBool>,
-    start_time: Option<Instant>,
+    status: BatchStatus,
     /// Accumulated PCM samples for the current segment.
     audio_buffer: Vec<i16>,
+    buffer_timing: BatchTiming,
     /// Total samples needed before sending (~5 seconds at 16 kHz).
     segment_sample_threshold: usize,
 }
@@ -61,8 +64,9 @@ impl AzureSpeechSTT {
             is_streaming: false,
             result_tx: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            start_time: None,
+            status: BatchStatus::default(),
             audio_buffer: Vec::new(),
+            buffer_timing: BatchTiming::default(),
             segment_sample_threshold: (SAMPLE_RATE as f32 * SEGMENT_DURATION_SECS) as usize,
         }
     }
@@ -91,11 +95,28 @@ impl AzureSpeechSTT {
         &self.region
     }
 
+    pub(crate) fn set_status_context(&mut self, app: AppHandle, party: &str) {
+        self.status = BatchStatus::new(Some(app), party);
+    }
+
+    /// The region is a single DNS label in Microsoft's endpoint hostname.
+    fn validate_region(&self) -> Result<(), &'static str> {
+        if self.region.is_empty() {
+            return Err("No Azure region configured");
+        }
+        if self.region.len() > 63 || self.region.starts_with('-') || self.region.ends_with('-')
+            || !self.region.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err("Invalid Azure region. Use a region code such as eastus or westeurope.");
+        }
+        Ok(())
+    }
+
     /// Build the Azure REST endpoint URL.
     fn build_endpoint_url(&self) -> String {
         format!(
-            "https://{}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language={}&format=simple",
-            self.region, self.language
+            "https://{}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1",
+            self.region
         )
     }
 
@@ -135,15 +156,17 @@ impl AzureSpeechSTT {
         subscription_key: &str,
         endpoint_url: &str,
         samples: Vec<i16>,
-        timestamp_ms: u64,
+        timing: BatchTiming,
         language: &str,
         result_tx: mpsc::Sender<TranscriptResult>,
+        status: BatchStatus,
     ) {
         let wav_data = Self::encode_wav(&samples);
 
-        let client = reqwest::Client::new();
+        let Ok(client) = cloud_http::client() else { return };
         let response = client
             .post(endpoint_url)
+            .query(&[("language", language), ("format", "simple")])
             .header("Ocp-Apim-Subscription-Key", subscription_key)
             .header("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
             .header("Accept", "application/json")
@@ -169,11 +192,11 @@ impl AzureSpeechSTT {
                                             text,
                                             is_final: true,
                                             confidence: 0.90,
-                                            timestamp_ms,
+                                            timestamp_ms: timing.start_ms,
                                             speaker: None,
                                             language: Some(language.to_string()),
                                             segment_id: None,
-                                            duration_ms: None,
+                                            duration_ms: Some(timing.duration_ms()),
                                             speaker_tag: None,
                                             turn: None,
                                         };
@@ -194,11 +217,12 @@ impl AzureSpeechSTT {
                         }
                     }
                 } else {
-                    let status = resp.status();
+                    let http_status = resp.status();
+                    status.http_error("azure_speech", http_status);
                     let body = resp.text().await.unwrap_or_default();
                     log::error!(
                         "AzureSpeechSTT: API returned status {}: {}",
-                        status,
+                        http_status,
                         body
                     );
                 }
@@ -232,9 +256,11 @@ impl STTProvider for AzureSpeechSTT {
             return Err("Azure subscription key not configured".into());
         }
 
-        if self.region.is_empty() {
-            return Err("Azure region not configured".into());
+        self.validate_region()?;
+        if crate::stt::language::is_auto(&self.language) {
+            return Err("Azure Speech requires a specific recognition language".into());
         }
+        cloud_http::client()?;
 
         log::info!(
             "AzureSpeechSTT: Starting stream (region: {}, language: {})",
@@ -245,7 +271,7 @@ impl STTProvider for AzureSpeechSTT {
         self.result_tx = Some(result_tx);
         self.is_streaming = true;
         self.stop_flag.store(false, Ordering::SeqCst);
-        self.start_time = Some(Instant::now());
+        self.status.reset();
         self.audio_buffer.clear();
 
         log::info!("AzureSpeechSTT: Stream started");
@@ -256,34 +282,26 @@ impl STTProvider for AzureSpeechSTT {
         &mut self,
         chunk: AudioChunk,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming || self.stop_flag.load(Ordering::SeqCst) {
+        if !self.is_streaming || self.stop_flag.load(Ordering::SeqCst) || chunk.pcm_data.is_empty() {
             return Ok(());
         }
 
         // Skip only absolute digital silence (all-zero samples).
         // System audio via WASAPI loopback can be very quiet, so use a
         // minimal threshold. The STT API handles silence gracefully.
-        if !chunk.pcm_data.is_empty() {
-            let rms: f64 = chunk
-                .pcm_data
-                .iter()
-                .map(|&s| (s as f64) * (s as f64))
-                .sum::<f64>()
-                / chunk.pcm_data.len() as f64;
-            if rms < 0.25 {
-                return Ok(());
-            }
+        let mean_square = chunk.pcm_data.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>()
+            / chunk.pcm_data.len() as f64;
+        if mean_square < 0.25 {
+            return Ok(());
         }
 
+        self.buffer_timing.append(&chunk, self.audio_buffer.is_empty());
         self.audio_buffer.extend_from_slice(&chunk.pcm_data);
 
         // When we have ~5 seconds of audio, send it as a batch
         if self.audio_buffer.len() >= self.segment_sample_threshold {
             let segment = std::mem::take(&mut self.audio_buffer);
-            let timestamp_ms = self
-                .start_time
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(chunk.timestamp_ms);
+            let timing = self.buffer_timing;
 
             if let Some(ref tx) = self.result_tx {
                 // Send an interim result to indicate processing
@@ -291,11 +309,11 @@ impl STTProvider for AzureSpeechSTT {
                     text: "[transcribing...]".to_string(),
                     is_final: false,
                     confidence: 0.0,
-                    timestamp_ms,
+                    timestamp_ms: timing.start_ms,
                     speaker: None,
                     language: Some(self.language.clone()),
                     segment_id: None,
-                    duration_ms: None,
+                    duration_ms: Some(timing.duration_ms()),
                     speaker_tag: None,
                     turn: None,
                 };
@@ -306,14 +324,16 @@ impl STTProvider for AzureSpeechSTT {
                 let endpoint_url = self.build_endpoint_url();
                 let language = self.language.clone();
                 let result_tx = tx.clone();
+                let status = self.status.clone();
                 tokio::spawn(async move {
                     Self::send_segment(
                         &subscription_key,
                         &endpoint_url,
                         segment,
-                        timestamp_ms,
+                        timing,
                         &language,
                         result_tx,
+                        status,
                     )
                     .await;
                 });
@@ -335,38 +355,24 @@ impl STTProvider for AzureSpeechSTT {
         // Flush remaining audio buffer
         if !self.audio_buffer.is_empty() {
             let segment = std::mem::take(&mut self.audio_buffer);
-            let timestamp_ms = self
-                .start_time
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(0);
-
             if let Some(ref tx) = self.result_tx {
-                let subscription_key = self.subscription_key.clone();
                 let endpoint_url = self.build_endpoint_url();
-                let language = self.language.clone();
-                let result_tx = tx.clone();
-                let handle = tokio::spawn(async move {
-                    Self::send_segment(
-                        &subscription_key,
-                        &endpoint_url,
-                        segment,
-                        timestamp_ms,
-                        &language,
-                        result_tx,
-                    )
-                    .await;
-                });
-                // Wait for the final segment to be sent (with timeout)
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    handle,
-                ).await;
+                let final_batch = Self::send_segment(
+                    &self.subscription_key,
+                    &endpoint_url,
+                    segment,
+                    self.buffer_timing,
+                    &self.language,
+                    tx.clone(),
+                    self.status.clone(),
+                );
+                // Allow a little extra time for handing the final transcript to the receiver.
+                let _ = tokio::time::timeout(cloud_http::REQUEST_TIMEOUT + Duration::from_millis(500), final_batch).await;
             }
         }
 
         self.is_streaming = false;
         self.result_tx = None;
-        self.start_time = None;
 
         log::info!("AzureSpeechSTT: Stream stopped");
         Ok(())
@@ -377,9 +383,7 @@ impl STTProvider for AzureSpeechSTT {
             return Err("No subscription key configured".into());
         }
 
-        if self.region.is_empty() {
-            return Err("No region configured".into());
-        }
+        self.validate_region()?;
 
         log::info!(
             "AzureSpeechSTT: Testing connection (region: {})...",
@@ -393,8 +397,7 @@ impl STTProvider for AzureSpeechSTT {
             self.region
         );
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = cloud_http::client()?
             .post(&token_url)
             .header("Ocp-Apim-Subscription-Key", &self.subscription_key)
             .header("Content-Length", "0")
@@ -418,5 +421,20 @@ impl STTProvider for AzureSpeechSTT {
     fn set_language(&mut self, language: &str) {
         self.language = language.to_string();
         log::info!("AzureSpeechSTT: Language set to {}", self.language);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn azure_rejects_auto_even_when_called_outside_per_party_capture() {
+        let mut provider = AzureSpeechSTT::with_config("test", "eastus2");
+        provider.set_language("AUTO");
+        let (result_tx, _) = mpsc::channel(8);
+        let error = provider.start_stream(result_tx).await.unwrap_err();
+        assert!(error.to_string().contains("requires a specific recognition language"));
+        assert!(!provider.is_streaming);
     }
 }

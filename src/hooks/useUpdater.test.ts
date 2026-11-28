@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Handler = (e: { payload: unknown }) => void;
 const listeners = new Map<string, Set<Handler>>();
-const emitted: string[] = [];
+const emitted: Array<{ name: string; payload: unknown }> = [];
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, cb: Handler) => {
@@ -10,8 +10,8 @@ vi.mock("@tauri-apps/api/event", () => ({
     listeners.get(name)!.add(cb);
     return () => listeners.get(name)!.delete(cb);
   },
-  emit: async (name: string) => {
-    emitted.push(name);
+  emit: async (name: string, payload: unknown) => {
+    emitted.push({ name, payload });
   },
 }));
 
@@ -26,17 +26,16 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   installUpdateNow: () => installUpdateNow(),
 }));
 
-const windowLabel = vi.hoisted(() => ({ value: "launcher" }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({ label: windowLabel.value }),
+  getCurrentWebviewWindow: () => ({ label: "launcher" }),
 }));
 
 import { endMeetingFromThisWindow, restartToUpdate, MEETING_END_TIMEOUT_MS } from "./useUpdater";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useToastStore } from "../stores/toastStore";
 
-function windowEnded(window: string) {
-  listeners.get("nexq:meeting_ended")?.forEach((cb) => cb({ payload: { window } }));
+function receive(name: string, payload: unknown) {
+  listeners.get(name)?.forEach((cb) => cb({ payload }));
 }
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
@@ -70,35 +69,48 @@ describe("restartToUpdate", () => {
 
     await restartToUpdate();
 
-    expect(emitted).not.toContain("tray_stop_meeting");
+    expect(emitted).toHaveLength(0);
     expect(installUpdateNow).not.toHaveBeenCalled();
   });
 
-  it("ends the meeting in every window before installing", async () => {
+  it("waits for the launcher to finish saving the requested meeting", async () => {
     useMeetingStore.setState({ activeMeeting: { id: "m1" } as never });
     confirm.mockResolvedValue(true);
 
     const run = restartToUpdate();
     await flush();
-    expect(emitted).toContain("tray_stop_meeting");
+    expect(emitted).toContainEqual({ name: "tray_stop_meeting", payload: { meetingId: "m1" } });
 
-    windowEnded("launcher");
+    receive("nexq:meeting_ended", { window: "overlay", meetingId: "m1" });
+    receive("nexq:meeting_ended", { window: "launcher", meetingId: "other" });
     await flush();
     expect(installUpdateNow).not.toHaveBeenCalled();
 
-    windowEnded("overlay");
+    receive("nexq:meeting_ended", { window: "launcher", meetingId: "m1" });
     await run;
     expect(installUpdateNow).toHaveBeenCalledTimes(1);
   });
 
-  it("aborts the install and warns if a window doesn't finish ending the meeting", async () => {
+  it("aborts the install and warns if the launcher does not acknowledge the meeting", async () => {
     useMeetingStore.setState({ activeMeeting: { id: "m1" } as never });
     confirm.mockResolvedValue(true);
 
     const run = restartToUpdate();
     await flush();
-    windowEnded("launcher");
     await vi.advanceTimersByTimeAsync(MEETING_END_TIMEOUT_MS);
+    await run;
+
+    expect(installUpdateNow).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts.some((t) => t.type === "error")).toBe(true);
+  });
+
+  it("aborts the install when the launcher reports a save failure", async () => {
+    useMeetingStore.setState({ activeMeeting: { id: "m1" } as never });
+    confirm.mockResolvedValue(true);
+
+    const run = restartToUpdate();
+    await flush();
+    receive("nexq:meeting_end_failed", { meetingId: "m1", message: "Failed to save the transcript" });
     await run;
 
     expect(installUpdateNow).not.toHaveBeenCalled();
@@ -114,7 +126,6 @@ describe("endMeetingFromThisWindow", () => {
     listeners.clear();
     emitted.length = 0;
     endMeetingFlow.mockReset().mockResolvedValue(undefined);
-    windowLabel.value = "launcher";
     useMeetingStore.setState({ activeMeeting: null, overlayMeetingId: null, endMeetingFlow } as never);
   });
 
@@ -122,46 +133,26 @@ describe("endMeetingFromThisWindow", () => {
     vi.useRealTimers();
   });
 
-  it("from the launcher, ends through every window when the overlay holds the meeting", async () => {
+  it("delegates to the meeting flow and waits for it to finish", async () => {
     useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, overlayMeetingId: "m1" });
+    let finish!: () => void;
+    endMeetingFlow.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
 
     let ended: boolean | undefined;
     const run = endMeetingFromThisWindow().then((ok) => (ended = ok));
     await flush();
-    expect(emitted).toContain("tray_stop_meeting");
-    expect(endMeetingFlow).not.toHaveBeenCalled(); // the launcher runs it from tray_stop_meeting
+    expect(endMeetingFlow).toHaveBeenCalledTimes(1);
+    expect(ended).toBeUndefined();
 
-    windowEnded("launcher");
-    await flush();
-    expect(ended).toBeUndefined(); // still waiting for the overlay to save
-
-    windowEnded("overlay");
+    finish();
     await run;
     expect(ended).toBe(true);
   });
 
-  it("reports failure when the overlay never finishes", async () => {
+  it("reports failure when the meeting flow rejects", async () => {
     useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, overlayMeetingId: "m1" });
-    const run = endMeetingFromThisWindow();
-    await flush();
-    windowEnded("launcher");
-    await vi.advanceTimersByTimeAsync(MEETING_END_TIMEOUT_MS);
-    expect(await run).toBe(false);
-  });
-
-  it("from the launcher, ends by itself when no overlay took the meeting", async () => {
-    useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, overlayMeetingId: null });
-    expect(await endMeetingFromThisWindow()).toBe(true);
-    expect(endMeetingFlow).toHaveBeenCalledTimes(1);
-    expect(emitted).not.toContain("tray_stop_meeting");
-  });
-
-  it("the overlay ends by itself", async () => {
-    windowLabel.value = "overlay";
-    useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, overlayMeetingId: "m1" });
-    expect(await endMeetingFromThisWindow()).toBe(true);
-    expect(endMeetingFlow).toHaveBeenCalledTimes(1);
-    expect(emitted).not.toContain("tray_stop_meeting");
+    endMeetingFlow.mockRejectedValue(new Error("A window did not save"));
+    expect(await endMeetingFromThisWindow()).toBe(false);
   });
 
   it("does nothing without a meeting", async () => {

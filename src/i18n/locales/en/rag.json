@@ -119,6 +119,8 @@
     "title": "Gemini Context Cache",
     "active": "Active · expires {{time}}",
     "description": "Upload your context documents to Gemini's servers once. Each query skips local embedding entirely — <strong>~3-5s faster per response</strong> on CPU-only machines.",
+    "connection": "Gemini connection",
+    "connectionUnavailable": "Enable a Gemini connection in AI Models to create a cache.",
     "model": "Model",
     "ttl": "TTL",
     "ttlOptions": {

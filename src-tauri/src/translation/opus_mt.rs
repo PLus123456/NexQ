@@ -6,8 +6,8 @@
 // translate() call, NOT during set_provider(). This prevents panics
 // from poisoning the TranslationRouter's Mutex.
 
-use std::path::PathBuf;
-use std::sync::Mutex as StdMutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use super::*;
 use super::opus_mt_registry;
@@ -38,56 +38,30 @@ pub struct OpusMtTranslator {
     active_model_id: Option<String>,
     /// Currently loaded model — behind a std::sync::Mutex for interior mutability.
     /// translate() can lazy-load without needing &mut self.
-    loaded: StdMutex<Option<(String, LoadedModel)>>,
+    loaded: Arc<StdMutex<Option<LoadedModel>>>,
 }
 
-// Safety: LoadedModel contains ort::Session which is Send+Sync in ort v2.
-// The Mutex provides thread-safe access.
-unsafe impl Send for OpusMtTranslator {}
-unsafe impl Sync for OpusMtTranslator {}
-
 impl OpusMtTranslator {
-    pub fn new() -> Self {
+    pub fn new(models_dir: Option<PathBuf>, active_model_id: Option<String>) -> Self {
         Self {
-            models_dir: None,
-            active_model_id: None,
-            loaded: StdMutex::new(None),
+            models_dir,
+            active_model_id,
+            loaded: Arc::new(StdMutex::new(None)),
         }
     }
-
-    pub fn set_models_dir(&mut self, path: PathBuf) {
-        self.models_dir = Some(path);
-    }
-
-    pub fn set_active_model_id(&mut self, model_id: Option<String>) {
-        self.active_model_id = model_id;
-    }
-
 }
 
 // ── Model loading (runs on a blocking thread, NOT in async context) ──
 
-/// Load the ONNX model if not already loaded. Must run on a blocking thread.
-fn ensure_loaded_blocking(
-    loaded: &StdMutex<Option<(String, LoadedModel)>>,
-    models_dir: &Option<PathBuf>,
+/// Load the ONNX model on a blocking thread.
+fn load_model_blocking(
+    models_dir: Option<&Path>,
     active_model_id: Option<&str>,
-) -> Result<(), String> {
+) -> Result<LoadedModel, String> {
     let model_id = active_model_id
         .ok_or("No OPUS-MT model activated. Activate a model in Settings → Translation.")?;
 
-    // Check if already loaded
-    {
-        let guard = loaded.lock().map_err(|_| "Model lock error".to_string())?;
-        if let Some((loaded_id, _)) = guard.as_ref() {
-            if loaded_id == model_id {
-                return Ok(());
-            }
-        }
-    }
-
-    let models_dir = models_dir.as_ref()
-        .ok_or("OPUS-MT models directory not configured")?;
+    let models_dir = models_dir.ok_or("OPUS-MT models directory not configured")?;
 
     let model_dir = models_dir.join(model_id);
     let encoder_path = model_dir.join("encoder_model.onnx");
@@ -136,13 +110,10 @@ fn ensure_loaded_blocking(
     log::info!("OPUS-MT model ready: {} (eos={}, dec_start={}, prefix={:?}, heads={}, head_dim={})",
         model_id, eos_token_id, decoder_start_token_id, target_prefix, num_heads, head_dim);
 
-    let mut guard = loaded.lock().map_err(|_| "Model lock error".to_string())?;
-    *guard = Some((model_id.to_string(), LoadedModel {
+    Ok(LoadedModel {
         encoder, decoder, tokenizer, eos_token_id, decoder_start_token_id,
         target_prefix, past_kv_names, num_heads, head_dim, has_use_cache_branch,
-    }));
-
-    Ok(())
+    })
 }
 
 #[async_trait]
@@ -161,21 +132,17 @@ impl TranslationProvider for OpusMtTranslator {
         let models_dir = self.models_dir.clone();
         let active_model_id = self.active_model_id.clone();
 
-        // Safety: the OpusMtTranslator lives behind an Arc in the router,
-        // and we await the spawn_blocking result before returning.
-        let loaded_ptr = &self.loaded as *const StdMutex<Option<(String, LoadedModel)>>;
-        let loaded_ref = unsafe { &*loaded_ptr };
+        let loaded = Arc::clone(&self.loaded);
 
         // ALL heavy work (model loading + inference) runs in a blocking thread.
         // ORT's native C++ code can crash if called from a tokio async context.
         let result = tokio::task::spawn_blocking(move || {
-            // Lazy-load model if needed (inside blocking thread, safe for ORT)
-            ensure_loaded_blocking(loaded_ref, &models_dir, active_model_id.as_deref())?;
-
-            let mut guard = loaded_ref.lock()
+            let mut guard = loaded.lock()
                 .map_err(|_| "Model lock error during inference".to_string())?;
-            let (_, model) = guard.as_mut()
-                .ok_or_else(|| "Model unloaded during inference".to_string())?;
+            let model = match &mut *guard {
+                Some(model) => model,
+                slot @ None => slot.insert(load_model_blocking(models_dir.as_deref(), active_model_id.as_deref())?),
+            };
             translate_blocking(&text_owned, model)
         })
         .await

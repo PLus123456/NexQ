@@ -77,7 +77,7 @@ describe("OverlayResizeHandles", () => {
     const east = handle(container, "e");
     fireEvent.pointerDown(east, { button: 0, pointerId: 1, screenX: 1000, screenY: 500 });
     await act(async () => {}); // the window's start rect arrives
-    fireEvent.pointerMove(east, { pointerId: 1, screenX: 1030, screenY: 500 });
+    fireEvent.pointerMove(east, { buttons: 1, pointerId: 1, screenX: 1030, screenY: 500 });
     fireEvent.pointerUp(east, { pointerId: 1, screenX: 1030, screenY: 500 });
 
     expect(win.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 530, height: 700 }));
@@ -89,7 +89,7 @@ describe("OverlayResizeHandles", () => {
     const west = handle(container, "w");
     fireEvent.pointerDown(west, { button: 0, pointerId: 1, screenX: 100, screenY: 300 });
     await act(async () => {});
-    fireEvent.pointerMove(west, { pointerId: 1, screenX: 80, screenY: 300 });
+    fireEvent.pointerMove(west, { buttons: 1, pointerId: 1, screenX: 80, screenY: 300 });
     fireEvent.pointerUp(west, { pointerId: 1, screenX: 80, screenY: 300 });
 
     expect(win.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: 80, y: 50 }));
@@ -103,5 +103,21 @@ describe("OverlayResizeHandles", () => {
     await act(async () => {});
     fireEvent.pointerMove(east, { pointerId: 1, screenX: 1100, screenY: 500 });
     expect(win.setSize).not.toHaveBeenCalled();
+  });
+
+  it.each(["lost capture", "released buttons"])("stops a resize after %s and allows the next drag", async (release) => {
+    const { container } = render(<OverlayResizeHandles />);
+    const east = handle(container, "e");
+    fireEvent.pointerDown(east, { button: 0, pointerId: 1, screenX: 100, screenY: 300 });
+    await act(async () => {});
+    if (release === "lost capture") fireEvent.lostPointerCapture(east, { pointerId: 1 });
+    else fireEvent.pointerMove(east, { buttons: 0, pointerId: 1, screenX: 120, screenY: 300 });
+    fireEvent.pointerMove(east, { buttons: 1, pointerId: 1, screenX: 140, screenY: 300 });
+    expect(win.setSize).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(east, { button: 0, pointerId: 1, screenX: 100, screenY: 300 });
+    await act(async () => {});
+    fireEvent.pointerMove(east, { buttons: 1, pointerId: 1, screenX: 130, screenY: 300 });
+    expect(win.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 530 }));
   });
 });

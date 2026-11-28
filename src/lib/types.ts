@@ -523,6 +523,7 @@ export interface LocalSTTModelInfo {
   speed_rating: number;
   is_streaming: boolean;
   is_downloaded: boolean;
+  download_progress?: ModelDownloadProgress;
 }
 
 export interface LocalSTTEngineInfo {
@@ -544,7 +545,8 @@ export interface ModelDownloadProgress {
   downloaded_bytes: number;
   total_bytes: number;
   percent: number;
-  status: "downloading" | "verifying" | "extracting" | "complete" | "error" | "cancelled";
+  status: "downloading" | "verifying" | "extracting" | "cancelling" | "complete" | "error" | "cancelled";
+  detail?: string;
 }
 
 export interface STTProviderConfig {
@@ -718,6 +720,7 @@ export interface StreamState {
 
 export interface TranscriptUpdateEvent {
   segment: TranscriptSegment;
+  meeting_id?: string | null;
 }
 
 // Every llm_stream_* payload carries the request_id of the generation it
@@ -730,7 +733,7 @@ export interface StreamTokenEvent {
 
 export interface StreamStartEvent {
   prepared?: boolean;
-  mode: IntelligenceMode;
+  mode: IntelligenceMode | "RagTest";
   model: string;
   provider: string;
   system_prompt: string;
@@ -1111,6 +1114,8 @@ export type TranslationProviderType = "microsoft" | "google" | "deepl" | "opus-m
 export type TranslationDisplayMode = "inline" | "hover";
 
 export interface TranslationResult {
+  /** Set for transcript translations. Selections have no meeting. */
+  meeting_id?: string;
   segment_id?: string;
   original_text: string;
   translated_text: string;
@@ -1271,6 +1276,7 @@ export interface OverlayMeetingReadyEvent {
 
 /** Frontend-only event: a window finished `endMeetingFlow`. */
 export interface WindowMeetingEndedEvent {
+  meetingId: string;
   window: string;
 }
 

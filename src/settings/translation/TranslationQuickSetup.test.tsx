@@ -131,6 +131,26 @@ describe("TranslationQuickSetup", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Google API returned 403");
   });
 
+  it("ignores a test that finishes after switching away from the provider and back", async () => {
+    let resolveTest: (value: unknown) => void = () => {};
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "test_translation_connection") return new Promise((resolve) => { resolveTest = resolve; });
+      return undefined;
+    });
+    const onStatusChange = await renderStep();
+    fireEvent.click(screen.getByRole("radio", { name: "DeepL" }));
+    await act(async () => {});
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "superseded-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save & Test" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Google Translate" }));
+    fireEvent.click(screen.getByRole("radio", { name: "DeepL" }));
+    await act(async () => resolveTest({ connected: true, language_count: 0, response_ms: 10 }));
+
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "store_api_key")).toBe(false);
+    expect(useTranslationStore.getState().autoTranslateEnabled).toBe(false);
+    expect(lastStatus(onStatusChange)).toEqual(["incomplete", undefined]);
+  });
+
   it("offers the STT engine's own translation and needs no service then", async () => {
     useConfigStore.setState({ meetingAudioConfig: audio({ stt_provider: SONIOX }) });
     const onStatusChange = await renderStep();

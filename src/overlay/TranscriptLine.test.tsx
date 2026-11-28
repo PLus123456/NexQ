@@ -1,7 +1,7 @@
 // A displayed line can be several merged segments (mergeConsecutiveSegments);
 // its translation is every segment's, not just the first one's.
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -38,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 describe("TranscriptLine translations", () => {
@@ -89,5 +90,16 @@ describe("TranscriptLine translations", () => {
     useTranslationStore.getState().addTranslation(translation("solo", "你好", "DeepL"));
     render(<TranscriptLine segment={segment("solo", "Hello", 0)} />);
     expect(screen.getByText("你好")).toBeInTheDocument();
+  });
+
+  it("keeps a hover translation inside a narrow window", () => {
+    vi.stubGlobal("innerWidth", 400);
+    useTranslationStore.setState({ displayMode: "hover" });
+    useTranslationStore.getState().addTranslation(translation("solo", "你好", "DeepL"));
+    render(<TranscriptLine segment={segment("solo", "Hello", 0)} />);
+    const line = screen.getByText("Hello");
+    fireEvent.mouseEnter(line, { clientX: 390, clientY: 180 });
+    expect(screen.getByText("你好").parentElement).toHaveStyle({ left: "8px" });
+    fireEvent.mouseLeave(line);
   });
 });

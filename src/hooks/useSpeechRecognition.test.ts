@@ -28,6 +28,7 @@ const config: MeetingAudioConfig = {
 
 class FakeRecognition {
   static instances: FakeRecognition[] = [];
+  static endOnStop = false;
   /** The instances that were started, in order. */
   static started: FakeRecognition[] = [];
   continuous = false;
@@ -39,7 +40,7 @@ class FakeRecognition {
   onend: (() => void) | null = null;
   onstart: (() => void) | null = null;
   start = vi.fn(() => { FakeRecognition.started.push(this); });
-  stop = vi.fn();
+  stop = vi.fn(() => { if (FakeRecognition.endOnStop) this.onend?.(); });
   abort = vi.fn();
   constructor() { FakeRecognition.instances.push(this); }
   result(text: string, isFinal = true) {
@@ -57,6 +58,7 @@ beforeEach(() => {
 
 describe("Web Speech language", () => {
   beforeEach(() => {
+    FakeRecognition.endOnStop = true;
     useMeetingStore.setState({ isRecording: true, isEndingMeeting: false, audioMode: "online" });
     useConfigStore.setState({ meetingAudioConfig: config, sttLanguage: "en-US" });
   });
@@ -171,6 +173,7 @@ describe("Web Speech language", () => {
 
 describe("Web Speech meeting end", () => {
   beforeEach(() => {
+    FakeRecognition.endOnStop = false;
     vi.useFakeTimers();
     ipc.push.mockReset().mockResolvedValue(undefined);
     ipc.ensure.mockClear();
@@ -221,8 +224,9 @@ describe("Web Speech meeting end", () => {
     act(() => useMeetingStore.setState({ isEndingMeeting: true }));
     const stopping = stopWebSpeechRecognition();
     act(() => useMeetingStore.setState({ activeMeeting: { id: "m2" } as never, isEndingMeeting: false }));
-    const next = FakeRecognition.instances[1];
+    expect(FakeRecognition.instances).toHaveLength(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); await stopping; });
+    const next = FakeRecognition.instances[1];
     expect(first.abort).toHaveBeenCalledTimes(1);
     expect(next.abort).not.toHaveBeenCalled();
     act(() => { first.result("stale words"); next.result("new meeting"); });
@@ -248,5 +252,32 @@ describe("Web Speech meeting end", () => {
     renderHook(useSpeechRecognition);
     expect(FakeRecognition.instances).toHaveLength(0);
     expect(emit).not.toHaveBeenCalledWith("capture_warning", expect.anything());
+  });
+
+  it("aborts the muted side, ignores a stale result, and resumes only after it stops", async () => {
+    renderHook(useSpeechRecognition);
+    const first = FakeRecognition.instances[0];
+    act(() => useConfigStore.setState({ mutedYou: true }));
+    expect(first.abort).toHaveBeenCalledTimes(1);
+    act(() => first.result("while muted"));
+    expect(useTranscriptStore.getState().segments).toEqual([]);
+    act(() => useConfigStore.setState({ mutedYou: false }));
+    expect(FakeRecognition.instances).toHaveLength(1);
+    await act(async () => first.onend?.());
+    expect(FakeRecognition.instances).toHaveLength(2);
+    act(() => FakeRecognition.instances[1].result("after unmute"));
+    expect(useTranscriptStore.getState().segments.map((segment) => segment.text)).toEqual(["after unmute"]);
+  });
+
+  it("does not restart after permission, capture, or language errors", async () => {
+    const { unmount } = renderHook(useSpeechRecognition);
+    const recognition = FakeRecognition.instances[0];
+    act(() => {
+      recognition.onerror?.({ error: "not-allowed" });
+      recognition.onend?.();
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(recognition.start).toHaveBeenCalledTimes(1);
+    unmount();
   });
 });

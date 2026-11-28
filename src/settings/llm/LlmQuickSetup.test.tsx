@@ -60,9 +60,16 @@ describe("LlmQuickSetup", () => {
     expect(backend.secrets.get(saved.id)).toBe("sk-quick-1234");
     expect(backend.view().routing.default.target).toEqual({ connection_id: saved.id, model: null });
     expect(await screen.findByText("AI model ready: DeepSeek / deepseek-flash")).toBeInTheDocument();
-    // Saved first, then tested by id, so Rust records the success.
     const test = backend.calls.find((c) => c.cmd === "llm_test_connection");
-    expect(test?.args).toMatchObject({ id: saved.id, mode: "chat" });
+    expect(test?.args).toMatchObject({
+      id: null,
+      draft: { id: "", default_model: "deepseek-flash" },
+      secret: "sk-quick-1234",
+      mode: "chat",
+    });
+    const upsert = backend.calls.find((c) => c.cmd === "llm_upsert_connection");
+    expect(upsert?.args).toMatchObject({ quickSetup: { test_receipt: expect.any(String) } });
+    expect(backend.calls.indexOf(test!)).toBeLessThan(backend.calls.indexOf(upsert!));
   });
 
   it("reports a failed test with the error and saves nothing", async () => {
@@ -72,11 +79,34 @@ describe("LlmQuickSetup", () => {
     await user.type(screen.getByLabelText("Default model"), "deepseek-flash{Enter}");
     await user.click(screen.getByRole("button", { name: "Test and save" }));
     await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("error", "invalid api key"));
-    // The connection that didn't answer was removed again.
     expect(backend.view().connections).toHaveLength(0);
-    expect(backend.calls.map((c) => c.cmd)).toContain("llm_delete_connection");
+    expect(backend.calls.map((c) => c.cmd)).not.toContain("llm_upsert_connection");
     expect(screen.getByText("invalid api key")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save anyway and test later" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save anyway and test later" }));
+    await waitFor(() => expect(backend.view().connections[0]?.verified_at_ms).toBeNull());
+    expect(backend.view().routing.default.target?.connection_id).toBe(backend.view().connections[0].id);
+  });
+
+  it("ignores a test that returns after the provider was changed", async () => {
+    const { user, backend } = setup();
+    const original = backend.invoke;
+    let resume!: () => void;
+    const pause = new Promise<void>((resolve) => { resume = resolve; });
+    backend.invoke = async (cmd, args) => {
+      if (cmd === "llm_test_connection") await pause;
+      return original(cmd, args);
+    };
+    await user.click(await screen.findByRole("button", { name: /DeepSeek/ }));
+    await user.type(screen.getByLabelText("API Key"), "sk-draft-1234{Enter}");
+    await user.type(screen.getByLabelText("Default model"), "deepseek-flash{Enter}");
+    await user.click(screen.getByRole("button", { name: "Test and save" }));
+    expect(backend.view().connections).toHaveLength(0);
+    expect(backend.secrets.size).toBe(0);
+    await user.click(screen.getByRole("button", { name: /Ollama/ }));
+    await act(() => { resume(); });
+    expect(backend.view().connections).toHaveLength(0);
+    expect(backend.view().routing.default.target).toBeNull();
+    expect(screen.getByRole("button", { name: /Ollama/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("checks a local Ollama by fetching its models", async () => {

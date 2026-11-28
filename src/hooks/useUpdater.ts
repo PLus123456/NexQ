@@ -24,7 +24,7 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
 import { RELEASES_URL, UPDATER_ENABLED } from "../lib/brand";
 import { t } from "../i18n";
-import { meetingEndRoute } from "../lib/windows";
+import { endMeetingInLauncher, MEETING_END_TIMEOUT_MS } from "../lib/meetingWindowEvents";
 import { compareVersions } from "../lib/changelog";
 import {
   checkForUpdate,
@@ -33,11 +33,10 @@ import {
   installUpdateNow,
 } from "../lib/ipc";
 import {
-  emitStopMeeting,
   emitUpdaterPrefsChanged,
-  onWindowMeetingEnded,
   onUpdateDownloadFailed,
   onUpdateDownloadProgress,
+  onUpdateDownloadStarted,
   onUpdateDownloaded,
   onUpdaterPrefsChanged,
 } from "../lib/events";
@@ -50,18 +49,16 @@ const AUTO_UPDATE_KEY = "auto_update";
 const STARTUP_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-/** Windows that each run endMeetingFlow and hold part of the meeting's data. */
-const MEETING_WINDOWS = ["launcher", "overlay"];
-export const MEETING_END_TIMEOUT_MS = 60_000;
+export { MEETING_END_TIMEOUT_MS };
 
 /** Never hold up an install for longer than this waiting on GitHub. */
 export const UPDATE_CHECK_LIMIT_MS = 8_000;
-export const UPDATE_DOWNLOAD_LIMIT_MS = 120_000;
+const DOWNLOAD_ALREADY_IN_PROGRESS = "An update download is already in progress";
 
 export { RELEASES_URL };
 
 export function releaseNotesUrl(version: string): string {
-  return `${RELEASES_URL}/tag/v${version}`;
+  return `${RELEASES_URL}/tag/plus-v${version}`;
 }
 
 function errorMessage(err: unknown): string {
@@ -109,7 +106,10 @@ export async function hydrateUpdater(): Promise<void> {
   try {
     const pending = await getPendingUpdate();
     // setReady ignores a skipped version
-    if (pending) updater.setReady(pending.version, pending.body);
+    const { phase, version } = useUpdaterStore.getState();
+    if (pending && phase !== "downloading" && (!version || compareVersions(pending.version, version) >= 0)) {
+      updater.setReady(pending.version, pending.body);
+    }
   } catch (err) {
     console.warn("[updater] Failed to read pending update:", err);
   }
@@ -132,9 +132,12 @@ export async function checkForUpdates(opts?: { manual?: boolean }): Promise<void
   let update;
   try {
     const found = await checkForUpdate();
-    update = useUpdaterStore.getState().finishCheck(found, opts);
+    const updater = useUpdaterStore.getState();
+    if (updater.phase !== "checking") return;
+    update = updater.finishCheck(found, opts);
   } catch (err) {
-    useUpdaterStore.getState().failCheck(errorMessage(err));
+    const updater = useUpdaterStore.getState();
+    if (updater.phase === "checking") updater.failCheck(errorMessage(err));
     return;
   }
 
@@ -162,20 +165,27 @@ export async function refreshReadyUpdate(opts?: { explicit?: boolean }): Promise
   if (phase !== "ready" || refresh !== "idle") return;
 
   setRefresh("checking");
+  let requestedDownload = false;
+  let joinedDownload = false;
   try {
     const found = await withinLimit(checkForUpdate(), UPDATE_CHECK_LIMIT_MS);
-    const { version, skippedVersion, autoUpdate } = useUpdaterStore.getState();
+    const { refresh, version, skippedVersion, autoUpdate } = useUpdaterStore.getState();
+    if (refresh !== "checking") return;
     if (!found || !version || compareVersions(found.version, version) <= 0) return;
     if (found.version === skippedVersion) return;
     if (!autoUpdate && !opts?.explicit) return;
 
     setRefresh("downloading", found.version);
-    const info = await withinLimit(downloadUpdate(), UPDATE_DOWNLOAD_LIMIT_MS);
+    requestedDownload = true;
+    const info = await downloadUpdate();
     useUpdaterStore.getState().setReady(info.version, info.body);
   } catch (err) {
-    console.warn("[updater] Keeping the downloaded update:", err);
+    joinedDownload = errorMessage(err) === DOWNLOAD_ALREADY_IN_PROGRESS;
+    if (!joinedDownload) console.warn("[updater] Keeping the downloaded update:", err);
   } finally {
-    useUpdaterStore.getState().setRefresh("idle");
+    if (!joinedDownload && (requestedDownload || useUpdaterStore.getState().refresh === "checking")) {
+      setRefresh("idle");
+    }
   }
 }
 
@@ -205,63 +215,34 @@ export async function downloadUpdateNow(opts?: { explicit?: boolean }): Promise<
     const info = await downloadUpdate();
     useUpdaterStore.getState().setReady(info.version, info.body, opts);
   } catch (err) {
-    useUpdaterStore.getState().failDownload(errorMessage(err));
+    const message = errorMessage(err);
+    if (message !== DOWNLOAD_ALREADY_IN_PROGRESS) useUpdaterStore.getState().failDownload(message);
   }
 }
 
-/**
- * End the meeting through the cross-window stop path (the tray's Stop): both
- * windows run endMeetingFlow and save the data they hold. Resolves true once
- * both report done, false on timeout or error.
- */
-export async function endMeetingInAllWindows(
-  timeoutMs: number = MEETING_END_TIMEOUT_MS,
-): Promise<boolean> {
-  const waiting = new Set(MEETING_WINDOWS);
-  let finish: (ok: boolean) => void = () => {};
-  const done = new Promise<boolean>((resolve) => {
-    finish = resolve;
-  });
-
-  let unlisten: UnlistenFn | undefined;
-  const timer = setTimeout(() => finish(false), timeoutMs);
+/** Wait for the launcher's acknowledgement after both windows have saved. */
+export async function endMeetingInAllWindows(timeoutMs = MEETING_END_TIMEOUT_MS): Promise<boolean> {
+  const meetingId = useMeetingStore.getState().activeMeeting?.id;
+  if (!meetingId) return true;
   try {
-    unlisten = await onWindowMeetingEnded((e) => {
-      waiting.delete(e.window);
-      if (waiting.size === 0) finish(true);
-    });
-    await emitStopMeeting();
-    return await done;
-  } catch (err) {
-    console.error("[updater] Failed to end the meeting:", err);
+    await endMeetingInLauncher(meetingId, timeoutMs);
+    return true;
+  } catch (error) {
+    console.error("[updater] Failed to end the meeting:", error);
     return false;
-  } finally {
-    clearTimeout(timer);
-    unlisten?.();
   }
 }
 
-/**
- * End the running meeting from this window. When the overlay took the
- * meeting and this is another window, it ends through every window so the
- * overlay saves the data only it holds; resolves once both are done (false
- * on timeout). Otherwise this window ends it by itself.
- */
 export async function endMeetingFromThisWindow(): Promise<boolean> {
   const state = useMeetingStore.getState();
-  const meeting = state.activeMeeting;
-  if (!meeting) return true;
-  let label = "";
+  if (!state.activeMeeting) return true;
   try {
-    label = getCurrentWebviewWindow().label;
-  } catch {
-    /* not running in Tauri */
+    await state.endMeetingFlow();
+    return true;
+  } catch (error) {
+    console.error("[updater] Failed to end the meeting:", error);
+    return false;
   }
-  if (meetingEndRoute(label, state.overlayMeetingId === meeting.id) === "all_windows") {
-    return endMeetingInAllWindows();
-  }
-  await state.endMeetingFlow();
-  return true;
 }
 
 /**
@@ -310,8 +291,7 @@ export async function skipVersion(version: string): Promise<void> {
 }
 
 /**
- * Runs the update loop. Mount once at the app root; active only in the launcher
- * window, and not at all in builds with UPDATER_ENABLED off.
+ * Both app windows listen for downloads. The launcher schedules update checks.
  */
 export function useUpdater(): void {
   useEffect(() => {
@@ -325,6 +305,7 @@ export function useUpdater(): void {
       label = "";
     }
     const isLauncher = label === "launcher";
+    if (!isLauncher && label !== "overlay") return;
 
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
@@ -341,14 +322,11 @@ export function useUpdater(): void {
       else updater.setSkippedVersion(undefined);
     }).then(keep);
 
-    if (!isLauncher) {
-      return () => {
-        disposed = true;
-        unlisteners.forEach((fn) => fn());
-      };
-    }
-
-    hydrateUpdater();
+    onUpdateDownloadStarted((info) => {
+      const updater = useUpdaterStore.getState();
+      if (updater.phase === "ready") updater.setRefresh("downloading", info.version);
+      else updater.startDownload(info);
+    }).then(keep);
 
     onUpdateDownloadProgress((e) => {
       useUpdaterStore.getState().addProgress(e.chunk_length, e.content_length);
@@ -356,17 +334,20 @@ export function useUpdater(): void {
 
     // Downloads may be started from any window (e.g. About in the overlay).
     onUpdateDownloaded((info) => {
-      useUpdaterStore.getState().setReady(info.version, info.body);
+      const updater = useUpdaterStore.getState();
+      updater.setReady(info.version, info.body);
+      updater.setRefresh("idle");
     }).then(keep);
 
     onUpdateDownloadFailed((e) => {
-      if (useUpdaterStore.getState().phase === "downloading") {
-        useUpdaterStore.getState().failDownload(e.message);
-      }
+      const updater = useUpdaterStore.getState();
+      if (updater.phase === "downloading") updater.failDownload(e.message);
+      updater.setRefresh("idle");
     }).then(keep);
 
-    const startupTimer = setTimeout(() => checkForUpdates(), STARTUP_DELAY_MS);
-    const intervalId = setInterval(() => checkForUpdates(), CHECK_INTERVAL_MS);
+    void hydrateUpdater();
+    const startupTimer = isLauncher ? setTimeout(() => checkForUpdates(), STARTUP_DELAY_MS) : undefined;
+    const intervalId = isLauncher ? setInterval(() => checkForUpdates(), CHECK_INTERVAL_MS) : undefined;
 
     return () => {
       disposed = true;

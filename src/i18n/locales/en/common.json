@@ -47,7 +47,8 @@
     "saving": "Saving…",
     "success": "Success",
     "testing": "Testing…",
-    "copiedToClipboard": "Copied to clipboard"
+    "copiedToClipboard": "Copied to clipboard",
+    "nothingToCopy": "There is nothing to copy yet"
   },
   "labels": {
     "advanced": "Advanced",

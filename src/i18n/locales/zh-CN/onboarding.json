@@ -11,6 +11,9 @@
     }
   },
   "meetingFlow": {
+    "listenersUnavailable": "实时转写监听未能启动。",
+    "overlaySaveTimeout": "悬浮窗未能及时保存会议。请再次点击“结束”重试。",
+    "endTimeout": "会议未能及时结束。",
     "noSpeakerSeparation": "本地语音识别不支持说话人分离，所有发言都会标为“现场”。",
     "captureFailed": "音频采集失败：{{detail}}",
     "endFailed": "会议没能在数据库里结束，仍在进行中，请再按一次“结束”。"

@@ -1,6 +1,6 @@
 use tauri::{
-    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    AppHandle, Wry,
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    AppHandle, Manager, Wry,
 };
 
 use crate::i18n::{tr, Text};
@@ -12,10 +12,11 @@ pub(crate) enum Entry {
     Item(&'static str, Text),
     /// "Hide from Screen Share" (stealth mode), checked while it is on.
     ScreenShare,
+    RecentMeetings,
     Separator,
 }
 
-use Entry::{Item, ScreenShare, Separator};
+use Entry::{Item, RecentMeetings, ScreenShare, Separator};
 
 /// Idle: opening the dashboard comes first, since NexQ has no taskbar
 /// button under stealth mode and the tray is the way back to it.
@@ -27,6 +28,7 @@ pub(crate) const IDLE_MENU: &[Entry] = &[
     Item("copy_action_items", Text::CopyActionItems),
     Item("copy_summary", Text::CopySummary),
     Item("copy_transcript", Text::CopyTranscript),
+    RecentMeetings,
     Separator,
     ScreenShare,
     Item("settings", Text::Settings),
@@ -50,6 +52,7 @@ pub(crate) const MEETING_MENU: &[Entry] = &[
     Item("copy_action_items", Text::CopyActionItems),
     Item("copy_summary", Text::CopySummary),
     Item("copy_transcript", Text::CopyTranscript),
+    RecentMeetings,
     Separator,
     Item("settings", Text::Settings),
     Item("quit", Text::Quit),
@@ -68,11 +71,28 @@ fn build(app: &AppHandle, layout: &[Entry]) -> Result<Menu<Wry>, tauri::Error> {
                 crate::commands::stealth_commands::stealth_enabled(),
                 None::<&str>,
             )?),
+            RecentMeetings => Box::new(recent_meetings(app)?),
             Separator => Box::new(PredefinedMenuItem::separator(app)?),
         });
     }
     let refs: Vec<&dyn IsMenuItem<Wry>> = items.iter().map(|i| i.as_ref()).collect();
     Menu::with_items(app, &refs)
+}
+
+fn recent_meetings(app: &AppHandle) -> Result<Submenu<Wry>, tauri::Error> {
+    let meetings = app.try_state::<crate::state::AppState>()
+        .and_then(|state| {
+            let db = state.database.as_ref()?.lock().ok()?;
+            crate::db::meetings::list_meetings(db.connection(), 20, 0).ok()
+        })
+        .unwrap_or_default();
+    let recent: Vec<_> = meetings.into_iter().filter(|meeting| meeting.end_time.is_some()).take(5).collect();
+    let submenu = Submenu::new(app, tr(Text::RecentMeetings), !recent.is_empty())?;
+    for meeting in recent {
+        let item = MenuItem::with_id(app, format!("recent_{}", meeting.id), meeting.title, true, None::<&str>)?;
+        submenu.append(&item)?;
+    }
+    Ok(submenu)
 }
 
 /// Build the idle-state tray menu.
@@ -95,6 +115,7 @@ mod tests {
             .filter_map(|e| match e {
                 Entry::Item(id, _) => Some(*id),
                 Entry::ScreenShare => Some("toggle_screen_share_stealth"),
+                Entry::RecentMeetings => Some("recent_meetings"),
                 Entry::Separator => None,
             })
             .collect()
@@ -111,5 +132,11 @@ mod tests {
         for layout in [IDLE_MENU, MEETING_MENU] {
             assert_eq!(ids(layout)[ids(layout).len() - 2..], ["settings", "quit"]);
         }
+    }
+
+    #[test]
+    fn both_menus_offer_recent_meetings() {
+        assert!(ids(IDLE_MENU).contains(&"recent_meetings"));
+        assert!(ids(MEETING_MENU).contains(&"recent_meetings"));
     }
 }

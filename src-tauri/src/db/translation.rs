@@ -15,7 +15,7 @@ pub struct TranslationRow {
     pub created_at: String,
 }
 
-/// Upsert a translation (insert or replace if segment+lang already exists).
+/// Upsert a translation for a segment and target language within its meeting.
 pub fn save_translation(
     conn: &Connection,
     segment_id: &str,
@@ -27,18 +27,19 @@ pub fn save_translation(
     provider: &str,
 ) -> Result<String, rusqlite::Error> {
     let id = Uuid::new_v4().to_string();
-    conn.execute(
+    conn.query_row(
         "INSERT INTO transcript_translations (id, segment_id, meeting_id, source_lang, target_lang, original_text, translated_text, provider)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT(segment_id, target_lang) DO UPDATE SET
+         ON CONFLICT(meeting_id, segment_id, target_lang) DO UPDATE SET
             original_text = excluded.original_text,
             translated_text = excluded.translated_text,
             provider = excluded.provider,
             source_lang = excluded.source_lang,
-            created_at = datetime('now')",
+            created_at = datetime('now')
+         RETURNING id",
         params![id, segment_id, meeting_id, source_lang, target_lang, original_text, translated_text, provider],
-    )?;
-    Ok(id)
+        |row| row.get(0),
+    )
 }
 
 /// Load all translations for a meeting + target language.
@@ -102,15 +103,16 @@ pub fn get_all_meeting_translations(
 /// Get a single segment's translation.
 pub fn get_segment_translation(
     conn: &Connection,
+    meeting_id: &str,
     segment_id: &str,
     target_lang: &str,
 ) -> Result<Option<TranslationRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT id, segment_id, meeting_id, source_lang, target_lang, original_text, translated_text, provider, created_at
          FROM transcript_translations
-         WHERE segment_id = ?1 AND target_lang = ?2",
+         WHERE meeting_id = ?1 AND segment_id = ?2 AND target_lang = ?3",
     )?;
-    let mut rows = stmt.query_map(params![segment_id, target_lang], |row| {
+    let mut rows = stmt.query_map(params![meeting_id, segment_id, target_lang], |row| {
         Ok(TranslationRow {
             id: row.get(0)?,
             segment_id: row.get(1)?,

@@ -29,10 +29,11 @@ vi.mock("../lib/events", async (importOriginal) => ({
   onStreamError: async () => () => {},
 }));
 
-const ipc = vi.hoisted(() => ({ generateAssist: vi.fn() }));
+const ipc = vi.hoisted(() => ({ generateAssist: vi.fn(), addMeetingBookmark: vi.fn() }));
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/ipc")>()),
   generateAssist: (...args: unknown[]) => ipc.generateAssist(...args),
+  addMeetingBookmark: (bookmark: string) => ipc.addMeetingBookmark(bookmark),
 }));
 
 import { useBookmarkSuggestions } from "./useBookmarkSuggestions";
@@ -63,6 +64,7 @@ beforeEach(() => {
   stream.token = null;
   stream.end = null;
   ipc.generateAssist.mockReset().mockResolvedValue(undefined);
+  ipc.addMeetingBookmark.mockReset().mockResolvedValue(undefined);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -94,4 +96,32 @@ describe("useBookmarkSuggestions messages", () => {
     );
     expect(await suggestWith(BROKEN)).toBe("无法解析书签建议，请重试。");
   });
+});
+
+it("saves each selected suggestion once and removes exactly the saved rows", async () => {
+  let finishFirst!: () => void;
+  let finishSecond!: () => void;
+  ipc.addMeetingBookmark
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve; }));
+  const onAccepted = vi.fn();
+  const { result } = renderHook(() => useBookmarkSuggestions(MEETING, onAccepted));
+  await act(async () => result.current.suggest());
+  const requestId = ipc.generateAssist.mock.calls[0][2].requestId;
+  await act(async () => {
+    stream.token!({ token: '[{"note":"First"},{"note":"Second"},{"note":"Third"}]', request_id: requestId });
+    await stream.end!({ total_tokens: 3, latency_ms: 1, request_id: requestId, cancelled: false });
+  });
+
+  const [first, second, third] = result.current.suggestions;
+  act(() => {
+    result.current.acceptSuggestion(first);
+    result.current.acceptSuggestion(second);
+    result.current.acceptSuggestion(second);
+  });
+  expect(ipc.addMeetingBookmark).toHaveBeenCalledTimes(2);
+  await act(async () => finishFirst());
+  await act(async () => finishSecond());
+  expect(result.current.suggestions).toEqual([third]);
+  expect(onAccepted.mock.calls.map(([bookmark]) => bookmark.note)).toEqual(["First", "Second"]);
 });

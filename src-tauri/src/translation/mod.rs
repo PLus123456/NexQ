@@ -69,6 +69,8 @@ impl std::fmt::Display for TranslationProviderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranslationResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_id: Option<String>,
     pub segment_id: Option<String>,
     pub original_text: String,
     pub translated_text: String,
@@ -319,6 +321,9 @@ impl TranslationRouter {
         let mut hasher = DefaultHasher::new();
         self.options.endpoints.hash(&mut hasher);
         self.options.llm.hash(&mut hasher);
+        if self.active_type == Some(TranslationProviderType::OpusMt) {
+            self.opus_mt_active_model_id.hash(&mut hasher);
+        }
         hasher.finish()
     }
 
@@ -343,7 +348,20 @@ impl TranslationRouter {
     }
 
     pub fn set_opus_mt_active_model(&mut self, model_id: Option<String>) {
+        if self.opus_mt_active_model_id == model_id {
+            return;
+        }
         self.opus_mt_active_model_id = model_id;
+        if self.active_type == Some(TranslationProviderType::OpusMt) {
+            self.active_provider = Some(Arc::new(self.opus_mt_provider()));
+        }
+    }
+
+    fn opus_mt_provider(&self) -> opus_mt::OpusMtTranslator {
+        opus_mt::OpusMtTranslator::new(
+            self.opus_mt_models_dir.clone(),
+            self.opus_mt_active_model_id.clone(),
+        )
     }
 
     /// A provider of `provider_type` built from these keys and options, without
@@ -366,18 +384,7 @@ impl TranslationRouter {
             TranslationProviderType::Deepl => {
                 Box::new(deepl::DeepLTranslator::new(keys.deepl.clone(), endpoints.deepl())?)
             }
-            TranslationProviderType::OpusMt => {
-                let mut translator = opus_mt::OpusMtTranslator::new();
-                if let Some(dir) = &self.opus_mt_models_dir {
-                    translator.set_models_dir(dir.clone());
-                }
-                // Set the active model ID — ONNX sessions load lazily on first translate()
-                // to avoid panicking inside the router's Mutex lock.
-                if let Some(active_id) = &self.opus_mt_active_model_id {
-                    translator.set_active_model_id(Some(active_id.clone()));
-                }
-                Box::new(translator)
-            }
+            TranslationProviderType::OpusMt => Box::new(self.opus_mt_provider()),
             TranslationProviderType::Llm => {
                 Box::new(llm_provider::LlmTranslator::new())
             }
@@ -505,6 +512,22 @@ mod tests {
         router.apply_options(serde_json::from_str(r#"{"endpoints": {"deepl": "http://deeplx.lan:1188/v2"}}"#).unwrap());
         router.set_provider(TranslationProviderType::Deepl).unwrap();
         assert_eq!(router.active_provider_name(), "DeepL");
+    }
+
+    #[tokio::test]
+    async fn removing_the_active_opus_model_refreshes_the_route_and_cache_scope() {
+        let mut router = TranslationRouter::new();
+        router.set_opus_mt_active_model(Some("opus-mt-en-es".into()));
+        router.set_provider(TranslationProviderType::OpusMt).unwrap();
+        let old_provider = router.get_provider().unwrap();
+        let old_fingerprint = router.options_fingerprint();
+
+        router.set_opus_mt_active_model(None);
+        let provider = router.get_provider().unwrap();
+        assert!(!Arc::ptr_eq(&old_provider, &provider));
+        assert_ne!(old_fingerprint, router.options_fingerprint());
+        let error = provider.translate("Hello", Some("en"), "es").await.unwrap_err();
+        assert!(error.to_string().contains("No OPUS-MT model activated"));
     }
 
     #[test]

@@ -15,9 +15,9 @@ export function TranslationPopup({ result, onClose }: TranslationPopupProps) {
   };
 
   return (
-    <div className="mt-2 w-72 rounded-xl border border-border/30 bg-popover p-3 shadow-2xl">
+    <div className="mt-2 max-h-[calc(100vh-64px)] w-72 max-w-full overflow-y-auto rounded-xl border border-border/30 bg-popover p-3 shadow-2xl">
       <div className="flex items-start justify-between gap-2">
-        <div className="text-sm font-medium text-foreground leading-relaxed">
+        <div className="min-w-0 break-words text-sm font-medium text-foreground leading-relaxed">
           {result.translated_text}
         </div>
         <button

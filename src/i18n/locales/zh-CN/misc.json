@@ -80,7 +80,9 @@
     },
     "download": {
       "label": "下载录音",
-      "fileType": "音频"
+      "fileType": "音频",
+      "formatChanged": "录音已完成处理。请重新点击下载以保存当前格式。",
+      "failed": "保存录音失败"
     },
     "processing": {
       "label": "正在处理音频…"

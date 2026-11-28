@@ -92,4 +92,24 @@ describe("processSpeaker", () => {
     expect(out?.speaker_id).toBe("speaker_0");
     expect(useSpeakerStore.getState().getAllSpeakers().map((s) => s.id)).toEqual(["speaker_0"]);
   });
+
+  it("keeps merged speakers merged as their final lines grow or new lines arrive", () => {
+    const samePerson = { speaker_id: "speaker_0" };
+    const store = useSpeakerStore.getState();
+    store.initForInPerson(true);
+    processSpeaker(them("old", "one two", samePerson), true);
+    store.addSpeaker("speaker_1");
+    store.mergeSpeaker("speaker_0", "speaker_1");
+    store.addSpeaker("speaker_2");
+    store.mergeSpeaker("speaker_1", "speaker_2");
+
+    store.addSpeaker("speaker_0"); // a late speaker_detected event
+    expect(processSpeaker(them("old", "one two three", samePerson), true)?.speaker_id).toBe("speaker_2");
+    expect(processSpeaker(them("new", "four", samePerson), true)?.speaker_id).toBe("speaker_2");
+    expect(Object.keys(useSpeakerStore.getState().speakers)).toEqual(["speaker_2"]);
+    expect(useSpeakerStore.getState().speakers.speaker_2.stats).toMatchObject({ segment_count: 2, word_count: 4 });
+
+    store.initForInPerson(true);
+    expect(processSpeaker(them("old", "different", samePerson), true)?.speaker_id).toBe("speaker_0");
+  });
 });

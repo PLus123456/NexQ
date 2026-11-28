@@ -35,6 +35,12 @@ export interface StreamStartDetails extends Partial<Omit<StreamMeta, "model" | "
   requestId?: string | null;
 }
 
+interface PendingProgress {
+  mode: IntelligenceMode;
+  startedAt: number;
+  sources: SourceToggles | null;
+}
+
 interface StreamState {
   // Current stream
   isStreaming: boolean;
@@ -62,6 +68,8 @@ interface StreamState {
   streamMeta: StreamMeta | null;
   /** Request id of the user action awaiting its start event. */
   pendingRequestId: string | null;
+  /** The pending click's metadata, kept if another window's stream arrives first. */
+  pendingProgress: PendingProgress | null;
   /** Request id of the answer streaming now (null when idle or unknown). */
   streamRequestId: string | null;
   /** The pills the user asked this request with (null for an answer that may not use sources). */
@@ -111,9 +119,24 @@ const IDLE_PROGRESS = {
   firstTokenAt: null,
   streamMeta: null,
   pendingRequestId: null,
+  pendingProgress: null,
   streamRequestId: null,
   requestSources: null,
 };
+
+function settledProgress(state: StreamState): Partial<StreamState> {
+  const pending = state.pendingProgress;
+  if (!pending || !state.pendingRequestId) return IDLE_PROGRESS;
+  return {
+    ...IDLE_PROGRESS,
+    phase: "sending",
+    pendingRequestId: state.pendingRequestId,
+    pendingProgress: pending,
+    currentMode: pending.mode,
+    requestStartedAt: pending.startedAt,
+    requestSources: pending.sources,
+  };
+}
 
 /** Requests to drop when they end (automatic answers NexQ stopped). */
 const discarded = new Set<string>();
@@ -178,11 +201,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     // A second press while one is running or still sending is refused by the
     // backend; it must not take over the first request's progress.
     if (get().isStreaming || get().phase === "sending") return;
+    const pending = { mode: mode as IntelligenceMode, startedAt: Date.now(), sources: sources ?? null };
     set({
       phase: "sending",
       pendingRequestId: requestId,
-      requestSources: sources ?? null,
-      requestStartedAt: Date.now(),
+      pendingProgress: pending,
+      requestSources: pending.sources,
+      requestStartedAt: pending.startedAt,
       firstTokenAt: null,
       streamMeta: null,
       currentMode: mode as IntelligenceMode,
@@ -196,8 +221,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   },
 
   clearPending: (requestId) => {
-    if (get().pendingRequestId !== requestId) return;
-    set({ ...IDLE_PROGRESS, currentMode: get().isStreaming ? get().currentMode : null });
+    const state = get();
+    if (state.pendingRequestId !== requestId) return;
+    set(state.isStreaming
+      ? { pendingRequestId: null, pendingProgress: null }
+      : { ...IDLE_PROGRESS, currentMode: null });
   },
 
   isRunning: (requestId) => {
@@ -213,10 +241,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
   startStream: (mode, model, provider, details = {}) => {
     const state = get();
-    const fromClick =
-      state.pendingRequestId !== null &&
-      state.requestStartedAt !== null &&
-      (details.requestId == null || details.requestId === state.pendingRequestId);
+    const fromClick = details.requestId != null && details.requestId === state.pendingRequestId;
+    const pending = fromClick ? state.pendingProgress : null;
     // Lines about the sources that came before the start belong to this stream.
     const early = details.requestId ? earlyActivity.get(details.requestId) ?? [] : [];
     if (details.requestId) earlyActivity.delete(details.requestId);
@@ -234,9 +260,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       error: null,
       latencyMs: null,
       phase: "waiting",
-      requestStartedAt: fromClick ? state.requestStartedAt : Date.now(),
+      requestStartedAt: pending?.startedAt ?? Date.now(),
+      requestSources: pending?.sources ?? null,
       firstTokenAt: null,
-      pendingRequestId: null,
+      pendingRequestId: fromClick ? null : state.pendingRequestId,
+      pendingProgress: fromClick ? null : state.pendingProgress,
       streamRequestId: details.requestId ?? null,
       currentId: null,
       streamMeta: {
@@ -302,13 +330,17 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       isStreaming: false,
       currentContent: dropped ? "" : content,
       latencyMs,
-      ...IDLE_PROGRESS,
+      ...settledProgress(s),
       currentId: keep ? response.id : null,
       responseHistory: keep ? [response, ...s.responseHistory].slice(0, RESPONSE_HISTORY_CAP) : s.responseHistory,
     }));
   },
 
-  setError: (error) => set({ error, isStreaming: false, ...IDLE_PROGRESS }),
+  setError: (error) => set((state) => ({
+    error,
+    isStreaming: false,
+    ...(state.isStreaming ? settledProgress(state) : IDLE_PROGRESS),
+  })),
   clearCurrent: () =>
     set({
       currentContent: "",

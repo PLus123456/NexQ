@@ -229,7 +229,7 @@ export function MeetingAudioSettings() {
     const newConfig = { ...config, recording_enabled: enabled };
     setMeetingAudioConfig(newConfig);
     try {
-      await setRecordingEnabled(enabled);
+      await setRecordingEnabled(enabled, useMeetingStore.getState().activeMeeting?.id);
       showToast(
         enabled ? t("stt:meetingAudio.recording.enabled") : t("stt:meetingAudio.recording.disabled"),
         "success"

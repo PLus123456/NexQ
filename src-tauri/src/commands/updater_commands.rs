@@ -1,9 +1,9 @@
 use std::ffi::OsStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
-use tauri::{command, AppHandle, Emitter, ExitRequestApi, Manager, State};
+use serde::{Deserialize, Serialize};
+use tauri::{command, AppHandle, Emitter, ExitRequestApi, Listener, Manager, State};
 use tauri_plugin_store::StoreExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -15,9 +15,13 @@ const SETTINGS_STORE: &str = "nexq-settings.json";
 const AUTO_UPDATE_KEY: &str = "auto_update";
 const SKIPPED_VERSION_KEY: &str = "skipped_version";
 
+const UPDATE_CHECK_LIMIT: Duration = Duration::from_secs(8);
+const UPDATE_DOWNLOAD_LIMIT: Duration = Duration::from_secs(120);
 /// How long Restart waits for the last recording to finish saving.
 const RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(120);
-/// How long quit (with an update to install) waits for the last recording.
+/// A quit during startup waits for capture to connect and drain before saving.
+const MEETING_END_LIMIT: Duration = Duration::from_secs(120);
+/// How long quit waits for the last recording before leaving the app open.
 const QUIT_RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(600);
 
 /// Passed to the installer for an install on quit. The NSIS installer
@@ -32,12 +36,14 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    args.into_iter().any(|a| a.as_ref() == OsStr::new(POST_UPDATE_QUIT_ARG))
+    args.into_iter()
+        .any(|a| a.as_ref() == OsStr::new(POST_UPDATE_QUIT_ARG))
 }
 
-/// Set once quit has been deferred for a recording, so the second exit
-/// request goes through even if the wait timed out.
-static QUIT_WAITED_FOR_RECORDING: AtomicBool = AtomicBool::new(false);
+const QUIT_IDLE: u8 = 0;
+const QUIT_SAVING: u8 = 1;
+const QUIT_READY: u8 = 2;
+static QUIT_STATE: AtomicU8 = AtomicU8::new(QUIT_IDLE);
 
 /// Information about an available update.
 #[derive(Debug, Clone, Serialize)]
@@ -75,47 +81,51 @@ pub struct PendingUpdate {
 /// app is already up-to-date.
 #[command]
 pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let updater = app.updater().map_err(|e| format!("Failed to get updater: {}", e))?;
+    Ok(check_latest(&app)
+        .await?
+        .as_ref()
+        .map(UpdateInfo::from_update))
+}
 
-    let update = updater
-        .check()
+async fn check_latest(app: &AppHandle) -> Result<Option<Update>, String> {
+    let updater = app
+        .updater()
+        .map_err(|e| format!("Failed to get updater: {}", e))?;
+    tokio::time::timeout(UPDATE_CHECK_LIMIT, updater.check())
         .await
-        .map_err(|e| format!("Failed to check for update: {}", e))?;
-
-    Ok(update.as_ref().map(UpdateInfo::from_update))
+        .map_err(|_| "Checking for an update timed out".to_string())?
+        .map_err(|e| format!("Failed to check for update: {e}"))
 }
 
 /// Download the latest update in the background and keep the bytes in
 /// `AppState.pending_update` (nothing is installed yet).
 ///
-/// Emits `update_download_progress { chunk_length, content_length }` while
-/// downloading, then `update_downloaded { version, body, date }` or
-/// `update_download_failed { message }`.
+/// Broadcasts the start and progress of a download, then its result.
 #[command]
 pub async fn download_update(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<UpdateInfo, String> {
-    if state.update_downloading.swap(true, Ordering::SeqCst) {
-        return Err("An update download is already in progress".to_string());
-    }
-    let result = download_into_pending(&app, &state).await;
-    state.update_downloading.store(false, Ordering::SeqCst);
-    if let Err(message) = &result {
-        let _ = app.emit(
+    let _download = state
+        .update_download
+        .try_lock()
+        .map_err(|_| "An update download is already in progress".to_string())?;
+    let result = tokio::time::timeout(UPDATE_DOWNLOAD_LIMIT, download_into_pending(&app, &state))
+        .await
+        .unwrap_or_else(|_| Err("Downloading the update timed out".to_string()));
+    let _ = match &result {
+        Ok(info) => app.emit("update_downloaded", info),
+        Err(message) => app.emit(
             "update_download_failed",
             serde_json::json!({ "message": message }),
-        );
-    }
+        ),
+    };
     result
 }
 
 async fn download_into_pending(app: &AppHandle, state: &AppState) -> Result<UpdateInfo, String> {
-    let updater = app.updater().map_err(|e| format!("Failed to get updater: {}", e))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| format!("Failed to check for update: {}", e))?
+    let update = check_latest(app)
+        .await?
         .ok_or_else(|| "No update available".to_string())?;
     let info = UpdateInfo::from_update(&update);
 
@@ -128,6 +138,7 @@ async fn download_into_pending(app: &AppHandle, state: &AppState) -> Result<Upda
         }
     }
 
+    let _ = app.emit("update_download_started", &info);
     let progress_app = app.clone();
     let bytes = update
         .download(
@@ -145,8 +156,15 @@ async fn download_into_pending(app: &AppHandle, state: &AppState) -> Result<Upda
         .await
         .map_err(|e| format!("Failed to download update: {}", e))?;
 
-    log::info!("Update v{} downloaded ({} bytes)", info.version, bytes.len());
+    log::info!(
+        "Update v{} downloaded ({} bytes)",
+        info.version,
+        bytes.len()
+    );
+    #[cfg(target_os = "windows")]
     let quit_update = quit_variant(app, &info.version).await;
+    #[cfg(not(target_os = "windows"))]
+    let quit_update = None;
 
     *state
         .pending_update
@@ -158,16 +176,17 @@ async fn download_into_pending(app: &AppHandle, state: &AppState) -> Result<Upda
         info: info.clone(),
     });
 
-    let _ = app.emit("update_downloaded", &info);
     Ok(info)
 }
 
 /// `version` as an [`Update`] whose installer gets [`POST_UPDATE_QUIT_ARG`]
 /// (installer arguments are fixed when the updater is built).
+#[cfg(target_os = "windows")]
 async fn quit_variant(app: &AppHandle, version: &str) -> Option<Update> {
     let checked = match app
         .updater_builder()
         .installer_arg(POST_UPDATE_QUIT_ARG)
+        .timeout(UPDATE_CHECK_LIMIT)
         .build()
     {
         Ok(updater) => updater.check().await.map_err(|e| e.to_string()),
@@ -208,13 +227,30 @@ pub async fn get_pending_update(state: State<'_, AppState>) -> Result<Option<Upd
 /// after the wait.
 #[command]
 pub async fn install_update_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _lifecycle = state
+        .meeting_lifecycle
+        .try_lock()
+        .map_err(|_| "A meeting or update is already in progress".to_string())?;
+    if quit_pending() {
+        return Err("NexQ is already quitting".to_string());
+    }
     if state.meeting_active.load(Ordering::SeqCst) {
         return Err("End the meeting before updating".to_string());
     }
     if !wait_for_recordings(&state, RECORDING_WAIT_LIMIT).await {
         return Err("Still saving the last recording — try again in a moment".to_string());
     }
-    install_pending(&state, InstallFor::Restart)?;
+    if quit_pending() {
+        return Err("NexQ is already quitting".to_string());
+    }
+    {
+        let pending = state
+            .pending_update
+            .lock()
+            .map_err(|e| format!("Failed to lock pending update: {e}"))?;
+        let update = pending.as_ref().ok_or("No downloaded update to install")?;
+        install_downloaded(update, InstallFor::Restart)?;
+    }
     // macOS replaces the app bundle in place and returns: relaunch it.
     #[cfg(not(target_os = "windows"))]
     app.restart();
@@ -246,15 +282,7 @@ enum InstallFor {
     Quit,
 }
 
-fn install_pending(state: &AppState, why: InstallFor) -> Result<(), String> {
-    let pending = state
-        .pending_update
-        .lock()
-        .map_err(|e| format!("Failed to lock pending update: {}", e))?;
-    let p = pending
-        .as_ref()
-        .ok_or_else(|| "No downloaded update to install".to_string())?;
-
+fn install_downloaded(p: &PendingUpdate, why: InstallFor) -> Result<(), String> {
     let update = match why {
         InstallFor::Quit => p.quit_update.as_ref().unwrap_or(&p.update),
         InstallFor::Restart => &p.update,
@@ -269,106 +297,149 @@ fn install_pending(state: &AppState, why: InstallFor) -> Result<(), String> {
         .map_err(|e| format!("Failed to install update: {}", e))
 }
 
-/// True while a quit is deferred waiting for a recording to finish saving.
+/// True while a quit is saving the meeting and its recordings or exiting.
 /// Tray actions that would start new work are ignored meanwhile.
 pub fn quit_pending() -> bool {
-    QUIT_WAITED_FOR_RECORDING.load(Ordering::SeqCst)
+    QUIT_STATE.load(Ordering::SeqCst) != QUIT_IDLE
 }
 
-/// Whether a quit is deferred (waiting for the last recording to save), so
+/// Whether a quit is deferred (waiting for meeting data to save), so
 /// the frontend doesn't start a meeting meanwhile (e.g. Ctrl+M).
 #[command]
 pub fn is_quit_pending() -> bool {
     quit_pending()
 }
 
-/// What to do with a downloaded update when the app is asked to exit.
-#[derive(Debug, PartialEq, Eq)]
-pub enum QuitAction {
-    /// Exit normally without installing.
-    Exit,
-    /// Defer the exit until the last recording has finished saving.
-    WaitForRecording,
-    /// Install the update (the process exits inside the install).
-    Install,
-}
-
-/// Installs only when an update is pending, no meeting is running, automatic
-/// updates are on and the version wasn't skipped. A recording still being
-/// saved defers the quit once; if it is still running after the wait, exit
-/// without installing.
-pub fn quit_action(
-    pending: bool,
-    meeting_active: bool,
-    auto_update: bool,
-    skipped: bool,
-    recording_jobs: usize,
-    already_waited: bool,
-) -> QuitAction {
-    if !pending || meeting_active || !auto_update || skipped {
-        return QuitAction::Exit;
-    }
-    if recording_jobs > 0 {
-        return if already_waited {
-            QuitAction::Exit
-        } else {
-            QuitAction::WaitForRecording
-        };
-    }
-    QuitAction::Install
-}
-
 /// `RunEvent::ExitRequested` handler (tray Quit calls `app.exit(0)`).
-pub fn on_exit_requested(app: &AppHandle, api: &ExitRequestApi) {
-    let state = app.state::<AppState>();
-
-    let pending_version = state
-        .pending_update
-        .lock()
-        .ok()
-        .and_then(|p| p.as_ref().map(|p| p.info.version.clone()));
-    let skipped = match &pending_version {
-        Some(v) => skipped_version(app).as_deref() == Some(v.as_str()),
-        None => false,
-    };
-
-    let action = quit_action(
-        pending_version.is_some(),
-        state.meeting_active.load(Ordering::SeqCst),
-        auto_update_enabled(app),
-        skipped,
-        state.recording_jobs.load(Ordering::SeqCst),
-        QUIT_WAITED_FOR_RECORDING.load(Ordering::SeqCst),
-    );
-
-    match action {
-        QuitAction::Exit => {}
-        QuitAction::Install => {
-            if let Err(e) = install_pending(&state, InstallFor::Quit) {
-                log::error!("Install on quit failed: {}", e);
-            }
-        }
-        QuitAction::WaitForRecording => {
-            log::info!("Quit deferred until the last recording finishes saving");
-            QUIT_WAITED_FOR_RECORDING.store(true, Ordering::SeqCst);
+pub fn on_exit_requested(app: &AppHandle, api: &ExitRequestApi, code: i32) {
+    match QUIT_STATE.compare_exchange(QUIT_IDLE, QUIT_SAVING, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => {
             api.prevent_exit();
-            for (_, window) in app.webview_windows() {
-                let _ = window.hide();
-            }
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let state = app.state::<AppState>();
-                if !wait_for_recordings(&state, QUIT_RECORDING_WAIT_LIMIT).await {
-                    log::warn!("Recording still saving after the quit wait; exiting without installing");
+                match prepare_quit(&app).await {
+                    Ok(()) => {
+                        QUIT_STATE.store(QUIT_READY, Ordering::SeqCst);
+                        app.exit(code);
+                    }
+                    Err(e) => {
+                        log::warn!("Quit deferred work failed, leaving NexQ open: {e}");
+                        QUIT_STATE.store(QUIT_IDLE, Ordering::SeqCst);
+                        let _ = app.emit("nexq:quit_failed", ());
+                    }
                 }
-                app.exit(0);
             });
         }
+        Err(QUIT_READY) => {}
+        Err(_) => api.prevent_exit(),
     }
+}
+
+async fn prepare_quit(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let meeting_id = {
+        let _lifecycle = state.meeting_lifecycle.lock().await;
+        let live = state
+            .live_meeting
+            .lock()
+            .map_err(|_| "Live meeting lock poisoned")?;
+        live.as_ref().map(|meeting| meeting.id.clone())
+    };
+    if let Some(meeting_id) = meeting_id {
+        end_meeting_on_quit(app, &state, &meeting_id).await?;
+    }
+    if !wait_for_recordings(&state, QUIT_RECORDING_WAIT_LIMIT).await {
+        return Err("The recording is still saving".to_string());
+    }
+
+    let _lifecycle = state.meeting_lifecycle.lock().await;
+    if state.meeting_active.load(Ordering::SeqCst) {
+        return Err("The meeting is still active".to_string());
+    }
+    if let Err(e) = install_on_quit(app, &state) {
+        log::error!("Install on quit failed: {e}");
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingEndEvent {
+    meeting_id: String,
+    window: Option<String>,
+    message: Option<String>,
+}
+
+async fn end_meeting_on_quit(
+    app: &AppHandle,
+    state: &AppState,
+    meeting_id: &str,
+) -> Result<(), String> {
+    let (send, mut receive) = tokio::sync::mpsc::channel(1);
+    let send_failed = send.clone();
+    let expected_id = meeting_id.to_string();
+    let ended = app.listen_any("nexq:meeting_ended", move |event| {
+        if let Ok(payload) = serde_json::from_str::<MeetingEndEvent>(event.payload()) {
+            if payload.meeting_id == expected_id && payload.window.as_deref() == Some("launcher") {
+                let _ = send.try_send(Ok(()));
+            }
+        }
+    });
+    let expected_id = meeting_id.to_string();
+    let failed = app.listen_any("nexq:meeting_end_failed", move |event| {
+        if let Ok(payload) = serde_json::from_str::<MeetingEndEvent>(event.payload()) {
+            if payload.meeting_id == expected_id {
+                let message = payload
+                    .message
+                    .unwrap_or_else(|| "The meeting could not be saved".to_string());
+                let _ = send_failed.try_send(Err(message));
+            }
+        }
+    });
+
+    let mut retry = tokio::time::interval(Duration::from_secs(2));
+    let result = tokio::time::timeout(MEETING_END_LIMIT, async {
+        loop {
+            tokio::select! {
+                Some(outcome) = receive.recv() => return outcome,
+                _ = retry.tick() => {
+                    if !state.meeting_active.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    // The launcher may still be finishing start. Its end flow
+                    // coalesces repeated stop requests for this meeting.
+                    app.emit_to("launcher", "tray_stop_meeting", serde_json::json!({ "meetingId": meeting_id }))
+                        .map_err(|e| format!("Couldn't request meeting shutdown: {e}"))?;
+                }
+            }
+        }
+    }).await;
+    app.unlisten(ended);
+    app.unlisten(failed);
+    result.unwrap_or_else(|_| Err("Timed out waiting for the meeting to be saved".to_string()))
+}
+
+fn install_on_quit(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    if !auto_update_enabled(app) {
+        return Ok(());
+    }
+    let skipped = skipped_version(app);
+    let pending = state
+        .pending_update
+        .lock()
+        .map_err(|e| format!("Failed to lock pending update: {e}"))?;
+    if let Some(update) = pending.as_ref() {
+        if skipped.as_deref() != Some(update.info.version.as_str()) {
+            install_downloaded(update, InstallFor::Quit)?;
+        }
+    }
+    Ok(())
 }
 
 fn setting(app: &AppHandle, key: &str) -> Option<serde_json::Value> {
-    app.store(SETTINGS_STORE).ok().and_then(|store| store.get(key))
+    app.store(SETTINGS_STORE)
+        .ok()
+        .and_then(|store| store.get(key))
 }
 
 /// "Automatic updates" preference; defaults to on when unset or unreadable.
@@ -384,11 +455,17 @@ fn skipped_version(app: &AppHandle) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_post_update_quit, quit_action, QuitAction, POST_UPDATE_QUIT_ARG};
+    use super::{
+        is_post_update_quit, wait_for_recordings, AppState, Duration, Ordering,
+        POST_UPDATE_QUIT_ARG,
+    };
 
     #[test]
     fn relaunch_after_install_on_quit_is_recognised() {
-        assert!(is_post_update_quit([r"C:\NexQ\nexq.exe", POST_UPDATE_QUIT_ARG]));
+        assert!(is_post_update_quit([
+            r"C:\NexQ\nexq.exe",
+            POST_UPDATE_QUIT_ARG
+        ]));
         assert!(is_post_update_quit(vec![
             std::ffi::OsString::from("nexq.exe"),
             std::ffi::OsString::from("--flag"),
@@ -400,49 +477,18 @@ mod tests {
     fn normal_launch_and_restart_relaunch_are_not_post_update_quit() {
         assert!(!is_post_update_quit(["nexq.exe"]));
         assert!(!is_post_update_quit(Vec::<String>::new()));
-        assert!(!is_post_update_quit(["nexq.exe", "--nexq-post-update-quit-later"]));
+        assert!(!is_post_update_quit([
+            "nexq.exe",
+            "--nexq-post-update-quit-later"
+        ]));
     }
 
-    #[test]
-    fn installs_when_everything_allows_it() {
-        assert_eq!(quit_action(true, false, true, false, 0, false), QuitAction::Install);
-    }
-
-    #[test]
-    fn exits_without_pending_update() {
-        assert_eq!(quit_action(false, false, true, false, 0, false), QuitAction::Exit);
-    }
-
-    #[test]
-    fn never_installs_during_a_meeting() {
-        assert_eq!(quit_action(true, true, true, false, 0, false), QuitAction::Exit);
-    }
-
-    #[test]
-    fn respects_automatic_updates_off() {
-        assert_eq!(quit_action(true, false, false, false, 0, false), QuitAction::Exit);
-    }
-
-    #[test]
-    fn skipped_version_is_not_installed() {
-        assert_eq!(quit_action(true, false, true, true, 0, false), QuitAction::Exit);
-    }
-
-    #[test]
-    fn waits_for_a_recording_still_saving() {
-        assert_eq!(
-            quit_action(true, false, true, false, 1, false),
-            QuitAction::WaitForRecording
-        );
-    }
-
-    #[test]
-    fn exits_without_installing_if_recording_outlasts_the_wait() {
-        assert_eq!(quit_action(true, false, true, false, 1, true), QuitAction::Exit);
-    }
-
-    #[test]
-    fn installs_after_the_wait_once_recording_is_saved() {
-        assert_eq!(quit_action(true, false, true, false, 0, true), QuitAction::Install);
+    #[tokio::test]
+    async fn only_finishes_waiting_when_recording_jobs_are_drained() {
+        let state = AppState::new();
+        state.recording_jobs.store(1, Ordering::SeqCst);
+        assert!(!wait_for_recordings(&state, Duration::ZERO).await);
+        state.recording_jobs.store(0, Ordering::SeqCst);
+        assert!(wait_for_recordings(&state, Duration::ZERO).await);
     }
 }

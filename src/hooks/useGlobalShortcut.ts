@@ -4,11 +4,12 @@ import {
   unregister,
 } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { emit } from "@tauri-apps/api/event";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
 import { isQuitPending } from "../lib/ipc";
 import { runYourAction } from "../lib/autoAnswer";
-import { isOverlayVisible, meetingShortcutAction, showLauncherWindow, showMeetingOverlay, switchShortcutTarget } from "../lib/windows";
+import { isOverlayVisible, meetingShortcutAction, showLauncherWindow, showMeetingOverlay, switchShortcutTarget, TOGGLE_OVERLAY_SETTINGS_EVENT, toggleWindowSettings } from "../lib/windows";
 import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
 import { useConfigStore } from "../stores/configStore";
@@ -60,47 +61,69 @@ function announceCaptureShortcutFailure(key: string): void {
   showToast(t("misc:shortcuts.captureRegistrationFailed", { shortcut: formatShortcut(key) }), "warning");
 }
 
+const shortcutWrites = new Map<string, Promise<void>>();
+
+function changeShortcut(key: string, change: () => Promise<void>): void {
+  const accelerator = normalizeAccelerator(key);
+  const previous = shortcutWrites.get(accelerator) ?? Promise.resolve();
+  const operation = previous.then(change).catch((error) => {
+    console.warn(`[Shortcuts] Could not update ${key}:`, error);
+  });
+  shortcutWrites.set(accelerator, operation);
+  void operation.then(() => {
+    if (shortcutWrites.get(accelerator) === operation) shortcutWrites.delete(accelerator);
+  });
+}
+
+function registerShortcut(key: string, pressed: () => void, report = reportShortcutFailure): () => void {
+  let released = false;
+  let registered = false;
+  changeShortcut(key, async () => {
+    if (released) return;
+    try {
+      await register(key, (event) => {
+        if (!released && event.state === "Pressed") pressed();
+      });
+      registered = true;
+    } catch (error) {
+      if (!released) {
+        console.warn(`[Shortcuts] Could not register ${key}:`, error);
+        report(key);
+      }
+    }
+  });
+  return () => {
+    released = true;
+    changeShortcut(key, async () => {
+      if (registered) await unregister(key);
+    });
+  };
+}
+
 export function useGlobalShortcut() {
   const stealthShortcut = useConfigStore((s) => s.stealthShortcut);
   const assistShortcut = useConfigStore((s) => s.assistShortcut);
   const captureShortcut = useConfigStore((s) => s.captureShortcut);
   const canReadImages = useConfigStore((s) => providerReadsImages(s.llmProvider));
   const meetingActive = useMeetingStore((s) => !!s.activeMeeting);
+  let windowLabel = "";
+  try { windowLabel = getCurrentWebviewWindow().label; } catch { /* browser preview */ }
 
   // Assist from any app (Space only works while the overlay has focus). Held
   // only during a meeting, by the overlay window, so the key combination
   // stays free for other apps the rest of the time.
   useEffect(() => {
     const key = assistShortcut;
-    if (!meetingActive || !key || getCurrentWebviewWindow().label !== "overlay") return;
+    if (!meetingActive || !key || windowLabel !== "overlay") return;
     if (reservedShortcutAction(key) || normalizeAccelerator(key) === normalizeAccelerator(stealthShortcut)) {
       console.warn(`[useGlobalShortcut] Assist shortcut ${key} collides with another shortcut; not registered`);
       return;
     }
-    let registered = false;
-    let cancelled = false;
-    (async () => {
-      try {
-        await unregister(key).catch(() => {});
-        if (cancelled) return;
-        await register(key, (event) => {
-          if (event.state !== "Pressed") return;
-          const visible = useAIActionsStore.getState().configs.actions["Assist"]?.visible !== false;
-          if (visible) runYourAction("Assist").catch(() => {});
-        });
-        registered = true;
-        // The meeting ended (or the key changed) while registering.
-        if (cancelled) unregister(key).catch(() => {});
-      } catch (err) {
-        console.warn(`Failed to register Assist shortcut ${key}:`, err);
-        if (!cancelled) reportShortcutFailure(key);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (registered) unregister(key).catch(() => {});
-    };
-  }, [assistShortcut, stealthShortcut, meetingActive]);
+    return registerShortcut(key, () => {
+      const visible = useAIActionsStore.getState().configs.actions.Assist?.visible !== false;
+      if (visible) void runYourAction("Assist").catch(() => {});
+    });
+  }, [assistShortcut, stealthShortcut, meetingActive, windowLabel]);
 
   // Capture the screen under the mouse into the Ask box. Held only during a
   // meeting, by the overlay window, and only while the chosen AI can read
@@ -109,7 +132,7 @@ export function useGlobalShortcut() {
   useEffect(() => {
     const key = captureShortcut;
     if (!screenCaptureSupported() || !meetingActive || !canReadImages || !key) return;
-    if (getCurrentWebviewWindow().label !== "overlay") return;
+    if (windowLabel !== "overlay") return;
     const wanted = normalizeAccelerator(key);
     if (
       reservedShortcutAction(key) ||
@@ -119,31 +142,12 @@ export function useGlobalShortcut() {
       console.warn(`[useGlobalShortcut] Capture shortcut ${key} collides with another shortcut; not registered`);
       return;
     }
-    let registered = false;
-    let cancelled = false;
-    (async () => {
-      try {
-        await unregister(key).catch(() => {});
-        if (cancelled) return;
-        await register(key, (event) => {
-          if (event.state === "Pressed") captureScreenIntoAsk().catch(() => {});
-        });
-        registered = true;
-        // The meeting ended (or the key or provider changed) while registering.
-        if (cancelled) unregister(key).catch(() => {});
-      } catch (err) {
-        console.warn(`Failed to register capture shortcut ${key}:`, err);
-        if (!cancelled) announceCaptureShortcutFailure(key);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (registered) unregister(key).catch(() => {});
-    };
-  }, [captureShortcut, assistShortcut, stealthShortcut, meetingActive, canReadImages]);
+    return registerShortcut(key, () => { void captureScreenIntoAsk().catch(() => {}); }, announceCaptureShortcutFailure);
+  }, [captureShortcut, assistShortcut, stealthShortcut, meetingActive, canReadImages, windowLabel]);
 
   // Stealth mode shortcut (user-configurable, re-registered when it changes)
   useEffect(() => {
+    if (windowLabel !== "launcher") return;
     const key = stealthShortcut;
     // Never take over a built-in shortcut (e.g. a binding saved before it was
     // reserved): registering it would unregister that action's handler.
@@ -151,97 +155,34 @@ export function useGlobalShortcut() {
       if (key) console.warn(`[useGlobalShortcut] Stealth shortcut ${key} collides with a built-in shortcut; not registered`);
       return;
     }
-    let registered = false;
-    let cancelled = false;
-    (async () => {
-      try {
-        await unregister(key).catch(() => {});
-        if (cancelled) return;
-        await register(key, (event) => {
-          if (event.state === "Pressed") toggleStealthMode().catch(() => {});
-        });
-        registered = true;
-        if (cancelled) unregister(key).catch(() => {});
-      } catch (err) {
-        console.warn(`Failed to register stealth shortcut ${key}:`, err);
-        if (!cancelled) reportShortcutFailure(key);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (registered) unregister(key).catch(() => {});
-    };
-  }, [stealthShortcut]);
+    return registerShortcut(key, () => { void toggleStealthMode().catch(() => {}); });
+  }, [stealthShortcut, windowLabel]);
 
   // Global shortcuts (work even when window is not focused)
   useEffect(() => {
-    const shortcuts: string[] = [];
-    let cancelled = false;
-
-    async function registerShortcuts() {
-      const isLauncher = getCurrentWebviewWindow().label === "launcher";
-      // Register each shortcut independently — one failure shouldn't block the rest.
-      // Unregister first to handle hot-reload / React strict mode re-mounts.
-      const defs: Array<{ key: string; handler: (event: { state: string }) => void }> = [
-        {
-          key: "CmdOrCtrl+M",
-          handler: (event) => {
-            if (event.state === "Pressed") {
-              toggleMeetingFromShortcut().catch(() => {});
-            }
-          },
-        },
-        {
-          key: "CmdOrCtrl+B",
-          handler: (event) => {
-            if (event.state === "Pressed") {
-              (async () => {
-                const target = switchShortcutTarget(await isOverlayVisible(), !!useMeetingStore.getState().activeMeeting);
-                if (target === "launcher") await showLauncherWindow();
-                else await showMeetingOverlay();
-              })().catch(() => {});
-            }
-          },
-        },
-        {
-          key: "CmdOrCtrl+,",
-          handler: (event) => {
-            if (event.state === "Pressed") {
-              const store = useMeetingStore.getState();
-              store.setSettingsOpen(!store.settingsOpen);
-            }
-          },
-        },
-      ];
-
-      for (const { key, handler } of defs) {
-        if (cancelled) break;
-        if (key === "CmdOrCtrl+M" && !isLauncher) continue;
-        try {
-          await unregister(key).catch(() => {}); // Clean up stale registration
-          if (cancelled) break;
-          await register(key, handler);
-          if (cancelled) {
-            await unregister(key).catch(() => {});
-            break;
+    if (windowLabel !== "launcher") return;
+    const remove = [
+      registerShortcut("CmdOrCtrl+M", () => { void toggleMeetingFromShortcut().catch(() => {}); }),
+      registerShortcut("CmdOrCtrl+B", () => {
+        void (async () => {
+          const target = switchShortcutTarget(await isOverlayVisible(), !!useMeetingStore.getState().activeMeeting);
+          if (target === "launcher") await showLauncherWindow();
+          else await showMeetingOverlay();
+        })().catch(() => {});
+      }),
+      registerShortcut("CmdOrCtrl+,", () => {
+        void (async () => {
+          if (await isOverlayVisible()) {
+            await emit(TOGGLE_OVERLAY_SETTINGS_EVENT);
+          } else {
+            toggleWindowSettings();
+            await showLauncherWindow();
           }
-          shortcuts.push(key);
-        } catch (err) {
-          console.warn(`Failed to register shortcut ${key}:`, err);
-          if (!cancelled) reportShortcutFailure(key);
-        }
-      }
-    }
-
-    registerShortcuts();
-
-    return () => {
-      cancelled = true;
-      shortcuts.forEach((s) => {
-        unregister(s).catch(() => {});
-      });
-    };
-  }, []);
+        })().catch(() => {});
+      }),
+    ];
+    return () => remove.forEach((release) => release());
+  }, [windowLabel]);
 
   // Window-level shortcuts (work when window is active/focused)
   useEffect(() => {
@@ -249,9 +190,11 @@ export function useGlobalShortcut() {
       const store = useMeetingStore.getState();
       if (!store.activeMeeting) return;
 
-      // Don't trigger if user is typing in an input/textarea
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.defaultPrevented || e.isComposing || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target;
+      if (target instanceof Element && target.closest(
+        "input, textarea, select, button, a[href], [contenteditable]:not([contenteditable='false']), [role='button'], [role='textbox']",
+      )) return;
 
       // Check action visibility from the AI actions store
       const actions = useAIActionsStore.getState().configs.actions;
@@ -266,35 +209,35 @@ export function useGlobalShortcut() {
           break;
         case "Numpad1":
         case "Digit1":
-          if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("WhatToSay")) {
+          if (isVisible("WhatToSay")) {
             e.preventDefault();
             runYourAction("WhatToSay").catch(() => {});
           }
           break;
         case "Numpad2":
         case "Digit2":
-          if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("Shorten")) {
+          if (isVisible("Shorten")) {
             e.preventDefault();
             runYourAction("Shorten").catch(() => {});
           }
           break;
         case "Numpad3":
         case "Digit3":
-          if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("FollowUp")) {
+          if (isVisible("FollowUp")) {
             e.preventDefault();
             runYourAction("FollowUp").catch(() => {});
           }
           break;
         case "Numpad4":
         case "Digit4":
-          if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("Recap")) {
+          if (isVisible("Recap")) {
             e.preventDefault();
             runYourAction("Recap").catch(() => {});
           }
           break;
         case "Numpad5":
         case "Digit5":
-          if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("AskQuestion")) {
+          if (isVisible("AskQuestion")) {
             e.preventDefault();
             // Open/focus the Ask input instead of triggering generation directly
             window.dispatchEvent(new Event("nexq:toggle-ask-input"));

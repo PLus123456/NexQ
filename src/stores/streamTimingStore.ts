@@ -18,17 +18,23 @@ interface StreamTimingState {
   lastLatencyMs: number | null;
   lastFirstTokenMs: number | null;
   init: () => void;
+  reset: () => void;
 }
 
 let initialized = false;
 
-export const useStreamTimingStore = create<StreamTimingState>((set, get) => ({
+const emptyTiming = {
   requestId: null,
   startedAt: null,
   firstTokenAt: null,
   thinking: false,
   lastLatencyMs: null,
   lastFirstTokenMs: null,
+};
+
+export const useStreamTimingStore = create<StreamTimingState>((set, get) => ({
+  ...emptyTiming,
+  reset: () => set(emptyTiming),
 
   init: () => {
     if (initialized) return;
@@ -36,8 +42,7 @@ export const useStreamTimingStore = create<StreamTimingState>((set, get) => ({
     const mine = (requestId: string | null) => requestId != null && requestId === get().requestId;
     const subscriptions = [
       onStreamStart((e) => {
-        // Past-meeting generations stream into their own view, not the live answer.
-        if (!e.request_id || PAST_MEETING_MODES.has(e.mode)) return;
+        if (!e.request_id || e.mode === "RagTest" || PAST_MEETING_MODES.has(e.mode)) return;
         set({ requestId: e.request_id, startedAt: Date.now(), firstTokenAt: null, thinking: false });
       }),
       onStreamThinking((e) => {
@@ -70,12 +75,5 @@ export const useStreamTimingStore = create<StreamTimingState>((set, get) => ({
 /** Test-only: forget the subscription and the timings. */
 export function resetStreamTimingForTests(): void {
   initialized = false;
-  useStreamTimingStore.setState({
-    requestId: null,
-    startedAt: null,
-    firstTokenAt: null,
-    thinking: false,
-    lastLatencyMs: null,
-    lastFirstTokenMs: null,
-  });
+  useStreamTimingStore.getState().reset();
 }

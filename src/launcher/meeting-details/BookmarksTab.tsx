@@ -7,6 +7,7 @@ import { showToast } from "../../stores/toastStore";
 import { useAudioPlayerStore } from "../../stores/audioPlayerStore";
 import { Bookmark, Trash2, Pencil, Sparkles, Check, X, Loader2 } from "lucide-react";
 import { formatTimestamp, formatRelativeTime } from "../../lib/utils";
+import { toElapsedMs } from "../../lib/bookmarkTarget";
 
 interface BookmarksTabProps {
   meeting: Meeting;
@@ -63,7 +64,9 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
     );
   }
 
-  const sorted = [...bookmarks].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+  const sorted = [...bookmarks].sort(
+    (a, b) => toElapsedMs(a.timestamp_ms, meetingStartMs) - toElapsedMs(b.timestamp_ms, meetingStartMs),
+  );
 
   return (
     <div className="p-3">
@@ -115,7 +118,7 @@ export function BookmarksTab({ meeting, onBookmarkUpdated, onNavigateToBookmark,
       {/* Existing bookmarks */}
       <div className="space-y-1">
         {sorted.map((bookmark) => {
-          const relativeMs = Math.max(0, bookmark.timestamp_ms - meetingStartMs);
+          const relativeMs = toElapsedMs(bookmark.timestamp_ms, meetingStartMs);
           return (
             <BookmarkRow
               key={bookmark.id}
@@ -168,7 +171,7 @@ function SuggestionsSection({
       {/* Suggestion rows */}
       <div className="space-y-1">
         {suggestions.suggestions.map((suggestion, index) => {
-          const relativeMs = Math.max(0, suggestion.timestamp_ms - meetingStartMs);
+          const relativeMs = toElapsedMs(suggestion.timestamp_ms, meetingStartMs);
           return (
             <div
               key={`suggestion-${index}`}
@@ -190,7 +193,7 @@ function SuggestionsSection({
               <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   type="button"
-                  onClick={() => suggestions.acceptSuggestion(index)}
+                  onClick={() => suggestions.acceptSuggestion(suggestion)}
                   className="rounded-md p-1 text-success/60 hover:text-success hover:bg-success/10 transition-colors cursor-pointer"
                   title={t("bookmarks.suggestions.accept")}
                 >
@@ -198,7 +201,7 @@ function SuggestionsSection({
                 </button>
                 <button
                   type="button"
-                  onClick={() => suggestions.dismissSuggestion(index)}
+                  onClick={() => suggestions.dismissSuggestion(suggestion)}
                   className="rounded-md p-1 text-muted-foreground/40 hover:text-foreground/60 hover:bg-secondary/30 transition-colors cursor-pointer"
                   title={t("bookmarks.suggestions.dismiss")}
                 >

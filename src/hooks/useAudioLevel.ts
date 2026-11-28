@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { onAudioLevel } from "../lib/events";
+import { createEventScope } from "../lib/eventScope";
 import type { AudioLevelEvent } from "../lib/types";
 
 interface AudioLevelState {
@@ -42,78 +43,58 @@ export function useAudioLevel(): AudioLevelState {
   const roomSmoothedRef = useRef(0);
 
   useEffect(() => {
-    let mounted = true;
+    const scope = createEventScope("Audio level");
+    void scope.add(onAudioLevel, (event: AudioLevelEvent) => {
+      if (event.source === "Mic") {
+        // EMA smoothing: smooth = prev * 0.7 + current * 0.3
+        micSmoothedRef.current = micSmoothedRef.current * 0.7 + event.level * 0.3;
 
-    const setupListener = async () => {
-      const unlisten = await onAudioLevel((event: AudioLevelEvent) => {
-        if (!mounted) return;
-
-        if (event.source === "Mic") {
-          // EMA smoothing: smooth = prev * 0.7 + current * 0.3
-          micSmoothedRef.current = micSmoothedRef.current * 0.7 + event.level * 0.3;
-
-          // Update peak with decay
-          if (event.peak > micPeakRef.current) {
-            micPeakRef.current = event.peak;
-          } else {
-            // Decay peak slowly
-            micPeakRef.current = micPeakRef.current * 0.95;
-          }
-
-          setState((prev) => ({
-            ...prev,
-            micLevel: micSmoothedRef.current,
-            micPeak: micPeakRef.current,
-          }));
-        } else if (event.source === "System") {
-          // EMA smoothing: smooth = prev * 0.7 + current * 0.3
-          systemSmoothedRef.current = systemSmoothedRef.current * 0.7 + event.level * 0.3;
-
-          if (event.peak > systemPeakRef.current) {
-            systemPeakRef.current = event.peak;
-          } else {
-            systemPeakRef.current = systemPeakRef.current * 0.95;
-          }
-
-          setState((prev) => ({
-            ...prev,
-            systemLevel: systemSmoothedRef.current,
-            systemPeak: systemPeakRef.current,
-          }));
-        } else if (event.source === "Room") {
-          // Room audio — in-person meeting mode shared mic
-          roomSmoothedRef.current = roomSmoothedRef.current * 0.7 + event.level * 0.3;
-
-          if (event.peak > roomPeakRef.current) {
-            roomPeakRef.current = event.peak;
-          } else {
-            roomPeakRef.current = roomPeakRef.current * 0.95;
-          }
-
-          setState((prev) => ({
-            ...prev,
-            roomLevel: roomSmoothedRef.current,
-            roomPeak: roomPeakRef.current,
-          }));
+        // Update peak with decay
+        if (event.peak > micPeakRef.current) {
+          micPeakRef.current = event.peak;
+        } else {
+          // Decay peak slowly
+          micPeakRef.current = micPeakRef.current * 0.95;
         }
-      });
 
-      // Return cleanup function
-      return unlisten;
-    };
+        setState((prev) => ({
+          ...prev,
+          micLevel: micSmoothedRef.current,
+          micPeak: micPeakRef.current,
+        }));
+      } else if (event.source === "System") {
+        // EMA smoothing: smooth = prev * 0.7 + current * 0.3
+        systemSmoothedRef.current = systemSmoothedRef.current * 0.7 + event.level * 0.3;
 
-    let unlistenFn: (() => void) | null = null;
+        if (event.peak > systemPeakRef.current) {
+          systemPeakRef.current = event.peak;
+        } else {
+          systemPeakRef.current = systemPeakRef.current * 0.95;
+        }
 
-    setupListener().then((fn) => {
-      unlistenFn = fn;
-    });
+        setState((prev) => ({
+          ...prev,
+          systemLevel: systemSmoothedRef.current,
+          systemPeak: systemPeakRef.current,
+        }));
+      } else if (event.source === "Room") {
+        // Room audio — in-person meeting mode shared mic
+        roomSmoothedRef.current = roomSmoothedRef.current * 0.7 + event.level * 0.3;
 
-    return () => {
-      mounted = false;
-      if (unlistenFn) {
-        unlistenFn();
+        if (event.peak > roomPeakRef.current) {
+          roomPeakRef.current = event.peak;
+        } else {
+          roomPeakRef.current = roomPeakRef.current * 0.95;
+        }
+
+        setState((prev) => ({
+          ...prev,
+          roomLevel: roomSmoothedRef.current,
+          roomPeak: roomPeakRef.current,
+        }));
       }
-    };
+    });
+    return scope.dispose;
   }, []);
 
   return state;

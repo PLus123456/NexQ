@@ -1,12 +1,14 @@
 import { useEffect } from "react";
 import { onQuestionDetectionLog } from "../lib/questionDetection/events";
 import { useCallLogStore } from "../stores/callLogStore";
+import { createEventScope } from "../lib/eventScope";
 
 /** The backend emits this separate event only when diagnostic logging is on.
  * It never enters the answer stream or changes the active Assist request. */
 export function useQuestionDetectionLog() {
   useEffect(() => {
-    const listener = onQuestionDetectionLog((event) => {
+    const scope = createEventScope("Question Detection Log");
+    void scope.add(onQuestionDetectionLog, (event) => {
       useCallLogStore.getState().beginEntry({
         id: event.id,
         timestamp: event.timestamp_ms,
@@ -41,6 +43,6 @@ export function useQuestionDetectionLog() {
         errorMessage: event.error,
       });
     });
-    return () => { listener.then((unlisten) => unlisten()); };
+    return scope.dispose;
   }, []);
 }

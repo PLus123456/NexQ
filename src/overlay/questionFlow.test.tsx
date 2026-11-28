@@ -752,6 +752,47 @@ describe("rule 5: one answer at a time", () => {
     expect(shown()).toEqual([["What would you do first?", "held"]]);
   });
 
+  it("makes a failed automatic answer available again", async () => {
+    vi.mocked(runUserAction).mockRejectedValue(new Error("Authentication failed"));
+    const { shown } = mountFlow();
+    upsert("q1", "What would you do first?");
+    await settle();
+    expect(shown()).toEqual([["What would you do first?", "held"]]);
+    expect(useQuestionStore.getState().autoAnswer).toBeNull();
+  });
+
+  it("preserves a completed answer when a repeated request is refused", async () => {
+    setAutoTrigger(false);
+    const { answer, shown } = mountFlow();
+    const question = "What would you do first?";
+    upsert("q1", question);
+    answer(question);
+    await settle();
+    expect(shown()).toEqual([[question, "answered"]]);
+    vi.mocked(runUserAction).mockRejectedValueOnce(REFUSED);
+    answer(question);
+    await settle();
+    expect(shown()).toEqual([[question, "answered"]]);
+  });
+
+  it("keeps a revised question answering when its previous automatic answer gives way", async () => {
+    answersRunUntilStopped();
+    const { answer, shown } = mountFlow();
+    upsert("q1", "What would you do first?");
+    await settle();
+    useQuestionStore.getState().updateCard("q1", { autoRestarts: 1 });
+    const revision = "How did your team diagnose the database outage?";
+    upsert("q1", revision);
+    answer(revision);
+    await settle();
+    expect(cancelGeneration).toHaveBeenCalledWith(requestOf(0));
+    expect(askedFor()).toEqual(["What would you do first?", revision]);
+    expect(shown()).toEqual([[revision, "answering"]]);
+    // A second click cannot disturb the pending answer.
+    answer(revision);
+    expect(runUserAction).toHaveBeenCalledTimes(2);
+  });
+
   it("a click that gets no answer stays a card to click, and says why", async () => {
     setAutoTrigger(false);
     vi.mocked(runUserAction).mockRejectedValue(REFUSED);

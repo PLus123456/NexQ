@@ -14,6 +14,8 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
     v6_translation_schema(conn)?;
     v7_meeting_chat(conn)?;
     v8_segment_speaker_tag(conn)?;
+    v9_scope_transcripts_to_meetings(conn)?;
+    v10_recording_file_deletions(conn)?;
 
     log::info!("Database migrations completed successfully");
     Ok(())
@@ -261,6 +263,91 @@ fn v8_segment_speaker_tag(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
 }
 
+/// Segments and translations can reuse the same capture IDs in different meetings.
+fn v9_scope_transcripts_to_meetings(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version >= 9 {
+        return Ok(());
+    }
+
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE transcript_segments_v9 (
+            id              TEXT NOT NULL,
+            meeting_id      TEXT NOT NULL,
+            text            TEXT NOT NULL,
+            speaker         TEXT NOT NULL DEFAULT 'Unknown',
+            timestamp_ms    INTEGER NOT NULL,
+            is_final        BOOLEAN NOT NULL DEFAULT 0,
+            confidence      REAL NOT NULL DEFAULT 0.0,
+            created_at      TEXT NOT NULL,
+            speaker_id      TEXT,
+            speaker_tag     TEXT,
+            PRIMARY KEY (meeting_id, id),
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO transcript_segments_v9
+            (id, meeting_id, text, speaker, timestamp_ms, is_final, confidence, created_at, speaker_id, speaker_tag)
+        SELECT s.id, s.meeting_id, s.text, s.speaker, s.timestamp_ms, s.is_final, s.confidence,
+               s.created_at, s.speaker_id, s.speaker_tag
+        FROM transcript_segments s INNER JOIN meetings m ON m.id = s.meeting_id
+        ORDER BY s.rowid;
+
+        DROP TABLE transcript_segments;
+        ALTER TABLE transcript_segments_v9 RENAME TO transcript_segments;
+        CREATE INDEX idx_transcript_segments_meeting_id
+            ON transcript_segments(meeting_id);
+
+        CREATE TABLE transcript_translations_v9 (
+            id              TEXT PRIMARY KEY NOT NULL,
+            segment_id      TEXT NOT NULL,
+            meeting_id      TEXT NOT NULL,
+            source_lang     TEXT NOT NULL,
+            target_lang     TEXT NOT NULL,
+            original_text   TEXT NOT NULL,
+            translated_text TEXT NOT NULL,
+            provider        TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(meeting_id, segment_id, target_lang),
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO transcript_translations_v9
+            (id, segment_id, meeting_id, source_lang, target_lang, original_text, translated_text, provider, created_at)
+        SELECT t.id, t.segment_id, t.meeting_id, t.source_lang, t.target_lang, t.original_text,
+               t.translated_text, t.provider, t.created_at
+        FROM transcript_translations t INNER JOIN meetings m ON m.id = t.meeting_id;
+
+        DROP TABLE transcript_translations;
+        ALTER TABLE transcript_translations_v9 RENAME TO transcript_translations;
+        CREATE INDEX idx_translations_meeting ON transcript_translations(meeting_id, target_lang);
+
+        PRAGMA user_version = 9;
+        ",
+    )?;
+    transaction.commit()
+}
+
+fn v10_recording_file_deletions(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version >= 10 {
+        return Ok(());
+    }
+
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS recording_file_deletions (
+            meeting_id     TEXT PRIMARY KEY NOT NULL,
+            recording_path TEXT,
+            waveform_path  TEXT
+         );
+         PRAGMA user_version = 10;",
+    )?;
+    transaction.commit()
+}
+
 /// Schema v3: In-person meeting mode — meeting metadata, speakers, bookmarks,
 /// topic sections, and action items.
 fn v3_meeting_mode_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -352,4 +439,62 @@ fn v3_meeting_mode_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{meetings, translation};
+
+    #[test]
+    fn v9_preserves_legacy_meeting_data_and_scopes_reused_segment_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        v1_schema(&conn).unwrap();
+        v3_meeting_mode_schema(&conn).unwrap();
+        v6_translation_schema(&conn).unwrap();
+        v8_segment_speaker_tag(&conn).unwrap();
+        let old = meetings::create_meeting(&conn, "Old meeting").unwrap();
+        let new = meetings::create_meeting(&conn, "New meeting").unwrap();
+        conn.execute(
+            "INSERT INTO transcript_segments
+                (id, meeting_id, text, speaker, speaker_id, speaker_tag, timestamp_ms, is_final, created_at)
+             VALUES ('acc_1', ?1, 'old transcript', 'Them', 'them', 'S1', 2000, 1, 'legacy time')",
+            [&old.id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transcript_translations
+                (id, meeting_id, segment_id, source_lang, target_lang, original_text, translated_text, provider)
+             VALUES ('legacy', ?1, 'acc_1', 'en', 'es', 'old transcript', 'old translation', 'provider'),
+                    ('orphan', 'deleted-meeting', 'acc_2', 'en', 'es', 'gone', 'gone', 'provider')",
+            [&old.id],
+        ).unwrap();
+
+        run(&conn).unwrap();
+        run(&conn).unwrap();
+        let old_segments = meetings::get_meeting(&conn, &old.id).unwrap().transcript;
+        assert_eq!(old_segments[0]["text"], "old transcript");
+        assert_eq!(old_segments[0]["speaker_tag"], "S1");
+        assert_eq!(old_segments[0]["created_at"], "legacy time");
+        let mut new_segment: meetings::TranscriptSegment =
+            serde_json::from_value(old_segments[0].clone()).unwrap();
+        new_segment.meeting_id.clone_from(&new.id);
+        new_segment.text = "new transcript".into();
+        meetings::append_transcript_segment(&conn, &new.id, &new_segment).unwrap();
+        translation::save_translation(
+            &conn, "acc_1", &new.id, "en", "es", "new transcript", "new translation", "provider",
+        ).unwrap();
+
+        assert_eq!(meetings::get_meeting(&conn, &old.id).unwrap().transcript[0]["text"], "old transcript");
+        assert_eq!(meetings::get_meeting(&conn, &new.id).unwrap().transcript[0]["text"], "new transcript");
+        let old_result = translation::get_segment_translation(&conn, &old.id, "acc_1", "es").unwrap().unwrap();
+        let new_result = translation::get_segment_translation(&conn, &new.id, "acc_1", "es").unwrap().unwrap();
+        assert_eq!(old_result.id, "legacy");
+        assert_eq!(old_result.translated_text, "old translation");
+        assert_eq!(new_result.translated_text, "new translation");
+        assert_eq!(translation::get_all_meeting_translations(&conn, "deleted-meeting").unwrap().len(), 0);
+
+        assert!(translation::save_translation(
+            &conn, "acc_2", "deleted-meeting", "en", "es", "gone", "gone", "provider",
+        ).is_err());
+    }
 }

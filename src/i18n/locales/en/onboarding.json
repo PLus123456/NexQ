@@ -11,6 +11,9 @@
     }
   },
   "meetingFlow": {
+    "listenersUnavailable": "The listeners for live transcription did not start.",
+    "overlaySaveTimeout": "The meeting overlay did not finish saving. Press End to retry.",
+    "endTimeout": "The meeting did not finish closing in time.",
     "noSpeakerSeparation": "Local STT doesn't support speaker separation — all speech labeled as Room.",
     "captureFailed": "Audio capture failed: {{detail}}",
     "endFailed": "The meeting could not be closed in the database. It is still open — press End again."

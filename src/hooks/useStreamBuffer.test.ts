@@ -116,4 +116,24 @@ describe("useStreamBuffer", () => {
     expect(state.error).toBeNull();
     expect(state.lastUserRequest.byMode.MeetingSummary).toBeUndefined();
   });
+
+  it("keeps the live request when a knowledge base test starts and ends", async () => {
+    useStreamStore.getState().resetForMeeting();
+    renderHook(() => useStreamBuffer());
+    await waitFor(() => expect(handlers.end).toBeDefined());
+    act(() => {
+      useStreamStore.getState().setPending("Assist", "live");
+      start("RagTest", "test");
+      handlers.token({ token: "test result", request_id: "test" });
+      handlers.end({ total_tokens: 2, latency_ms: 5, request_id: "test" });
+    });
+    expect(useStreamStore.getState().pendingRequestId).toBe("live");
+    act(() => {
+      start("Assist", "live");
+      start("RagTest", "test-2");
+      handlers.token({ token: "live answer", request_id: "live" });
+      handlers.end({ total_tokens: 2, latency_ms: 6, request_id: "live" });
+    });
+    expect(useStreamStore.getState().responseHistory[0]?.content).toBe("live answer");
+  });
 });

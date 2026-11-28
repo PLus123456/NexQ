@@ -297,6 +297,7 @@ const useClickedAnswers = create<{ ids: readonly string[] }>(() => ({ ids: [] })
 
 /** How many question strips are mounted: Auto-Answer starts answers only while one is. */
 let mounted = 0;
+let meetingVersion = 0;
 
 const cardsNow = () => useQuestionStore.getState().questions;
 const cardById = (id: string) => cardsNow().find((q) => q.id === id);
@@ -309,9 +310,11 @@ function answeringCard(ref: AutoAnswerRef | null, id: string): ref is AutoAnswer
 /** The automatic answer `ref` was premature: stop it, then give its turn to `next` (card ids). */
 function withdraw(ref: AutoAnswerRef, next: () => string[]) {
   useQuestionStore.getState().setAutoAnswer(null);
+  const version = meetingVersion;
   void inTurn(async () => {
+    if (meetingVersion !== version) return;
     await stopAutoAnswer(ref);
-    startDue(next());
+    if (meetingVersion === version) startDue(next());
   });
 }
 
@@ -356,7 +359,10 @@ function onUpsert(q: DetectedQuestionV2) {
     assisted: card?.assisted ?? false,
     ...(restart ? { assisted: false, heldBack: false, autoRestarts: (card?.autoRestarts ?? 0) + 1 } : {}),
   };
-  if (!card) rememberYourWords(id, q.line_id);
+  if (!card) {
+    rememberYourWords(id, q.line_id);
+    for (const omitted of cards.slice(9)) yourWordsWhenAsked.delete(omitted.id);
+  }
   useQuestionStore.setState((state) => ({
     questions: card
       ? state.questions.map((c) => (c.id === card.id ? next : c))
@@ -367,7 +373,10 @@ function onUpsert(q: DetectedQuestionV2) {
     logAutoAnswer("restarted");
     withdraw(ref, () => [id]);
   } else {
-    void inTurn(() => startDue([id]));
+    const version = meetingVersion;
+    void inTurn(() => {
+      if (meetingVersion === version) startDue([id]);
+    });
   }
 }
 
@@ -377,6 +386,7 @@ function onRemove(backendId: string, reason: "veto" | "superseded" | "reset") {
   if (!card) return;
   const ref = store.autoAnswer;
   if (reason !== "reset" && answeringCard(ref, card.id)) {
+    yourWordsWhenAsked.delete(card.id);
     store.removeCard(card.id);
     logAutoAnswer(reason === "veto" ? "vetoed" : "withdrawn");
     withdraw(ref, () => releaseHeldBy(ref.requestId));
@@ -384,6 +394,7 @@ function onRemove(backendId: string, reason: "veto" | "superseded" | "reset") {
   }
   // Its answer is there, or on its way because you asked: the card stays with it.
   if (card.assisted) return;
+  yourWordsWhenAsked.delete(card.id);
   store.removeCard(card.id);
 }
 
@@ -417,6 +428,11 @@ export function resetQuestionDetectionForTests() {
   listening = null;
   stopTrackingWords?.();
   stopTrackingWords = null;
+  resetQuestionFlowForMeeting();
+}
+
+export function resetQuestionFlowForMeeting() {
+  ++meetingVersion;
   yourLines.clear();
   yourWordsAtLine.clear();
   yourWordsWhenAsked.clear();
@@ -464,19 +480,21 @@ function answerCard(card: TrackedQuestion, preparedOnly: boolean) {
   const opts = { requestId, skipQueryRewrite: true, ...(preparedOnly ? { preparedOnly: true } : {}) };
   const done = runUserAction("Assist", card.text, opts).catch((err) => {
     const refused = String(err).includes(REFUSED);
-    if (!refused && !preparedOnly) return;
     const now = useQuestionStore.getState();
-    if (now.autoAnswer?.requestId === requestId) now.setAutoAnswer(null);
-    if (refused) {
-      // Refused: an answer started elsewhere in the meantime.
+    if (now.autoAnswer?.requestId !== requestId) return;
+    now.setAutoAnswer(null);
+    if (refused || !preparedOnly) {
       now.holdBackCard(card.id);
       logAutoAnswer("held");
     } else {
       // A settings change or expiry can invalidate a prepared answer between
       // its confirmation and the replay. The question stays available, and
       // gets a fresh answer only when Auto-Answer is on.
-      now.updateCard(card.id, { assisted: false, prepared: false });
-      void inTurn(() => startDue([card.id]));
+      now.updateCard(card.id, { assisted: false, prepared: false, answeredText: undefined });
+      const version = meetingVersion;
+      void inTurn(() => {
+        if (meetingVersion === version) startDue([card.id]);
+      });
     }
   });
   store.setAutoAnswer({
@@ -505,11 +523,10 @@ function startTurnAnswer(question: DetectedQuestion, segmentId: string, early: b
   }
   store.answerLine(question, segmentId);
   const requestId = crypto.randomUUID();
-  const done = runUserAction("Assist", question.text, { requestId }).catch((err) => {
-    if (!String(err).includes(REFUSED)) return;
+  const done = runUserAction("Assist", question.text, { requestId }).catch(() => {
     const now = useQuestionStore.getState();
-    if (now.autoAnswer?.requestId === requestId) now.setAutoAnswer(null);
-    // Refused: an answer started elsewhere in the meantime.
+    if (now.autoAnswer?.requestId !== requestId) return;
+    now.setAutoAnswer(null);
     now.holdBack(segmentId, question.text);
     logAutoAnswer("held");
   });
@@ -518,8 +535,8 @@ function startTurnAnswer(question: DetectedQuestion, segmentId: string, early: b
 }
 
 /** Auto-Answer for a line that carries the provider's turn signal (rule-based detection only). */
-async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
-  if (!seg.turn || !autoTriggerOn() || !rulesOnly()) return;
+async function onTurnSignal(seg: TranscriptSegment, signalAt: number, version: number) {
+  if (meetingVersion !== version || !seg.turn || !autoTriggerOn() || !rulesOnly()) return;
   const store = useQuestionStore.getState();
   const sentence = lastSentence(seg.text);
   const question = sentence && looksLikeQuestion(sentence) ? sentence : null;
@@ -538,7 +555,7 @@ async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
     logAutoAnswer("withdrawn");
     await stopAutoAnswer(current);
   }
-  if (step.kind === "answer") {
+  if (step.kind === "answer" && meetingVersion === version) {
     const q = { text: step.question, confidence: 0.9, timestamp_ms: seg.timestamp_ms, source: seg.speaker };
     startTurnAnswer(q, seg.id, step.early, `${seg.turn}, ${Date.now() - signalAt} ms after the signal`);
   }
@@ -550,29 +567,35 @@ async function onTurnSignal(seg: TranscriptSegment, signalAt: number) {
 function answerQuestion(id: string) {
   const store = useQuestionStore.getState();
   const question = cardById(id);
-  if (!question) return;
+  if (!question || useClickedAnswers.getState().ids.includes(id)) return;
   // Its automatic answer is on the way: a click doesn't restart it (unless the question changed since).
   const ref = store.autoAnswer;
-  if (autoAnswerRunning() && ref && (ref.questionId
-    ? ref.questionId === id && !changedALot(ref.question, question.text)
-    : sameQuestion(ref.question, question.text))) return;
+  const replacingAuto = autoAnswerRunning() && ref && (ref.questionId
+    ? ref.questionId === id
+    : ref.segmentId === question.segmentId && sameQuestion(ref.question, question.answeredText ?? question.text));
+  if (replacingAuto && !changedALot(ref.question, question.text)) return;
+  const version = meetingVersion;
+  const isCurrent = () => meetingVersion === version;
   store.updateCard(id, { assisted: true, heldBack: false, heldBy: undefined, answeredText: question.text });
   useClickedAnswers.setState((s) => ({ ids: [...s.ids, id] }));
-  runYourAction("Assist", question.text)
+  runYourAction("Assist", question.text, undefined, { id, isCurrent })
     .catch((err) => {
-      // No answer came, so it stays a card to click.
-      useQuestionStore.getState().holdBackCard(id);
+      if (!isCurrent()) return;
+      const now = useQuestionStore.getState();
+      const refused = String(err).includes(REFUSED);
+      if (!replacingAuto && (question.assisted || (refused && question.heldBack))) {
+        const { assisted, heldBack, heldBy, answeredText } = question;
+        now.updateCard(id, { assisted, heldBack, heldBy, answeredText });
+      } else {
+        now.holdBackCard(id);
+      }
       showToast(
-        t(String(err).includes(REFUSED) ? "overlay:modes.errors.anotherRunning" : "overlay:modes.errors.generateFailed"),
+        t(refused ? "overlay:modes.errors.anotherRunning" : "overlay:modes.errors.generateFailed"),
         "error",
       );
     })
     .finally(() => {
-      // One click's answer is over; an earlier click on the same question may still be running.
-      useClickedAnswers.setState((s) => {
-        const at = s.ids.indexOf(id);
-        return at < 0 ? s : { ids: s.ids.filter((_, i) => i !== at) };
-      });
+      if (isCurrent()) useClickedAnswers.setState((s) => ({ ids: s.ids.filter((other) => other !== id) }));
     });
 }
 
@@ -580,7 +603,10 @@ function answerQuestion(id: string) {
 function dismissQuestion(id: string) {
   const store = useQuestionStore.getState();
   const index = store.questions.findIndex((q) => q.id === id);
-  if (index >= 0) store.dismiss(index);
+  if (index >= 0) {
+    yourWordsWhenAsked.delete(id);
+    store.dismiss(index);
+  }
 }
 
 /**
@@ -623,7 +649,8 @@ export function useQuestionFlow(): QuestionFlow {
       if (!segment.turn || !isOtherParty(segment.speaker)) return;
       useQuestionStore.getState().markTurnLine(segment.id);
       const at = Date.now();
-      void inTurn(() => onTurnSignal(segment, at));
+      const version = meetingVersion;
+      void inTurn(() => onTurnSignal(segment, at, version));
     };
     const updates = onTranscriptUpdate(onLine);
     const finals = onTranscriptFinal(onLine);

@@ -1,17 +1,20 @@
 import { create } from "zustand";
+import { emit } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppView, Meeting, MeetingSummary, AudioMode, AIScenario, WindowMeetingEndedEvent } from "../lib/types";
-import { shouldPersistOverlayData } from "../lib/windows";
+import { endMeetingInLauncher, MEETING_ENDED, MEETING_END_FAILED, saveMeetingInOverlay, startOverlayMeeting, WINDOW_READY_TIMEOUT_MS } from "../lib/meetingWindowEvents";
 import { captureParties, skipYouStt } from "../lib/audioMode";
 import {
   startMeeting as ipcStartMeeting,
   endMeeting as ipcEndMeeting,
   listMeetings as ipcListMeetings,
-  saveMeetingAiInteractions,
   startCapture,
   startCapturePerParty,
   stopCapture,
 } from "../lib/ipc";
 import { useConfigStore } from "./configStore";
+import { useCallLogStore } from "./callLogStore";
+import { useStreamStore } from "./streamStore";
 import { useTranscriptStore } from "./transcriptStore";
 import { initMeetingSpeakers, resetMeetingScopedStores } from "./resetMeeting";
 import { showToast } from "./toastStore";
@@ -51,10 +54,12 @@ interface MeetingState {
   // Stealth mode (overlay hidden while recording)
   overlayHidden: boolean;
 
-  // Launcher only: id of the meeting the overlay window acknowledged
-  // (nexq:overlay_meeting_ready). Decides which window persists overlay data.
+  // Launcher only: the overlay has opened this meeting and owns its edits.
   overlayMeetingId: string | null;
+  meetingListenersReadyId: string | null;
+  setMeetingListenersReady: (id: string) => void;
   setOverlayMeetingId: (id: string | null) => void;
+  clearEndedMeeting: (id: string) => boolean;
 
   // Launcher detail view (past meeting selected for viewing)
   selectedMeetingId: string | null;
@@ -87,8 +92,36 @@ interface MeetingState {
   stopTimer: () => void;
 }
 
-// Local reentry guard is separate from the cross-window stop intent.
-let endMeetingRunning = false;
+let startMeetingRun: Promise<void> | undefined;
+let endMeetingRun: Promise<void> | undefined;
+let meetingWindowAttached = false;
+
+export function attachMeetingWindow(): () => void {
+  meetingWindowAttached = true;
+  return () => { meetingWindowAttached = false; };
+}
+
+function currentWindowLabel(): string {
+  try { return getCurrentWebviewWindow().label; } catch { return ""; }
+}
+
+function waitForMeetingListeners(meetingId: string): Promise<boolean> {
+  if (!meetingWindowAttached || useMeetingStore.getState().meetingListenersReadyId === meetingId) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const unsubscribe = useMeetingStore.subscribe((state) => {
+      if (state.meetingListenersReadyId !== meetingId) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(true);
+    });
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(false);
+    }, WINDOW_READY_TIMEOUT_MS);
+  });
+}
 
 export const useMeetingStore = create<MeetingState>((set, get) => ({
   currentView: "launcher",
@@ -108,9 +141,39 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   aiScenario: "team_meeting",
   overlayHidden: false,
   overlayMeetingId: null,
+  meetingListenersReadyId: null,
   selectedMeetingId: null,
 
-  setOverlayMeetingId: (id) => set({ overlayMeetingId: id }),
+  setOverlayMeetingId: (id) => {
+    if (id === null || get().activeMeeting?.id === id) set({ overlayMeetingId: id });
+  },
+  setMeetingListenersReady: (id) => {
+    if (get().activeMeeting?.id === id) set({ meetingListenersReadyId: id });
+  },
+  clearEndedMeeting: (id) => {
+    if (get().activeMeeting?.id !== id) return false;
+    get().stopTimer();
+    useCallLogStore.getState().clearAll();
+    useCallLogStore.getState().setOpen(false);
+    useStreamStore.getState().resetForMeeting();
+    set({
+      activeMeeting: null,
+      isRecording: false,
+      isEndingMeeting: false,
+      meetingStartTime: null,
+      elapsedMs: 0,
+      lastPersistedIndex: 0,
+      audioMode: "online",
+      aiScenario: "team_meeting",
+      overlayMeetingId: null,
+      meetingListenersReadyId: null,
+      overlayHidden: false,
+      currentView: "launcher",
+      previousView: null,
+      settingsOpen: false,
+    });
+    return true;
+  },
 
   setCurrentView: (view) => {
     const current = get().currentView;
@@ -146,8 +209,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   },
   setSelectedMeetingId: (id) => set({ selectedMeetingId: id }),
 
-  startMeetingFlow: async (title?: string, audioMode?: AudioMode, scenario?: AIScenario) => {
-    try {
+  startMeetingFlow: (title, audioMode, scenario) => {
+    if (startMeetingRun) return startMeetingRun;
+    if (get().activeMeeting || currentWindowLabel() === "overlay") return Promise.resolve();
+    const run = (async () => {
       // Resolve mode and scenario (fall back to current state if not provided)
       const resolvedMode: AudioMode = audioMode ?? get().audioMode;
       let resolvedScenario: AIScenario = scenario ?? get().aiScenario;
@@ -201,334 +266,144 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         }
       } catch { /* non-critical */ }
 
-      // 2. Sync recording toggle to backend before capture starts
+      // Set both sides before opening the microphone or a direct STT session.
       const config = useConfigStore.getState();
-      try {
-        const { setRecordingEnabled } = await import("../lib/ipc");
-        await setRecordingEnabled(config.recordingEnabled);
-      } catch { /* non-critical */ }
+      const { setRecordingEnabled, setSourceMuted } = await import("../lib/ipc");
+      const initializeMute = async () => {
+        await Promise.all([setSourceMuted("you", false, meeting.id), setSourceMuted("them", false, meeting.id)]);
+        if (resolvedMode === "in_person") await setSourceMuted("you", true, meeting.id);
+        useConfigStore.setState({ mutedYou: resolvedMode === "in_person", mutedThem: false });
+      };
+      await Promise.all([
+        setRecordingEnabled(config.recordingEnabled, meeting.id).catch((error) => {
+          console.warn("[meetingStore] Could not initialize recording:", error);
+        }),
+        initializeMute().catch((error) => console.warn("[meetingStore] Could not initialize mute settings:", error)),
+      ]);
 
-      // 2b. Both sides start unmuted. The mute flags live in the backend for the
-      // whole run, and the window that ends a meeting may not be the one that
-      // muted a side (an in-person meeting mutes "You"), so a mute must not
-      // carry over into the next meeting.
-      try {
-        const { setSourceMuted } = await import("../lib/ipc");
-        await Promise.all([setSourceMuted("you", false), setSourceMuted("them", false)]);
-        useConfigStore.setState({ mutedYou: false, mutedThem: false });
-      } catch { /* non-critical */ }
-
-      // 3. Start audio capture — use per-party config if available, else legacy
-      try {
-        if (config.meetingAudioConfig) {
-          const parties = captureParties(config.meetingAudioConfig.you, config.meetingAudioConfig.them, resolvedMode);
-          await startCapturePerParty(
-            parties.you,
-            parties.them,
-            { skipYouStt: skipYouStt(resolvedMode) }
-          );
-          // In-person mode: mute "you" source — room mic captures everyone,
-          // separate mic capture is redundant and creates duplicate "You" transcripts.
-          if (resolvedMode === "in_person") {
-            try {
-              const { setSourceMuted } = await import("../lib/ipc");
-              await setSourceMuted("you", true);
-              // Also set the UI mute state
-              (await import("./configStore")).useConfigStore.setState({ mutedYou: true });
-            } catch { /* non-critical */ }
-          }
-        } else {
-          // Legacy fallback: use old mic + system device IDs
-          const micId = config.micDeviceId || "default";
-          const sysId = config.systemDeviceId || "default";
-          await startCapture(micId, sysId);
-        }
-      } catch (err) {
-        console.warn("[meetingStore] Audio capture failed to start:", err);
-        // Every window shows it (the overlay is the one on screen).
-        const message = t("onboarding:meetingFlow.captureFailed", { detail: err instanceof Error ? err.message : String(err) });
-        import("@tauri-apps/api/event").then(({ emit }) => emit("capture_warning", message)).catch(() => {});
-        // Continue anyway — meeting is created, user can still use AI features
-      }
-
-      // 4. Set meeting state
-      const now = Date.now();
+      const parsedStartTime = Date.parse(meeting.start_time);
+      const startedAt = Number.isFinite(parsedStartTime) ? parsedStartTime : Date.now();
       (await import("../lib/transcriptPersistence")).resetSavedSegments();
       set({
         activeMeeting: meeting,
-        isRecording: true,
+        isRecording: false,
         isEndingMeeting: false,
-        meetingStartTime: now,
+        meetingStartTime: startedAt,
         elapsedMs: 0,
         lastPersistedIndex: 0,
-        // Reset lingering per-view state from the previous meeting
+        meetingListenersReadyId: null,
+        overlayMeetingId: null,
+        overlayHidden: false,
         selectedMeetingId: null,
         unfinishedMeeting: null,
         settingsOpen: false,
       });
-
-      // 5. Start timer
       get().startTimer();
 
-      // 6. Switch to overlay view
-      set({ currentView: "overlay" });
+      const localReady = waitForMeetingListeners(meeting.id);
+      const overlayReady = startOverlayMeeting({ meeting, audioMode: resolvedMode, aiScenario: resolvedScenario }, meetingWindowAttached)
+        .catch((error) => {
+          console.warn("[meetingStore] Could not prepare the meeting overlay:", error);
+          return false;
+        });
 
-      // 7. Notify overlay Tauri window to initialize meeting UI
-      import("@tauri-apps/api/event").then(({ emit }) => {
-        emit("nexq:meeting_started", {
-          meeting,
-          audioMode: resolvedMode,
-          aiScenario: resolvedScenario,
-        }).catch(() => {});
-      });
-    } catch (err) {
-      console.error("[meetingStore] Failed to start meeting:", err);
-      throw err;
-    }
+      try {
+        const [launcherListening, overlayHasMeeting] = await Promise.all([localReady, overlayReady]);
+        if (overlayHasMeeting) get().setOverlayMeetingId(meeting.id);
+        if (!launcherListening) {
+          void emit("capture_warning", t("onboarding:meetingFlow.listenersUnavailable")).catch(() => {});
+        }
+        if (get().isEndingMeeting) return;
+        set({ currentView: "overlay" });
+
+        // The first native status/transcript events can arrive before IPC returns.
+        if (config.meetingAudioConfig) {
+          const parties = captureParties(config.meetingAudioConfig.you, config.meetingAudioConfig.them, resolvedMode);
+          await startCapturePerParty(parties.you, parties.them, {
+            skipYouStt: skipYouStt(resolvedMode),
+            expectedMeetingId: meeting.id,
+          });
+        } else {
+          await startCapture(config.micDeviceId || "default", config.systemDeviceId || "default", meeting.id);
+        }
+      } catch (error) {
+        console.warn("[meetingStore] Audio capture failed to start:", error);
+        const detail = error instanceof Error ? error.message : String(error);
+        void emit("capture_warning", t("onboarding:meetingFlow.captureFailed", { detail })).catch(() => {});
+      }
+      set({ isRecording: true });
+    })();
+    startMeetingRun = run;
+    void run.finally(() => { startMeetingRun = undefined; }).catch(() => {});
+    return run;
   },
 
-  endMeetingFlow: async () => {
-    const state = get();
-    if (endMeetingRunning) return;
-    endMeetingRunning = true;
-    set({ isEndingMeeting: true });
-    try {
-    const meeting = state.activeMeeting;
+  endMeetingFlow: () => {
+    if (endMeetingRun) return endMeetingRun;
+    const meeting = get().activeMeeting;
+    if (!meeting) return Promise.resolve();
 
-    // 1. Stop timer
-    state.stopTimer();
-
-    // 2. Drain native and browser speech before reading the final transcript.
-    // The overlay asks the launcher (which owns Web Speech) to stop and ACK.
-    const { stopMeetingWebSpeech } = await import("../lib/webSpeechLifecycle");
-    const [nativeStop, browserStop] = await Promise.allSettled([
-      stopCapture(),
-      meeting ? stopMeetingWebSpeech(meeting.id) : Promise.resolve(),
-    ]);
-    if (nativeStop.status === "rejected") {
-      console.warn("[meetingStore] Audio capture failed to stop:", nativeStop.reason);
-    }
-    if (browserStop.status === "rejected") throw browserStop.reason;
-
-    // 2b. Reset mute state — unmute both sources for next meeting
-    const configStore = (await import("./configStore")).useConfigStore;
-    const { mutedYou, mutedThem } = configStore.getState();
-    if (mutedYou) configStore.getState().toggleMuteYou();
-    if (mutedThem) configStore.getState().toggleMuteThem();
-
-    // 3. Flush all remaining transcript segments to DB before ending
-    // (and lines that grew since they were saved)
-    if (meeting) {
-      const segments = useTranscriptStore.getState().segments;
-      const lastIdx = get().lastPersistedIndex;
-      const { segmentsToSave, segmentForSave, markSegmentSaved } = await import("../lib/transcriptPersistence");
-      const { toSave: unpersisted } = segmentsToSave(segments, lastIdx, { all: true });
-
-      const { appendTranscriptSegment } = await import("../lib/ipc");
-      const { saveSegmentsWithRetry, unsavedTranscriptError } = await import("../lib/endMeetingSave");
-      const failed = await saveSegmentsWithRetry(
-        unpersisted,
-        (seg) => appendTranscriptSegment(meeting.id, segmentForSave(seg)),
-        markSegmentSaved
-      );
-      // Keep the meeting and its transcript: End can be pressed again.
-      if (failed > 0) throw unsavedTranscriptError(failed);
-    }
-
-    // 4. Persist AI call log entries as AI interactions before ending
-    if (meeting) {
-      try {
-        const { useCallLogStore } = await import("./callLogStore");
-        const entries = useCallLogStore.getState().entries;
-        if (entries.length > 0) {
-          const interactions = entries
-            .filter((e) => e.status === "complete" && !["MeetingSummary", "ActionItemsExtraction", "BookmarkSuggestions", "MeetingAsk", "question_detect", "question_predict", "question_prepare"].includes(e.mode))
-            .map((e) => ({
-              id: e.id,
-              meeting_id: meeting.id,
-              mode: e.mode,
-              question_context: e.actualUserPrompt || "",
-              response: e.responseContentClean || e.responseContent,
-              model: e.model,
-              provider: e.provider,
-              latency_ms: e.latencyMs ?? 0,
-              timestamp: new Date(e.timestamp).toISOString(),
-            }));
-          if (interactions.length > 0) {
-            await saveMeetingAiInteractions(
-              meeting.id,
-              JSON.stringify(interactions)
-            );
-          }
-        }
-      } catch (err) {
-        console.error("[meetingStore] Failed to persist AI interactions:", err);
+    const windowLabel = currentWindowLabel();
+    const run = (async () => {
+      set({ isEndingMeeting: true });
+      if (windowLabel === "overlay") {
+        await endMeetingInLauncher(meeting.id);
+        return;
       }
-    }
 
-    // 5. End meeting record in DB. Stop an AI answer still streaming first:
-    // ending the meeting closes its Claude session.
-    if (meeting) {
       try {
+        await startMeetingRun;
+        const { stopWebSpeechRecognition } = await import("../lib/webSpeechLifecycle");
+        const [nativeStop, browserStop] = await Promise.allSettled([
+          stopCapture(false, meeting.id),
+          stopWebSpeechRecognition(),
+        ]);
+        if (nativeStop.status === "rejected") throw nativeStop.reason;
+        if (browserStop.status === "rejected") throw browserStop.reason;
+
+        let speakerAliases = new Map<string, string>();
+        if (meetingWindowAttached && get().overlayMeetingId === meeting.id) {
+          speakerAliases = await saveMeetingInOverlay(meeting.id);
+        } else {
+          speakerAliases = new Map(await persistOverlayMeetingData(meeting.id));
+        }
+
+        const segments = useTranscriptStore.getState().segments.map((segment) => {
+          const speaker = speakerAliases.get(segment.speaker_id ?? "");
+          return speaker ? { ...segment, speaker_id: speaker } : segment;
+        });
+        const { flushMeetingTranscript } = await import("../lib/transcriptPersistence");
+        await flushMeetingTranscript(
+          meeting.id,
+          segments,
+          get().lastPersistedIndex,
+          { all: true },
+        );
+
         const { cancelGeneration } = await import("../lib/ipc");
-        await cancelGeneration();
-      } catch { /* nothing in flight */ }
-      try {
+        await cancelGeneration().catch(() => {});
+        const { flushMeetingAiHistory } = await import("../hooks/useCallLogCapture");
+        await flushMeetingAiHistory(meeting.id);
         await ipcEndMeeting(meeting.id);
-      } catch (err) {
-        console.error("[meetingStore] Failed to end meeting:", err);
-        throw new Error(t("onboarding:meetingFlow.endFailed"));
+
+        get().clearEndedMeeting(meeting.id);
+        const payload: WindowMeetingEndedEvent = { meetingId: meeting.id, window: windowLabel || "launcher" };
+        await emit(MEETING_ENDED, payload).catch((error) => {
+          console.warn("[meetingStore] Could not notify the other window:", error);
+        });
+        await get().loadRecentMeetings();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await emit(MEETING_END_FAILED, { meetingId: meeting.id, message }).catch(() => {});
+        throw error;
       }
-    }
-
-    // 6. Clear call log and close sidebar
-    try {
-      const { useCallLogStore } = await import("./callLogStore");
-      useCallLogStore.getState().clearAll();
-      useCallLogStore.getState().setOpen(false);
-    } catch {
-      // Non-critical
-    }
-
-    // 7. Clear AI response history and dev log for fresh next meeting
-    try {
-      const { useStreamStore } = await import("./streamStore");
-      useStreamStore.getState().clearCurrent();
-      useStreamStore.setState({ responseHistory: [], pinnedResponses: [] });
-    } catch {
-      // Non-critical
-    }
-    try {
-      const { useDevLogStore } = await import("./devLogStore");
-      useDevLogStore.getState().clear();
-    } catch {
-      // Non-critical
-    }
-
-    // 7b. Persist overlay-edited stores — from exactly one window
-    let windowLabel = "";
-    try {
-      const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      windowLabel = getCurrentWebviewWindow().label;
-    } catch { /* not running in Tauri */ }
-    const overlayActive = !!meeting && state.overlayMeetingId === meeting.id;
-    if (meeting && shouldPersistOverlayData(windowLabel, overlayActive)) {
-      try {
-        const { useSpeakerStore } = await import("./speakerStore");
-        // Remote speaker tags too, so their names (e.g. "Erin") persist.
-        const speakerState = useSpeakerStore.getState();
-        const speakers = [...speakerState.getAllSpeakers(), ...speakerState.getRemoteSpeakers()];
-        if (speakers.length > 0) {
-          const { saveMeetingSpeakers } = await import("../lib/ipc");
-          const transformed = speakers.map((s) => ({
-            id: crypto.randomUUID(),
-            meeting_id: meeting.id,
-            speaker_id: s.id,
-            display_name: s.display_name,
-            source: s.source,
-            color: s.color ?? null,
-            segment_count: s.stats.segment_count,
-            word_count: s.stats.word_count,
-            talk_time_ms: s.stats.talk_time_ms,
-          }));
-          await saveMeetingSpeakers(meeting.id, JSON.stringify(transformed));
-          console.log(`[meetingStore] Persisted ${speakers.length} speaker(s) for ${meeting.id}`);
-        }
-      } catch (err) {
-        console.error("[meetingStore] Failed to persist speakers:", err);
-      }
-
-      try {
-        const { useBookmarkStore } = await import("./bookmarkStore");
-        const bookmarks = useBookmarkStore.getState().bookmarks;
-        if (bookmarks.length > 0) {
-          const { saveMeetingBookmarks } = await import("../lib/ipc");
-          const transformed = bookmarks.map((b) => ({ ...b, meeting_id: meeting.id }));
-          await saveMeetingBookmarks(meeting.id, JSON.stringify(transformed));
-          console.log(`[meetingStore] Persisted ${bookmarks.length} bookmark(s) for ${meeting.id}`);
-        }
-      } catch (err) {
-        console.error("[meetingStore] Failed to persist bookmarks:", err);
-      }
-
-      try {
-        const { useActionItemStore } = await import("./actionItemStore");
-        const items = useActionItemStore.getState().items;
-        if (items.length > 0) {
-          const { saveMeetingActionItems } = await import("../lib/ipc");
-          const transformed = items.map((item) => ({ ...item, meeting_id: meeting.id }));
-          await saveMeetingActionItems(meeting.id, JSON.stringify(transformed));
-          console.log(`[meetingStore] Persisted ${items.length} action item(s) for ${meeting.id}`);
-        }
-      } catch (err) {
-        console.error("[meetingStore] Failed to persist action items:", err);
-      }
-
-      try {
-        const { useTopicSectionStore } = await import("./topicSectionStore");
-        const sections = useTopicSectionStore.getState().sections;
-        if (sections.length > 0) {
-          const { saveMeetingTopicSections } = await import("../lib/ipc");
-          const transformed = sections.map((s) => ({ ...s, meeting_id: meeting.id }));
-          await saveMeetingTopicSections(meeting.id, JSON.stringify(transformed));
-          console.log(`[meetingStore] Persisted ${sections.length} topic section(s) for ${meeting.id}`);
-        }
-      } catch (err) {
-        console.error("[meetingStore] Failed to persist topic sections:", err);
-      }
-    }
-
-    // 7c. Reset new feature stores
-    try {
-      const { useSpeakerStore } = await import("./speakerStore");
-      useSpeakerStore.getState().reset();
-    } catch { /* non-critical */ }
-    try {
-      const { useBookmarkStore } = await import("./bookmarkStore");
-      useBookmarkStore.getState().clearBookmarks();
-    } catch { /* non-critical */ }
-    try {
-      const { useActionItemStore } = await import("./actionItemStore");
-      useActionItemStore.getState().clearItems();
-    } catch { /* non-critical */ }
-    try {
-      const { useTopicSectionStore } = await import("./topicSectionStore");
-      useTopicSectionStore.getState().clearSections();
-    } catch { /* non-critical */ }
-    try {
-      const { useTranslationStore } = await import("./translationStore");
-      useTranslationStore.getState().clearTranslations();
-    } catch { /* non-critical */ }
-
-    // 8. Clear active state
-    set({
-      activeMeeting: null,
-      isRecording: false,
-      isEndingMeeting: false,
-      meetingStartTime: null,
-      elapsedMs: 0,
-      lastPersistedIndex: 0,
-      audioMode: "online",
-      aiScenario: "team_meeting",
-      overlayMeetingId: null,
-    });
-
-    // 9. Reload recent meetings
-    await get().loadRecentMeetings();
-
-    // 10. Switch to launcher
-    set({ currentView: "launcher", previousView: null });
-
-    // Notify the other window that this window finished ending the meeting
-    // (the updater waits for both windows before restarting)
-    import("@tauri-apps/api/event").then(({ emit }) => {
-      const payload: WindowMeetingEndedEvent = { window: windowLabel };
-      emit("nexq:meeting_ended", payload).catch(() => {});
+    })();
+    endMeetingRun = run;
+    void run.finally(() => {
+      endMeetingRun = undefined;
+      if (get().activeMeeting?.id === meeting.id) set({ isEndingMeeting: false });
     }).catch(() => {});
-    } finally {
-      endMeetingRunning = false;
-      set({ isEndingMeeting: false });
-    }
+    return run;
   },
 
   loadRecentMeetings: async () => {
@@ -547,9 +422,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       clearInterval(state._timerInterval);
     }
 
-    const startTime = Date.now();
+    const startTime = state.meetingStartTime ?? Date.now();
+    const meetingId = state.activeMeeting?.id;
     const interval = setInterval(() => {
-      set({ elapsedMs: Date.now() - startTime });
+      if (get().activeMeeting?.id === meetingId) set({ elapsedMs: Math.max(0, Date.now() - startTime) });
     }, 1000);
 
     set({ _timerInterval: interval });
@@ -563,6 +439,41 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     }
   },
 }));
+
+/** Saves the data owned by the meeting view and returns its speaker merges. */
+export async function persistOverlayMeetingData(meetingId: string): Promise<[string, string][]> {
+  const [
+    { useSpeakerStore }, { useBookmarkStore }, { useActionItemStore }, { useTopicSectionStore }, ipc,
+  ] = await Promise.all([
+    import("./speakerStore"), import("./bookmarkStore"), import("./actionItemStore"), import("./topicSectionStore"), import("../lib/ipc"),
+  ]);
+  if (useMeetingStore.getState().activeMeeting?.id !== meetingId) return [];
+  const speakerState = useSpeakerStore.getState();
+  const speakerAliases = [...speakerState.speakerAliases];
+  const speakers = [...speakerState.getAllSpeakers(), ...speakerState.getRemoteSpeakers()].map((speaker) => ({
+    id: crypto.randomUUID(),
+    meeting_id: meetingId,
+    speaker_id: speaker.id,
+    display_name: speaker.display_name,
+    source: speaker.source,
+    color: speaker.color ?? null,
+    segment_count: speaker.stats.segment_count,
+    word_count: speaker.stats.word_count,
+    talk_time_ms: speaker.stats.talk_time_ms,
+  }));
+  const bookmarks = useBookmarkStore.getState().bookmarks.map((record) => ({ ...record, meeting_id: meetingId }));
+  const items = useActionItemStore.getState().items.map((record) => ({ ...record, meeting_id: meetingId }));
+  const sections = useTopicSectionStore.getState().sections.map((record) => ({ ...record, meeting_id: meetingId }));
+  const saved = await Promise.allSettled([
+    speakers.length && ipc.saveMeetingSpeakers(meetingId, JSON.stringify(speakers)),
+    bookmarks.length && ipc.saveMeetingBookmarks(meetingId, JSON.stringify(bookmarks)),
+    items.length && ipc.saveMeetingActionItems(meetingId, JSON.stringify(items)),
+    sections.length && ipc.saveMeetingTopicSections(meetingId, JSON.stringify(sections)),
+  ]);
+  const failed = saved.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+  return speakerAliases;
+}
 
 /**
  * Meeting id that routes a meeting-view AI request (summary, action items,

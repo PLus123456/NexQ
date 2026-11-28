@@ -11,13 +11,12 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 use tauri::AppHandle;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -47,22 +46,9 @@ pub struct SherpaSidecarSTT {
     model_dir: PathBuf,
     /// Recognition language code.
     language: String,
-    /// Whether the stream is currently active.
-    is_streaming: bool,
-    /// Channel sender for transcript results (set during start_stream).
-    result_tx: Option<mpsc::Sender<TranscriptResult>>,
-    /// Shared stop flag for coordinating shutdown across tasks.
-    stop_flag: Arc<AtomicBool>,
-    /// Handle to the child process.
-    child: Option<std::process::Child>,
-    /// Channel for sending raw PCM bytes to the stdin writer task.
-    stdin_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
-    /// Handle to the blocking stdin writer task.
-    stdin_task: Option<JoinHandle<()>>,
-    /// Handle to the blocking stdout reader task.
-    stdout_task: Option<JoinHandle<()>>,
-    /// Handle to the blocking stderr reader task.
-    stderr_task: Option<JoinHandle<()>>,
+    child: Option<Child>,
+    stdin_tx: Option<mpsc::Sender<Vec<u8>>>,
+    io_tasks: Vec<JoinHandle<()>>,
     /// Tauri app handle for emitting debug events.
     app_handle: Option<AppHandle>,
 }
@@ -73,14 +59,9 @@ impl SherpaSidecarSTT {
             binary_path,
             model_dir,
             language: "en".to_string(),
-            is_streaming: false,
-            result_tx: None,
-            stop_flag: Arc::new(AtomicBool::new(false)),
             child: None,
             stdin_tx: None,
-            stdin_task: None,
-            stdout_task: None,
-            stderr_task: None,
+            io_tasks: Vec::new(),
             app_handle: None,
         }
     }
@@ -125,6 +106,16 @@ impl SherpaSidecarSTT {
     }
 }
 
+impl Drop for SherpaSidecarSTT {
+    fn drop(&mut self) {
+        for task in self.io_tasks.drain(..) {
+            task.abort();
+        }
+        // Tokio's kill-on-drop also handles reaping when a caller is cancelled.
+        self.child.take();
+    }
+}
+
 #[async_trait]
 impl STTProvider for SherpaSidecarSTT {
     fn provider_name(&self) -> &str {
@@ -139,7 +130,7 @@ impl STTProvider for SherpaSidecarSTT {
         &mut self,
         result_tx: mpsc::Sender<TranscriptResult>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.is_streaming {
+        if self.child.is_some() {
             return Err("Stream already active".into());
         }
 
@@ -152,9 +143,9 @@ impl STTProvider for SherpaSidecarSTT {
             .into());
         }
 
-        let args = self.build_args().map_err(|e| {
-            format!("Failed to discover model files: {}", e)
-        })?;
+        let args = self
+            .build_args()
+            .map_err(|e| format!("Failed to discover model files: {}", e))?;
 
         self.debug(
             "info",
@@ -178,7 +169,8 @@ impl STTProvider for SherpaSidecarSTT {
             .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped()) // Capture stderr instead of null
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
                 format!(
@@ -202,90 +194,43 @@ impl STTProvider for SherpaSidecarSTT {
             .take()
             .ok_or("Failed to open stderr pipe from sherpa-onnx")?;
 
-        self.stop_flag.store(false, AtomicOrdering::SeqCst);
-
-        // ── Stdin writer task ──
-        let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let stop_flag_stdin = Arc::clone(&self.stop_flag);
-
-        let stdin_task = tokio::task::spawn_blocking(move || {
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(256);
+        let stdin_task = tokio::spawn(async move {
             let mut writer = child_stdin;
-            loop {
-                if stop_flag_stdin.load(AtomicOrdering::SeqCst) {
+            while let Some(bytes) = stdin_rx.recv().await {
+                if let Err(e) = writer.write_all(&bytes).await {
+                    log::warn!("SherpaSidecarSTT: stdin write error: {e}");
                     break;
                 }
-                match stdin_rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(bytes) => {
-                        if let Err(e) = writer.write_all(&bytes) {
-                            log::error!("SherpaSidecarSTT: stdin write error: {}", e);
-                            break;
-                        }
-                        if let Err(e) = writer.flush() {
-                            log::error!("SherpaSidecarSTT: stdin flush error: {}", e);
-                            break;
-                        }
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
             }
-            log::info!("SherpaSidecarSTT: stdin writer task exiting");
         });
 
-        // ── Stdout reader task ──
-        let stop_flag_stdout = Arc::clone(&self.stop_flag);
         let language = self.language.clone();
-        let tx = result_tx.clone();
-
-        // Capture wall-clock start time so we can convert process-relative
-        // timestamps to absolute epoch time (survives mid-meeting restarts)
-        let process_start_epoch_ms: u64 = std::time::SystemTime::now()
+        let process_start_epoch_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-
-        let stdout_task = tokio::task::spawn_blocking(move || {
-            let reader = BufReader::new(child_stdout);
-            for line_result in reader.lines() {
-                if stop_flag_stdout.load(AtomicOrdering::SeqCst) {
-                    break;
-                }
-
-                let line = match line_result {
-                    Ok(l) => l,
-                    Err(e) => {
-                        log::error!("SherpaSidecarSTT: stdout read error: {}", e);
-                        break;
-                    }
-                };
-
+        let stdout_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(child_stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-
-                let parsed: SherpaJsonLine = match serde_json::from_str(trimmed) {
-                    Ok(p) => p,
+                let parsed = match serde_json::from_str::<SherpaJsonLine>(trimmed) {
+                    Ok(parsed) => parsed,
                     Err(e) => {
-                        log::warn!(
-                            "SherpaSidecarSTT: Failed to parse JSON: {} (line: {})",
-                            e,
-                            trimmed
-                        );
+                        log::warn!("SherpaSidecarSTT: invalid JSON: {e}");
                         continue;
                     }
                 };
 
-                let text = parsed.text.trim().to_string();
+                let text = parsed.text.trim().to_owned();
                 if text.is_empty() {
                     continue;
                 }
-
-                // Convert process-relative end_time to absolute epoch timestamp.
-                // This ensures timestamps remain meaningful even after mid-meeting
-                // provider restarts (the old code used raw end_time which reset to 0).
-                let timestamp_ms = process_start_epoch_ms + (parsed.end_time * 1000.0) as u64;
-
+                let timestamp_ms =
+                    process_start_epoch_ms.saturating_add((parsed.end_time * 1000.0) as u64);
                 let result = TranscriptResult {
                     text,
                     is_final: parsed.is_endpoint,
@@ -298,58 +243,28 @@ impl STTProvider for SherpaSidecarSTT {
                     speaker_tag: None,
                     turn: None,
                 };
-
-                if let Err(e) = tx.blocking_send(result) {
-                    log::error!("SherpaSidecarSTT: Failed to send result: {}", e);
+                if result_tx.send(result).await.is_err() {
                     break;
                 }
             }
-
-            log::info!("SherpaSidecarSTT: stdout reader task exiting");
         });
 
-        // ── Stderr reader task — surfaces process errors to dev log ──
-        let stop_flag_stderr = Arc::clone(&self.stop_flag);
         let stderr_app_handle = self.app_handle.clone();
-
-        let stderr_task = tokio::task::spawn_blocking(move || {
-            let reader = BufReader::new(child_stderr);
-            for line_result in reader.lines() {
-                if stop_flag_stderr.load(AtomicOrdering::SeqCst) {
-                    break;
-                }
-
-                let line = match line_result {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
-
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                // Surface to dev log
-                log::info!("[sherpa-onnx stderr] {}", trimmed);
-                if let Some(ref handle) = stderr_app_handle {
-                    crate::stt::emit_stt_debug(
-                        handle,
-                        "info",
-                        "sherpa_binary",
-                        trimmed,
-                    );
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(child_stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    log::info!("[sherpa-onnx stderr] {}", line.trim());
+                    if let Some(ref handle) = stderr_app_handle {
+                        crate::stt::emit_stt_debug(handle, "info", "sherpa_binary", line.trim());
+                    }
                 }
             }
-            log::info!("SherpaSidecarSTT: stderr reader task exiting");
         });
 
         self.child = Some(child);
         self.stdin_tx = Some(stdin_tx);
-        self.stdin_task = Some(stdin_task);
-        self.stdout_task = Some(stdout_task);
-        self.stderr_task = Some(stderr_task);
-        self.result_tx = Some(result_tx);
-        self.is_streaming = true;
+        self.io_tasks.extend([stdin_task, stdout_task, stderr_task]);
 
         self.debug("info", "Stream started");
         Ok(())
@@ -359,14 +274,7 @@ impl STTProvider for SherpaSidecarSTT {
         &mut self,
         chunk: AudioChunk,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming {
-            return Err("Stream not active".into());
-        }
-
-        let stdin_tx = match self.stdin_tx {
-            Some(ref tx) => tx,
-            None => return Err("stdin channel not available".into()),
-        };
+        let stdin_tx = self.stdin_tx.as_ref().ok_or("Stream not active")?;
 
         // Convert i16 PCM samples to little-endian bytes
         let mut bytes = Vec::with_capacity(chunk.pcm_data.len() * 2);
@@ -374,7 +282,7 @@ impl STTProvider for SherpaSidecarSTT {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
 
-        stdin_tx.send(bytes).map_err(|e| {
+        stdin_tx.send(bytes).await.map_err(|e| {
             format!(
                 "SherpaSidecarSTT: Failed to send audio to stdin channel: {}",
                 e
@@ -385,73 +293,35 @@ impl STTProvider for SherpaSidecarSTT {
     }
 
     async fn stop_stream(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming {
-            return Ok(());
+        self.stdin_tx.take();
+        let mut exit = Ok(());
+        if let Some(child) = &mut self.child {
+            exit = match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                Ok(Ok(status)) if status.success() => Ok(()),
+                Ok(Ok(status)) => Err(format!("Sherpa sidecar exited with {status}")),
+                Ok(Err(e)) => {
+                    let _ = child.kill().await;
+                    Err(format!("Sherpa sidecar wait failed: {e}"))
+                }
+                Err(_) => {
+                    let _ = child.kill().await;
+                    Err("Sherpa sidecar did not exit after closing stdin".into())
+                }
+            };
+            self.child.take();
         }
 
-        self.debug("info", "Stopping stream");
-
-        self.stop_flag.store(true, AtomicOrdering::SeqCst);
-
-        // Drop the stdin sender
-        self.stdin_tx = None;
-
-        // Wait for the stdin task
-        if let Some(task) = self.stdin_task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
-        }
-
-        // Wait for the child process to exit gracefully
-        // Take ownership to avoid borrow conflict with self.debug()
-        if let Some(mut child) = self.child.take() {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        self.debug(
-                            "info",
-                            &format!("Child process exited: {}", status),
-                        );
-                        break;
-                    }
-                    Ok(None) => {
-                        if Instant::now() >= deadline {
-                            self.debug(
-                                "warn",
-                                "Child process didn't exit in 2s, killing",
-                            );
-                            if let Err(e) = child.kill() {
-                                log::error!(
-                                    "SherpaSidecarSTT: kill failed: {}",
-                                    e
-                                );
-                            }
-                            let _ = child.wait();
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "SherpaSidecarSTT: wait error: {}",
-                            e
-                        );
-                        break;
-                    }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while let Some(mut task) = self.io_tasks.pop() {
+            if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+                if exit.is_ok() {
+                    exit = Err("Timed out draining Sherpa sidecar output".into());
                 }
             }
         }
-
-        // Wait for stdout and stderr readers
-        if let Some(task) = self.stdout_task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
-        }
-        if let Some(task) = self.stderr_task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
-        }
-
-        self.result_tx = None;
-        self.is_streaming = false;
+        exit?;
 
         self.debug("info", "Stream stopped");
         Ok(())
@@ -459,11 +329,7 @@ impl STTProvider for SherpaSidecarSTT {
 
     async fn test_connection(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         if !self.binary_path.exists() {
-            return Err(format!(
-                "Binary not found: {}",
-                self.binary_path.display()
-            )
-            .into());
+            return Err(format!("Binary not found: {}", self.binary_path.display()).into());
         }
         // Also verify model files exist
         match crate::stt::local_engines::model_discovery::discover_model_files(&self.model_dir) {
@@ -473,11 +339,7 @@ impl STTProvider for SherpaSidecarSTT {
     }
 
     fn set_language(&mut self, language: &str) {
-        self.language = language
-            .split('-')
-            .next()
-            .unwrap_or(language)
-            .to_string();
+        self.language = language.split('-').next().unwrap_or(language).to_string();
         log::info!("SherpaSidecarSTT: Language set to {}", self.language);
     }
 }

@@ -4,7 +4,8 @@ import { useScenarioStore } from "../stores/scenarioStore";
 import { useCallLogStore } from "../stores/callLogStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { showToast } from "../stores/toastStore";
-import { translateBatchForParties } from "../lib/translation/ipc";
+import { translateBatch } from "../lib/translation/ipc";
+import { isCurrentTranslationScope } from "../hooks/useTranslationEvents";
 import { translateUntranslatedLines } from "../hooks/useAutoTranslate";
 import { serviceParties, TRANSLATION_PARTIES, partyTranslationMode } from "../lib/translation/nativeTranslation";
 import { APP_NAME } from "../lib/brand";
@@ -177,8 +178,11 @@ export function OverlayView() {
   const backendStatus = useTranslationStore((s) => s.backendStatus);
   const batchProgress = useTranslationStore((s) => s.batchProgress);
   const meetingAudioConfig = useConfigStore((s) => s.meetingAudioConfig);
-  const [translatingAll, setTranslatingAll] = useState(false);
-  const isBatchTranslating = batchProgress !== null || translatingAll;
+  const [batchRequest, setBatchRequest] = useState<{ meetingId: string; targetLang: string } | null>(null);
+  const activeBatchRequest = useRef<typeof batchRequest>(null);
+  const isBatchTranslating = batchProgress !== null || (
+    batchRequest !== null && batchRequest.meetingId === activeMeeting?.id && batchRequest.targetLang === targetLang
+  );
   // The provider's last switch failed (e.g. no API key): say so on the button.
   const translationNotReady = backendStatus?.ok === false ? backendStatus.error ?? "" : null;
   const nothingToTranslate = TRANSLATION_PARTIES.every(
@@ -242,17 +246,24 @@ export function OverlayView() {
   const handleTranslateAll = useCallback(async () => {
     const meetingId = activeMeeting?.id;
     if (!meetingId || !targetLang) return;
+    const pending = activeBatchRequest.current;
+    if (pending?.meetingId === meetingId && pending.targetLang === targetLang) return;
     // Parties the STT engine translates (Soniox) or that are switched off are left out.
     const parties = serviceParties(translateParties, meetingAudioConfig);
     if (parties.length === 0) {
       showToast(t("overlay.translate.noServiceParty"), "info");
       return;
     }
-    setTranslatingAll(true);
+    const request = { meetingId, targetLang };
+    activeBatchRequest.current = request;
+    setBatchRequest(request);
+    const isCurrent = () => activeBatchRequest.current === request && isCurrentTranslationScope(meetingId, targetLang);
     try {
-      const batch = await translateBatchForParties(meetingId, targetLang, parties);
+      const batch = await translateBatch(meetingId, targetLang, parties);
+      if (!isCurrent()) return;
       // Then the lines not saved yet (failures show on their lines).
       const recent = await translateUntranslatedLines(parties, new Set(batch.handledIds ?? []));
+      if (!isCurrent()) return;
       const total = batch.total + recent.translated + recent.failed;
       const newlyTranslated = batch.newlyTranslated + recent.translated;
       const alreadyDone = batch.alreadyDone;
@@ -269,9 +280,12 @@ export function OverlayView() {
         showToast(t("overlay.batch.allNew", { total }), "success");
       }
     } catch (err) {
-      showToast(t("overlay.batch.failed", { detail: errorMessage(err) }), "error");
+      if (isCurrent()) showToast(t("overlay.batch.failed", { detail: errorMessage(err) }), "error");
     } finally {
-      setTranslatingAll(false);
+      if (activeBatchRequest.current === request) {
+        activeBatchRequest.current = null;
+        setBatchRequest(null);
+      }
     }
   }, [activeMeeting?.id, targetLang, translateParties, meetingAudioConfig, t]);
 

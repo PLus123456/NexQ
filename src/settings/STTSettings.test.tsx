@@ -3,7 +3,7 @@
 // upstream's Auto-detect checks and provider hints show under the side they
 // are about.
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MeetingAudioConfig } from "../lib/types";
 import type * as IPC from "../lib/ipc";
@@ -13,10 +13,17 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => null }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({ set: async () => {}, get: async () => undefined, onKeyChange: async () => () => {} }),
 }));
+const credentialIpc = vi.hoisted(() => ({
+  getApiKey: vi.fn(async (_slot: string): Promise<string | null> => null),
+  testSTTConnection: vi.fn(async () => false),
+  storeApiKey: vi.fn(async () => {}),
+  storeAzureSpeechCredentials: vi.fn(async () => {}),
+  deleteApiKey: vi.fn(async () => {}),
+}));
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IPC>()),
+  ...credentialIpc,
   hasApiKey: async () => false,
-  getApiKey: async () => null,
   listLocalSTTEngines: async () => [],
 }));
 
@@ -40,15 +47,41 @@ const picker = (name: Side) => screen.getByRole("combobox", { name: `Recognition
 const field = (name: Side) => within(picker(name).closest(".grid > div") as HTMLElement);
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  credentialIpc.getApiKey.mockResolvedValue(null);
   useMeetingStore.setState({ audioMode: "online" });
   useConfigStore.setState({
     sttLanguage: "auto",
     sttProvider: "deepgram",
     meetingAudioConfig: config,
     deepgramConfig: { ...useConfigStore.getState().deepgramConfig, model: "nova-3" },
+    verifiedCloudProviders: [],
   });
 });
 afterEach(cleanup);
+
+it("preserves the saved Azure key and region after a candidate test fails", async () => {
+  useConfigStore.setState({ verifiedCloudProviders: ["azure_speech"] });
+  credentialIpc.getApiKey.mockImplementation(async (slot) => slot === "azure_speech" ? "old-key" : "eastus");
+  render(<STTSettings />);
+  fireEvent.click(screen.getByRole("button", { name: /^Azure Speech/ }));
+  const key = await screen.findByDisplayValue("old-key");
+  const region = screen.getByLabelText("Azure Region");
+  fireEvent.change(key, { target: { value: "candidate-key" } });
+  fireEvent.change(region, { target: { value: "westeurope" } });
+  fireEvent.blur(region);
+  fireEvent.click(screen.getByRole("button", { name: "Save & Test" }));
+  await screen.findByText("Connection failed — key not saved");
+  expect(credentialIpc.testSTTConnection).toHaveBeenCalledWith("azure_speech", { key: "candidate-key", region: "westeurope" });
+  expect(credentialIpc.storeApiKey).not.toHaveBeenCalled();
+  expect(credentialIpc.storeAzureSpeechCredentials).not.toHaveBeenCalled();
+  expect(credentialIpc.deleteApiKey).not.toHaveBeenCalled();
+  expect(useConfigStore.getState().verifiedCloudProviders).toContain("azure_speech");
+  fireEvent.click(screen.getByRole("button", { name: /^Deepgram/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^Azure Speech/ }));
+  await waitFor(() => expect(screen.getByLabelText("Azure Region")).toHaveValue("eastus"));
+  await screen.findByDisplayValue("old-key");
+});
 
 it("opens on the engine You uses and names the side that can't detect the language", () => {
   render(<STTSettings />);

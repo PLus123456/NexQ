@@ -361,12 +361,13 @@ export function QuestionStrip({ predictionsSlot }: { predictionsSlot?: ReactNode
             <div className="flex items-center justify-end gap-1.5 border-t border-border/15 pt-2">
               <button
                 type="button"
+                disabled={isAnswering}
                 onClick={() => {
                   setPinnedOpen(false);
                   setHovered(false);
                   answer(current.id);
                 }}
-                className="flex items-center gap-1 rounded-md bg-info/15 border border-info/25 px-2.5 py-1 text-xs font-semibold text-info transition-colors hover:bg-info/25 cursor-pointer"
+                className="flex items-center gap-1 rounded-md bg-info/15 border border-info/25 px-2.5 py-1 text-xs font-semibold text-info transition-colors hover:bg-info/25 cursor-pointer disabled:cursor-default disabled:opacity-50"
               >
                 {isAnswered || isAnswering ? (
                   <RotateCcw className="h-3 w-3" aria-hidden="true" />

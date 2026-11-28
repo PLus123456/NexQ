@@ -423,26 +423,27 @@ struct TranslationEvent {
 struct AppSink {
     app: AppHandle,
     party: String,
+    meeting_id: Option<String>,
     region: std::sync::Mutex<Option<String>>,
 }
 
 impl AppSink {
     fn new(app: AppHandle, party: &str) -> Self {
-        Self { app, party: party.to_string(), region: Default::default() }
+        let meeting_id = app.try_state::<crate::state::AppState>().and_then(|state| {
+            state.live_meeting.lock().ok().and_then(|meeting| meeting.as_ref().map(|m| m.id.clone()))
+        });
+        Self { app, party: party.to_string(), meeting_id, region: Default::default() }
     }
 
-    /// Save a final translation for the running meeting (none outside a meeting).
-    fn save(&self, t: &TranslationEvent) {
+    /// Save a final translation for the meeting that owns this Soniox session.
+    fn save(&self, meeting_id: &str, t: &TranslationEvent) {
         let Some(state) = self.app.try_state::<crate::state::AppState>() else { return };
-        let Some(meeting_id) = state.live_meeting.lock().ok().and_then(|m| m.as_ref().map(|m| m.id.clone())) else {
-            return;
-        };
         let Some(db) = state.database.as_ref() else { return };
         let Ok(db) = db.lock() else { return };
         if let Err(e) = crate::db::translation::save_translation(
             db.connection(),
             &t.segment_id,
-            &meeting_id,
+            meeting_id,
             &t.source_lang,
             &t.target_lang,
             &t.original_text,
@@ -491,11 +492,18 @@ impl SessionSink for AppSink {
     }
 
     fn translation(&self, translation: &TranslationEvent) {
-        let _ = self.app.emit("translation_result", translation);
+        let Some(meeting_id) = self.meeting_id.as_deref() else { return };
+        #[derive(Clone, serde::Serialize)]
+        struct MeetingTranslation<'a> {
+            meeting_id: &'a str,
+            #[serde(flatten)]
+            translation: &'a TranslationEvent,
+        }
+        let _ = self.app.emit("translation_result", MeetingTranslation { meeting_id, translation });
         // An empty final withdraws a partial that turned out to be no
         // translation (speech already in the target language): nothing to keep.
         if translation.is_final && !translation.translated_text.trim().is_empty() {
-            self.save(translation);
+            self.save(meeting_id, translation);
         }
     }
 }

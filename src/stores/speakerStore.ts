@@ -8,6 +8,7 @@ interface SpeakerState {
   speakers: Record<string, SpeakerIdentity>;
   speakerOrder: string[];
   pendingNaming: string | null;
+  speakerAliases: ReadonlyMap<string, string>;
 
   // Initialization
   initForOnline: () => void;
@@ -29,6 +30,7 @@ interface SpeakerState {
 
   // Getters
   getSpeaker: (speakerId: string) => SpeakerIdentity | undefined;
+  resolveSpeakerId: (speakerId: string) => string;
   getSpeakerColor: (speakerId: string) => string;
   getSpeakerDisplayName: (speakerId: string) => string;
   getAllSpeakers: () => SpeakerIdentity[];
@@ -63,10 +65,15 @@ function makeSpeaker(
   };
 }
 
-export const useSpeakerStore = create<SpeakerState>((set, get) => ({
+const noSpeakers = {
   speakers: {},
   speakerOrder: [],
   pendingNaming: null,
+  speakerAliases: new Map<string, string>(),
+};
+
+export const useSpeakerStore = create<SpeakerState>((set, get) => ({
+  ...noSpeakers,
 
   initForOnline: () => {
     // The default names are stored with the speaker (and saved with the
@@ -74,27 +81,27 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     const you = makeSpeaker("you", t("common:labels.you"), "fixed", FIXED_SPEAKER_COLORS.you);
     const them = makeSpeaker("them", t("common:labels.them"), "fixed", FIXED_SPEAKER_COLORS.them);
     set({
+      ...noSpeakers,
       speakers: { you, them },
       speakerOrder: ["you", "them"],
-      pendingNaming: null,
     });
   },
 
   initForInPerson: (hasDiarization) => {
     if (hasDiarization) {
       // In-person with diarization: start empty, speakers added dynamically via speaker_detected events
-      set({ speakers: {}, speakerOrder: [], pendingNaming: null });
+      set(noSpeakers);
     } else {
       // In-person without diarization: single "Room" label for all audio
       const room = makeSpeaker("room", t("common:labels.room"), "room", FIXED_SPEAKER_COLORS.room);
-      set({ speakers: { room }, speakerOrder: ["room"], pendingNaming: null });
+      set({ ...noSpeakers, speakers: { room }, speakerOrder: ["room"] });
     }
   },
 
   addSpeaker: (speakerId) => {
     const state = get();
     // Don't add duplicates
-    if (speakerId in state.speakers) return;
+    if (state.speakerAliases.has(speakerId) || speakerId in state.speakers) return;
 
     const orderIndex = state.speakerOrder.length;
     const color = getSpeakerColor(speakerId, orderIndex);
@@ -143,7 +150,7 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     set((s) => {
       const source = s.speakers[fromId];
       const target = s.speakers[intoId];
-      if (!source || !target) return s;
+      if (fromId === intoId || !source || !target) return s;
 
       // Transfer stats from source into target
       const mergedStats = {
@@ -155,12 +162,18 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
 
       // Remove source, update target stats
       const { [fromId]: _removed, ...remainingSpeakers } = s.speakers;
+      const speakerAliases = new Map(s.speakerAliases);
+      speakerAliases.set(fromId, intoId);
+      for (const [alias, targetId] of speakerAliases) {
+        if (targetId === fromId) speakerAliases.set(alias, intoId);
+      }
       return {
         speakers: {
           ...remainingSpeakers,
           [intoId]: { ...target, stats: mergedStats },
         },
         speakerOrder: s.speakerOrder.filter((id) => id !== fromId),
+        speakerAliases,
         pendingNaming: s.pendingNaming === fromId ? null : s.pendingNaming,
       };
     });
@@ -189,6 +202,8 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     return get().speakers[speakerId];
   },
 
+  resolveSpeakerId: (speakerId) => get().speakerAliases.get(speakerId) ?? speakerId,
+
   getSpeakerColor: (speakerId) => {
     const state = get();
     const speaker = state.speakers[speakerId];
@@ -214,6 +229,6 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
   },
 
   reset: () => {
-    set({ speakers: {}, speakerOrder: [], pendingNaming: null });
+    set(noSpeakers);
   },
 }));

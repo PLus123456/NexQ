@@ -86,6 +86,10 @@ function webSpeechLanguage(state: ReturnType<typeof useConfigStore.getState>): s
   return sideLanguage(side, state.sttLanguage);
 }
 
+const TERMINAL_RECOGNITION_ERRORS = new Set([
+  "not-allowed", "service-not-allowed", "audio-capture", "language-not-supported", "bad-grammar",
+]);
+
 /**
  * Hook that runs browser-native speech recognition while a meeting is active.
  * Speaker label is determined by which party has web_speech configured —
@@ -94,6 +98,10 @@ function webSpeechLanguage(state: ReturnType<typeof useConfigStore.getState>): s
 export function useSpeechRecognition() {
   const isRecording = useMeetingStore((s) => s.isRecording);
   const isEndingMeeting = useMeetingStore((s) => s.isEndingMeeting);
+  const meetingId = useMeetingStore((s) => s.activeMeeting?.id);
+  const speakerLabel = useConfigStore((s) => getSpeakerLabel(s.meetingAudioConfig));
+  const speakerId = speakerLabel === "User" ? "you" : "them";
+  const muted = useConfigStore((s) => speakerId === "you" ? s.mutedYou : s.mutedThem);
   // This side's own language when it has one, else the shared transcription language.
   // A change restarts recognition.
   const sttLanguage = useConfigStore(webSpeechLanguage);
@@ -122,292 +130,197 @@ export function useSpeechRecognition() {
   const settledOverride = useCaptureSyncStore((s) => s.settledOverrideKey);
   const captureReady = settledOverride === null || settledOverride === wantedOverride;
 
-  // Ref for store action — always fresh without being a dep.
-  const updateInterimRef = useRef(useTranscriptStore.getState().updateInterimSegment);
-  useEffect(() => {
-    return useTranscriptStore.subscribe((s) => {
-      updateInterimRef.current = s.updateInterimSegment;
-    });
-  }, []);
-
-  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
-  const segmentCounterRef = useRef(0);
-  const shouldRestartRef = useRef(false);
-  const sessionPrefixRef = useRef("");
-  const instanceIdRef = useRef(0);
-  // Track consecutive restart failures for backoff
-  const restartFailCountRef = useRef(0);
-
-  // True from the moment an instance starts until the next run of the effect below
-  // (whose cleanup has already stopped it by then).
-  const instanceStartedRef = useRef(false);
-  // Auto-detect has silenced Web Speech and the user has been told (reset when it speaks again).
-  const silencedRef = useRef(false);
-  // This meeting's first run of the effect below is over: Rust announces what is silenced at a start.
-  const ranOnceRef = useRef(false);
+  const retiring = useRef<Promise<void> | null>(null);
+  const instanceStarted = useRef(false);
+  const silenced = useRef(false);
+  const ranOnce = useRef(false);
 
   useEffect(() => {
-    const hadInstance = instanceStartedRef.current;
-    instanceStartedRef.current = false;
-    const firstRun = isRecording && !ranOnceRef.current;
-    ranOnceRef.current = isRecording;
+    const hadInstance = instanceStarted.current;
+    instanceStarted.current = false;
+    const firstRun = isRecording && !ranOnce.current;
+    ranOnce.current = isRecording;
 
-    // The previous run's cleanup has already asked its instance to stop (and
-    // lets its last result drain), so there is nothing to clean up here.
     if (!isRecording || isEndingMeeting || !usesWebSpeech) {
-      silencedRef.current = false;
+      silenced.current = false;
       return;
     }
     if (sttLanguage === AUTO_STT_LANGUAGE) {
-      // Web Speech can't detect the language, so Auto-detect silences it. Say so once,
-      // however it came about (a language picked, or Web Speech chosen while Auto-detect
-      // was on), except at a meeting's start, where Rust already told the user.
-      const alreadyTold = silencedRef.current;
-      silencedRef.current = true;
-      if (!firstRun && !alreadyTold) {
-        const side = getSpeakerLabel(useConfigStore.getState().meetingAudioConfig) === "Them"
-          ? (useMeetingStore.getState().audioMode === "in_person" ? t("common:labels.room") : t("common:labels.them"))
-          : t("common:labels.you");
-        emit(
-          "capture_warning",
-          hadInstance
-            ? t("misc:hooks.webSpeech.autoDetect.stopped", { side })
-            : t("misc:hooks.webSpeech.autoDetect.notTranscribed", { side }),
+      if (!firstRun && !silenced.current) {
+        const side = speakerId === "you" ? t("common:labels.you")
+          : audioMode === "in_person" ? t("common:labels.room") : t("common:labels.them");
+        void emit("capture_warning", hadInstance
+          ? t("misc:hooks.webSpeech.autoDetect.stopped", { side })
+          : t("misc:hooks.webSpeech.autoDetect.notTranscribed", { side }),
         ).catch(() => {});
       }
+      silenced.current = true;
       return;
     }
-    silencedRef.current = false;
+    silenced.current = false;
+    if (muted || !captureReady) return;
 
-    // The capture is still being restarted for this config: the mic isn't switched yet.
-    if (!captureReady) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
 
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn("[STT] Web Speech API not supported in this WebView");
-      return;
-    }
-
-    // Determine speaker label from config — symmetric for YOU and THEM
-    const currentConfig = useConfigStore.getState().meetingAudioConfig;
-    const currentLanguage = sttLanguage || "en-US";
-    const speakerLabel = getSpeakerLabel(currentConfig);
-
-    console.log(
-      "[STT] Web Speech starting | speaker:", speakerLabel,
-      "| Language:", currentLanguage,
-      "| Config:",
-      currentConfig
-        ? `you=${currentConfig.you.stt_provider}, them=${currentConfig.them.stt_provider}`
-        : "null"
-    );
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.lang = currentLanguage;
-
-    recognitionRef.current = recognition;
-    instanceStartedRef.current = true;
-    shouldRestartRef.current = true;
-    sessionPrefixRef.current = Date.now().toString(36).slice(-4);
-    restartFailCountRef.current = 0;
-    const myInstanceId = ++instanceIdRef.current;
-    const meetingId = useMeetingStore.getState().activeMeeting?.id;
-    const pendingWrites = new Set<Promise<unknown>>();
+    const prefix = crypto.randomUUID();
+    let counter = 0;
+    let recognition: SpeechRecognitionInstance | undefined;
+    let running = false;
+    let disposed = false;
+    let aborted = false;
+    let terminalError = false;
     let acceptingResults = true;
-    let stopping: Promise<void> | null = null;
-    let resolveStop: (() => void) | null = null;
-    let stopTimer: ReturnType<typeof setTimeout> | null = null;
-    let stoppingRecognition: SpeechRecognitionInstance | null = null;
-    const trackWrite = (write: Promise<unknown>) => {
-      const settled = write.catch(() => {});
-      pendingWrites.add(settled);
-      void settled.finally(() => pendingWrites.delete(settled));
+    let restartFailures = 0;
+    let restartTimer: ReturnType<typeof setTimeout> | undefined;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    let stopping: Promise<void> | undefined;
+    let resolveStop: (() => void) | undefined;
+    const pendingWrites = new Set<Promise<unknown>>();
+    const isMuted = () => {
+      const cfg = useConfigStore.getState();
+      return speakerId === "you" ? cfg.mutedYou : cfg.mutedThem;
     };
+    const isCurrentMeeting = () => useMeetingStore.getState().activeMeeting?.id === meetingId;
+    const mayStart = () => {
+      const meeting = useMeetingStore.getState();
+      const config = useConfigStore.getState();
+      return !disposed && !stopping && !terminalError && !isMuted() &&
+        meeting.isRecording && !meeting.isEndingMeeting && isCurrentMeeting() &&
+        getSpeakerLabel(config.meetingAudioConfig) === speakerLabel && webSpeechLanguage(config) === sttLanguage;
+    };
+    const trackWrite = (write: Promise<unknown>) => {
+      const pending = write.catch(() => {});
+      pendingWrites.add(pending);
+      void pending.finally(() => pendingWrites.delete(pending));
+    };
+
     const finishStop = () => {
       acceptingResults = false;
       if (stopTimer) clearTimeout(stopTimer);
-      if (recognitionRef.current === stoppingRecognition) recognitionRef.current = null;
       resolveStop?.();
     };
-    const stopped = () => {
+    const drain = () => {
       acceptingResults = false;
-      // onend follows the last onresult; the cross-window events and backend
-      // transcript writes from that result must also settle before saving.
       void Promise.allSettled([...pendingWrites]).then(finishStop);
     };
-    const stop = (): Promise<void> => {
+    const abort = () => {
+      if (aborted) return;
+      aborted = true;
+      recognition?.abort();
+    };
+    const stop = (discard = false): Promise<void> => {
+      if (discard) acceptingResults = false;
       if (stopping) return stopping;
-      shouldRestartRef.current = false;
-      stoppingRecognition = recognitionRef.current;
+      if (restartTimer) clearTimeout(restartTimer);
       stopping = new Promise<void>((resolve) => { resolveStop = resolve; });
       stopTimer = setTimeout(() => {
         acceptingResults = false;
-        // stop() is graceful; only an engine that fails to finish is aborted.
-        try { stoppingRecognition?.abort(); } catch {}
+        if (running) {
+          try { abort(); } catch {}
+        }
         finishStop();
       }, 2000);
-      try { stoppingRecognition?.stop(); } catch { stopped(); }
-      if (!stoppingRecognition) stopped();
+      if (!running || !recognition) {
+        drain();
+      } else {
+        try {
+          if (discard) abort();
+          else recognition.stop();
+        } catch {
+          drain();
+        }
+      }
       return stopping;
     };
-    const unregisterStop = registerWebSpeechStop(stop);
-    const unsubscribeMeeting = useMeetingStore.subscribe((state) => {
-      if (state.isEndingMeeting) void stop();
-    });
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      if (!acceptingResults || instanceIdRef.current !== myInstanceId ||
-          useMeetingStore.getState().activeMeeting?.id !== meetingId) return;
-      // Reset fail count on successful result — recognition is healthy
-      restartFailCountRef.current = 0;
+    const scheduleRestart = () => {
+      if (!mayStart() || restartTimer || restartFailures > 5) return;
+      const delay = Math.min(300 * 2 ** restartFailures, 4000);
+      restartTimer = setTimeout(() => {
+        restartTimer = undefined;
+        if (!mayStart()) return;
+        void ensureIpolicyOverride().catch(() => {}).then(start);
+      }, delay);
+    };
+    const start = () => {
+      if (!mayStart() || !recognition) return;
+      try {
+        running = true;
+        recognition.start();
+        instanceStarted.current = true;
+      } catch (error) {
+        running = false;
+        terminalError = error instanceof DOMException &&
+          ["NotAllowedError", "NotFoundError", "SecurityError", "NotSupportedError"].includes(error.name);
+        restartFailures += 1;
+        scheduleRestart();
+      }
+    };
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const transcript = result[0].transcript.trim();
-        const confidence = result[0].confidence || 0.9;
-        if (!transcript) continue;
-
-        const segId = `web_${sessionPrefixRef.current}_${segmentCounterRef.current + 1}`;
-
-        if (result.isFinal) {
-          segmentCounterRef.current += 1;
-          const now = Date.now();
-          const speakerId = speakerLabel === "User" ? "you" : "them";
-          const finalSeg = {
-            id: segId,
-            text: transcript,
-            speaker: speakerLabel,
-            speaker_id: speakerId,
-            timestamp_ms: now,
-            is_final: true,
-            confidence,
-          };
-          updateInterimRef.current(finalSeg);
-          // Broadcast to overlay window — it has its own Zustand store and needs events
-          trackWrite(emit("transcript_final", { segment: finalSeg }));
-          trackWrite(pushTranscript(transcript, speakerLabel, now, true));
-        } else {
-          const speakerId = speakerLabel === "User" ? "you" : "them";
-          const interimSeg = {
-            id: segId,
+    const initialize = () => {
+      if (!mayStart()) return;
+      const instance = new SpeechRecognition();
+      recognition = instance;
+      instance.continuous = true;
+      instance.interimResults = true;
+      instance.maxAlternatives = 1;
+      instance.lang = sttLanguage || "en-US";
+      instance.onresult = (event: SpeechRecognitionEvent) => {
+        if (!acceptingResults || isMuted() || !isCurrentMeeting()) return;
+        restartFailures = 0;
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const transcript = result[0].transcript.trim();
+          if (!transcript) continue;
+          const segment = {
+            id: `web_${prefix}_${counter + 1}`,
             text: transcript,
             speaker: speakerLabel,
             speaker_id: speakerId,
             timestamp_ms: Date.now(),
-            is_final: false,
-            confidence: 0,
+            is_final: result.isFinal,
+            confidence: result.isFinal ? result[0].confidence || 0.9 : 0,
           };
-          updateInterimRef.current(interimSeg);
-          // Broadcast to overlay window
-          trackWrite(emit("transcript_update", { segment: interimSeg }));
-        }
-      }
-    };
-
-    recognition.onerror = (event: Event & { error: string }) => {
-      const error = event.error;
-      // "no-speech" is normal — just silence, onend will fire and restart
-      // "aborted" happens when we stop intentionally
-      if (error === "no-speech" || error === "aborted") return;
-      console.error("[STT] Speech recognition error:", error);
-    };
-
-    recognition.onend = () => {
-      if (stopping) { stopped(); return; }
-      // Only restart if this is still the current instance
-      if (instanceIdRef.current !== myInstanceId) return;
-      if (!shouldRestartRef.current || !recognitionRef.current) return;
-
-      // Backoff: 300ms, 600ms, 1200ms, capped at 2000ms
-      const delay = Math.min(300 * Math.pow(2, restartFailCountRef.current), 2000);
-      const restartNum = restartFailCountRef.current + 1;
-
-      console.log(`[STT] Web Speech onend | restart #${restartNum}, delay ${delay}ms`);
-
-      setTimeout(async () => {
-        if (instanceIdRef.current !== myInstanceId) return;
-        if (!shouldRestartRef.current || !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
-
-        // Check fresh config
-        const freshCfg = useConfigStore.getState().meetingAudioConfig;
-        const stillActive =
-          (freshCfg?.you.stt_provider === "web_speech" && freshCfg?.you.is_input_device) ||
-          (freshCfg?.them.stt_provider === "web_speech" && freshCfg?.them.is_input_device);
-        if (!stillActive) return;
-
-        // Verify IPolicy before restarting — never block restart on failure
-        try {
-          const ipolicy = await ensureIpolicyOverride();
-          if (ipolicy.was_drifted) {
-            console.warn("[STT] IPolicy drift corrected before restart");
-          } else if (ipolicy.active) {
-            console.log("[STT] IPolicy verified (no drift)");
-          }
-        } catch (err) {
-          console.warn("[STT] IPolicy verification failed, proceeding anyway:", err);
-        }
-
-        // Guard again after async — state may have changed during IPolicy check
-        if (instanceIdRef.current !== myInstanceId) return;
-        if (!shouldRestartRef.current || !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
-
-        try {
-          recognitionRef.current!.start();
-          console.log("[STT] Web Speech auto-restarted (delay:", delay, "ms)");
-        } catch (err) {
-          restartFailCountRef.current += 1;
-          console.warn("[STT] Web Speech restart failed, will retry:", err);
-          // Force another onend to trigger retry with longer backoff
-          // by creating a fresh instance
-          if (restartFailCountRef.current <= 5) {
-            try {
-              // Re-verify IPolicy before fresh instance — device may have drifted
-              try {
-                await ensureIpolicyOverride();
-              } catch {
-                // proceed anyway
-              }
-              const language = webSpeechLanguage(useConfigStore.getState());
-              if (language === AUTO_STT_LANGUAGE) return;
-              if (instanceIdRef.current !== myInstanceId || !shouldRestartRef.current ||
-                  !recognitionRef.current || useMeetingStore.getState().isEndingMeeting) return;
-
-              const fresh = new SpeechRecognition();
-              fresh.continuous = true;
-              fresh.interimResults = true;
-              fresh.maxAlternatives = 1;
-              fresh.lang = language || currentLanguage;
-              // Copy handlers from old instance
-              fresh.onresult = recognitionRef.current!.onresult;
-              fresh.onerror = recognitionRef.current!.onerror;
-              fresh.onend = recognitionRef.current!.onend;
-              recognitionRef.current = fresh;
-              fresh.start();
-              console.log("[STT] Web Speech creating fresh instance (restart failed)");
-            } catch {
-              console.error("[STT] Web Speech fresh instance creation also failed");
-            }
+          useTranscriptStore.getState().updateInterimSegment(segment);
+          trackWrite(emit(result.isFinal ? "transcript_final" : "transcript_update", { segment, meeting_id: meetingId }));
+          if (result.isFinal) {
+            counter += 1;
+            trackWrite(pushTranscript(transcript, speakerLabel, segment.timestamp_ms, true, meetingId));
           }
         }
-      }, delay);
+      };
+      instance.onerror = ({ error }) => {
+        if (stopping || error === "no-speech") return;
+        terminalError ||= TERMINAL_RECOGNITION_ERRORS.has(error);
+        restartFailures += 1;
+        console.warn("[STT] Web Speech recognition error:", error);
+      };
+      instance.onend = () => {
+        running = false;
+        if (stopping) drain();
+        else scheduleRestart();
+      };
+      start();
     };
 
-    try {
-      recognition.start();
-      console.log("[STT] Web Speech recognition started");
-    } catch (err) {
-      console.warn("[STT] Recognition start deferred:", err);
-    }
+    const unregisterStop = registerWebSpeechStop(() => stop(isMuted()));
+    const unsubscribeMeeting = useMeetingStore.subscribe((state) => {
+      if (state.isEndingMeeting) void stop(isMuted());
+    });
+    const previous = retiring.current;
+    if (previous) void previous.then(initialize);
+    else initialize();
 
     return () => {
+      disposed = true;
       unsubscribeMeeting();
-      // Keep the stop handler registered until its final result has drained,
-      // including when ending triggered this effect's cleanup.
-      void stop().finally(unregisterStop);
+      const drainPrevious = stop(isMuted() || !isCurrentMeeting()).finally(unregisterStop);
+      const allStopped = previous ? Promise.all([previous, drainPrevious]).then(() => {}) : drainPrevious;
+      retiring.current = allStopped;
+      void allStopped.then(() => {
+        if (retiring.current === allStopped) retiring.current = null;
+      });
     };
-  }, [isRecording, isEndingMeeting, usesWebSpeech, sttLanguage, captureReady]);
+  }, [isRecording, isEndingMeeting, meetingId, usesWebSpeech, sttLanguage, captureReady, muted, speakerId, speakerLabel, audioMode]);
 }

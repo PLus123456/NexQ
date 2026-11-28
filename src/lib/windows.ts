@@ -5,6 +5,7 @@
  * drifting away from the actual native windows.
  */
 import { logToFile } from "./logger";
+import { useMeetingStore } from "../stores/meetingStore";
 
 /** Show the launcher window and hide the overlay (whichever window asks). */
 export async function showLauncherWindow(): Promise<void> {
@@ -55,6 +56,14 @@ export async function showOverlayWindow(): Promise<void> {
 
 /** Window -> overlay window: bring back the floating meeting overlay. */
 export const SHOW_MEETING_OVERLAY_EVENT = "nexq:show_meeting_overlay";
+export const TOGGLE_OVERLAY_SETTINGS_EVENT = "nexq:toggle_overlay_settings";
+
+export function toggleWindowSettings(): void {
+  const store = useMeetingStore.getState();
+  if (store.settingsOpen) store.setSettingsOpen(false);
+  else if (store.currentView === "settings") store.setCurrentView(store.previousView ?? "launcher");
+  else store.openSettings();
+}
 
 /**
  * Bring back the floating meeting overlay from any window (launcher RETURN,
@@ -68,31 +77,7 @@ export async function showMeetingOverlay(): Promise<void> {
 
 /** Whether the overlay window is on screen. */
 export async function isOverlayVisible(): Promise<boolean> {
-  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const overlay = await WebviewWindow.getByLabel("overlay");
-  return overlay ? overlay.isVisible().catch(() => false) : false;
-}
-
-/**
- * Speakers, bookmarks, action items and topic sections are edited in the
- * overlay window. When a meeting ends, both windows may run endMeetingFlow
- * (tray Stop, update restart), and saving them replaces all rows — so exactly
- * one window persists them: the overlay, or the launcher only when no overlay
- * window has taken the meeting.
- */
-export function shouldPersistOverlayData(windowLabel: string, overlayActive: boolean): boolean {
-  if (windowLabel === "overlay") return true;
-  return !overlayActive;
-}
-
-/**
- * How a window ends the running meeting: by itself, or through every window
- * (the tray's Stop path) when it is not the overlay and the overlay took the
- * meeting — the overlay holds data only it saves (see
- * shouldPersistOverlayData), so it must run its own endMeetingFlow.
- */
-export function meetingEndRoute(windowLabel: string, overlayActive: boolean): "here" | "all_windows" {
-  return windowLabel !== "overlay" && overlayActive ? "all_windows" : "here";
+  return isWindowShown("overlay");
 }
 
 /**

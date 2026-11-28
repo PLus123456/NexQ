@@ -89,8 +89,8 @@ pub struct SegmentAccumulator {
     segment_counter: u64,
     /// Whether we have an active accumulated segment
     has_active: bool,
-    /// The interim line last shown, until a final replaces it: words the
-    /// provider hasn't confirmed, which `close_line` still turns into a line.
+    /// The interim line last shown, until a final replaces it. A standalone
+    /// interim can be saved on close without rewriting a committed line.
     last_interim: Option<AccumulatorOutput>,
     /// Whether the interims since the last final show on a new line, decided
     /// by the first of them. None until an interim arrives after a final.
@@ -245,18 +245,16 @@ impl SegmentAccumulator {
         }
     }
 
-    /// End the line being shown, interim words included, as a final line, and
-    /// leave the next result a new id (the provider behind this accumulator is
-    /// being replaced). Nothing when no line is showing.
+    /// End the line and reserve a new id for the next provider. Save an
+    /// interim-only line of its own and preserve any already committed text.
     pub fn close_line(&mut self) -> Option<AccumulatorOutput> {
         let Some(mut shown) = self.last_interim.take() else {
             return self.flush();
         };
-        if shown.id == format!("acc_{}", self.segment_counter + 1) {
-            // Interim words on a line of their own (no final yet, or speech
-            // after a pause): they own the next id.
-            self.segment_counter += 1;
+        if shown.id != format!("acc_{}", self.segment_counter + 1) {
+            return self.flush();
         }
+        self.segment_counter += 1;
         shown.is_final = true;
         shown.turn = None;
         self.interim_new_line = None;
@@ -507,13 +505,13 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_line_keeps_the_interim_words_after_its_finals() {
+    fn closing_a_final_line_keeps_its_committed_text() {
         let mut a = acc();
         a.feed_result(fin("Hello there.", T0, Some(500), None));
         a.feed_result(interim("how ar", T0 + 700));
 
         let closed = a.close_line().unwrap();
-        assert_eq!((closed.id.as_str(), closed.text.as_str(), closed.is_final), ("acc_1", "Hello there. how ar", true));
+        assert_eq!((closed.id.as_str(), closed.text.as_str(), closed.is_final), ("acc_1", "Hello there.", true));
         let next = a.feed_result(fin("Hola.", T0 + 900, Some(300), None));
         assert_eq!(next[0].id, "acc_2");
     }

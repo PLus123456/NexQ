@@ -7,6 +7,7 @@ const registrationControl = vi.hoisted(() => ({ failKey: "", pendingKey: "", rel
 const captureFailure = vi.hoisted(() => ({ message: "" }));
 const registerFailure = vi.hoisted(() => ({ key: "" }));
 const emitted = vi.hoisted(() => [] as Array<[string, unknown]>);
+const overlayWindow = vi.hoisted(() => ({ visible: false }));
 const invoked = vi.hoisted(() => [] as Array<[string, Record<string, unknown> | undefined]>);
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: async (key: string, handler: (event: { state: string }) => void) => {
@@ -47,7 +48,11 @@ async function mountWindow(label: "launcher" | "overlay") {
   vi.resetModules();
   vi.doMock("@tauri-apps/api/webviewWindow", () => ({
     getCurrentWebviewWindow: () => ({ label }),
-    WebviewWindow: { getByLabel: async () => null },
+    WebviewWindow: { getByLabel: async (label: string) => label === "overlay" ? {
+      isVisible: async () => overlayWindow.visible,
+      isMinimized: async () => false,
+      hide: async () => { overlayWindow.visible = false; },
+    } : null },
   }));
   const { useGlobalShortcut } = await import("./useGlobalShortcut");
   const { useMeetingStore } = await import("../stores/meetingStore");
@@ -55,12 +60,14 @@ async function mountWindow(label: "launcher" | "overlay") {
   useConfigStore.setState({ stealthShortcut: "", meetingAudioConfig: null });
   stores.push(useMeetingStore);
   renderHook(() => useGlobalShortcut());
-  await waitFor(() => expect(shortcuts.has("CmdOrCtrl+,")).toBe(true));
+  if (label === "launcher") await waitFor(() => expect(shortcuts.has("CmdOrCtrl+,")).toBe(true));
   return useMeetingStore;
 }
 
 beforeEach(() => {
   invoked.length = 0;
+  emitted.length = 0;
+  overlayWindow.visible = false;
   shortcuts.clear();
   captureFailure.message = "";
   registrationControl.failKey = "";
@@ -76,14 +83,43 @@ afterEach(() => {
 
 it("starts recording in the launcher that owns Web Speech when the overlay loads last", async () => {
   const launcher = await mountWindow("launcher");
-  shortcuts.delete("CmdOrCtrl+,");
+  const installed = new Map(shortcuts);
   const overlay = await mountWindow("overlay");
+  expect(shortcuts).toEqual(installed);
 
   await act(async () => { shortcuts.get("CmdOrCtrl+M")!({ state: "Pressed" }); });
   await waitFor(() => expect(launcher.getState().isRecording || overlay.getState().isRecording).toBe(true));
   await waitFor(() => expect(launcher.getState().isRecording).toBe(true));
   expect(launcher.getState().activeMeeting?.id).toBe("shortcut-meeting");
   expect(overlay.getState().isRecording).toBe(false);
+});
+
+it("opens Settings in whichever meeting window is visible", async () => {
+  const launcher = await mountWindow("launcher");
+  await mountWindow("overlay");
+  overlayWindow.visible = true;
+  await act(async () => { shortcuts.get("CmdOrCtrl+,")!({ state: "Pressed" }); });
+  expect(emitted).toContainEqual(["nexq:toggle_overlay_settings", undefined]);
+  expect(launcher.getState().currentView).toBe("launcher");
+
+  overlayWindow.visible = false;
+  await act(async () => { shortcuts.get("CmdOrCtrl+,")!({ state: "Pressed" }); });
+  expect(launcher.getState().currentView).toBe("settings");
+});
+
+it("keeps Space on a focused button available for normal activation", async () => {
+  const launcher = await mountWindow("launcher");
+  act(() => launcher.setState({ activeMeeting: { id: "m" } as Meeting }));
+  const button = document.createElement("button");
+  document.body.append(button);
+  try {
+    const key = new KeyboardEvent("keydown", { code: "Space", bubbles: true, cancelable: true });
+    await act(async () => { button.dispatchEvent(key); });
+    expect(key.defaultPrevented).toBe(false);
+    expect(invoked.some(([command]) => command === "generate_assist")).toBe(false);
+  } finally {
+    button.remove();
+  }
 });
 
 it("reports denied audio capture while retaining the created meeting", async () => {
@@ -236,9 +272,14 @@ describe("capture screen shortcut", () => {
   });
 
   it("yields to Hide from screen share when bound to the same keys", async () => {
+    await mountWindow("launcher");
+    const { useConfigStore: launcherConfig } = await import("../stores/configStore");
     const { overlay, useConfigStore, key } = await overlayWithProvider("claude_cli");
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    act(() => useConfigStore.setState({ stealthShortcut: key }));
+    act(() => {
+      launcherConfig.setState({ stealthShortcut: key });
+      useConfigStore.setState({ stealthShortcut: key });
+    });
     act(() => overlay.setState({ activeMeeting: { id: "m1" } as Meeting }));
     await waitFor(() => expect(shortcuts.has(key)).toBe(true));
     await new Promise((r) => setTimeout(r, 30));

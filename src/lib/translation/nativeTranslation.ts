@@ -10,7 +10,7 @@
 // by the settings, never by "a translation already arrived": Soniox's
 // translation often lands after `transcript_final`.
 
-import type { MeetingAudioConfig, NativeTranslationConfig, PartyAudioConfig, Speaker } from "../types";
+import type { MeetingAudioConfig, NativeTranslationConfig, PartyAudioConfig, Speaker, TranslationResult } from "../types";
 import { AUTO_LANGUAGE, baseLanguage, normalizeLanguageCode } from "../languages";
 import { sttProviderMeta } from "../stt/providerMeta";
 import type { PartyTranslationMode, TranslateParties, TranslationParty } from "./types";
@@ -54,6 +54,25 @@ export function partyUsesNativeTranslation(config: PartyAudioConfig | null | und
   if (!config || !native || !engineSupportsNativeTranslation(config.stt_provider)) return false;
   if (native.mode === "one_way") return true;
   return native.mode === "two_way" && hasLanguagePair(native);
+}
+
+/** Service results use the global target. Soniox can use a per-side target or both sides of a pair. */
+export function matchesTranslationTarget(
+  result: TranslationResult,
+  targetLang: string,
+  audio: MeetingAudioConfig | null,
+): boolean {
+  if (result.provider.toLowerCase() !== "soniox") return result.target_lang === targetLang;
+  const party = result.segment_id?.startsWith("you_") ? "you" : "them";
+  const config = partyConfig(audio, party);
+  const native = config?.native_translation;
+  if (!native || !partyUsesNativeTranslation(config)) return false;
+
+  const actual = normalizeLanguageCode(result.target_lang);
+  if (native.mode === "two_way") {
+    return [native.language_a, native.language_b].some((code) => normalizeLanguageCode(code ?? "") === actual);
+  }
+  return normalizeLanguageCode(native.target_language?.trim() || targetLang) === actual;
 }
 
 /** Who translates `party` right now. */

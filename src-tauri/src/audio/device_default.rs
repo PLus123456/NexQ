@@ -1,294 +1,172 @@
-//! IPolicyConfig-based default device override for Windows.
-//!
-//! When Web Speech API or Windows Speech Recognition is selected with a non-default
-//! audio device, we temporarily set the Windows default recording endpoint to the
-//! user's selected device. Both engines always capture from the OS default mic, so
-//! this is the only way to redirect them.
-//!
-//! IPolicyConfig is an undocumented but widely-used COM interface (stable since Vista).
-//! Used by EarTrumpet, SoundSwitch, and many other audio utilities.
-//!
-//! The original default is saved in AppState and restored on meeting end or app exit.
+//! Temporary default recording endpoint override for engines that open their own mic.
 
-/// Get the current default capture endpoint ID (Windows MMDevice ID).
-/// Returns a string like `{0.0.1.00000000}.{guid}`.
-///
-/// Caller must ensure COM is initialized on the current thread.
-#[cfg(target_os = "windows")]
-pub fn get_default_capture_endpoint_id() -> Result<String, String> {
-    use std::ffi::c_void;
-    use windows::Win32::Media::Audio::{eCapture, eConsole, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+#![cfg(target_os = "windows")]
 
-    unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("Device enumerator creation failed: {}", e))?;
+use std::ffi::c_void;
 
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eCapture, eConsole)
-            .map_err(|e| format!("GetDefaultAudioEndpoint(eCapture) failed: {}", e))?;
+use windows::core::{IUnknown, Interface, GUID, HRESULT, PCWSTR};
+use windows::Win32::Media::Audio::{
+    eCapture, eCommunications, eConsole, eMultimedia, ERole, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+    COINIT_MULTITHREADED,
+};
 
-        let id_pwstr = device
-            .GetId()
-            .map_err(|e| format!("GetId failed: {}", e))?;
+const ROLES: [ERole; 3] = [eConsole, eMultimedia, eCommunications];
 
-        let id_str = id_pwstr
-            .to_string()
-            .map_err(|e| format!("PWSTR to string failed: {}", e))?;
+/// Preserve each default separately. Some users choose a different device for
+/// calls, and setting one role must not overwrite their other role preferences.
+pub struct DefaultCaptureOverride {
+    target: String,
+    original: [String; ROLES.len()],
+    changed: [bool; ROLES.len()],
+    active: bool,
+}
 
-        // Free the CoTaskMem-allocated PWSTR
-        windows::Win32::System::Com::CoTaskMemFree(Some(id_pwstr.0 as *const c_void));
+impl DefaultCaptureOverride {
+    pub fn new(device_name: &str) -> Result<Self, String> {
+        with_com(|| {
+            let enumerator = device_enumerator()?;
+            let target = find_capture_endpoint_id_by_name(&enumerator, device_name)?;
+            let original = [
+                default_endpoint(&enumerator, eConsole)?,
+                default_endpoint(&enumerator, eMultimedia)?,
+                default_endpoint(&enumerator, eCommunications)?,
+            ];
+            Ok(Self { target, original, changed: [false; ROLES.len()], active: false })
+        })
+    }
 
-        Ok(id_str)
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Return whether any roles needed applying, including if one has drifted
+    /// since an initially matching default was selected.
+    pub fn ensure(&mut self) -> Result<bool, String> {
+        with_com(|| {
+            let enumerator = device_enumerator()?;
+            let mut applied = false;
+            for (index, role) in ROLES.into_iter().enumerate() {
+                if default_endpoint(&enumerator, role)? != self.target {
+                    set_default_endpoint(&self.target, role)?;
+                    self.changed[index] = true;
+                    applied = true;
+                }
+            }
+            self.active = true;
+            Ok(applied)
+        })
+    }
+
+    /// Undo the app's changes. If a role has since been changed elsewhere,
+    /// leave that device selection in place. Keep failed restores for retry.
+    pub fn restore(&mut self) -> Result<(), String> {
+        self.active = false;
+        with_com(|| {
+            let enumerator = device_enumerator()?;
+            let mut error = None;
+            for (index, role) in ROLES.into_iter().enumerate() {
+                if !self.changed[index] {
+                    continue;
+                }
+                let still_overridden = default_endpoint(&enumerator, role)
+                    .map(|current| current == self.target).unwrap_or(true);
+                if still_overridden && self.original[index] != self.target {
+                    if let Err(err) = set_default_endpoint(&self.original[index], role) {
+                        error = Some(err);
+                        continue;
+                    }
+                }
+                self.changed[index] = false;
+            }
+            error.map_or(Ok(()), Err)
+        })
     }
 }
 
-/// Find the Windows endpoint ID for a capture device matching the given cpal name.
-/// cpal uses PKEY_Device_FriendlyName as device names, which this also reads.
-///
-/// Caller must ensure COM is initialized on the current thread.
-#[cfg(target_os = "windows")]
-pub fn find_capture_endpoint_id_by_name(cpal_name: &str) -> Result<String, String> {
-    use std::ffi::c_void;
-    use windows::Win32::Media::Audio::{
-        eCapture, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
-    };
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-
-    unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("Device enumerator failed: {}", e))?;
-
-        let collection = enumerator
-            .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
-            .map_err(|e| format!("EnumAudioEndpoints failed: {}", e))?;
-
-        let count = collection
-            .GetCount()
-            .map_err(|e| format!("GetCount failed: {}", e))?;
-
-        for i in 0..count {
-            let device = match collection.Item(i) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            // Get friendly name using same property as cpal
-            let name = get_device_friendly_name_internal(&device);
-
-            if name.as_deref() == Some(cpal_name) {
-                let id_pwstr = device
-                    .GetId()
-                    .map_err(|e| format!("GetId failed: {}", e))?;
-                let id_str = id_pwstr
-                    .to_string()
-                    .map_err(|e| format!("PWSTR conversion: {}", e))?;
-                windows::Win32::System::Com::CoTaskMemFree(Some(id_pwstr.0 as *const c_void));
-                return Ok(id_str);
+fn with_com<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    struct Apartment(bool);
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
             }
         }
+    }
+    let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    // RPC_E_CHANGED_MODE means the caller already has a different COM apartment.
+    if result.is_err() && result.0 as u32 != 0x80010106 {
+        return Err(format!("CoInitializeEx failed: 0x{:08X}", result.0));
+    }
+    let _apartment = Apartment(result.is_ok()); // includes S_FALSE
+    operation()
+}
 
-        Err(format!(
-            "Capture device '{}' not found in MMDevice enumeration",
-            cpal_name
-        ))
+fn device_enumerator() -> Result<IMMDeviceEnumerator, String> {
+    unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+        .map_err(|err| format!("Device enumerator creation failed: {err}"))
+}
+
+fn endpoint_id(device: &IMMDevice) -> Result<String, String> {
+    unsafe {
+        let id = device.GetId().map_err(|err| format!("GetId failed: {err}"))?;
+        let value = id.to_string();
+        CoTaskMemFree(Some(id.0.cast::<c_void>()));
+        value.map_err(|err| format!("Invalid Windows endpoint ID: {err}"))
     }
 }
 
-/// Set the Windows default capture endpoint using IPolicyConfig.
-///
-/// `endpoint_id` must be a Windows MMDevice endpoint ID (not a cpal name).
-/// Sets the default for all three roles: eConsole, eMultimedia, eCommunications.
-///
-/// Caller must ensure COM is initialized on the current thread.
-#[cfg(target_os = "windows")]
-pub fn set_default_capture_endpoint(endpoint_id: &str) -> Result<(), String> {
-    use std::ffi::c_void;
-    use windows::core::{IUnknown, Interface, GUID, HRESULT, PCWSTR};
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+fn default_endpoint(enumerator: &IMMDeviceEnumerator, role: ERole) -> Result<String, String> {
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, role) }
+        .map_err(|err| format!("Couldn't read default capture device for role {}: {err}", role.0))?;
+    endpoint_id(&device)
+}
 
-    // IPolicyConfig COM interface constants (undocumented, stable since Vista)
-    const CLSID_POLICY_CONFIG_CLIENT: GUID = GUID {
-        data1: 0x870AF99C,
-        data2: 0x171D,
-        data3: 0x4F9E,
-        data4: [0xAF, 0x0D, 0xE6, 0x3D, 0xF4, 0x0C, 0x2B, 0xC9],
-    };
-    const IID_IPOLICY_CONFIG: GUID = GUID {
-        data1: 0xF8679F50,
-        data2: 0x850A,
-        data3: 0x41CF,
-        data4: [0x9C, 0x72, 0x43, 0x0F, 0x29, 0x02, 0x90, 0xC8],
-    };
-
-    // SetDefaultEndpoint is at vtable index 13 in IPolicyConfig:
-    //   IUnknown: 0=QueryInterface, 1=AddRef, 2=Release
-    //   IPolicyConfig: 3=GetMixFormat, 4=GetDeviceFormat, 5=ResetDeviceFormat,
-    //     6=SetDeviceFormat, 7=GetProcessingPeriod, 8=SetProcessingPeriod,
-    //     9=GetShareMode, 10=SetShareMode, 11=GetPropertyValue,
-    //     12=SetPropertyValue, 13=SetDefaultEndpoint, 14=SetEndpointVisibility
-    const VTABLE_SET_DEFAULT_ENDPOINT: usize = 13;
-
-    type SetDefaultEndpointFn =
-        unsafe extern "system" fn(this: *mut c_void, device_id: PCWSTR, role: u32) -> HRESULT;
-    type QueryInterfaceFn = unsafe extern "system" fn(
-        this: *mut c_void,
-        riid: *const GUID,
-        ppv: *mut *mut c_void,
-    ) -> HRESULT;
-    type ReleaseFn = unsafe extern "system" fn(this: *mut c_void) -> u32;
-
+fn find_capture_endpoint_id_by_name(enumerator: &IMMDeviceEnumerator, name: &str) -> Result<String, String> {
     unsafe {
-        // Create PolicyConfig COM object — request IUnknown first
-        let unk: IUnknown = CoCreateInstance(&CLSID_POLICY_CONFIG_CLIENT, None, CLSCTX_ALL)
-            .map_err(|e| format!("PolicyConfig COM creation failed: {}", e))?;
-
-        let raw = unk.as_raw();
-        let vtable = *(raw as *const *const *const c_void);
-
-        // QueryInterface for IPolicyConfig to get the right vtable
-        let qi: QueryInterfaceFn = std::mem::transmute(*vtable);
-        let mut ipc_ptr: *mut c_void = std::ptr::null_mut();
-        let hr = qi(raw, &IID_IPOLICY_CONFIG, &mut ipc_ptr);
-        if hr.is_err() {
-            return Err(format!(
-                "QueryInterface for IPolicyConfig failed: 0x{:08X}",
-                hr.0
-            ));
-        }
-
-        // Get SetDefaultEndpoint from IPolicyConfig vtable
-        let ipc_vtable = *(ipc_ptr as *const *const *const c_void);
-        let set_default: SetDefaultEndpointFn =
-            std::mem::transmute(*ipc_vtable.add(VTABLE_SET_DEFAULT_ENDPOINT));
-
-        let wide: Vec<u16> = endpoint_id
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Set for all three roles: eConsole(0), eMultimedia(1), eCommunications(2)
-        let role_names = ["eConsole", "eMultimedia", "eCommunications"];
-        let mut last_error = None;
-        for (idx, role) in [0u32, 1, 2].iter().enumerate() {
-            let hr = set_default(ipc_ptr, PCWSTR(wide.as_ptr()), *role);
-            if hr.is_err() {
-                log::error!(
-                    "IPolicyConfig::SetDefaultEndpoint({}) HRESULT=0x{:08X}",
-                    role_names[idx], hr.0
-                );
-                last_error = Some(format!(
-                    "SetDefaultEndpoint failed for {} (role {}): 0x{:08X}",
-                    role_names[idx], role, hr.0
-                ));
-            } else {
-                log::debug!(
-                    "IPolicyConfig::SetDefaultEndpoint({}) OK (0x{:08X})",
-                    role_names[idx], hr.0
-                );
+        let devices = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
+            .map_err(|err| format!("EnumAudioEndpoints failed: {err}"))?;
+        let count = devices.GetCount().map_err(|err| format!("GetCount failed: {err}"))?;
+        for index in 0..count {
+            if let Ok(device) = devices.Item(index) {
+                if get_device_friendly_name_internal(&device).as_deref() == Some(name) {
+                    return endpoint_id(&device);
+                }
             }
         }
-
-        // Release IPolicyConfig reference
-        let release: ReleaseFn = std::mem::transmute(*ipc_vtable.add(2));
-        release(ipc_ptr);
-
-        if let Some(err) = last_error {
-            return Err(err);
-        }
-
-        log::info!(
-            "IPolicyConfig: Set default capture endpoint to '{}'",
-            endpoint_id
-        );
-        Ok(())
     }
+    Err(format!("Capture device '{name}' not found in MMDevice enumeration"))
 }
 
-/// High-level helper: override the system default capture device to match a cpal device name.
-/// Returns the original endpoint ID so it can be restored later.
-///
-/// Handles COM initialization internally (safe to call from any thread).
-#[cfg(target_os = "windows")]
-/// Returns `Ok(Some(original_endpoint_id))` when an override was applied,
-/// or `Ok(None)` when the target was already the default (no change made).
-pub fn override_default_capture_device(cpal_device_name: &str) -> Result<Option<String>, String> {
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-
+fn set_default_endpoint(endpoint: &str, role: ERole) -> Result<(), String> {
+    // IPolicyConfig, available since Vista. SetDefaultEndpoint is vtable slot
+    // 13, including the three leading IUnknown entries.
+    const CLASS: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
+    const IID: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+    type QueryInterface = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
+    type SetDefault = unsafe extern "system" fn(*mut c_void, PCWSTR, i32) -> HRESULT;
     unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let we_initialized = hr.0 == 0; // S_OK only — don't CoUninitialize if S_FALSE
-        // RPC_E_CHANGED_MODE (0x80010106): COM already initialized with a different
-        // threading model (e.g. APARTMENTTHREADED). COM is still usable — just don't
-        // uninitialize it. S_FALSE (0x01): already initialized same mode — also usable.
-        if hr.is_err() && hr.0 as u32 != 0x80010106 {
-            return Err(format!("CoInitializeEx failed: 0x{:08X}", hr.0));
-        }
-
-        let result = (|| -> Result<Option<String>, String> {
-            // Save current default
-            let original = get_default_capture_endpoint_id()?;
-            log::info!(
-                "IPolicyConfig: Current default capture = '{}'",
-                original
-            );
-
-            // Find the endpoint ID for the user's selected device
-            let target = find_capture_endpoint_id_by_name(cpal_device_name)?;
-            log::info!(
-                "IPolicyConfig: Target device '{}' → endpoint '{}'",
-                cpal_device_name,
-                target
-            );
-
-            if target == original {
-                log::info!("IPolicyConfig: Target is already the default — no override needed");
-                return Ok(None);
-            }
-
-            // Set the new default
-            set_default_capture_endpoint(&target)?;
-
-            Ok(Some(original))
-        })();
-
-        if we_initialized {
-            CoUninitialize();
-        }
-        result
-    }
-}
-
-/// Restore the original default capture device.
-///
-/// Handles COM initialization internally (safe to call from any thread).
-#[cfg(target_os = "windows")]
-pub fn restore_default_capture_device(original_endpoint_id: &str) -> Result<(), String> {
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let we_initialized = hr.0 == 0; // S_OK only
-        // RPC_E_CHANGED_MODE: COM already initialized with different threading model — still usable
-        if hr.is_err() && hr.0 as u32 != 0x80010106 {
-            return Err(format!("CoInitializeEx failed: 0x{:08X}", hr.0));
-        }
-
-        let result = set_default_capture_endpoint(original_endpoint_id);
-
-        if result.is_ok() {
-            log::info!(
-                "IPolicyConfig: Restored default capture to '{}'",
-                original_endpoint_id
-            );
-        }
-
-        if we_initialized {
-            CoUninitialize();
-        }
-        result
+        let client: IUnknown = CoCreateInstance(&CLASS, None, CLSCTX_ALL)
+            .map_err(|err| format!("PolicyConfig COM creation failed: {err}"))?;
+        let raw = client.as_raw();
+        let vtable = *raw.cast::<*const *const c_void>();
+        let query: QueryInterface = std::mem::transmute(*vtable);
+        let mut raw_policy = std::ptr::null_mut();
+        query(raw, &IID, &mut raw_policy).ok()
+            .map_err(|err| format!("QueryInterface for IPolicyConfig failed: {err}"))?;
+        let policy = IUnknown::from_raw(raw_policy);
+        let policy_vtable = *policy.as_raw().cast::<*const *const c_void>();
+        let set_default: SetDefault = std::mem::transmute(*policy_vtable.add(13));
+        let wide: Vec<u16> = endpoint.encode_utf16().chain(std::iter::once(0)).collect();
+        set_default(policy.as_raw(), PCWSTR(wide.as_ptr()), role.0).ok()
+            .map_err(|err| format!("Couldn't set default capture device for role {}: {err}", role.0))
     }
 }
 
@@ -322,30 +200,4 @@ fn get_device_friendly_name_internal(
         }
         Some(s)
     }
-}
-
-// Provide no-op stubs on non-Windows platforms so the module compiles everywhere.
-#[cfg(not(target_os = "windows"))]
-pub fn get_default_capture_endpoint_id() -> Result<String, String> {
-    Err("IPolicyConfig is only available on Windows".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn override_default_capture_device(_cpal_device_name: &str) -> Result<Option<String>, String> {
-    Err("IPolicyConfig is only available on Windows".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn restore_default_capture_device(_original_endpoint_id: &str) -> Result<(), String> {
-    Err("IPolicyConfig is only available on Windows".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn find_capture_endpoint_id_by_name(_cpal_name: &str) -> Result<String, String> {
-    Err("IPolicyConfig is only available on Windows".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn set_default_capture_endpoint(_endpoint_id: &str) -> Result<(), String> {
-    Err("IPolicyConfig is only available on Windows".to_string())
 }

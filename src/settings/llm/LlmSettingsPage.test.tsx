@@ -205,6 +205,31 @@ describe("LlmSettingsPage", () => {
     expect(screen.getByText("pong")).toBeInTheDocument();
   });
 
+  it("keeps a draft edit made while the connection test is running", async () => {
+    const { user, backend } = setup({ connections: [ollama] });
+    let completeProbe!: () => void;
+    const pending = new Promise<void>((resolve) => { completeProbe = resolve; });
+    const invoke = backend.invoke.bind(backend);
+    backend.invoke = async (command, args) => {
+      if (command === "llm_test_connection") await pending;
+      return invoke(command, args);
+    };
+
+    const baseUrl = await screen.findByLabelText("Base URL");
+    await user.clear(baseUrl);
+    await user.type(baseUrl, "http://192.168.1.20:11434/v1");
+    await user.click(screen.getByRole("button", { name: /Test chat/ }));
+    const name = screen.getByLabelText("Connection name");
+    await user.clear(name);
+    await user.type(name, "Renamed while testing");
+    completeProbe();
+
+    expect(await screen.findByText("It works")).toBeInTheDocument();
+    expect(name).toHaveValue("Renamed while testing");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(backend.view().connections[0].name).toBe("Renamed while testing"));
+  });
+
   it("routes a task to its own connection and model", async () => {
     const { user, backend } = setup({
       connections: [deepseek, ollama],
@@ -297,6 +322,17 @@ describe("LlmSettingsPage", () => {
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(backend.view().connections[0].default_model).toBe("deepseek/deepseek-v4.1-flash"));
+  });
+
+  it("hides the OpenRouter catalog on an unrelated hostname with a similar suffix", async () => {
+    const other = mockConnection({
+      id: "c_0000a0a0",
+      name: "Other connection",
+      base_url: "https://otheropenrouter.ai/api/v1",
+    });
+    setup({ connections: [other] });
+    expect(await screen.findByLabelText("Base URL")).toHaveValue(other.base_url);
+    expect(screen.queryByRole("button", { name: "Browse the OpenRouter catalog" })).toBeNull();
   });
 
   it("saves how much a connection's model thinks, and a task can set its own", async () => {

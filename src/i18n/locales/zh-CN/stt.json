@@ -788,6 +788,7 @@
     "delete": "删除模型",
     "download": "下载",
     "extracting": "正在解压…",
+    "cancelling": "正在取消…",
     "verifying": "正在校验…",
     "toasts": {
       "autoActivated": "已为 {{engine}} 启用模型“{{model}}”",

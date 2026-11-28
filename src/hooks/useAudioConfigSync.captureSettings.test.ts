@@ -10,13 +10,14 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tauri-apps/api/event")>()),
   emit: vi.fn(async () => {}),
 }));
-import type { MeetingAudioConfig, PartyAudioConfig } from "../lib/types";
+import type { MeetingAudioConfig, PartyAudioConfig, TranscriptSegment } from "../lib/types";
 import { captureKey, useAudioConfigSync } from "./useAudioConfigSync";
 import { captureKey as audioConfigKey } from "../lib/audioConfigKeys";
 
 import { useConfigStore } from "../stores/configStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useTranscriptStore } from "../stores/transcriptStore";
 import { DEFAULT_SONIOX_CONFIG } from "../lib/stt/types";
 
 const config = (them: Partial<PartyAudioConfig>): MeetingAudioConfig => ({
@@ -77,6 +78,7 @@ describe("active capture settings", () => {
     vi.useRealTimers();
     useMeetingStore.setState({ isRecording: false, isEndingMeeting: false, activeMeeting: null });
     useConfigStore.setState({ meetingAudioConfig: null });
+    useTranscriptStore.getState().clearSegments();
   });
   const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
   const calls = (name: string) => invoke.mock.calls.filter(([cmd]) => cmd === name);
@@ -118,6 +120,28 @@ describe("active capture settings", () => {
     changeModel("unused-model");
     await advance(1000);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps capture running when only recording is toggled", async () => {
+    renderHook(useAudioConfigSync);
+    act(() => {
+      const current = useConfigStore.getState().meetingAudioConfig!;
+      useConfigStore.setState({ meetingAudioConfig: { ...current, recording_enabled: true } });
+    });
+    await advance(500);
+    expect(calls("start_capture_per_party")).toHaveLength(0);
+  });
+
+  it("leaves final text committed while a provider change drains interim results", async () => {
+    const transcript = useTranscriptStore.getState();
+    const line: TranscriptSegment = { id: "line", text: "confirmed", speaker: "Them", timestamp_ms: 20, is_final: true, confidence: 1 };
+    transcript.updateInterimSegment(line);
+    transcript.updateInterimSegment({ ...line, text: "old partial", is_final: false });
+    renderHook(useAudioConfigSync);
+    changeModel("model-one");
+    await advance(500);
+    expect(calls("start_capture_per_party")).toHaveLength(1);
+    expect(useTranscriptStore.getState().segments[0]).toMatchObject({ text: "confirmed", is_final: true });
   });
 
   it("consumes another edit made while the previous start is in flight", async () => {

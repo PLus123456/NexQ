@@ -2,10 +2,10 @@
 // LLM prompts, languages, who to translate, and behavior toggles.
 // Follows the STT/LLM settings pattern: provider grid, API key input, test connection, make active.
 
-import { useState, useEffect, useCallback, useId } from "react";
+import { useState, useEffect, useCallback, useId, useRef } from "react";
 import { useTranslationStore, errorMessage } from "../stores/translationStore";
 import { useConfigStore } from "../stores/configStore";
-import { storeApiKey, getApiKey, hasApiKey, deleteApiKey, listOpusMtModels } from "../lib/ipc";
+import { hasApiKey, deleteApiKey, listOpusMtModels } from "../lib/ipc";
 import { testTranslationProvider } from "../lib/translation/ipc";
 import type { TranslationProviderType, OpusMtModelStatus } from "../lib/types";
 import { TRANSLATION_COMMON, languageLabel } from "../lib/languages";
@@ -30,12 +30,12 @@ import { LlmTranslationPanel } from "./translation/LlmTranslationPanel";
 import { PartyTranslationPicker } from "./translation/PartyTranslationPicker";
 import { ProviderEndpointField } from "./translation/ProviderEndpointField";
 import { SonioxTranslationCard } from "./translation/SonioxTranslationCard";
+import { saveTestedTranslationCredentials, useTranslationCredentialDraft } from "./translation/credentials";
 import {
   ALL_PROVIDERS,
   AZURE_REGIONS,
   CLOUD_PROVIDERS,
   LOCAL_PROVIDERS,
-  MICROSOFT_REGION_KEY,
   isCloudProvider,
   type ProviderOption,
 } from "./translation/providers";
@@ -87,25 +87,36 @@ export function TranslationSettings() {
   const setShowPostMeetingTranslation = useConfigStore((s) => s.setShowPostMeetingTranslation);
 
   const [selectedProvider, setSelectedProvider] = useState<TranslationProviderType>(provider);
-  const [apiKey, setApiKey] = useState("");
+  const currentProviderOption = ALL_PROVIDERS.find((p) => p.value === selectedProvider);
+  const credentials = useTranslationCredentialDraft(currentProviderOption);
+  const { apiKey, hasStoredKey, keyDirty, region: azureRegion, regionDirty } = credentials;
   const [showApiKey, setShowApiKey] = useState(false);
-  const [hasStoredKey, setHasStoredKey] = useState(false);
-  const [keyDirty, setKeyDirty] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
-  const [azureRegion, setAzureRegion] = useState("global");
+  const testRevision = useRef(0);
   const [keyStatusMap, setKeyStatusMap] = useState<Record<string, boolean>>({});
   const [testedProviders, setTestedProviders] = useState<Set<string>>(new Set());
   const [opusMtModels, setOpusMtModels] = useState<OpusMtModelStatus[]>([]);
   const settleId = useId();
 
+  const invalidateTest = useCallback(() => {
+    testRevision.current += 1;
+    setConnectionStatus("idle");
+    setStatusMessage("");
+  }, []);
+
   // Sync selectedProvider grid when the active provider loads from storage
   // (loadConfig runs async after mount, so useState initial value may be stale)
   useEffect(() => {
     setSelectedProvider(provider);
-  }, [provider]);
+    invalidateTest();
+  }, [provider, invalidateTest]);
 
-  const currentProviderOption = ALL_PROVIDERS.find((p) => p.value === selectedProvider);
+  useEffect(() => {
+    setShowApiKey(false);
+    return () => { testRevision.current += 1; };
+  }, [selectedProvider]);
+
   const providerLabel = (p: ProviderOption | undefined, fallback: string) =>
     p ? (p.labelKey ? t(p.labelKey) : p.label) : fallback;
 
@@ -147,54 +158,13 @@ export function TranslationSettings() {
       for (const p of CLOUD_PROVIDERS) {
         try { status[p.credentialKey] = await hasApiKey(p.credentialKey); } catch { status[p.credentialKey] = false; }
       }
-      setKeyStatusMap(status);
+      setKeyStatusMap((previous) => ({ ...status, ...previous }));
     }
     checkAllKeys();
   }, []);
 
-  // ── Load key when provider changes ──
-
-  useEffect(() => {
-    const loadKeyForProvider = async () => {
-      setApiKey("");
-      setShowApiKey(false);
-      setHasStoredKey(false);
-      setKeyDirty(false);
-      setConnectionStatus("idle");
-      setStatusMessage("");
-
-      if (!currentProviderOption?.requiresApiKey) return;
-
-      const credKey = currentProviderOption.credentialKey;
-      if (!credKey) return;
-
-      try {
-        const keyExists = await hasApiKey(credKey);
-        setHasStoredKey(keyExists);
-        if (keyExists) {
-          const stored = await getApiKey(credKey);
-          if (stored) setApiKey(stored);
-        }
-      } catch (e) {
-        console.warn("Failed to load translation API key:", e);
-      }
-
-      if (currentProviderOption.needsRegion) {
-        try {
-          const regionExists = await hasApiKey(MICROSOFT_REGION_KEY);
-          if (regionExists) {
-            const stored = await getApiKey(MICROSOFT_REGION_KEY);
-            if (stored) setAzureRegion(stored);
-          }
-        } catch (e) {
-          console.warn("Failed to load Azure region:", e);
-        }
-      }
-    };
-    loadKeyForProvider();
-  }, [selectedProvider, currentProviderOption?.credentialKey, currentProviderOption?.requiresApiKey, currentProviderOption?.needsRegion]);
-
   const customEndpoint = isCloudProvider(selectedProvider) ? endpoints[selectedProvider].trim() : "";
+  useEffect(invalidateTest, [customEndpoint, invalidateTest]);
 
   // ── Badge state ──
 
@@ -221,38 +191,39 @@ export function TranslationSettings() {
   // ── Handlers ──
 
   const handleProviderSelect = (prov: TranslationProviderType) => {
+    if (prov === selectedProvider) return;
+    invalidateTest();
     setSelectedProvider(prov);
-    setConnectionStatus("idle");
-    setStatusMessage("");
   };
 
-  /** Saves a changed key (and the region), then tests the selected provider — the active one stays. */
-  const handleSaveAndTest = useCallback(async () => {
-    if (!currentProviderOption?.requiresApiKey) return;
-    const key = apiKey.trim();
-    if (!key && !customEndpoint) return;
+  const handleSaveAndTest = async () => {
+    if (!currentProviderOption?.requiresApiKey || !credentials.loaded) return;
+    const key = keyDirty ? apiKey.trim() : undefined;
+    if (!key && !hasStoredKey && !customEndpoint) return;
+
+    const revision = ++testRevision.current;
+    const isCurrent = () => {
+      const current = useTranslationStore.getState();
+      return revision === testRevision.current && current.provider === provider
+        && isCloudProvider(selectedProvider) && current.endpoints[selectedProvider].trim() === customEndpoint;
+    };
+    const region = currentProviderOption.needsRegion ? azureRegion : undefined;
 
     setConnectionStatus("testing");
     setStatusMessage(t("settings.apiKey.testing"));
 
     try {
-      if (keyDirty && key) {
-        await storeApiKey(currentProviderOption.credentialKey, key);
-        setHasStoredKey(true);
-        setKeyDirty(false);
-        setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: true }));
-      }
-      if (currentProviderOption.needsRegion && azureRegion.trim()) {
-        await storeApiKey(MICROSOFT_REGION_KEY, azureRegion.trim());
-      }
-
-      const result = await testTranslationProvider(
-        selectedProvider,
-        { endpoints },
-        currentProviderOption.needsRegion ? azureRegion : undefined,
-      );
+      const result = await testTranslationProvider(selectedProvider, { endpoints }, region, key);
+      if (!isCurrent()) return;
 
       if (result.connected) {
+        if (key || regionDirty) {
+          await saveTestedTranslationCredentials(currentProviderOption, key, region);
+          if (key) setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: true }));
+        }
+        if (selectedProvider === useTranslationStore.getState().provider) void syncBackend();
+        if (!isCurrent()) return;
+        credentials.update({ hasStoredKey: hasStoredKey || Boolean(key), keyDirty: false, regionDirty: false });
         setConnectionStatus("success");
         setStatusMessage(
           result.language_count > 0
@@ -260,57 +231,41 @@ export function TranslationSettings() {
             : t("settings.apiKey.connectedNoList", { ms: result.response_ms }),
         );
         setTestedProviders((prev) => new Set(prev).add(selectedProvider));
-        // The active provider picks up a new key or region.
-        if (selectedProvider === provider) void syncBackend();
       } else {
         setConnectionStatus("error");
         setStatusMessage(result.error || t("settings.apiKey.failed"));
       }
     } catch (e) {
+      if (!isCurrent()) return;
       setConnectionStatus("error");
       setStatusMessage(errorMessage(e));
     }
-  }, [apiKey, azureRegion, customEndpoint, endpoints, keyDirty, provider, selectedProvider, currentProviderOption, syncBackend, t]);
-
-  const handleMakeActive = useCallback(async () => {
-    try {
-      if (currentProviderOption?.requiresApiKey && keyDirty && apiKey.trim()) {
-        await storeApiKey(currentProviderOption.credentialKey, apiKey.trim()).catch(() => {});
-      }
-      if (currentProviderOption?.needsRegion && azureRegion.trim()) {
-        await storeApiKey(MICROSOFT_REGION_KEY, azureRegion.trim()).catch(() => {});
-      }
-    } finally {
-      // Tells the backend; its answer shows in the banner.
-      setStoreProvider(selectedProvider);
-    }
-  }, [selectedProvider, apiKey, keyDirty, azureRegion, currentProviderOption, setStoreProvider]);
+  };
 
   const handleRegionChange = (region: string) => {
-    setAzureRegion(region);
-    storeApiKey(MICROSOFT_REGION_KEY, region)
-      .then(() => {
-        if (provider === "microsoft") void syncBackend();
-      })
-      .catch((e) => console.warn("Failed to store Azure region:", e));
+    invalidateTest();
+    credentials.update({ region, regionDirty: true });
   };
 
   const handleClearKey = async () => {
     if (!currentProviderOption) return;
+    invalidateTest();
+    const revision = testRevision.current;
     try {
       await deleteApiKey(currentProviderOption.credentialKey);
-      setHasStoredKey(false);
-      setApiKey("");
-      setConnectionStatus("idle");
-      setStatusMessage("");
       setTestedProviders((prev) => {
         const next = new Set(prev);
         next.delete(selectedProvider);
         return next;
       });
       setKeyStatusMap((prev) => ({ ...prev, [currentProviderOption.credentialKey]: false }));
-      if (selectedProvider === provider) void syncBackend();
-    } catch { /* ignore */ }
+      if (selectedProvider === useTranslationStore.getState().provider) void syncBackend();
+      if (revision === testRevision.current) credentials.update({ apiKey: "", hasStoredKey: false, keyDirty: false });
+    } catch (err) {
+      if (revision !== testRevision.current) return;
+      setConnectionStatus("error");
+      setStatusMessage(errorMessage(err));
+    }
   };
 
   const isCloud = currentProviderOption?.requiresApiKey ?? false;
@@ -324,7 +279,7 @@ export function TranslationSettings() {
   const canMakeActive = (() => {
     if (selectedProvider === provider) return false; // already active
     if (isOpusMt) return opusMtHasActive;
-    if (isCloud) return (testedProviders.has(selectedProvider) || hasStoredKey || Boolean(customEndpoint)) && !keyDirty;
+    if (isCloud) return credentials.loaded && (hasStoredKey || Boolean(customEndpoint)) && !keyDirty && !regionDirty;
     if (isLlm) return true;
     return false;
   })();
@@ -440,10 +395,8 @@ export function TranslationSettings() {
                       type={showApiKey ? "text" : "password"}
                       value={apiKey}
                       onChange={(e) => {
-                        setApiKey(e.target.value);
-                        setKeyDirty(true);
-                        setConnectionStatus("idle");
-                        setStatusMessage("");
+                        invalidateTest();
+                        credentials.update({ apiKey: e.target.value, keyDirty: true });
                       }}
                       placeholder={
                         hasStoredKey && !keyDirty
@@ -471,7 +424,7 @@ export function TranslationSettings() {
                   {(keyDirty ? apiKey.trim() !== "" : (hasStoredKey || Boolean(customEndpoint))) && (
                     <button
                       onClick={handleSaveAndTest}
-                      disabled={connectionStatus === "testing"}
+                      disabled={!credentials.loaded || connectionStatus === "testing"}
                       className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                     >
                       {connectionStatus === "testing" ? (
@@ -479,7 +432,7 @@ export function TranslationSettings() {
                       ) : (
                         <Wifi className="h-3.5 w-3.5" />
                       )}
-                      {keyDirty ? t("settings.apiKey.saveAndTest") : t("settings.apiKey.test")}
+                      {keyDirty || regionDirty ? t("settings.apiKey.saveAndTest") : t("settings.apiKey.test")}
                     </button>
                   )}
 
@@ -487,6 +440,7 @@ export function TranslationSettings() {
                   {hasStoredKey && !keyDirty && (
                     <button
                       onClick={handleClearKey}
+                      disabled={connectionStatus === "testing"}
                       className="flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
                       title={t("settings.apiKey.clearTitle")}
                     >
@@ -541,6 +495,7 @@ export function TranslationSettings() {
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-foreground">{t("settings.region.label")}</label>
                   <select
+                    aria-label={t("settings.region.label")}
                     value={azureRegion}
                     onChange={(e) => handleRegionChange(e.target.value)}
                     className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
@@ -558,9 +513,8 @@ export function TranslationSettings() {
                 provider={selectedProvider}
                 value={endpoints[selectedProvider]}
                 onChange={(url) => {
+                  invalidateTest();
                   setEndpoint(selectedProvider, url);
-                  setConnectionStatus("idle");
-                  setStatusMessage("");
                 }}
                 apiKey={apiKey}
               />
@@ -576,7 +530,7 @@ export function TranslationSettings() {
           {/* Make Active — full-width at bottom of left column */}
           {canMakeActive && (
             <button
-              onClick={handleMakeActive}
+              onClick={() => setStoreProvider(selectedProvider)}
               className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer"
             >
               {t("settings.makeActive", { provider: providerLabel(currentProviderOption, selectedProvider) })}

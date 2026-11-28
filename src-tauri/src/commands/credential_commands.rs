@@ -1,11 +1,26 @@
-use tauri::{command, State};
+use tauri::{command, AppHandle, Manager, State};
 
+use crate::llm::registry::LlmRegistry;
 use crate::state::AppState;
+
+/// Save the two values that were tested together. Readers share this lock,
+/// and a failed region write restores the original key.
+#[command]
+pub async fn store_azure_speech_credentials(
+    key: String,
+    region: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let credentials = state.credentials.as_ref().ok_or("Credential manager not initialized")?;
+    let credentials = credentials.lock().map_err(|e| format!("Failed to lock credential manager: {e}"))?;
+    credentials.store_key_with_region("azure_speech", &key, "azure_speech_region", &region)
+}
 
 #[command]
 pub async fn store_api_key(
     provider: String,
     key: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let cred_mgr = state
@@ -17,7 +32,12 @@ pub async fn store_api_key(
         .lock()
         .map_err(|e| format!("Failed to lock credential manager: {}", e))?;
 
-    cred.store_key(&provider, &key)
+    let store = || cred.store_key(&provider, &key);
+    if let Some(registry) = app.try_state::<LlmRegistry>() {
+        registry.update_legacy_credential(&provider, store)
+    } else {
+        store()
+    }
 }
 
 #[command]
@@ -40,6 +60,7 @@ pub async fn get_api_key(
 #[command]
 pub async fn delete_api_key(
     provider: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let cred_mgr = state
@@ -51,7 +72,12 @@ pub async fn delete_api_key(
         .lock()
         .map_err(|e| format!("Failed to lock credential manager: {}", e))?;
 
-    cred.delete_key(&provider)
+    let delete = || cred.delete_key(&provider);
+    if let Some(registry) = app.try_state::<LlmRegistry>() {
+        registry.update_legacy_credential(&provider, delete)
+    } else {
+        delete()
+    }
 }
 
 #[command]

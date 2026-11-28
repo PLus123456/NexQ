@@ -8,7 +8,7 @@ import { useT } from "../../i18n";
 import type { LlmConfigView } from "../../lib/llm/types";
 import { ConnectionEditor } from "./ConnectionEditor";
 import { ConnectionList, type ConnectionListItem } from "./ConnectionList";
-import { draftOf, isDirty, type ConnectionDraft } from "./draft";
+import { draftOf, isDirty, type ConnectionDraft, type DraftChange } from "./draft";
 import { connectionFromTemplate, type ProviderTemplate } from "./providerTemplates";
 import { TemplatePicker } from "./TemplatePicker";
 import { connectionNameFrom, useTemplateName } from "./templateNames";
@@ -46,7 +46,13 @@ export function ConnectionsPanel({ view }: { view: LlmConfigView }) {
   const saved = view.connections.find((c) => c.id === selectedId) ?? null;
   const draft = selectedId ? drafts[selectedId] ?? (saved ? draftOf(saved) : null) : null;
 
-  const setDraft = (id: string, next: ConnectionDraft) => setDrafts((all) => ({ ...all, [id]: next }));
+  const setDraft = (id: string, next: DraftChange) => setDrafts((all) => {
+    if (typeof next !== "function") return { ...all, [id]: next };
+    const current = all[id] ?? (draft?.connection.id === id ? draft : null);
+    if (!current) return all;
+    const updated = next(current);
+    return updated === current ? all : { ...all, [id]: updated };
+  });
   const dropDraft = (id: string) =>
     setDrafts((all) => {
       const { [id]: _dropped, ...rest } = all;

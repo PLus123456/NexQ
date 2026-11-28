@@ -1,12 +1,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::{command, AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use crate::audio::capture_supervisor::{CaptureCounters, CaptureStatus, StatusSink};
 use crate::audio::device_manager;
-use crate::audio::recording_mixer::{wall_clock_ms, CaptureTimes, MixSide, RecordingMixer};
+use crate::audio::recorder::CaptureRecorder;
+use crate::audio::recording_mixer::{wall_clock_ms, CaptureTimes, MixSide};
 use crate::audio::session_monitor;
 use crate::audio::vad::{calculate_peak, calculate_rms, VoiceActivityDetector};
 use crate::audio::side_swap::{self, Side, SideSwapMsg, SwapSignal, Tagged};
@@ -221,7 +223,7 @@ async fn pump_party_lines(
         .await;
 
         // Flush remaining accumulated segment on meeting end (a final)
-        if let Some(output) = accumulator.flush() {
+        if let Some(output) = accumulator.close_line() {
             on_line(line(output));
         }
     } else {
@@ -257,6 +259,7 @@ fn spawn_party_emitter(
     session_prefix: &str,
     mut rx: mpsc::Receiver<Tagged>,
     signal: Arc<SwapSignal>,
+    meeting_id: Option<String>,
 ) -> tokio::task::JoinHandle<()> {
     let app = app.clone();
     let provider = provider.to_string();
@@ -265,9 +268,15 @@ fn spawn_party_emitter(
 
     tokio::spawn(async move {
         pump_party_lines(side, &provider, &session_prefix, &mut rx, &signal, &pause_threshold, |line| {
+            let state = app.state::<AppState>();
+            if !capture_meeting_matches(&state, meeting_id.as_deref()).unwrap_or(false) {
+                return;
+            }
             let event_name = if line.is_final { "transcript_final" } else { "transcript_update" };
-            let _ = app.emit(event_name, &serde_json::json!({ "segment": line.segment }));
-            crate::intelligence::ingest_native_line(&app, &line.id, side_speaker(side), line.text, line.timestamp_ms, line.is_final);
+            let _ = app.emit(event_name, &serde_json::json!({ "segment": line.segment, "meeting_id": meeting_id }));
+            if meeting_id.is_some() {
+                crate::intelligence::ingest_native_line(&app, &line.id, side_speaker(side), line.text, line.timestamp_ms, line.is_final);
+            }
         })
         .await;
     })
@@ -286,9 +295,11 @@ pub async fn start_capture(
     app: AppHandle,
     mic_device_id: String,
     system_device_id: String,
+    expected_meeting_id: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
+    let meeting_id = capture_start_meeting(&state, expected_meeting_id.as_deref())?;
 
     // The legacy single-provider route also uses browser Web Speech for the
     // microphone and may use providers/models that cannot honor `auto`.
@@ -317,28 +328,12 @@ pub async fn start_capture(
         }
     }
 
-    // Create the audio chunk channel
-    let (tx, mut rx) = mpsc::channel::<crate::audio::AudioChunk>(256);
-
-    // Initialize and start the manager
-    {
-        let mut guard = state
-            .audio
-            .lock()
-            .map_err(|_| "Audio state lock poisoned".to_string())?;
-        let mgr = guard.get_or_insert_with(AudioCaptureManager::new);
-        mgr.start_capture(&mic_device_id, &system_device_id, false, tx, capture_status_sink(&app))?;
-        for warning in mgr.take_warnings() {
-            let _ = app.emit("capture_warning", warning);
-        }
-    }
-
     // ---- System Audio STT (for remote party in calls) ----
     // Mic transcription is handled by Web Speech API in the frontend.
     // System audio (WASAPI loopback = other party in Zoom/Meet) needs a
     // cloud STT provider (Deepgram/Whisper/Azure/Groq) configured in Settings.
     // If no cloud provider is configured, system audio won't be transcribed.
-    let system_stt: Option<Box<dyn STTProvider>> = {
+    let (system_provider_name, system_stt) = {
         let stt_config = state.stt.as_ref().and_then(|stt_arc| {
             let router = stt_arc.lock().ok()?;
             let provider_type = router.active_provider_type()?.clone();
@@ -362,312 +357,210 @@ pub async fn start_capture(
         match stt_config {
             Some((pt, dk, dg_cfg, wk, ak, ar, gk, ck, lang)) => {
                 use crate::stt::provider::STTProviderType;
-                let p: Box<dyn STTProvider> = match pt {
+                let p: Option<Box<dyn STTProvider>> = match pt {
                     STTProviderType::Deepgram => {
-                        let mut p = match dk.as_deref() {
+                        let key = get_credential_key(&state, "deepgram").or(dk);
+                        let mut p = match key.as_deref() {
                             Some(k) => crate::stt::deepgram::DeepgramSTT::with_api_key(k),
                             None => crate::stt::deepgram::DeepgramSTT::new(),
                         };
                         p.set_language(&lang);
                         p.set_config(dg_cfg);
-                        Box::new(p)
+                        p.set_app_handle(app.clone());
+                        p.set_party("Them");
+                        Some(Box::new(p))
                     }
                     STTProviderType::WhisperApi => {
-                        let mut p = match wk.as_deref() {
+                        let key = get_credential_key(&state, "whisper_api").or(wk);
+                        let mut p = match key.as_deref() {
                             Some(k) => crate::stt::whisper_api::WhisperApiSTT::with_api_key(k),
                             None => crate::stt::whisper_api::WhisperApiSTT::new(),
                         };
                         p.set_language(&lang);
-                        Box::new(p)
+                        p.set_status_context(app.clone(), "Them");
+                        Some(Box::new(p))
                     }
                     STTProviderType::AzureSpeech => {
-                        let mut p = match (ak.as_deref(), ar.as_deref()) {
+                        let saved = super::stt_commands::azure_credentials(&state, None, None);
+                        let (key, region) = if saved.0.is_some() || saved.1.is_some() { saved } else { (ak, ar) };
+                        let mut p = match (key.as_deref(), region.as_deref()) {
                             (Some(k), Some(r)) => crate::stt::azure_speech::AzureSpeechSTT::with_config(k, r),
                             _ => crate::stt::azure_speech::AzureSpeechSTT::new(),
                         };
                         p.set_language(&lang);
-                        Box::new(p)
+                        p.set_status_context(app.clone(), "Them");
+                        Some(Box::new(p))
                     }
                     STTProviderType::GroqWhisper => {
-                        let mut p = match gk.as_deref() {
+                        let key = get_credential_key(&state, "groq_whisper").or(gk);
+                        let mut p = match key.as_deref() {
                             Some(k) => crate::stt::groq_whisper::GroqWhisperSTT::with_api_key(k),
                             None => crate::stt::groq_whisper::GroqWhisperSTT::new(),
                         };
                         p.set_language(&lang);
-                        Box::new(p)
+                        p.set_app_handle(app.clone());
+                        p.set_party("Them");
+                        Some(Box::new(p))
                     }
                     STTProviderType::Cartesia => {
-                        let mut p = match ck.as_deref() {
+                        let key = get_credential_key(&state, "cartesia").or(ck);
+                        let mut p = match key.as_deref() {
                             Some(k) => crate::stt::cartesia::CartesiaSTT::with_api_key(k),
                             None => crate::stt::cartesia::CartesiaSTT::new(),
                         };
                         p.set_language(&lang);
                         p.set_app_handle(app.clone());
-                        Box::new(p)
+                        Some(Box::new(p))
                     }
-                    _ => return Ok(()), // shouldn't reach
+                    // The legacy route only configures cloud providers. Keep
+                    // native capture available if a different engine was selected.
+                    _ => None,
                 };
-                Some(p)
+                (pt.as_str().to_string(), p)
             }
             None => {
                 log::info!(
                     "No cloud STT configured — system audio (remote party) won't be transcribed. \
                      Set up Deepgram/Whisper/Azure/Groq in Settings → STT."
                 );
-                None
+                (String::new(), None)
             }
         }
     };
 
-    // Start system STT if available
-    let (sys_stt_tx, mut sys_stt_rx) =
-        mpsc::channel::<crate::stt::provider::TranscriptResult>(256);
-    let mut system_stt_provider = system_stt;
-    let has_system_stt = if let Some(ref mut provider) = system_stt_provider {
-        match provider.start_stream(sys_stt_tx).await {
-            Ok(()) => {
-                log::info!("System audio STT started (remote party transcription)");
-                true
-            }
-            Err(e) => {
-                log::warn!("Failed to start system STT: {}", e);
-                system_stt_provider = None;
-                false
-            }
-        }
-    } else {
-        false
-    };
-
-    // Emit transcript events from system audio STT (speaker = "Them")
-    // Uses the SegmentAccumulator to merge consecutive segments within a
-    // configurable pause threshold, producing longer, more readable lines.
-    if has_system_stt {
-        let stt_app = app.clone();
-        let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
-        tasks.push(tokio::spawn(async move {
-            use std::sync::atomic::Ordering;
-            let threshold = pause_threshold.load(Ordering::Relaxed);
-            let mut accumulator =
-                crate::stt::segment_accumulator::SegmentAccumulator::new(threshold);
-
-            while let Some(result) = sys_stt_rx.recv().await {
-                // Check for runtime threshold changes
-                let current_threshold = pause_threshold.load(Ordering::Relaxed);
-                accumulator.set_pause_threshold(current_threshold);
-
-                let outputs = accumulator.feed_result(result);
-                for output in outputs {
-                    let event_name = if output.is_final {
-                        "transcript_final"
-                    } else {
-                        "transcript_update"
-                    };
-                    let payload = serde_json::json!({
-                        "segment": accumulator_segment_json(&output.id, &output.speaker, &output)
-                    });
-                    let _ = stt_app.emit(event_name, &payload);
-
-                    crate::intelligence::ingest_native_line(&stt_app, &output.id, "Them", output.text, output.timestamp_ms, output.is_final);
-                }
-            }
-        }));
-    }
-
-    // Grab the recorder handle for WAV recording (with mic/system mixing)
-    let recorder = {
-        let guard = state.audio.lock().map_err(|_| "lock poisoned".to_string())?;
-        guard.as_ref().and_then(|mgr| mgr.get_recorder())
-    };
-
-    // Audio processing task: levels + recording + system STT feed
-    // (Mic STT is handled by Web Speech API in the frontend)
-    let app_handle = app.clone();
-    tasks.push(tokio::spawn(async move {
-        let mut vad = VoiceActivityDetector::new();
-        let mut mic_emit_counter: u32 = 0;
-        let mut system_emit_counter: u32 = 0;
-        // Mixer for proper two-source recording: places mic and system on the
-        // wall clock so a stalled side cannot shift the other.
-        let mut recording_mixer = RecordingMixer::new();
-        // While no audio arrives, time still passes: the mixer pads a side that
-        // went quiet as it happens, not all at once when it comes back.
-        let mut mixer_tick = tokio::time::interval(MIXER_TICK_INTERVAL);
-        mixer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            // Audio first: the tick only runs once the queue is empty, so a
-            // backlog is never mistaken for silence.
-            let mut chunk = tokio::select! {
-                biased;
-                received = rx.recv() => match received {
-                    Some(chunk) => chunk,
-                    None => break,
-                },
-                _ = mixer_tick.tick() => {
-                    if let Some(ref rec) = recorder {
-                        recording_mixer.tick(wall_clock_ms(), &mut |b| rec.write_samples(b));
-                    }
-                    continue;
-                }
-            };
-            let vad_result = vad.process_chunk(&chunk.pcm_data);
-            chunk.is_speech = vad_result.is_speech;
-
-            // Emit audio levels — separate counters per source for independent update rates
-            let should_emit = match chunk.source {
-                AudioSource::Mic | AudioSource::Room => {
-                    mic_emit_counter += 1;
-                    mic_emit_counter % 3 == 0
-                }
-                AudioSource::System => {
-                    system_emit_counter += 1;
-                    system_emit_counter % 3 == 0
-                }
-            };
-            if should_emit {
-                let rms = calculate_rms(&chunk.pcm_data);
-                let peak = calculate_peak(&chunk.pcm_data);
-                let level = AudioLevel {
-                    source: chunk.source.clone(),
-                    level: (rms / 3000.0).min(1.0),
-                    peak,
-                };
-                let _ = app_handle.emit("audio_level", &level);
-            }
-
-            // Recording with mic/system mixing
-            if let Some(ref rec) = recorder {
-                // Placed by when it was captured, not when it was dequeued.
-                let sink = &mut |b: &[i16]| rec.write_samples(b);
-                match chunk.source {
-                    AudioSource::Mic => recording_mixer.push(
-                        MixSide::Mic,
-                        &chunk.pcm_data,
-                        chunk.timestamp_ms,
-                        sink,
-                    ),
-                    AudioSource::System => recording_mixer.push(
-                        MixSide::System,
-                        &chunk.pcm_data,
-                        chunk.timestamp_ms,
-                        sink,
-                    ),
-                    AudioSource::Room => rec.write_samples(&chunk.pcm_data),
-                }
-            }
-
-            // Feed ONLY system audio to the cloud STT provider
-            if chunk.source == AudioSource::System {
-                if let Some(ref mut provider) = system_stt_provider {
-                    let _ = provider.feed_audio(chunk).await;
-                }
-            }
-        }
-
-        // Flush remaining mix buffers on loop exit
-        if let Some(ref rec) = recorder {
-            recording_mixer.finish(&mut |b| rec.write_samples(b));
-        }
-
-        // Clean shutdown
-        if let Some(ref mut provider) = system_stt_provider {
-            let _ = provider.stop_stream().await;
-        }
-        log::info!("Audio processing task exiting");
-    }));
-
-    log::info!("Audio capture started via command");
+    start_audio_pipeline(
+        &app,
+        &state,
+        &mut tasks,
+        CaptureDevices { mic: mic_device_id, system: system_device_id, system_is_input: false },
+        meeting_id,
+        &new_capture_prefix(),
+        [(String::new(), None), (system_provider_name, system_stt)],
+    ).await?;
     Ok(())
 }
 
+fn new_capture_prefix() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Run stream open and join on the blocking pool. The manager's state lock is
+/// available to readers while the native operation waits on a device thread.
+/// Every caller serializes writes with the audio_tasks mutex.
+async fn edit_audio_manager<T: Send + 'static>(
+    state: &AppState,
+    edit: impl FnOnce(&mut AudioCaptureManager) -> T + Send + 'static,
+) -> Result<T, String> {
+    let audio = state.audio.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut manager = audio.lock().map_err(|_| "Audio state lock poisoned")?
+            .take().unwrap_or_else(AudioCaptureManager::new);
+        let result = edit(&mut manager);
+        *audio.lock().map_err(|_| "Audio state lock poisoned")? = Some(manager);
+        Ok(result)
+    }).await.map_err(|err| format!("Audio device task failed: {err}"))?
+}
+
 /// Wait for producers and transcript forwarders together under one deadline.
-/// The native audio mutex is never held here. Aborting and joining on timeout
-/// prevents late events from an old meeting leaking into the next one.
-async fn finish_capture_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>, budget: std::time::Duration) -> bool {
+async fn finish_capture_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>, budget: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
     let mut complete = true;
     while let Some(mut task) = tasks.pop() {
-        if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
-            complete = false;
-            task.abort();
-            let _ = task.await;
+        match tokio::time::timeout_at(deadline, &mut task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                complete = false;
+                log::error!("Audio processing task failed: {err}");
+            }
+            Err(_) => {
+                complete = false;
+                task.abort();
+                let _ = task.await;
+            }
         }
     }
     complete
 }
 
-fn capture_meeting_matches(state: &AppState, expected: Option<&str>) -> Result<bool, String> {
-    let Some(expected) = expected else { return Ok(true) };
-    let meeting = state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned".to_string())?;
-    Ok(meeting.as_ref().is_some_and(|meeting| meeting.id == expected))
+fn current_capture_meeting(state: &AppState) -> Result<Option<String>, String> {
+    let meeting = state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned")?;
+    Ok(meeting.as_ref().map(|meeting| meeting.id.clone()))
 }
 
-/// Stop all audio capture. `keep_recording` (a device change mid-meeting)
-/// keeps the meeting's recording open for the capture that follows.
-/// `expected_meeting_id`: stop only while that meeting is still the live one.
+fn capture_meeting_matches(state: &AppState, expected: Option<&str>) -> Result<bool, String> {
+    Ok(expected.is_none() || current_capture_meeting(state)?.as_deref() == expected)
+}
+
+fn capture_start_meeting(state: &AppState, expected: Option<&str>) -> Result<Option<String>, String> {
+    let current = current_capture_meeting(state)?;
+    if expected.is_some() && current.as_deref() != expected {
+        return Err("The meeting ended before capture could start".into());
+    }
+    let audio = state.audio.lock().map_err(|_| "Audio state lock poisoned")?;
+    if current.as_deref().is_some_and(|id| audio.as_ref().is_some_and(|mgr| mgr.stopped_meeting(id))) {
+        return Err("The meeting's capture has already stopped".into());
+    }
+    Ok(current)
+}
+
+async fn drain_capture(
+    app: &AppHandle,
+    state: &AppState,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    budget: Duration,
+) -> Result<bool, String> {
+    let capturing = state.audio.lock().map_err(|_| "Audio state lock poisoned")?
+        .as_ref().is_some_and(AudioCaptureManager::is_capturing);
+    if !capturing && tasks.is_empty() {
+        restore_default_device_if_overridden(state, app);
+        return Ok(false);
+    }
+    let was_capturing = edit_audio_manager(state, |mgr| {
+        let active = mgr.is_capturing();
+        mgr.stop_capture(true);
+        active
+    }).await?;
+    set_running_capture(None);
+    if let Ok(mut slot) = state.side_swap.lock() {
+        *slot = [None, None];
+    }
+    if was_capturing {
+        let _ = app.emit("audio_capture_stopped", ());
+    }
+    if !finish_capture_tasks(tasks, budget).await {
+        crate::stt::emit_stt_debug(app, "warn", "audio", "Some audio/STT tasks did not drain completely");
+    }
+    restore_default_device_if_overridden(state, app);
+    Ok(was_capturing)
+}
+
+/// Stop all audio capture. During a device change, the recording continues
+/// after the next capture starts. A stale stop is scoped to its own meeting.
 #[command]
 pub async fn stop_capture(app: AppHandle, keep_recording: Option<bool>, expected_meeting_id: Option<String>) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
-    // An old hot-swap must never stop a newer meeting's capture.
-    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? { return Ok(()); }
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        return Ok(());
+    }
     let keep_recording = keep_recording.unwrap_or(false);
-
-    // Restore original default capture device if IPolicyConfig override was active
-    restore_default_device_if_overridden(&state, &app);
-
-    {
-        let mut guard = state
-            .audio
-            .lock()
-            .map_err(|_| "Audio state lock poisoned".to_string())?;
-
-        match guard.as_mut() {
-            Some(mgr) => {
-                // The recorder stays open for now: the tasks drained below still
-                // write the last audio into it.
-                mgr.stop_capture(true);
-                log::info!("Audio capture stopped via command; draining final results");
-                // `keep_recording` means the meeting goes on (a device change), so the
-                // sides running without speech-to-text stay remembered; a real stop forgets them.
-                if !keep_recording {
-                    if let Ok(mut refusals) = state.auto_refusals.lock() {
-                        *refusals = [None, None];
-                    }
-                }
-            }
-            None => return Err("No audio manager initialized".to_string()),
-        }
-    };
-    // No side is left to restart for a language change.
-    set_running_capture(None);
-
-    // Every side's thread has stopped: the windows drop what they showed about reconnecting.
-    let _ = app.emit("audio_capture_stopped", ());
-
-    if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
-        crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining audio/STT; unfinished tasks were stopped");
+    let budget = if keep_recording { STT_DRAIN_TIMEOUT } else { STT_START_TIMEOUT + STT_DRAIN_TIMEOUT };
+    drain_capture(&app, &state, &mut tasks, budget).await?;
+    if keep_recording {
+        return Ok(());
     }
-    let recording_info = state.audio.lock()
-        .map_err(|_| "Audio state lock poisoned".to_string())?
-        .as_mut().and_then(|mgr| mgr.stop_capture(keep_recording));
-
-    // Store recording info for end_meeting to pick up.
-    // The frontend calls stopCapture() then endMeeting() in sequence, so
-    // we park the info here and end_meeting consumes it.
-    if let Some((wav_path, start_time_ms)) = recording_info {
-        let mut pending = state
-            .pending_recording
-            .lock()
-            .map_err(|_| "Pending recording lock poisoned".to_string())?;
-        *pending = Some(crate::state::PendingRecording {
-            wav_path,
-            start_time_ms,
-        });
-        log::info!("Recording info stored for post-meeting pipeline");
+    if let Ok(mut refusals) = state.auto_refusals.lock() {
+        *refusals = [None, None];
     }
-
+    let meeting_id = current_capture_meeting(&state)?;
+    let recording = edit_audio_manager(&state, move |mgr| {
+        mgr.note_stopped_meeting(meeting_id);
+        mgr.stop_capture(false)
+    }).await?;
+    if let Some(recording) = recording {
+        state.pending_recordings.lock().map_err(|_| "Pending recording lock poisoned")?
+            .insert(recording.meeting_id.clone(), recording);
+    }
     Ok(())
 }
 
@@ -702,17 +595,11 @@ pub async fn start_audio_test(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
 
-    // Start test capture and get the audio chunk receiver
-    let (mut rx, detected_flag) = {
-        let mut guard = state
-            .audio
-            .lock()
-            .map_err(|_| "Audio state lock poisoned".to_string())?;
-        let mgr = guard.get_or_insert_with(AudioCaptureManager::new);
+    let _capture_change = state.audio_tasks.lock().await;
+    let (mut rx, detected_flag) = edit_audio_manager(&state, move |mgr| {
         let rx = mgr.start_test(&device_id, is_input)?;
-        let detected = Arc::clone(&mgr.test_audio_detected);
-        (rx, detected)
-    };
+        Ok::<_, String>((rx, Arc::clone(&mgr.test_audio_detected)))
+    }).await??;
 
     // Spawn a tokio task that reads audio chunks from the test stream
     // and emits audio_level events to the frontend for the level meter.
@@ -748,15 +635,8 @@ pub async fn start_audio_test(
 #[command]
 pub async fn stop_audio_test(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<AppState>();
-    let mut guard = state
-        .audio
-        .lock()
-        .map_err(|_| "Audio state lock poisoned".to_string())?;
-
-    match guard.as_mut() {
-        Some(mgr) => Ok(mgr.stop_test()),
-        None => Ok(false),
-    }
+    let _capture_change = state.audio_tasks.lock().await;
+    edit_audio_manager(&state, AudioCaptureManager::stop_test).await
 }
 
 /// Test whether a specific audio device can be opened (legacy quick check).
@@ -767,26 +647,13 @@ pub async fn test_audio_device(device_id: String) -> Result<bool, String> {
 
 /// Enable or disable audio recording to file.
 #[command]
-pub async fn set_recording_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+pub async fn set_recording_enabled(app: AppHandle, enabled: bool, expected_meeting_id: Option<String>) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mut guard = state
-        .audio
-        .lock()
-        .map_err(|_| "Audio state lock poisoned".to_string())?;
-
-    match guard.as_mut() {
-        Some(mgr) => {
-            mgr.set_recording_enabled(enabled);
-            Ok(())
-        }
-        None => {
-            log::info!(
-                "Recording {} (will take effect when capture starts)",
-                if enabled { "enabled" } else { "disabled" }
-            );
-            Ok(())
-        }
+    let _capture_change = state.audio_tasks.lock().await;
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        return Ok(());
     }
+    edit_audio_manager(&state, move |mgr| mgr.set_recording_enabled(enabled)).await?
 }
 
 /// Peak level entry returned by get_audio_peak_levels.
@@ -1039,44 +906,51 @@ fn run_device_monitor_loop(app: tauri::AppHandle, stop: Arc<AtomicBool>) {
             let _ = a.client.Stop();
         }
 
+        drop(input_activators);
         CoUninitialize();
     }
 }
 
-/// Start the Live Monitor background thread.
-/// Idempotent — stops any running monitor first, waits for it to exit, then starts fresh.
+/// Start one Live Monitor run.
 #[command]
 pub async fn start_device_monitor(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
     #[cfg(target_os = "windows")]
     {
-        let state = app.state::<crate::state::AppState>();
-
-        // Signal any existing thread to stop
-        state.device_monitor_running.store(false, Ordering::SeqCst);
-        // Wait long enough for the old thread to see the flag (loop sleeps 16ms)
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-
-        // Start fresh
-        state.device_monitor_running.store(true, Ordering::SeqCst);
-        let stop_flag = Arc::clone(&state.device_monitor_running);
-        let app_clone = app.clone();
-        std::thread::spawn(move || {
-            run_device_monitor_loop(app_clone, stop_flag);
-            // Don't reset the flag here — only start/stop commands manage it.
-            // This prevents a race where an exiting thread resets the flag
-            // after a new thread has already been started.
-        });
+        let state = app.state::<AppState>();
+        let mut monitor = state.device_monitor.lock().await;
+        if monitor.as_ref().is_some_and(|run| !run.thread.is_finished()) {
+            return Ok(());
+        }
+        let running = Arc::new(AtomicBool::new(true));
+        let thread = {
+            let flag = running.clone();
+            let handle = app.clone();
+            std::thread::Builder::new().name("device-monitor".into())
+                .spawn(move || run_device_monitor_loop(handle, flag))
+                .map_err(|error| format!("Couldn't start audio device monitor: {error}"))?
+        };
+        *monitor = Some(crate::audio::DeviceMonitor { running, thread });
     }
     Ok(())
 }
 
-/// Stop the Live Monitor background thread.
+/// Stop the current monitor before a later start can open more streams.
 #[command]
 pub async fn stop_device_monitor(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
     #[cfg(target_os = "windows")]
     {
-        let state = app.state::<crate::state::AppState>();
-        state.device_monitor_running.store(false, Ordering::SeqCst);
+        let state = app.state::<AppState>();
+        let mut monitor = state.device_monitor.lock().await;
+        if let Some(run) = monitor.take() {
+            run.running.store(false, Ordering::SeqCst);
+            tokio::task::spawn_blocking(move || run.thread.join()).await
+                .map_err(|err| format!("Audio monitor task failed: {err}"))?
+                .map_err(|_| "Audio monitor thread panicked".to_string())?;
+        }
     }
     Ok(())
 }
@@ -1099,6 +973,7 @@ fn needs_default_mic_override(config: &crate::audio::PartyAudioConfig, stt_skipp
     !stt_skipped
         && (provider == "web_speech" || provider == "windows_native")
         && config.is_input_device
+        && !config.device_id.is_empty()
         && config.device_id != "default"
 }
 
@@ -1171,19 +1046,9 @@ pub async fn start_capture_per_party(
 
     let state = app.state::<AppState>();
     let mut tasks = state.audio_tasks.lock().await;
-    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
-        return Err("The meeting ended before capture could restart".to_string());
-    }
-
-    // Unique session prefix to avoid segment ID collisions across mid-meeting restarts.
-    // Each restart of start_capture_per_party gets a distinct prefix, so segment IDs
-    // like "you_a3_1" won't collide with "you_b7_1" from a previous session.
-    // Computed before the providers exist: Soniox tags its translations with
-    // the full id of the line they belong to.
-    let session_prefix = format!("{:x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() % 0xFFFF);
+    let meeting_id = capture_start_meeting(&state, expected_meeting_id.as_deref())?;
+    // Native translation receives this same prefix so it refers to the matching transcript line.
+    let session_prefix = new_capture_prefix();
 
     // Validate provider/model combinations before stopping an existing meeting,
     // switching the default microphone, or starting new audio capture.
@@ -1229,583 +1094,48 @@ pub async fn start_capture_per_party(
     let you_stt = you_side.provider;
     let them_stt = them_side.provider;
 
-    // If already capturing, stop first (allows mid-meeting hot-swap).
-    let mut stopped_existing_capture = false;
-    {
-        // Restore any previous IPolicyConfig override before hot-swap
-        restore_default_device_if_overridden(&state, &app);
-
-        let mut guard = state
-            .audio
-            .lock()
-            .map_err(|_| "Audio state lock poisoned".to_string())?;
-        if let Some(ref mut mgr) = *guard {
-            if mgr.is_capturing() {
-                stopped_existing_capture = true;
-                log::info!("start_capture_per_party: stopping existing capture for hot-swap");
-                crate::stt::emit_stt_debug(&app, "info", "stt",
-                    "Hot-swap: stopping existing audio capture + STT providers");
-                mgr.stop_capture(true);
-            }
-        }
-    }
-    if stopped_existing_capture {
-        // The old sides can't be restarted for a language change any more.
-        set_running_capture(None);
-        // The old sides have stopped; the new capture starts with a clean slate.
-        let _ = app.emit("audio_capture_stopped", ());
-        // Give WASAPI time to release the previous stream before reopening the devices.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    if drain_capture(&app, &state, &mut tasks, STT_DRAIN_TIMEOUT).await? {
+        // Give WASAPI time to release the previous streams before reopening.
+        #[cfg(target_os = "windows")]
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // The old capture's tasks send their last results and stop their providers
-    // before the new one starts (they share the meeting's transcript and recording).
-    if !finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(10)).await {
-        crate::stt::emit_stt_debug(&app, "warn", "audio", "Timed out draining the previous audio/STT session");
-    }
+    let mic = if you.is_input_device { you.device_id.clone() } else { "default".to_owned() };
+    let devices = CaptureDevices { mic, system: them.device_id.clone(), system_is_input: them.is_input_device };
 
-    log::info!(
-        "Starting per-party capture: You={{device='{}', input={}, stt={}, skipped={}}}, Them={{device='{}', input={}, stt={}}}",
-        you.device_id,
-        you.is_input_device,
-        you.stt_provider,
-        skip_you_stt,
-        them.device_id,
-        them.is_input_device,
-        them.stt_provider
-    );
-
-    // Create the audio chunk channel
-    let (tx, mut rx) = mpsc::channel::<crate::audio::AudioChunk>(256);
-
-    // Use the existing AudioCaptureManager for the physical capture
-    // Map "You" → mic device, "Them" → system device (backward compat with existing manager)
-    let mic_device = if you.is_input_device {
-        you.device_id.clone()
+    // Web Speech and WinRT's direct mode follow the OS default microphone.
+    // Apply the override before either can start listening.
+    let target = if needs_default_mic_override(&you, skip_you_stt || you_refused) {
+        Some(you.device_id.as_str())
+    } else if needs_default_mic_override(&them, them_refused) {
+        Some(them.device_id.as_str())
     } else {
-        "default".to_string()
+        None
     };
-    // Always use the user's selected device for "Them" — the AudioCaptureManager
-    // will choose the right capture method (loopback vs input) based on system_is_input.
-    let system_device = them.device_id.clone();
-    let system_is_input = them.is_input_device;
-
-    // ── IPolicyConfig: override system default mic BEFORE starting capture ──
-    // Web Speech and Windows Speech always use the OS default recording device.
-    // The override must happen before capture starts so that Web Speech API
-    // picks up the correct device when recognition.start() is called.
-    {
-        let you_needs_override = needs_default_mic_override(&you, skip_you_stt || you_refused);
-        let them_needs_override = needs_default_mic_override(&them, them_refused);
-        log::info!(
-            "IPolicyConfig check: You needs_override={} (provider='{}', stt_skipped={}), Them needs_override={} (provider='{}')",
-            you_needs_override, you.stt_provider, skip_you_stt, them_needs_override, them.stt_provider
-        );
-
-        if you_needs_override || them_needs_override {
-            // Pick the device that needs the override (prefer "You" if both need it)
-            let target_device = if you_needs_override {
-                &you.device_id
-            } else {
-                &them.device_id
-            };
-
-            crate::stt::emit_stt_debug(&app, "info", "audio",
-                &format!("IPolicyConfig: overriding default capture → '{}'", target_device));
-
-            match crate::audio::device_default::override_default_capture_device(target_device) {
-                Ok(Some(original)) => {
-                    // Store original so we can restore it on stop
-                    if let Ok(mut guard) = state.original_default_device.lock() {
-                        *guard = Some(original.clone());
-                    }
-                    // Also store the resolved target endpoint for ensure_ipolicy_override
-                    match crate::audio::device_default::find_capture_endpoint_id_by_name(target_device) {
-                        Ok(target_ep) => {
-                            if let Ok(mut guard) = state.ipolicy_target_endpoint.lock() {
-                                *guard = Some(target_ep.clone());
-                            }
-                            crate::stt::emit_stt_debug(&app, "info", "ipolicy",
-                                &format!("IPolicyConfig: stored target endpoint '{}'", target_ep));
-                        }
-                        Err(e) => {
-                            crate::stt::emit_stt_debug(&app, "warn", "ipolicy",
-                                &format!("IPolicyConfig: could not resolve target endpoint: {}", e));
-                        }
-                    }
-                    crate::stt::emit_stt_debug(&app, "info", "audio",
-                        &format!("IPolicyConfig: saved original default '{}', override active", original));
-
-                    // Verify the override took effect by reading back the current default
-                    match crate::audio::device_default::get_default_capture_endpoint_id() {
-                        Ok(current) => {
-                            crate::stt::emit_stt_debug(&app, "info", "ipolicy",
-                                &format!("Current default after override: '{}'", current));
-                        }
-                        Err(e) => {
-                            crate::stt::emit_stt_debug(&app, "warn", "ipolicy",
-                                &format!("Could not verify override: {}", e));
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Target was already the default — no override applied
-                    crate::stt::emit_stt_debug(&app, "info", "audio",
-                        "IPolicyConfig: selected device is already the default — no override needed");
-                    // Still store the target endpoint — it IS the current default
-                    match crate::audio::device_default::get_default_capture_endpoint_id() {
-                        Ok(ep) => {
-                            if let Ok(mut guard) = state.ipolicy_target_endpoint.lock() {
-                                *guard = Some(ep);
-                            }
-                        }
-                        Err(_) => {}
-                    }
-                }
-                Err(e) => {
-                    crate::stt::emit_stt_debug(&app, "warn", "audio",
-                        &format!("IPolicyConfig: override failed ({}). STT will use OS default mic.", e));
-                }
-            }
-        } else {
-            crate::stt::emit_stt_debug(&app, "info", "ipolicy",
-                "IPolicyConfig: no override needed (neither party uses web_speech/windows_native with non-default input)");
+    apply_default_capture_override(&state, &app, target);
+    let start = start_audio_pipeline(
+        &app,
+        &state,
+        &mut tasks,
+        devices,
+        meeting_id,
+        &session_prefix,
+        [(you.stt_provider.clone(), you_stt), (them.stt_provider.clone(), them_stt)],
+    ).await;
+    let signals = match start {
+        Ok(signals) => signals,
+        Err(err) => {
+            restore_default_device_if_overridden(&state, &app);
+            return Err(err);
         }
-
-        // Emit IPolicyConfig status event for frontend synchronization
-        let override_applied = you_needs_override || them_needs_override;
-        let _ = app.emit("ipolicy_status", serde_json::json!({
-            "applied": override_applied,
-            "target_device": if you_needs_override { &you.device_id } else { &them.device_id },
-        }));
-    }
-
-    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
-        return Err("The meeting ended before capture could restart".to_string());
-    }
-    {
-        let mut guard = state
-            .audio
-            .lock()
-            .map_err(|_| "Audio state lock poisoned".to_string())?;
-        let mgr = guard.get_or_insert_with(AudioCaptureManager::new);
-        log::info!(
-            "AudioCaptureManager::start_capture mic='{}', system='{}'",
-            mic_device, system_device
-        );
-        mgr.start_capture(&mic_device, &system_device, system_is_input, tx, capture_status_sink(&app))?;
-        for warning in mgr.take_warnings() {
-            let _ = app.emit("capture_warning", warning);
-        }
-    }
-
-    // Start STT streams
-    // Each side's results arrive tagged with the generation of the provider that made
-    // them (a side's provider can be swapped alone, see audio::side_swap).
-    let (you_stt_tx, you_stt_rx) = mpsc::channel::<Tagged>(256);
-    let (them_stt_tx, them_stt_rx) = mpsc::channel::<Tagged>(256);
-    let you_signal = Arc::new(SwapSignal::default());
-    let them_signal = Arc::new(SwapSignal::default());
-
-    let mut you_stt_provider = you_stt;
-    let mut them_stt_provider = them_stt;
-
-    // A party that's already muted (hot-swap, in-person) starts muted, so a
-    // provider that bills for an open stream doesn't connect until unmute.
-    let you_muted_at_start = state.you_muted.load(Ordering::Relaxed);
-    let them_muted_at_start = state.them_muted.load(Ordering::Relaxed);
-
-    if let Some(ref mut provider) = you_stt_provider {
-        crate::stt::emit_stt_debug(&app, "info", "stt",
-            &format!("Starting 'You' STT ({})", you.stt_provider));
-        provider.set_muted(you_muted_at_start);
-        match provider.start_stream(you_signal.attach(&you_stt_tx)).await {
-            Ok(()) => {
-                log::info!("'You' party STT started ({})", you.stt_provider);
-                crate::stt::emit_stt_debug(&app, "info", "stt",
-                    &format!("'You' STT started: {}", you.stt_provider));
-            }
-            Err(e) => {
-                log::warn!("Failed to start 'You' STT: {}", e);
-                crate::stt::emit_stt_debug(&app, "error", "stt",
-                    &format!("'You' STT failed to start: {}", e));
-                let _ = app.emit("stt_connection_status", serde_json::json!({
-                    "provider": you.stt_provider,
-                    "party": "You",
-                    "status": "error",
-                    "message": format!("Failed to start STT: {}", e)
-                }));
-                you_stt_provider = None;
-            }
-        }
-    }
-
-    if let Some(ref mut provider) = them_stt_provider {
-        crate::stt::emit_stt_debug(&app, "info", "stt",
-            &format!("Starting 'Them' STT ({})", them.stt_provider));
-        provider.set_muted(them_muted_at_start);
-        match provider.start_stream(them_signal.attach(&them_stt_tx)).await {
-            Ok(()) => {
-                log::info!("'Them' party STT started ({})", them.stt_provider);
-                crate::stt::emit_stt_debug(&app, "info", "stt",
-                    &format!("'Them' STT started: {}", them.stt_provider));
-            }
-            Err(e) => {
-                log::warn!("Failed to start 'Them' STT: {}", e);
-                crate::stt::emit_stt_debug(&app, "error", "stt",
-                    &format!("'Them' STT failed to start: {}", e));
-                let _ = app.emit("stt_connection_status", serde_json::json!({
-                    "provider": them.stt_provider,
-                    "party": "Them",
-                    "status": "error",
-                    "message": format!("Failed to start STT: {}", e)
-                }));
-                them_stt_provider = None;
-            }
-        }
-    }
-
-    // Transcript events: "You" lines are spoken by "User", "Them" lines by "Them".
-    // Each side's task also ends the open line when the side's provider is swapped.
-    if you_stt_provider.is_some() {
-        tasks.push(spawn_party_emitter(
-            &app, Side::You, &you.stt_provider, &session_prefix, you_stt_rx, you_signal.clone(),
-        ));
-    }
-    if them_stt_provider.is_some() {
-        tasks.push(spawn_party_emitter(
-            &app, Side::Them, &them.stt_provider, &session_prefix, them_stt_rx, them_signal.clone(),
-        ));
-    }
-
-    // Grab the recorder handle for WAV recording (with mic/system mixing), and
-    // each side's xrun/rebuild counts for the stats line.
-    let (recorder, (you_counters, them_counters)) = {
-        let guard = state.audio.lock().map_err(|_| "lock poisoned".to_string())?;
-        let mgr = guard.as_ref().ok_or("No audio manager initialized")?;
-        (mgr.get_recorder(), mgr.capture_counters())
     };
-
-    // Grab mute flags so the audio loop can check them lock-free
-    let you_muted_flag = state.you_muted.clone();
-    let them_muted_flag = state.them_muted.clone();
-
-    // Echo cancellation: what "Them" plays on the speakers is the reference
-    // for the mic. Only for an output: an input "Them" (a second mic, the
-    // same mic, a room mic) also carries the user's own voice.
-    let echo_flag = state.echo_cancellation.clone();
-    let echo_reference = !system_is_input;
-    if echo_reference {
-        log::info!(
-            "Echo cancellation available: the output is the mic's reference (currently {})",
-            if echo_flag.load(Ordering::Relaxed) { "on" } else { "off" }
-        );
-    }
-
-    // A language change for one side reaches the loop here (set_party_language).
-    let (swap_tx, mut swap_rx) =
-        mpsc::unbounded_channel::<SideSwapMsg<Box<dyn STTProvider>>>();
-    if let Ok(mut slot) = state.side_swap.lock() {
-        *slot = Some(swap_tx);
-    }
-    // The loop keeps each side's result channel for the provider swapped in.
-    let you_stt_tx = Some(you_stt_tx);
-    let them_stt_tx = Some(them_stt_tx);
-    // What a side's replacement engine is built from (set_party_language).
     let shared_language = get_stt_language(&state);
-    let running = RunningCapture {
-        session_prefix: session_prefix.clone(),
+    set_running_capture(Some(RunningCapture {
+        session_prefix,
         languages: [you.effective_language(&shared_language), them.effective_language(&shared_language)],
-        parties: [you.clone(), them.clone()],
-        signals: [you_signal.clone(), them_signal.clone()],
-    };
-
-    // Audio processing task: levels + recording + STT feed per party
-    let app_handle = app.clone();
-    tasks.push(tokio::spawn(async move {
-        // Separate VAD instances per audio source — sharing one VAD across
-        // interleaved mic + system chunks corrupts smoothed_energy state.
-        let mut mic_vad = VoiceActivityDetector::new();
-        let mut sys_vad = VoiceActivityDetector::new();
-        let mut mic_emit_ctr: u32 = 0;
-        let mut sys_emit_ctr: u32 = 0;
-        let mut mic_chunk_count: u64 = 0;
-        let mut system_chunk_count: u64 = 0;
-
-        // Time-based stats — emit only every 120s to reduce dev log noise
-        let mut last_mic_stats = std::time::Instant::now();
-        let mut last_sys_stats = std::time::Instant::now();
-        let stats_interval = std::time::Duration::from_secs(120);
-
-        // Mixer for proper two-source recording: places mic and system on the
-        // wall clock so a stalled side cannot shift the other.
-        let mut recording_mixer = RecordingMixer::new();
-        // Capture times of the mic audio as it passes the echo stage, which
-        // holds some back: the recording places each sample by when it was
-        // captured, not by when the stage let it go.
-        let mut mic_times = CaptureTimes::new();
-        let mut mic_pieces: Vec<(usize, u64)> = Vec::new();
-
-        // Track feed_audio errors per provider (emit once, not every chunk)
-        let mut you_feed_error_emitted = false;
-        let mut them_feed_error_emitted = false;
-
-        let mut echo = crate::audio::echo_cancel::MicEchoFilter::new();
-
-        // Mute state last passed to each provider. Checked on every chunk and on
-        // a timer: Windows loopback sends no chunks while nothing plays, and a
-        // mute then must still reach the provider.
-        let mut you_muted_applied = you_muted_at_start;
-        let mut them_muted_applied = them_muted_at_start;
-        let mut mute_check = tokio::time::interval(MUTE_CHECK_INTERVAL);
-        mute_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            // Audio first: the timer only runs once the queue is empty, so a
-            // backlog is never mistaken for silence by the recording mixer.
-            let mut chunk = tokio::select! {
-                biased;
-                received = rx.recv() => match received {
-                    Some(chunk) => chunk,
-                    None => break,
-                },
-                _ = mute_check.tick() => {
-                    sync_mute(&mut you_stt_provider, &mut you_muted_applied, &you_muted_flag);
-                    sync_mute(&mut them_stt_provider, &mut them_muted_applied, &them_muted_flag);
-                    // Time passes while no audio arrives: the recording pads
-                    // a side that went quiet as it happens.
-                    if let Some(ref rec) = recorder {
-                        recording_mixer.tick(wall_clock_ms(), &mut |b| rec.write_samples(b));
-                    }
-                    continue;
-                }
-                // One side's provider is being swapped for a new language; the other side,
-                // the audio and the recording carry on.
-                Some(msg) = swap_rx.recv() => {
-                    match msg {
-                        SideSwapMsg::Take { side: Side::You, reply } => side_swap::handle_take(
-                            &mut you_stt_provider, you_stt_tx.as_ref(), &you_signal, reply),
-                        SideSwapMsg::Take { side: Side::Them, reply } => side_swap::handle_take(
-                            &mut them_stt_provider, them_stt_tx.as_ref(), &them_signal, reply),
-                        SideSwapMsg::Put { side: Side::You, provider, muted } => side_swap::handle_put(
-                            &mut you_stt_provider, &mut you_muted_applied, provider, muted),
-                        SideSwapMsg::Put { side: Side::Them, provider, muted } => side_swap::handle_put(
-                            &mut them_stt_provider, &mut them_muted_applied, provider, muted),
-                    }
-                    continue;
-                }
-            };
-            sync_mute(&mut you_stt_provider, &mut you_muted_applied, &you_muted_flag);
-            sync_mute(&mut them_stt_provider, &mut them_muted_applied, &them_muted_flag);
-
-            // Echo cancellation comes first: levels, recording and STT all
-            // get the cleaned mic.
-            let cancel_echo = echo_reference && echo_flag.load(Ordering::Relaxed);
-            match chunk.source {
-                AudioSource::System => echo.reference(cancel_echo, &chunk.pcm_data),
-                AudioSource::Mic => {
-                    mic_times.input(chunk.pcm_data.len(), chunk.timestamp_ms);
-                    chunk.pcm_data = echo.mic(cancel_echo, std::mem::take(&mut chunk.pcm_data));
-                    mic_pieces = mic_times.output(chunk.pcm_data.len());
-                    if chunk.pcm_data.is_empty() {
-                        continue; // held back until the reference catches up
-                    }
-                }
-                AudioSource::Room => {}
-            }
-
-            // Apply VAD from the correct per-source instance
-            let vad_result = match chunk.source {
-                AudioSource::Mic | AudioSource::Room => mic_vad.process_chunk(&chunk.pcm_data),
-                AudioSource::System => sys_vad.process_chunk(&chunk.pcm_data),
-            };
-            chunk.is_speech = vad_result.is_speech;
-
-            // Track chunk counts for diagnostics (time-based stats)
-            match chunk.source {
-                AudioSource::Mic | AudioSource::Room => {
-                    mic_chunk_count += 1;
-                    if mic_chunk_count == 1 {
-                        let label = if chunk.source == AudioSource::Room { "room" } else { "mic" };
-                        log::info!("First {} audio chunk received", label);
-                        crate::stt::emit_stt_debug(&app_handle, "info", "audio",
-                            &format!("First {} chunk received — audio pipeline active", label));
-                    }
-                    if last_mic_stats.elapsed() >= stats_interval {
-                        let rms = calculate_rms(&chunk.pcm_data);
-                        let label = if chunk.source == AudioSource::Room { "Room" } else { "Mic" };
-                        let echo_queue = match (chunk.source == AudioSource::Mic, echo.queue_stats()) {
-                            (true, Some((refills, trims))) => {
-                                format!(", echo queue: {} refills, {} trims", refills, trims)
-                            }
-                            _ => String::new(),
-                        };
-                        crate::stt::emit_stt_debug_ex(&app_handle, "info", "audio",
-                            &format!(
-                                "{}: {} chunks, speech={}, rms={:.0}{}{}",
-                                label, mic_chunk_count, chunk.is_speech, rms, echo_queue, capture_counts(&you_counters)
-                            ),
-                            Some("audio_mic_stats"));
-                        last_mic_stats = std::time::Instant::now();
-                    }
-                }
-                AudioSource::System => {
-                    system_chunk_count += 1;
-                    if system_chunk_count == 1 {
-                        log::info!("First system audio chunk received — 'Them' capture is active");
-                        crate::stt::emit_stt_debug(&app_handle, "info", "audio",
-                            "First system chunk received — system audio capture active");
-                    }
-                    if last_sys_stats.elapsed() >= stats_interval {
-                        let rms = calculate_rms(&chunk.pcm_data);
-                        crate::stt::emit_stt_debug_ex(&app_handle, "info", "audio",
-                            &format!(
-                                "System: {} chunks, speech={}, rms={:.0}{}",
-                                system_chunk_count, chunk.is_speech, rms, capture_counts(&them_counters)
-                            ),
-                            Some("audio_sys_stats"));
-                        last_sys_stats = std::time::Instant::now();
-                    }
-                }
-            }
-
-            // Emit audio levels — separate counters per source for independent update rates
-            let should_emit = match chunk.source {
-                AudioSource::Mic | AudioSource::Room => {
-                    mic_emit_ctr += 1;
-                    mic_emit_ctr % 3 == 0
-                }
-                AudioSource::System => {
-                    sys_emit_ctr += 1;
-                    sys_emit_ctr % 3 == 0
-                }
-            };
-            if should_emit {
-                let rms = calculate_rms(&chunk.pcm_data);
-                let peak = calculate_peak(&chunk.pcm_data);
-                let level = AudioLevel {
-                    source: chunk.source.clone(),
-                    level: (rms / 3000.0).min(1.0),
-                    peak,
-                };
-                let _ = app_handle.emit("audio_level", &level);
-            }
-
-            // Recording with mic/system mixing
-            if let Some(ref rec) = recorder {
-                // Placed by when it was captured, not when it was dequeued.
-                let sink = &mut |b: &[i16]| rec.write_samples(b);
-                match chunk.source {
-                    AudioSource::Mic => {
-                        let mut off = 0;
-                        for &(n, end_ms) in &mic_pieces {
-                            recording_mixer.push(
-                                MixSide::Mic,
-                                &chunk.pcm_data[off..off + n],
-                                end_ms,
-                                sink,
-                            );
-                            off += n;
-                        }
-                    }
-                    AudioSource::System => recording_mixer.push(
-                        MixSide::System,
-                        &chunk.pcm_data,
-                        chunk.timestamp_ms,
-                        sink,
-                    ),
-                    AudioSource::Room => rec.write_samples(&chunk.pcm_data),
-                }
-            }
-
-            // Route to the correct party's STT provider (surface errors once).
-            // Mute gate: when a party is muted, skip feed_audio entirely —
-            // audio levels + recording still flow, only STT is silenced.
-            match chunk.source {
-                AudioSource::Mic => {
-                    if !you_muted_flag.load(Ordering::Relaxed) {
-                        if let Some(ref mut provider) = you_stt_provider {
-                            if let Err(e) = provider.feed_audio(chunk).await {
-                                if !you_feed_error_emitted {
-                                    crate::stt::emit_stt_debug(&app_handle, "error", "stt",
-                                        &format!("'You' feed_audio error: {}", e));
-                                    you_feed_error_emitted = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                AudioSource::System => {
-                    if !them_muted_flag.load(Ordering::Relaxed) {
-                        if let Some(ref mut provider) = them_stt_provider {
-                            if let Err(e) = provider.feed_audio(chunk).await {
-                                if !them_feed_error_emitted {
-                                    crate::stt::emit_stt_debug(&app_handle, "error", "stt",
-                                        &format!("'Them' feed_audio error: {}", e));
-                                    them_feed_error_emitted = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                AudioSource::Room => {
-                    // In-person mode: room audio routes to the "Them" provider
-                    // (which handles diarization). Use the same mute gate.
-                    if !them_muted_flag.load(Ordering::Relaxed) {
-                        if let Some(ref mut provider) = them_stt_provider {
-                            if let Err(e) = provider.feed_audio(chunk).await {
-                                if !them_feed_error_emitted {
-                                    crate::stt::emit_stt_debug(&app_handle, "error", "stt",
-                                        &format!("'Room' feed_audio error: {}", e));
-                                    them_feed_error_emitted = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Flush remaining mix buffers
-        if let Some(ref rec) = recorder {
-            recording_mixer.finish(&mut |b| rec.write_samples(b));
-        }
-
-        // Clean shutdown, both parties at once: a cloud provider waits for its
-        // last results here (Deepgram up to a few seconds).
-        tokio::join!(
-            async {
-                if let Some(ref mut provider) = you_stt_provider {
-                    let _ = provider.stop_stream().await;
-                }
-            },
-            async {
-                if let Some(ref mut provider) = them_stt_provider {
-                    let _ = provider.stop_stream().await;
-                }
-            },
-        );
-        // The transcript tasks end (and flush) once no result channel is left open.
-        drop(you_stt_tx);
-        drop(them_stt_tx);
-
-        // Restore IPolicyConfig override if active (crash recovery for async task exit)
-        {
-            let original = app_handle
-                .try_state::<AppState>()
-                .and_then(|s| s.original_default_device.lock().ok()?.take());
-            if let Some(ref original_id) = original {
-                let _ = crate::audio::device_default::restore_default_capture_device(original_id);
-                log::info!("IPolicyConfig: restored default device on audio task exit");
-            }
-        }
-
-        log::info!("Per-party audio processing task exiting");
+        parties: [you, them],
+        signals,
     }));
-
-    log::info!("Per-party audio capture started");
-    set_running_capture(Some(running));
-    // Remember what each side now runs under, so the next swap can tell news from old.
     if let Ok(mut stored) = state.auto_refusals.lock() {
         *stored = sides_refusals;
     }
@@ -1813,6 +1143,296 @@ pub async fn start_capture_per_party(
         let _ = app.emit("capture_warning", warning);
     }
     Ok(())
+}
+
+struct CaptureDevices {
+    mic: String,
+    system: String,
+    system_is_input: bool,
+}
+
+type SideProvider = Option<Box<dyn STTProvider>>;
+
+// Capture callbacks need a small queue. Provider startup and network backpressure
+// have their own bounded queues and never delay recording or the other party.
+const STT_AUDIO_BACKLOG_SAMPLES: usize = 60 * 16_000;
+const STT_START_TIMEOUT: Duration = Duration::from_secs(45);
+const STT_DRAIN_TIMEOUT: Duration = Duration::from_secs(12);
+
+type QueuedSttAudio = (crate::audio::AudioChunk, OwnedSemaphorePermit);
+
+#[derive(Clone)]
+struct SttInput {
+    sender: mpsc::UnboundedSender<QueuedSttAudio>,
+    space: Arc<Semaphore>,
+}
+
+impl SttInput {
+    /// A busy provider may fall behind by at most one minute of PCM.
+    fn enqueue(&self, chunk: crate::audio::AudioChunk) -> bool {
+        let samples = u32::try_from(chunk.pcm_data.len()).unwrap_or(u32::MAX);
+        let Ok(permit) = self.space.clone().try_acquire_many_owned(samples) else { return false };
+        let _ = self.sender.send((chunk, permit));
+        true
+    }
+}
+
+async fn start_audio_pipeline(
+    app: &AppHandle,
+    state: &AppState,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    devices: CaptureDevices,
+    meeting_id: Option<String>,
+    session_prefix: &str,
+    providers: [(String, SideProvider); 2],
+) -> Result<[Arc<SwapSignal>; 2], String> {
+    let (tx, rx) = mpsc::channel(256);
+    let recorder = state.audio.lock().map_err(|_| "Audio state lock poisoned")?
+        .get_or_insert_with(AudioCaptureManager::new).get_recorder();
+    let queues = providers.map(|(name, provider)| provider.map(|provider| {
+        let (sender, audio) = mpsc::unbounded_channel();
+        let input = SttInput { sender, space: Arc::new(Semaphore::new(STT_AUDIO_BACKLOG_SAMPLES)) };
+        (name, provider, input, audio)
+    }));
+    let inputs = queues.each_ref().map(|queue| queue.as_ref().map(|(_, _, input, _)| input.clone()));
+    let echo_reference = !devices.system_is_input;
+    let audio_task = tokio::spawn(process_capture_audio(app.clone(), rx, recorder, echo_reference, inputs));
+    let capture_meeting = meeting_id.clone();
+    let sink = capture_status_sink(app);
+    let start = edit_audio_manager(state, move |mgr| {
+        mgr.set_meeting_id(capture_meeting);
+        mgr.start_capture(&devices.mic, &devices.system, devices.system_is_input, tx, sink)?;
+        Ok::<_, String>(mgr.take_warnings())
+    }).await.and_then(|result| result);
+    let warnings = match start {
+        Ok(warnings) => warnings,
+        Err(err) => {
+            let _ = finish_capture_tasks(&mut vec![audio_task], Duration::from_secs(2)).await;
+            return Err(err);
+        }
+    };
+
+    let signals = std::array::from_fn(|_| Arc::new(SwapSignal::default()));
+    let mut controls = [None, None];
+    let mut workers = Vec::new();
+    for (side, queue) in [Side::You, Side::Them].into_iter().zip(queues) {
+        let Some((name, provider, _, audio)) = queue else { continue };
+        let index = side.index();
+        let (result_tx, result_rx) = mpsc::channel(256);
+        let (control_tx, control) = mpsc::unbounded_channel();
+        let signal = signals[index].clone();
+        let muted = match side {
+            Side::You => state.you_muted.clone(),
+            Side::Them => state.them_muted.clone(),
+        };
+        // Consume results before start_stream, which can publish immediately.
+        tasks.push(spawn_party_emitter(app, side, &name, session_prefix, result_rx, signal.clone(), meeting_id.clone()));
+        workers.push(tokio::spawn(SttSide {
+            app: app.clone(), side, name, audio, control, result_tx, signal, muted,
+        }.run(provider)));
+        controls[index] = Some(control_tx);
+    }
+    if let Ok(mut slot) = state.side_swap.lock() {
+        *slot = controls;
+    }
+    // Stop waits in reverse: native audio, providers, then the result forwarders.
+    tasks.append(&mut workers);
+    tasks.push(audio_task);
+    for warning in warnings {
+        let _ = app.emit("capture_warning", warning);
+    }
+    Ok(signals)
+}
+
+struct SttSide {
+    app: AppHandle,
+    side: Side,
+    name: String,
+    audio: mpsc::UnboundedReceiver<QueuedSttAudio>,
+    control: mpsc::UnboundedReceiver<SideSwapMsg<Box<dyn STTProvider>>>,
+    result_tx: side_swap::SideTx,
+    signal: Arc<SwapSignal>,
+    muted: Arc<AtomicBool>,
+}
+
+impl SttSide {
+    async fn run(mut self, mut engine: Box<dyn STTProvider>) {
+        let label = side_label(self.side);
+        let mut muted = self.muted.load(Ordering::Relaxed);
+        engine.set_muted(muted);
+        let start = tokio::time::timeout(STT_START_TIMEOUT, engine.start_stream(self.signal.attach(&self.result_tx))).await;
+        let error = match start {
+            Ok(Ok(())) => None,
+            Ok(Err(err)) => Some(err.to_string()),
+            Err(_) => Some("Timed out connecting to the speech recognition provider".into()),
+        };
+        if let Some(error) = error {
+            let _ = tokio::time::timeout(Duration::from_secs(1), engine.stop_stream()).await;
+            drop(engine);
+            self.signal.drained(Duration::from_secs(1)).await;
+            crate::stt::emit_stt_debug(&self.app, "error", "stt", &format!("'{label}' STT failed to start: {error}"));
+            let _ = self.app.emit("stt_connection_status", serde_json::json!({
+                "provider": self.name, "party": label, "status": "error", "message": error
+            }));
+            return;
+        }
+
+        let mut provider = Some(engine);
+        let mut feed_error_emitted = false;
+        let mut mute_check = tokio::time::interval(MUTE_CHECK_INTERVAL);
+        mute_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                Some(msg) = self.control.recv() => match msg {
+                    SideSwapMsg::Take { reply, .. } => side_swap::handle_take(
+                        &mut provider, Some(&self.result_tx), &self.signal, reply),
+                    SideSwapMsg::Put { provider: next, muted: started_muted, .. } => {
+                        // The replacement must not receive the old stream's queued audio.
+                        for _ in 0..self.audio.len() {
+                            let _ = self.audio.try_recv();
+                        }
+                        side_swap::handle_put(&mut provider, &mut muted, next, started_muted);
+                        feed_error_emitted = false;
+                    }
+                },
+                _ = mute_check.tick() => sync_mute(&mut provider, &mut muted, &self.muted),
+                received = self.audio.recv() => {
+                    let Some((chunk, _queued)) = received else { break };
+                    sync_mute(&mut provider, &mut muted, &self.muted);
+                    if !muted {
+                        if let Some(engine) = provider.as_mut() {
+                            if let Err(err) = engine.feed_audio(chunk).await {
+                                if !feed_error_emitted {
+                                    crate::stt::emit_stt_debug(&self.app, "error", "stt", &format!("'{label}' audio feed failed: {err}"));
+                                    feed_error_emitted = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(mut engine) = provider {
+            if let Err(err) = engine.stop_stream().await {
+                crate::stt::emit_stt_debug(&self.app, "warn", "stt", &format!("'{label}' STT failed to finish: {err}"));
+            }
+        }
+        self.signal.drained(Duration::from_secs(1)).await;
+    }
+}
+
+async fn process_capture_audio(
+    app_handle: AppHandle,
+    mut rx: mpsc::Receiver<crate::audio::AudioChunk>,
+    recorder: CaptureRecorder,
+    echo_reference: bool,
+    inputs: [Option<SttInput>; 2],
+) {
+    let state = app_handle.state::<AppState>();
+    let echo_flag = state.echo_cancellation.clone();
+    let mute_flags = [&*state.you_muted, &*state.them_muted];
+    let mut echo = crate::audio::echo_cancel::MicEchoFilter::new();
+    let mut mic_times = CaptureTimes::new();
+    let mut vad = [VoiceActivityDetector::new(), VoiceActivityDetector::new()];
+    let mut stats_at = [std::time::Instant::now(); 2];
+    let mut chunks = [0u64; 2];
+    let mut queue_full = [false; 2];
+    let mut tick = tokio::time::interval(MIXER_TICK_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        let mut chunk = tokio::select! {
+            biased;
+            received = rx.recv() => match received {
+                Some(chunk) => chunk,
+                None => break,
+            },
+            _ = tick.tick() => {
+                recorder.tick(wall_clock_ms());
+                continue;
+            }
+        };
+        let cancel_echo = echo_reference && echo_flag.load(Ordering::Relaxed);
+        let side = match chunk.source {
+            AudioSource::Mic => {
+                mic_times.input(chunk.pcm_data.len(), chunk.timestamp_ms);
+                chunk.pcm_data = echo.mic(cancel_echo, std::mem::take(&mut chunk.pcm_data));
+                let mut offset = 0;
+                for (len, end_ms) in mic_times.output(chunk.pcm_data.len()) {
+                    recorder.push(MixSide::Mic, &chunk.pcm_data[offset..offset + len], end_ms);
+                    offset += len;
+                    chunk.timestamp_ms = end_ms;
+                }
+                Side::You
+            }
+            AudioSource::System | AudioSource::Room => {
+                if chunk.source == AudioSource::System {
+                    echo.reference(cancel_echo, &chunk.pcm_data);
+                }
+                recorder.push(MixSide::System, &chunk.pcm_data, chunk.timestamp_ms);
+                Side::Them
+            }
+        };
+        if chunk.pcm_data.is_empty() {
+            continue;
+        }
+        let index = side.index();
+        let label = side_label(side);
+        chunk.is_speech = vad[index].process_chunk(&chunk.pcm_data).is_speech;
+        chunks[index] += 1;
+        if chunks[index] == 1 {
+            crate::stt::emit_stt_debug(&app_handle, "info", "audio", &format!("First '{label}' audio chunk received"));
+        }
+        if stats_at[index].elapsed() >= Duration::from_secs(120) {
+            let rms = calculate_rms(&chunk.pcm_data);
+            let counts = state.audio.lock().ok().and_then(|guard| guard.as_ref().map(|mgr| mgr.capture_counters()));
+            let counts = counts.as_ref().map(|(you, them)| capture_counts(if index == 0 { you } else { them })).unwrap_or_default();
+            let echo_stats = if side == Side::You {
+                echo.queue_stats().map(|(refills, trims)| format!(", echo queue: {refills} refills, {trims} trims")).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            crate::stt::emit_stt_debug_ex(&app_handle, "info", "audio",
+                &format!("{label}: {} chunks, speech={}, rms={rms:.0}{counts}{echo_stats}", chunks[index], chunk.is_speech),
+                Some(if index == 0 { "audio_mic_stats" } else { "audio_sys_stats" }));
+            stats_at[index] = std::time::Instant::now();
+        }
+        if chunks[index] % 3 == 0 {
+            let level = AudioLevel {
+                source: chunk.source.clone(),
+                level: (calculate_rms(&chunk.pcm_data) / 3000.0).min(1.0),
+                peak: calculate_peak(&chunk.pcm_data),
+            };
+            let _ = app_handle.emit("audio_level", &level);
+        }
+        if let Some(input) = inputs[index].as_ref().filter(|_| !mute_flags[index].load(Ordering::Relaxed)) {
+            let full = !input.enqueue(chunk);
+            if full && !queue_full[index] {
+                crate::stt::emit_stt_debug(&app_handle, "warn", "stt", &format!(
+                    "'{label}' transcription fell behind and skipped some audio. Recording continues."
+                ));
+            }
+            queue_full[index] = full;
+        }
+    }
+
+    // The echo filter holds back the end of the mic stream for its reference.
+    // When devices stop, record and transcribe those samples under their capture times.
+    let tail = echo.mic(false, Vec::new());
+    let mut offset = 0;
+    let mut end_ms = None;
+    for (length, timestamp) in mic_times.output(tail.len()) {
+        recorder.push(MixSide::Mic, &tail[offset..offset + length], timestamp);
+        offset += length;
+        end_ms = Some(timestamp);
+    }
+    if let (Some(timestamp_ms), Some(input)) = (end_ms, inputs[0].as_ref()) {
+        if !mute_flags[0].load(Ordering::Relaxed) {
+            let is_speech = vad[0].process_chunk(&tail).is_speech;
+            input.enqueue(crate::audio::AudioChunk { pcm_data: tail, source: AudioSource::Mic, timestamp_ms, is_speech });
+        }
+    }
 }
 
 /// Create an STT provider for a party based on their config.
@@ -1900,7 +1520,6 @@ async fn create_stt_provider_for_party(
         }
         #[cfg(not(target_os = "windows"))]
         STTProviderType::WindowsNative => {
-            // Only an energy detector off Windows ("[speech: N s]" placeholders): no engine.
             crate::stt::emit_stt_debug(app, "error", "stt",
                 &format!("[{}] Windows Speech only works on Windows — choose another engine in Settings.", party_role));
             Ok(None)
@@ -1914,9 +1533,14 @@ async fn create_stt_provider_for_party(
                 // so DirectMic mode correctly captures from non-default devices too
                 WindowsNativeSTT::for_mic()
             } else {
-                // System audio: feed PCM from pipeline
+                // The provider reports an unsupported source for loopback.
                 WindowsNativeSTT::for_custom_stream()
             };
+            let muted = match side {
+                Side::You => state.you_muted.clone(),
+                Side::Them => state.them_muted.clone(),
+            };
+            provider.set_mute_flags(muted, state.windows_stt_mute_revisions[side.index()].clone());
             provider.set_language(&lang);
             provider.set_app_handle(app.clone());
             provider.set_party(party_role);
@@ -1946,12 +1570,12 @@ async fn create_stt_provider_for_party(
                 None => crate::stt::whisper_api::WhisperApiSTT::new(),
             };
             p.set_language(&lang);
+            p.set_status_context(app.clone(), party_role);
             Ok(Some(Box::new(p)))
         }
         STTProviderType::AzureSpeech => {
             let lang = stt_language.clone();
-            let key = get_credential_key(state, "azure_speech");
-            let region = get_credential_key(state, "azure_speech_region");
+            let (key, region) = super::stt_commands::azure_credentials(state, None, None);
             log::info!("Azure key for '{}': {}, region: {}", party_role,
                 if key.is_some() { "present" } else { "MISSING" },
                 if region.is_some() { "present" } else { "MISSING" });
@@ -1960,6 +1584,7 @@ async fn create_stt_provider_for_party(
                 _ => crate::stt::azure_speech::AzureSpeechSTT::new(),
             };
             p.set_language(&lang);
+            p.set_status_context(app.clone(), party_role);
             Ok(Some(Box::new(p)))
         }
         STTProviderType::GroqWhisper => {
@@ -2577,128 +2202,67 @@ fn get_deepgram_config(state: &AppState) -> crate::stt::deepgram::DeepgramConfig
 
 // ── IPolicyConfig verification for Web Speech restart ───────────────
 
-/// Verify the OS default capture device still matches the IPolicy target.
-/// If Windows has reset the default (drift), re-apply the override.
-/// Called by the frontend before each Web Speech restart.
-/// Non-destructive: only reads original_default_device and ipolicy_target_endpoint.
+/// Re-apply the selected default microphone if it changed while a browser
+/// recognizer was idle. This also checks devices already default at start.
 #[command]
 pub async fn ensure_ipolicy_override(app: AppHandle) -> Result<String, String> {
-    let state = app.state::<AppState>();
-
-    // 1. Check if an override is active (peek, not take)
-    let original = match state.original_default_device.lock() {
-        Ok(guard) => guard.clone(),
-        Err(_) => return Err("State lock poisoned".to_string()),
-    };
-    if original.is_none() {
-        return serde_json::to_string(&serde_json::json!({
-            "active": false,
-            "was_drifted": false
-        })).map_err(|e| e.to_string());
-    }
-
-    // 2. Get the target endpoint (peek, not take)
-    let target = match state.ipolicy_target_endpoint.lock() {
-        Ok(guard) => guard.clone(),
-        Err(_) => return Err("State lock poisoned".to_string()),
-    };
-    let target = match target {
-        Some(t) => t,
-        None => {
-            log::warn!("IPolicyConfig: override active but no target endpoint stored");
-            return serde_json::to_string(&serde_json::json!({
-                "active": true,
-                "was_drifted": false,
-                "current_device": ""
-            })).map_err(|e| e.to_string());
-        }
-    };
-
-    // 3. Read current OS default (handles COM init internally)
-    log::info!("IPolicyConfig: verifying default capture device...");
-
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-
-        let result = unsafe {
-            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let we_initialized = hr.0 == 0;
-            if hr.is_err() && hr.0 as u32 != 0x80010106 {
-                return Err(format!("CoInitializeEx failed: 0x{:08X}", hr.0));
-            }
-
-            let res = (|| -> Result<String, String> {
-                let current = crate::audio::device_default::get_default_capture_endpoint_id()?;
-                log::debug!("IPolicyConfig verify: current='{}', target='{}'", current, target);
-
-                let was_drifted = current != target;
-                if was_drifted {
-                    log::warn!(
-                        "IPolicyConfig: drift detected! current='{}' != target='{}', re-applying...",
-                        current, target
-                    );
-                    crate::audio::device_default::set_default_capture_endpoint(&target)?;
-                    crate::stt::emit_stt_debug(&app, "warn", "ipolicy",
-                        &format!("IPolicyConfig drift corrected: '{}' → '{}'", current, target));
-                } else {
-                    log::info!("IPolicyConfig: no drift — default is still correct");
-                }
-
-                serde_json::to_string(&serde_json::json!({
-                    "active": true,
-                    "was_drifted": was_drifted,
-                    "current_device": target
-                })).map_err(|e| e.to_string())
-            })();
-
-            if we_initialized {
-                CoUninitialize();
-            }
-            res
-        };
-        result
+        let state = app.state::<AppState>();
+        let mut slot = state.capture_device_override.lock().map_err(|_| "Default microphone lock poisoned")?;
+        if let Some(device) = slot.as_mut().filter(|device| device.is_active()) {
+            let was_drifted = device.ensure()?;
+            return Ok(serde_json::json!({
+                "active": true,
+                "was_drifted": was_drifted,
+                "current_device": device.target(),
+            }).to_string());
+        }
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        serde_json::to_string(&serde_json::json!({
-            "active": false,
-            "was_drifted": false
-        })).map_err(|e| e.to_string())
-    }
+    Ok(serde_json::json!({ "active": false, "was_drifted": false }).to_string())
 }
 
-// ── IPolicyConfig restore helper ────────────────────────────────────
-
-/// Restore the original default capture device if an IPolicyConfig override is active.
-/// Safe to call even if no override was applied (no-op in that case).
-/// Uses `take()` to atomically remove the stored value, preventing TOCTOU races
-/// where a concurrent hot-swap could lose a newly-stored override.
-fn restore_default_device_if_overridden(state: &AppState, app: &tauri::AppHandle) {
-    // Atomically take the value — if another thread races, only one gets Some
-    let original = match state.original_default_device.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(_) => return,
-    };
-
-    // Also clear the target endpoint
-    if let Ok(mut target_guard) = state.ipolicy_target_endpoint.lock() {
-        target_guard.take();
-    }
-
-    if let Some(ref original_id) = original {
-        crate::stt::emit_stt_debug(app, "info", "audio",
-            &format!("IPolicyConfig: restoring default capture → '{}'", original_id));
-
-        match crate::audio::device_default::restore_default_capture_device(original_id) {
-            Ok(()) => {
-                crate::stt::emit_stt_debug(app, "info", "audio",
-                    "IPolicyConfig: default capture device restored");
+fn apply_default_capture_override(state: &AppState, app: &AppHandle, target: Option<&str>) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = state;
+    #[allow(unused_mut)]
+    let mut applied = false;
+    #[cfg(target_os = "windows")]
+    if let Some(target) = target {
+        let apply = || -> Result<bool, String> {
+            let mut slot = state.capture_device_override.lock().map_err(|_| "Default microphone lock poisoned")?;
+            if slot.is_some() {
+                return Err("Previous default microphone change could not be restored".into());
             }
-            Err(e) => {
-                crate::stt::emit_stt_debug(app, "error", "audio",
-                    &format!("IPolicyConfig: restore failed: {}", e));
+            let mut device = crate::audio::device_default::DefaultCaptureOverride::new(target)?;
+            let result = device.ensure();
+            // Preserve the original settings even if applying just some roles
+            // succeeded, then undo any such changes.
+            *slot = Some(device);
+            result
+        };
+        match apply() {
+            Ok(did_apply) => applied = did_apply,
+            Err(err) => {
+                crate::stt::emit_stt_debug(app, "warn", "ipolicy", &format!("Default microphone override failed: {err}"));
+                restore_default_device_if_overridden(state, app);
+            }
+        }
+    }
+    let _ = app.emit("ipolicy_status", serde_json::json!({ "applied": applied, "target_device": target }));
+}
+
+fn restore_default_device_if_overridden(state: &AppState, app: &AppHandle) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = (state, app);
+    #[cfg(target_os = "windows")]
+    if let Ok(mut slot) = state.capture_device_override.lock() {
+        if let Some(device) = slot.as_mut() {
+            match device.restore() {
+                Ok(()) => *slot = None,
+                Err(err) => crate::stt::emit_stt_debug(app, "error", "ipolicy", &format!("Default microphone restore failed: {err}")),
             }
         }
     }
@@ -2726,19 +2290,56 @@ pub async fn set_source_muted(
     app: AppHandle,
     source: String,
     muted: bool,
+    expected_meeting_id: Option<String>,
+) -> Result<(), String> {
+    change_source_mute(&app, &source, Some(muted), expected_meeting_id.as_deref())
+}
+
+/// Toggle the shared mute flag once, even if both webviews issue a toggle.
+#[command]
+pub async fn toggle_source_muted(
+    app: AppHandle,
+    source: String,
+    expected_meeting_id: String,
+) -> Result<(), String> {
+    change_source_mute(&app, &source, None, Some(&expected_meeting_id))
+}
+
+fn change_source_mute(
+    app: &AppHandle,
+    source: &str,
+    desired: Option<bool>,
+    expected_meeting_id: Option<&str>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    match source.as_str() {
-        "you" => {
-            state.you_muted.store(muted, Ordering::Relaxed);
-            log::info!("'You' audio source {}", if muted { "muted" } else { "unmuted" });
-        }
-        "them" => {
-            state.them_muted.store(muted, Ordering::Relaxed);
-            log::info!("'Them' audio source {}", if muted { "muted" } else { "unmuted" });
-        }
-        _ => return Err(format!("Unknown source: '{}' (expected 'you' or 'them')", source)),
+    // Keep the active ID, the flag, and its published event in the same order.
+    let live = state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned".to_string())?;
+    let meeting_id = live.as_ref().map(|meeting| meeting.id.as_str());
+    if expected_meeting_id.is_some() && expected_meeting_id != meeting_id {
+        return Ok(());
     }
+    let flag = match source {
+        "you" => &state.you_muted,
+        "them" => &state.them_muted,
+        _ => return Err(format!("Unknown source: '{}' (expected 'you' or 'them')", source)),
+    };
+    let previous = flag.load(Ordering::SeqCst);
+    let muted = desired.unwrap_or(!previous);
+    if previous != muted {
+        // A previous Windows recognition session must remain invalid after a quick unmute.
+        if muted {
+            flag.store(true, Ordering::SeqCst);
+        }
+        #[cfg(target_os = "windows")]
+        state.windows_stt_mute_revisions[usize::from(source == "them")].fetch_add(1, Ordering::SeqCst);
+        if !muted {
+            flag.store(false, Ordering::SeqCst);
+        }
+        log::info!("Audio source {source} {}", if muted { "muted" } else { "unmuted" });
+    }
+    let _ = app.emit("source_mute_changed", serde_json::json!({
+        "source": source, "muted": muted, "meetingId": meeting_id,
+    }));
     Ok(())
 }
 
@@ -2859,6 +2460,7 @@ pub async fn set_party_language(
     party: String,
     config: String,
     skip_you_stt: Option<bool>,
+    expected_meeting_id: Option<String>,
 ) -> Result<bool, String> {
     let side = Side::parse(&party)
         .ok_or_else(|| format!("Unknown party: '{}' (expected 'you' or 'them')", party))?;
@@ -2869,6 +2471,9 @@ pub async fn set_party_language(
     // NexQ Plus: capture changes run one at a time. A restart or a stop of the
     // capture waits for this swap, so the capture it belongs to stays the running one.
     let _capture_change = state.audio_tasks.lock().await;
+    if !capture_meeting_matches(&state, expected_meeting_id.as_deref())? {
+        return Ok(false);
+    }
 
     let capturing = state
         .audio
@@ -2907,7 +2512,7 @@ pub async fn set_party_language(
     let Some(provider) = resolve_language_swap(created, running_refusal.as_deref(), false)? else {
         return Ok(false);
     };
-    let Some(sender) = state.side_swap.lock().ok().and_then(|slot| slot.clone()) else {
+    let Some(sender) = state.side_swap.lock().ok().and_then(|slot| slot[side.index()].clone()) else {
         return Ok(false);
     };
     let muted_flag = match side {
@@ -3008,6 +2613,37 @@ mod tests {
         assert!(finish_capture_tasks(&mut tasks, std::time::Duration::from_secs(1)).await);
         assert!(tasks.is_empty());
         assert_eq!(*forwarded.lock().unwrap(), ["last sentence", "flushed"]);
+    }
+
+    #[test]
+    fn a_slow_handshake_buffers_opening_audio_separately_for_each_side() {
+        let buffered_side = || {
+            let (sender, audio) = mpsc::unbounded_channel();
+            (SttInput { sender, space: Arc::new(Semaphore::new(320)) }, audio)
+        };
+        let (slow, mut slow_audio) = buffered_side();
+        let (ready, mut ready_audio) = buffered_side();
+        let chunk = |timestamp_ms| crate::audio::AudioChunk {
+            pcm_data: vec![100; 160], source: AudioSource::System, timestamp_ms, is_speech: true,
+        };
+
+        // A connecting provider has not started consuming yet.
+        assert!(slow.enqueue(chunk(10)));
+        assert!(slow.enqueue(chunk(20)));
+        assert!(!slow.enqueue(chunk(30)));
+        assert!(ready.enqueue(chunk(30)), "the other side still accepts new audio");
+        assert_eq!(ready_audio.try_recv().unwrap().0.timestamp_ms, 30);
+        assert_eq!(slow_audio.try_recv().unwrap().0.timestamp_ms, 10);
+        assert!(slow.enqueue(chunk(40)));
+        assert_eq!(slow_audio.try_recv().unwrap().0.timestamp_ms, 20);
+        assert_eq!(slow_audio.try_recv().unwrap().0.timestamp_ms, 40);
+    }
+
+    #[test]
+    fn consecutive_capture_runs_use_distinct_segment_ids() {
+        let ids = (0..100).map(|_| segment_prefix(Side::Them, &new_capture_prefix()))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 100);
     }
 
     #[tokio::test]
@@ -3286,8 +2922,8 @@ mod tests {
                 line("them_ab12_acc_1", "我们今天", true),
                 line("them_ab12_acc_1", "我们今天讨论预算。", true),
                 line("them_ab12_acc_2", "Next point", false),
-                // Meeting end: the paragraph the accumulator still holds.
-                line("them_ab12_acc_1", "我们今天讨论预算。", true),
+                // The standalone tail is saved without changing the previous paragraph.
+                line("them_ab12_acc_2", "Next point", true),
             ]
         );
     }

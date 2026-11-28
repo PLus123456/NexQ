@@ -439,8 +439,13 @@ impl LlmConnection {
         self.template.as_deref() == Some("openrouter")
             || Url::parse(self.base_url.trim())
                 .ok()
-                .and_then(|u| u.host_str().map(|h| h.ends_with("openrouter.ai")))
-                .unwrap_or(false)
+                .is_some_and(|url| {
+                    url.host_str().is_some_and(|host| {
+                        let host = host.strip_suffix('.').unwrap_or(host);
+                        host == "openrouter.ai"
+                            || host.strip_suffix(".openrouter.ai").is_some_and(|subdomain| !subdomain.is_empty())
+                    })
+                })
     }
 }
 
@@ -1131,6 +1136,20 @@ mod tests {
 
     fn models(conn: &LlmConnection) -> Option<String> {
         endpoints(conn).models.map(|m| m.unwrap())
+    }
+
+    #[test]
+    fn openrouter_auto_detection_checks_dns_label_boundaries() {
+        for host in ["openrouter.ai", "API.OpenRouter.AI", "openrouter.ai."] {
+            let c = conn("a", LlmKind::OpenAiCompat, &format!("https://{host}/api/v1"));
+            assert!(c.is_openrouter(), "{host}");
+            assert_eq!(c.web_search(), WebSearch::OpenrouterOnline);
+        }
+        for host in ["otheropenrouter.ai", "openrouter.ai.example.org"] {
+            let c = conn("a", LlmKind::OpenAiCompat, &format!("https://{host}/v1"));
+            assert!(!c.is_openrouter(), "{host}");
+            assert_eq!(c.web_search(), WebSearch::None);
+        }
     }
 
     #[test]

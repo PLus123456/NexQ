@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toElapsedMs } from "../lib/bookmarkTarget";
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
@@ -85,18 +86,19 @@ export const useAudioPlayerStore = create<AudioPlayerState>((set, get) => ({
   },
 
   seekToTime: (ms: number) => {
-    const { audioElement } = get();
-    const clampedMs = Math.max(0, ms);
+    if (!Number.isFinite(ms)) return;
+    const { audioElement, durationMs } = get();
+    const clampedMs = Math.max(0, durationMs > 0 ? Math.min(ms, durationMs) : ms);
     if (audioElement) {
       audioElement.currentTime = clampedMs / 1000;
     }
     set({ currentTimeMs: clampedMs });
   },
 
-  seekToTimestamp: (absoluteTimestampMs: number) => {
+  seekToTimestamp: (timestampMs: number) => {
     const { isPlaying, meetingStartMs, recordingOffsetMs } = get();
     if (!isPlaying) return;
-    const audioMs = absoluteTimestampMs - meetingStartMs - recordingOffsetMs;
+    const audioMs = toElapsedMs(timestampMs, meetingStartMs) - recordingOffsetMs;
     get().seekToTime(audioMs);
   },
 
@@ -139,27 +141,28 @@ export const useAudioPlayerStore = create<AudioPlayerState>((set, get) => ({
   },
 
   setGainNode: (node: GainNode | null) => {
+    const { audioElement, volume } = get();
     set({ gainNode: node });
     if (node) {
-      node.gain.value = get().volume;
+      node.gain.value = volume;
     }
+    if (audioElement) audioElement.volume = node ? 1 : Math.min(1, volume);
   },
 
   setAudioElement: (el: HTMLAudioElement | null) => {
     set({ audioElement: el });
     if (el) {
       el.playbackRate = get().playbackSpeed;
-      // Keep audio.volume at 1.0 — GainNode handles amplification beyond 100%
-      el.volume = 1.0;
+      el.volume = get().gainNode ? 1 : Math.min(1, get().volume);
     }
   },
 
   setDuration: (ms: number) => {
-    set({ durationMs: ms });
+    set({ durationMs: Number.isFinite(ms) && ms > 0 ? ms : 0 });
   },
 
   updateCurrentTime: (ms: number) => {
-    set({ currentTimeMs: ms });
+    if (Number.isFinite(ms) && ms >= 0) set({ currentTimeMs: ms });
   },
 
   setActiveSegmentId: (id: string | null) => {

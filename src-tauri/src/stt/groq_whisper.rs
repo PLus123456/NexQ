@@ -18,18 +18,25 @@
 //   - Live config updates: reads shared config Arc on each API call
 
 use async_trait::async_trait;
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::audio::AudioChunk;
+use crate::stt::cloud_http::{self, BatchStatus, BatchTiming};
 use crate::stt::provider::{STTProvider, STTProviderType, TranscriptResult};
 
 /// Sample rate expected by the audio pipeline (16 kHz mono).
 const SAMPLE_RATE: u32 = 16000;
+const TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
+const MAX_IN_FLIGHT: usize = 8;
+const BATCH_QUEUE_CAPACITY: usize = 8;
+const STOP_DRAIN: Duration = cloud_http::REQUEST_TIMEOUT.saturating_add(Duration::from_millis(500));
+const STOP_GRACE: Duration = Duration::from_millis(500);
 
 /// RMS threshold for i16 PCM silence detection.
 /// Segments with RMS below this are considered silence and skipped.
@@ -109,11 +116,39 @@ struct GroqWhisperResponse {
 /// pause-based newlines (like Deepgram's endpointing).
 enum AccumulatorMsg {
     /// A batch returned speech text — append to current utterance.
-    Speech { text: String, timestamp_ms: u64 },
+    Speech { text: String, timing: BatchTiming },
     /// A batch was silent or a hallucination — may trigger utterance finalization.
     Silence,
-    /// Stream ending — flush any accumulated text as final.
-    Flush,
+}
+
+enum Batch {
+    Audio {
+        segment: Vec<i16>,
+        config: GroqConfig,
+        timing: BatchTiming,
+    },
+    Silence,
+}
+
+struct RequestContext {
+    client: reqwest::Client,
+    url: String,
+    key: String,
+    app: Option<AppHandle>,
+    status: BatchStatus,
+}
+
+struct GroqStream {
+    batches: Option<mpsc::Sender<Batch>>,
+    worker: JoinHandle<()>,
+    accumulator: JoinHandle<()>,
+}
+
+impl Drop for GroqStream {
+    fn drop(&mut self) {
+        self.worker.abort();
+        self.accumulator.abort();
+    }
 }
 
 // ── GroqWhisperSTT provider ──
@@ -136,12 +171,10 @@ pub struct GroqWhisperSTT {
     /// A language pinned on this provider (one side of a meeting, "auto"
     /// included) beats the shared config's, which every side reads.
     language_override: Option<String>,
-    is_streaming: bool,
-    result_tx: Option<mpsc::Sender<TranscriptResult>>,
-    stop_flag: Arc<AtomicBool>,
-    start_time: Option<Instant>,
+    stream: Option<GroqStream>,
     /// Accumulated PCM samples for the current segment.
     audio_buffer: Vec<i16>,
+    buffer_timing: BatchTiming,
     /// Number of consecutive silence samples at the tail of audio_buffer.
     /// Used to split segments at pause boundaries before sending to API.
     trailing_silence_samples: usize,
@@ -153,8 +186,8 @@ pub struct GroqWhisperSTT {
     app_handle: Option<AppHandle>,
     /// Party role ("You" or "Them") for event attribution.
     party: String,
-    /// Channel to send results to the utterance accumulator task.
-    accumulator_tx: Option<mpsc::Sender<AccumulatorMsg>>,
+    #[cfg(test)]
+    transcriptions_url: Option<String>,
 }
 
 impl GroqWhisperSTT {
@@ -164,17 +197,16 @@ impl GroqWhisperSTT {
             config: GroqConfig::default(),
             shared_config: None,
             language_override: None,
-            is_streaming: false,
-            result_tx: None,
-            stop_flag: Arc::new(AtomicBool::new(false)),
-            start_time: None,
+            stream: None,
             audio_buffer: Vec::new(),
+            buffer_timing: BatchTiming::default(),
             trailing_silence_samples: 0,
             segment_counter: 0,
             chunks_fed: 0,
             app_handle: None,
             party: String::new(),
-            accumulator_tx: None,
+            #[cfg(test)]
+            transcriptions_url: None,
         }
     }
 
@@ -311,11 +343,11 @@ impl GroqWhisperSTT {
 
     /// Make the API call and return the transcribed text (or None on error/silence).
     async fn call_api(
-        api_key: &str,
+        ctx: &RequestContext,
         config: &GroqConfig,
         samples: Vec<i16>,
-        app_handle: Option<&AppHandle>,
     ) -> Option<String> {
+        let app_handle = ctx.app.as_ref();
         let duration_secs = samples.len() as f32 / SAMPLE_RATE as f32;
         let wav_data = Self::encode_wav(&samples);
         let wav_size_kb = wav_data.len() / 1024;
@@ -332,7 +364,6 @@ impl GroqWhisperSTT {
             );
         }
 
-        let client = reqwest::Client::new();
         let file_part = reqwest::multipart::Part::bytes(wav_data)
             .file_name("audio.wav")
             .mime_str("audio/wav")
@@ -362,9 +393,9 @@ impl GroqWhisperSTT {
         }
 
         let send_start = Instant::now();
-        let response = client
-            .post("https://api.groq.com/openai/v1/audio/transcriptions")
-            .header("Authorization", format!("Bearer {}", api_key))
+        let response = ctx.client
+            .post(&ctx.url)
+            .bearer_auth(&ctx.key)
             .multipart(form)
             .send()
             .await;
@@ -417,6 +448,7 @@ impl GroqWhisperSTT {
                     }
                 } else {
                     let status = resp.status();
+                    ctx.status.http_error("groq_whisper", status);
                     let body = resp.text().await.unwrap_or_default();
                     log::error!(
                         "GroqWhisperSTT: API returned status {}: {}",
@@ -449,6 +481,98 @@ impl GroqWhisperSTT {
 
         None
     }
+
+    /// Starts HTTP requests concurrently and hands their results, including
+    /// silence, to the accumulator in audio order.
+    async fn transcribe_batches(
+        ctx: RequestContext,
+        mut batches: mpsc::Receiver<Batch>,
+        acc_tx: mpsc::Sender<AccumulatorMsg>,
+    ) {
+        let ctx = Arc::new(ctx);
+        let ordered = stream::poll_fn(move |cx| batches.poll_recv(cx))
+            .map(|batch| {
+                let ctx = ctx.clone();
+                async move {
+                    let Batch::Audio { segment, config, timing } = batch else {
+                        return AccumulatorMsg::Silence;
+                    };
+                    match Self::call_api(&ctx, &config, segment).await {
+                        Some(text) if !Self::is_hallucination(&text) => {
+                            AccumulatorMsg::Speech { text, timing }
+                        }
+                        Some(text) => {
+                            if let Some(handle) = &ctx.app {
+                                super::emit_stt_debug(handle, "info", "groq", &format!("Filtered hallucination: {text:?}"));
+                            }
+                            AccumulatorMsg::Silence
+                        }
+                        None => AccumulatorMsg::Silence,
+                    }
+                }
+            })
+            .buffered(MAX_IN_FLIGHT);
+        futures::pin_mut!(ordered);
+        while let Some(msg) = ordered.next().await {
+            if acc_tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+    }
+
+    /// Joins consecutive speech batches into a line and finalizes on a pause
+    /// or once the ordered worker has handed over its last result.
+    async fn accumulate(
+        mut batches: mpsc::Receiver<AccumulatorMsg>,
+        result_tx: mpsc::Sender<TranscriptResult>,
+        app: Option<AppHandle>,
+    ) {
+        let mut count: u64 = 0;
+        let mut line: Option<TranscriptResult> = None;
+        while let Some(batch) = batches.recv().await {
+            let result = match batch {
+                AccumulatorMsg::Speech { text, timing } => {
+                    let current = line.get_or_insert_with(|| {
+                        count += 1;
+                        TranscriptResult {
+                            text: String::new(),
+                            is_final: false,
+                            confidence: 0.95,
+                            timestamp_ms: timing.start_ms,
+                            speaker: None,
+                            language: None,
+                            segment_id: Some(format!("groq_utt_{count}")),
+                            duration_ms: None,
+                            speaker_tag: None,
+                            turn: None,
+                        }
+                    });
+                    if !current.text.is_empty() {
+                        current.text.push(' ');
+                    }
+                    current.text.push_str(&text);
+                    let span = timing.end_ms.saturating_sub(current.timestamp_ms);
+                    current.duration_ms = Some(span.max(current.duration_ms.unwrap_or_default()));
+                    current.clone()
+                }
+                AccumulatorMsg::Silence => {
+                    let Some(mut current) = line.take() else { continue };
+                    current.is_final = true;
+                    if let Some(handle) = &app {
+                        super::emit_stt_debug(handle, "info", "groq", "Utterance finalized (pause detected)");
+                    }
+                    current
+                }
+            };
+            if result_tx.send(result).await.is_err() {
+                return;
+            }
+        }
+        if let Some(mut current) = line {
+            current.is_final = true;
+            let _ = result_tx.send(current).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -465,7 +589,7 @@ impl STTProvider for GroqWhisperSTT {
         &mut self,
         result_tx: mpsc::Sender<TranscriptResult>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.is_streaming {
+        if self.stream.is_some() {
             return Err("Stream already active".into());
         }
 
@@ -483,110 +607,25 @@ impl STTProvider for GroqWhisperSTT {
             ),
         );
 
-        // Set up the utterance accumulator — manages pause-based newlines.
-        // Speech batches accumulate into one line; silence triggers finalization (new line).
-        let (acc_tx, mut acc_rx) = mpsc::channel::<AccumulatorMsg>(64);
-        self.accumulator_tx = Some(acc_tx);
-        self.result_tx = Some(result_tx.clone());
-
-        let app_handle = self.app_handle.clone();
-
-        tokio::spawn(async move {
-            let mut utt_counter: u64 = 0;
-            let mut utt_text = String::new();
-            let mut utt_id = String::new();
-            let mut last_ts: u64 = 0;
-
-            while let Some(msg) = acc_rx.recv().await {
-                match msg {
-                    AccumulatorMsg::Speech {
-                        text,
-                        timestamp_ms,
-                    } => {
-                        // Start a new utterance if needed
-                        if utt_text.is_empty() {
-                            utt_counter += 1;
-                            utt_id = format!("groq_utt_{}", utt_counter);
-                        }
-
-                        // Append this batch's text to the current utterance
-                        if !utt_text.is_empty() {
-                            utt_text.push(' ');
-                        }
-                        utt_text.push_str(&text);
-                        last_ts = timestamp_ms;
-
-                        // Emit as interim — frontend updates in-place (same line)
-                        let _ = result_tx
-                            .send(TranscriptResult {
-                                text: utt_text.clone(),
-                                is_final: false,
-                                confidence: 0.95,
-                                timestamp_ms,
-                                speaker: None,
-                                language: None,
-                                segment_id: Some(utt_id.clone()),
-                                duration_ms: None,
-                                speaker_tag: None,
-                                turn: None,
-                            })
-                            .await;
-                    }
-                    AccumulatorMsg::Silence | AccumulatorMsg::Flush => {
-                        if !utt_text.is_empty() {
-                            // Finalize the current utterance — frontend starts new line
-                            let _ = result_tx
-                                .send(TranscriptResult {
-                                    text: utt_text.clone(),
-                                    is_final: true,
-                                    confidence: 0.95,
-                                    timestamp_ms: last_ts,
-                                    speaker: None,
-                                    language: None,
-                                    segment_id: Some(utt_id.clone()),
-                                    duration_ms: None,
-                                    speaker_tag: None,
-                                    turn: None,
-                                })
-                                .await;
-                            utt_text.clear();
-
-                            if let Some(ref handle) = app_handle {
-                                super::emit_stt_debug(
-                                    handle,
-                                    "info",
-                                    "groq",
-                                    "Utterance finalized (pause detected)",
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Flush remaining text when channel closes (stream ending)
-            if !utt_text.is_empty() {
-                let _ = result_tx
-                    .send(TranscriptResult {
-                        text: utt_text,
-                        is_final: true,
-                        confidence: 0.95,
-                        timestamp_ms: last_ts,
-                        speaker: None,
-                        language: None,
-                        segment_id: Some(utt_id),
-                        duration_ms: None,
-                        speaker_tag: None,
-                        turn: None,
-                    })
-                    .await;
-            }
+        let url = TRANSCRIPTIONS_URL.to_string();
+        #[cfg(test)]
+        let url = self.transcriptions_url.clone().unwrap_or(url);
+        let ctx = RequestContext {
+            client: cloud_http::client()?,
+            url,
+            key: self.api_key.clone(),
+            app: self.app_handle.clone(),
+            status: BatchStatus::new(self.app_handle.clone(), &self.party),
+        };
+        let (batch_tx, batch_rx) = mpsc::channel(BATCH_QUEUE_CAPACITY);
+        let (acc_tx, acc_rx) = mpsc::channel(MAX_IN_FLIGHT);
+        self.stream = Some(GroqStream {
+            batches: Some(batch_tx),
+            worker: tokio::spawn(Self::transcribe_batches(ctx, batch_rx, acc_tx)),
+            accumulator: tokio::spawn(Self::accumulate(acc_rx, result_tx, self.app_handle.clone())),
         });
-
-        self.is_streaming = true;
-        self.stop_flag.store(false, Ordering::SeqCst);
-        self.start_time = Some(Instant::now());
         self.audio_buffer.clear();
+        self.trailing_silence_samples = 0;
         self.segment_counter = 0;
         self.chunks_fed = 0;
 
@@ -598,7 +637,7 @@ impl STTProvider for GroqWhisperSTT {
         &mut self,
         chunk: AudioChunk,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming || self.stop_flag.load(Ordering::SeqCst) {
+        if self.stream.is_none() || chunk.pcm_data.is_empty() {
             return Ok(());
         }
 
@@ -630,6 +669,7 @@ impl STTProvider for GroqWhisperSTT {
             self.trailing_silence_samples = 0;
         }
 
+        self.buffer_timing.append(&chunk, self.audio_buffer.is_empty());
         self.audio_buffer.extend_from_slice(&chunk.pcm_data);
 
         // Dynamic threshold from current config (picks up live setting changes)
@@ -652,90 +692,45 @@ impl STTProvider for GroqWhisperSTT {
         if should_send {
             self.segment_counter += 1;
             // Trim trailing silence from the segment to send cleaner audio
-            let full_buffer = std::mem::take(&mut self.audio_buffer);
-            let segment = if self.trailing_silence_samples > 0 && self.trailing_silence_samples < full_buffer.len() {
-                full_buffer[..full_buffer.len() - self.trailing_silence_samples].to_vec()
-            } else {
-                full_buffer
-            };
+            let mut segment = std::mem::take(&mut self.audio_buffer);
+            let mut timing = self.buffer_timing;
+            if self.trailing_silence_samples < segment.len() {
+                segment.truncate(segment.len() - self.trailing_silence_samples);
+                let trailing_ms = self.trailing_silence_samples as u64 * 1000 / u64::from(SAMPLE_RATE);
+                timing.end_ms = timing.end_ms.saturating_sub(trailing_ms);
+            }
             self.trailing_silence_samples = 0;
-            let timestamp_ms = self
-                .start_time
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(chunk.timestamp_ms);
-
-            // Silence detection on the full segment
             let rms = Self::segment_rms(&segment);
 
-            if rms < SILENCE_RMS_THRESHOLD {
+            let batch = if rms < SILENCE_RMS_THRESHOLD {
+                self.emit_debug(
+                    "info",
+                    &format!("Silent segment #{} (rms={rms:.1}), skipping API call", self.segment_counter),
+                );
+                Batch::Silence
+            } else {
                 self.emit_debug(
                     "info",
                     &format!(
-                        "Silent segment #{} (rms={:.1}), skipping API call",
-                        self.segment_counter, rms
+                        "Speech segment #{} (rms={rms:.1}), sending {:.1}s to API",
+                        self.segment_counter,
+                        segment.len() as f32 / SAMPLE_RATE as f32
                     ),
                 );
-                if let Some(ref tx) = self.accumulator_tx {
-                    let _ = tx.send(AccumulatorMsg::Silence).await;
+                Batch::Audio { segment, config, timing }
+            };
+            if let Some(tx) = self.stream.as_ref().and_then(|stream| stream.batches.as_ref()) {
+                if matches!(tx.try_send(batch), Err(mpsc::error::TrySendError::Full(_))) {
+                    self.emit_debug("warn", "Groq transcription queue is full; dropped an audio batch");
                 }
-                return Ok(());
             }
-
-            self.emit_debug(
-                "info",
-                &format!(
-                    "Speech segment #{} (rms={:.1}), sending {:.1}s to API",
-                    self.segment_counter,
-                    rms,
-                    segment.len() as f32 / SAMPLE_RATE as f32
-                ),
-            );
-
-            // Spawn the API call — result flows to the accumulator
-            let api_key = self.api_key.clone();
-            let acc_tx = self.accumulator_tx.as_ref().unwrap().clone();
-            let app_handle = self.app_handle.clone();
-
-            tokio::spawn(async move {
-                let text =
-                    Self::call_api(&api_key, &config, segment, app_handle.as_ref()).await;
-
-                match text {
-                    Some(t) if !Self::is_hallucination(&t) => {
-                        let _ = acc_tx
-                            .send(AccumulatorMsg::Speech {
-                                text: t,
-                                timestamp_ms,
-                            })
-                            .await;
-                    }
-                    Some(t) => {
-                        // Hallucination detected — treat as silence
-                        if let Some(ref handle) = app_handle {
-                            super::emit_stt_debug(
-                                handle,
-                                "info",
-                                "groq",
-                                &format!("Filtered hallucination: \"{}\"", t),
-                            );
-                        }
-                        let _ = acc_tx.send(AccumulatorMsg::Silence).await;
-                    }
-                    None => {
-                        // API error or empty result
-                        let _ = acc_tx.send(AccumulatorMsg::Silence).await;
-                    }
-                }
-            });
         }
 
         Ok(())
     }
 
     async fn stop_stream(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_streaming {
-            return Ok(());
-        }
+        let Some(mut stream) = self.stream.take() else { return Ok(()) };
 
         self.emit_debug(
             "info",
@@ -745,67 +740,37 @@ impl STTProvider for GroqWhisperSTT {
             ),
         );
 
-        self.stop_flag.store(true, Ordering::SeqCst);
-
-        // Flush remaining audio buffer (if at least 0.5s of audio)
-        let min_flush_samples = (SAMPLE_RATE as f32 * 0.5) as usize;
-        if self.audio_buffer.len() >= min_flush_samples {
-            let segment = std::mem::take(&mut self.audio_buffer);
-            let rms = Self::segment_rms(&segment);
-
-            if rms >= SILENCE_RMS_THRESHOLD {
-                self.segment_counter += 1;
-                self.emit_debug(
-                    "info",
-                    &format!(
-                        "Flushing final {:.1}s buffer (rms={:.1})",
-                        segment.len() as f32 / SAMPLE_RATE as f32,
-                        rms
-                    ),
-                );
-
-                let timestamp_ms = self
-                    .start_time
-                    .map(|t| t.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
-                let config = self.current_config();
-
-                // Send final segment synchronously (awaited in stop_stream)
-                let text = Self::call_api(
-                    &self.api_key,
-                    &config,
-                    segment,
-                    self.app_handle.as_ref(),
-                )
-                .await;
-
-                if let Some(t) = text {
-                    if !Self::is_hallucination(&t) {
-                        if let Some(ref tx) = self.accumulator_tx {
-                            let _ = tx
-                                .send(AccumulatorMsg::Speech {
-                                    text: t,
-                                    timestamp_ms,
-                                })
-                                .await;
-                        }
-                    }
-                }
+        let segment = std::mem::take(&mut self.audio_buffer);
+        let tail = (segment.len() >= SAMPLE_RATE as usize / 2 && Self::segment_rms(&segment) >= SILENCE_RMS_THRESHOLD)
+            .then(|| Batch::Audio {
+                segment,
+                config: self.current_config(),
+                timing: self.buffer_timing,
+            });
+        let batches = stream.batches.take();
+        let drained = tokio::time::timeout(STOP_DRAIN, async {
+            if let (Some(tx), Some(tail)) = (&batches, tail) {
+                let _ = tx.send(tail).await;
+            }
+            // Closing the input lets the worker finish its requests, then
+            // close the accumulator, which finalizes the last utterance.
+            drop(batches);
+            (&mut stream.worker).await
+        })
+        .await;
+        match drained {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => self.emit_debug("warn", &format!("Groq transcription worker stopped early: {e}")),
+            Err(_) => {
+                stream.worker.abort();
+                let _ = (&mut stream.worker).await;
+                self.emit_debug("warn", "Stopped waiting for Groq; queued or in-flight audio may be missing");
             }
         }
-
-        // Flush the accumulator (finalize any accumulated utterance)
-        if let Some(ref tx) = self.accumulator_tx {
-            let _ = tx.send(AccumulatorMsg::Flush).await;
+        if tokio::time::timeout(STOP_GRACE, &mut stream.accumulator).await.is_err() {
+            stream.accumulator.abort();
+            let _ = (&mut stream.accumulator).await;
         }
-
-        // Drop channels to let the accumulator task finish
-        self.accumulator_tx = None;
-        self.audio_buffer.clear();
-        self.is_streaming = false;
-        self.result_tx = None;
-        self.start_time = None;
-
         self.emit_debug("info", "Stream stopped");
         Ok(())
     }
@@ -818,10 +783,9 @@ impl STTProvider for GroqWhisperSTT {
         log::info!("GroqWhisperSTT: Testing connection...");
 
         // Test by listing models — a lightweight authenticated endpoint
-        let client = reqwest::Client::new();
-        let response = client
+        let response = cloud_http::client()?
             .get("https://api.groq.com/openai/v1/models")
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .bearer_auth(&self.api_key)
             .send()
             .await?;
 
@@ -858,6 +822,95 @@ fn preview(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
+    use tokio::task::JoinSet;
+
+    async fn respond(socket: &mut TcpStream, second_replied: Arc<Notify>) {
+        let mut request = Vec::new();
+        let (headers, body_size) = loop {
+            assert!(socket.read_buf(&mut request).await.unwrap() > 0);
+            if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&request[..end]).unwrap();
+                let body_size = headers.lines().find_map(|line| {
+                    let (header, value) = line.split_once(':')?;
+                    header.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+                }).unwrap();
+                break (end + 4, body_size);
+            }
+        };
+        while request.len() < headers + body_size {
+            assert!(socket.read_buf(&mut request).await.unwrap() > 0);
+        }
+        let pcm = request[headers..].windows(4).position(|bytes| bytes == b"RIFF").unwrap() + headers + 44;
+        let marker = i16::from_le_bytes(request[pcm..pcm + 2].try_into().unwrap());
+        let word = match marker {
+            1000 => {
+                second_replied.notified().await;
+                "first"
+            }
+            2000 => "second",
+            3000 => "tail",
+            other => panic!("unexpected audio {other}"),
+        };
+        let body = format!(r#"{{"text":"{word}"}}"#);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        if marker == 2000 {
+            second_replied.notify_one();
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_replies_and_stop_keep_speech_and_pauses_in_capture_order() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let second_replied = Arc::new(Notify::new());
+                let mut handlers = JoinSet::new();
+                for _ in 0..3 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let second_replied = second_replied.clone();
+                    handlers.spawn(async move { respond(&mut socket, second_replied).await });
+                }
+                while let Some(result) = handlers.join_next().await {
+                    result.unwrap();
+                }
+            });
+            let mut provider = GroqWhisperSTT::with_api_key("test");
+            provider.transcriptions_url = Some(format!("http://{address}/transcribe"));
+            provider.config.segment_duration_secs = 1.0;
+            let (tx, mut rx) = mpsc::channel(8);
+            provider.start_stream(tx).await.unwrap();
+            let start = 1_800_000_000_000;
+            for (amplitude, len, end_ms) in [(1000, 1000, 1000), (2000, 1000, 2000), (0, 1000, 3000), (3000, 500, 3500)] {
+                provider.feed_audio(AudioChunk {
+                    pcm_data: vec![amplitude; len * 16],
+                    source: crate::audio::AudioSource::System,
+                    timestamp_ms: start + end_ms,
+                    is_speech: amplitude != 0,
+                }).await.unwrap();
+            }
+            provider.stop_stream().await.unwrap();
+            let mut results = Vec::new();
+            while let Some(result) = rx.recv().await {
+                results.push((result.text, result.is_final, result.timestamp_ms, result.duration_ms));
+            }
+            assert_eq!(results, vec![
+                ("first".into(), false, start, Some(1000)),
+                ("first second".into(), false, start, Some(2000)),
+                ("first second".into(), true, start, Some(2000)),
+                ("tail".into(), false, start + 3000, Some(500)),
+                ("tail".into(), true, start + 3000, Some(500)),
+            ]);
+            server.await.unwrap();
+        }).await.expect("the later HTTP batch must complete before the first and stop must drain both");
+    }
 
     /// NexQ Plus: a pinned language holds whichever comes first, the pin or
     /// the shared config, and a side that only got the shared language

@@ -51,6 +51,10 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   getApiKey: async () => null,
   hasApiKey: async () => false,
   listModels: async () => [],
+  toggleSourceMuted: async (source: "you" | "them") => {
+    const state = useConfigStore.getState();
+    useConfigStore.setState(source === "you" ? { mutedYou: !state.mutedYou } : { mutedThem: !state.mutedThem });
+  },
 }));
 
 import { ServiceStatusBar } from "./ServiceStatusBar";
@@ -116,7 +120,7 @@ beforeEach(() => {
     mutedYou: false,
     mutedThem: false,
   });
-  useMeetingStore.setState({ isRecording: false, audioMode: "online" });
+  useMeetingStore.setState({ activeMeeting: null, isRecording: false, audioMode: "online" });
   useSpeakerStore.setState({ speakerOrder: [] });
   useStreamStore.setState({ isStreaming: false, currentProvider: "", currentModel: "" });
   useUpdaterStore.getState().reset();
@@ -132,8 +136,8 @@ afterEach(async () => {
 });
 
 describe("ServiceStatusBar text", () => {
-  it("keeps the original English text", () => {
-    useMeetingStore.setState({ isRecording: true });
+  it("keeps the original English text", async () => {
+    useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, isRecording: true });
     render(<ServiceStatusBar />);
 
     expect(screen.getByTitle("LLM: Ollama / llama3.2")).toBeInTheDocument();
@@ -144,7 +148,9 @@ describe("ServiceStatusBar text", () => {
 
     // A mute button flips between Mute and Unmute.
     fireEvent.click(screen.getByTitle("Mute You"));
-    expect(screen.getByTitle("Unmute You")).toBeInTheDocument();
+    expect(await screen.findByTitle("Unmute You")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Unmute You"));
+    expect(await screen.findByTitle("Mute You")).toBeInTheDocument();
     expect(screen.getByTitle("Mute Them")).toBeInTheDocument();
   });
 
@@ -176,7 +182,7 @@ describe("ServiceStatusBar text", () => {
 
   it("is translated in Chinese", async () => {
     await changeUiLanguage("zh-CN");
-    useMeetingStore.setState({ isRecording: true });
+    useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, isRecording: true });
     render(<ServiceStatusBar />);
 
     expect(screen.getByTitle("AI 模型：Ollama / llama3.2")).toBeInTheDocument();
@@ -186,7 +192,7 @@ describe("ServiceStatusBar text", () => {
     expect(screen.getByText("对方")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("静音对方的声音"));
-    expect(screen.getByTitle("取消静音对方的声音")).toBeInTheDocument();
+    expect(await screen.findByTitle("取消静音对方的声音")).toBeInTheDocument();
     expect(screen.getByTitle("静音我的声音")).toBeInTheDocument();
   });
 

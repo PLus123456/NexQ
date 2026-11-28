@@ -60,7 +60,9 @@ describe("notesFor", () => {
 
   it("finds the first release in the real changelog", () => {
     const real = readFileSync(join(__dirname, "..", "CHANGELOG.plus.md"), "utf8");
-    expect(notesFor(real, "2.41.3")).toContain("### Features");
-    expect(parseChangelog(real)[0].version).toBe("2.41.3");
+    const firstVersion = real.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1];
+    expect(firstVersion).toBeDefined();
+    expect(notesFor(real, firstVersion!)).toMatch(/^### /m);
+    expect(parseChangelog(real)[0].version).toBe(firstVersion);
   });
 });

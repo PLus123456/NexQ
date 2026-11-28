@@ -120,6 +120,7 @@ pub enum Text {
     CopyActionItems,
     CopySummary,
     CopyTranscript,
+    RecentMeetings,
     Settings,
     Quit,
     Idle,
@@ -150,6 +151,7 @@ pub fn tr_in(lang: UiLanguage, text: Text) -> &'static str {
             Text::CopyActionItems => "Copy Action Items",
             Text::CopySummary => "Copy Summary",
             Text::CopyTranscript => "Copy Transcript",
+            Text::RecentMeetings => "Recent Meetings",
             Text::Settings => "Settings",
             Text::Quit => "Quit NexQ Plus",
             Text::Idle => "Idle",
@@ -172,6 +174,7 @@ pub fn tr_in(lang: UiLanguage, text: Text) -> &'static str {
             Text::CopyActionItems => "复制待办事项",
             Text::CopySummary => "复制会议总结",
             Text::CopyTranscript => "复制转写记录",
+            Text::RecentMeetings => "最近会议",
             Text::Settings => "设置",
             Text::Quit => "退出 NexQ Plus",
             Text::Idle => "空闲",
@@ -221,7 +224,7 @@ mod tests {
         let all = [
             Text::OpenDashboard, Text::StartMeeting, Text::StopMeeting, Text::MuteMicrophone, Text::MuteSystemAudio,
             Text::HideFromScreenShare, Text::HideOverlay, Text::ShowOverlay, Text::CopyLastAiAnswer,
-            Text::CopyActionItems, Text::CopySummary, Text::CopyTranscript, Text::Settings, Text::Quit,
+            Text::CopyActionItems, Text::CopySummary, Text::CopyTranscript, Text::RecentMeetings, Text::Settings, Text::Quit,
             Text::Idle, Text::Recording, Text::RecordingMicMuted, Text::RecordingOverlayHidden,
             Text::AiProcessing, Text::IndexingFiles,
         ];

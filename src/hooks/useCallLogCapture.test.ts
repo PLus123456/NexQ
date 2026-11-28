@@ -27,7 +27,7 @@ vi.mock("../lib/ipc", () => ({
   saveMeetingAiInteractions: (...args: unknown[]) => ipc.saveMeetingAiInteractions(...args),
 }));
 
-import { STALL_TIMEOUT_MS, useCallLogCapture } from "./useCallLogCapture";
+import { flushMeetingAiHistory, STALL_TIMEOUT_MS, useCallLogCapture } from "./useCallLogCapture";
 import { STALLED_MESSAGE, useCallLogStore } from "../stores/callLogStore";
 import { useMeetingStore } from "../stores/meetingStore";
 
@@ -102,6 +102,7 @@ describe("useCallLogCapture", () => {
       handlers.token({ token: "Prepared answer now used", request_id: "replayed" });
       handlers.end({ total_tokens: 0, latency_ms: 0, request_id: "replayed", cancelled: false });
     });
+    await flushMeetingAiHistory("m1");
     const saved = JSON.parse(ipc.saveMeetingAiInteractions.mock.calls[0][1]);
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ mode: "Assist", response: "Prepared answer now used" });
@@ -118,6 +119,7 @@ describe("useCallLogCapture", () => {
     });
     expect(ipc.saveMeetingAiInteractions).not.toHaveBeenCalled();
     act(() => handlers.end({ total_tokens: 3, latency_ms: 10, request_id: "live", cancelled: false }));
+    await flushMeetingAiHistory("m1");
     const saved = JSON.parse(ipc.saveMeetingAiInteractions.mock.calls[0][1]);
     expect(saved).toHaveLength(1);
     expect(saved[0].response).toBe("Live answer");
@@ -140,6 +142,7 @@ describe("useCallLogCapture", () => {
     expect(entry().latencyMs).toBe(31_000);
     expect(entry().usage).toEqual(USAGE);
 
+    await flushMeetingAiHistory("m1");
     expect(ipc.saveMeetingAiInteractions).toHaveBeenCalledTimes(1);
     const [meetingId, json] = ipc.saveMeetingAiInteractions.mock.calls[0];
     expect(meetingId).toBe("m1");
@@ -166,6 +169,7 @@ describe("useCallLogCapture", () => {
     act(() => handlers.end({ total_tokens: 5, latency_ms: 125_000, request_id: "r2", cancelled: false }));
     expect(entry().status).toBe("complete");
     expect(entry().usage).toBeNull();
+    await flushMeetingAiHistory("m1");
     expect(ipc.saveMeetingAiInteractions).toHaveBeenCalledTimes(1);
   });
 
@@ -177,6 +181,7 @@ describe("useCallLogCapture", () => {
     act(() => handlers.end({ total_tokens: 0, latency_ms: 130_000, request_id: "r3", cancelled: false }));
     expect(entry().status).toBe("complete");
     expect(entry().errorMessage).toBeNull();
+    await flushMeetingAiHistory("m1");
   });
 
   it("thinking restarts the silence clock", async () => {
@@ -206,5 +211,38 @@ describe("useCallLogCapture", () => {
     });
     expect(entry().status).toBe("cancelled");
     expect(entry().errorMessage).toBeNull();
+    await flushMeetingAiHistory("m1");
+  });
+
+  it("saves answers beyond the visible log and keeps an evicted cancellation", async () => {
+    await mount();
+    act(() => {
+      start("cancelled");
+      handlers.token({ token: "Partial answer", request_id: "cancelled" });
+      for (let index = 0; index < 105; index += 1) {
+        const id = `answer-${index}`;
+        start(id);
+        handlers.token({ token: id, request_id: id });
+        handlers.end({ total_tokens: 1, latency_ms: 10, request_id: id });
+      }
+      handlers.end({ total_tokens: 0, latency_ms: 110, request_id: "cancelled", cancelled: true });
+    });
+    expect(useCallLogStore.getState().entries).toHaveLength(100);
+    await flushMeetingAiHistory("m1");
+    const saved = ipc.saveMeetingAiInteractions.mock.calls.flatMap(([, json]) => JSON.parse(json));
+    expect(saved).toHaveLength(106);
+    expect(saved).toContainEqual(expect.objectContaining({ response: "Partial answer" }));
+    expect(saved).toContainEqual(expect.objectContaining({ response: "answer-0" }));
+  });
+
+  it("shows answers in the overlay without writing a second copy", async () => {
+    renderHook(() => useCallLogCapture(false));
+    await act(async () => {
+      start("overlay");
+      handlers.token({ token: "Visible answer", request_id: "overlay" });
+      handlers.end({ total_tokens: 1, latency_ms: 10, request_id: "overlay" });
+    });
+    expect(entry()).toMatchObject({ status: "complete", responseContent: "Visible answer" });
+    expect(ipc.saveMeetingAiInteractions).not.toHaveBeenCalled();
   });
 });

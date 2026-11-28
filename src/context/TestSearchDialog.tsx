@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { ParseKeys } from "i18next";
 import { useRagStore } from "../stores/ragStore";
-import { useConfigStore } from "../stores/configStore";
-import { testRagAnswer } from "../lib/ipc";
+import { useLlmConfig } from "../stores/llmConnectionsStore";
+import { effectiveRoute } from "../lib/llm/tasks";
+import { cancelGeneration, testRagAnswer } from "../lib/ipc";
 import { onStreamStart, onStreamToken, onStreamEnd, onStreamError } from "../lib/events";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { AnswerMarkdown } from "../components/AnswerMarkdown";
@@ -59,6 +60,10 @@ const SEARCH_MODE_KEYS = new Map<string, RagKey>([
 ]);
 
 export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
+  return isOpen ? <OpenTestSearchDialog onClose={onClose} /> : null;
+}
+
+function OpenTestSearchDialog({ onClose }: Pick<TestSearchDialogProps, "onClose">) {
   const { t } = useT(["rag", "common"]);
   const testSearchResults = useRagStore((s) => s.testSearchResults);
   const rerankReport = useRagStore((s) => s.testSearchRerank);
@@ -73,8 +78,9 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const ragConfig = useRagStore((s) => s.ragConfig);
   const indexStatus = useRagStore((s) => s.indexStatus);
   const error = useRagStore((s) => s.error);
-  const llmModel = useConfigStore((s) => s.llmModel);
-  const llmProvider = useConfigStore((s) => s.llmProvider);
+  const { view: llmConfig } = useLlmConfig();
+  const route = llmConfig ? effectiveRoute(llmConfig, "rag_answer") : null;
+  const llmModel = route && !route.error ? route.model ?? route.connection_name : null;
 
   const [query, setQuery] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
@@ -89,105 +95,100 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const [aiProvider, setAiProvider] = useState("");
   const [aiLatencyMs, setAiLatencyMs] = useState<number | null>(null);
   const [aiTotalTokens, setAiTotalTokens] = useState<number | null>(null);
-  const aiStartTime = useRef<number>(0);
-  // request_id of the test answer being streamed — ignore every other stream
-  const requestIdRef = useRef<string | null>(null);
+  const activeTest = useRef<{ id: string; answerStarted: boolean } | null>(null);
+  const listenersReady = useRef<Promise<UnlistenFn[]> | null>(null);
 
   const backdropRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const aiResponseRef = useRef<HTMLDivElement>(null);
 
-  // Reset all state when the dialog opens so stale results never persist
   useEffect(() => {
-    if (isOpen) {
-      resetTestSearch();
-      setHasSearched(false);
-      setAiResponse("");
-      setAiError(null);
-      setAiLatencyMs(null);
-      setAiTotalTokens(null);
-      setAiModel("");
-      setAiProvider("");
-      setTimeout(() => inputRef.current?.focus(), 100);
-    }
-  }, [isOpen, resetTestSearch]);
+    resetTestSearch();
+    const timer = setTimeout(() => inputRef.current?.focus(), 100);
+    return () => clearTimeout(timer);
+  }, [resetTestSearch]);
 
   // The rerank chip needs the knowledge base settings (the launcher doesn't load them).
   useEffect(() => {
-    if (isOpen && !settingsLoaded) void loadSettings();
-  }, [isOpen, settingsLoaded, loadSettings]);
+    if (!settingsLoaded) void loadSettings();
+  }, [settingsLoaded, loadSettings]);
+
+  const cancelTest = useCallback(() => {
+    const test = activeTest.current;
+    activeTest.current = null;
+    resetTestSearch();
+    if (test?.answerStarted) void cancelGeneration(test.id).catch(() => {});
+  }, [resetTestSearch]);
+
+  const close = useCallback(() => {
+    cancelTest();
+    onClose();
+  }, [cancelTest, onClose]);
 
   useEffect(() => {
-    if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") close();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [close]);
 
-  // Subscribe to LLM stream events when generating
   useEffect(() => {
-    if (!isGenerating) return;
-
-    let unlistenStart: UnlistenFn | null = null;
-    let unlistenToken: UnlistenFn | null = null;
-    let unlistenEnd: UnlistenFn | null = null;
-    let unlistenError: UnlistenFn | null = null;
-    let mounted = true;
-
-    const setup = async () => {
-      const isOurs = (id: string | null) =>
-        mounted && requestIdRef.current !== null && id === requestIdRef.current;
-
-      unlistenStart = await onStreamStart((event) => {
-        if (!isOurs(event.request_id)) return;
+    const isOurs = (id: string | null) => activeTest.current?.id === id;
+    const subscriptions = [
+      onStreamStart((event) => {
+        if (event.mode !== "RagTest" || !isOurs(event.request_id)) return;
         setAiModel(event.model);
         setAiProvider(event.provider);
-        // Scroll to AI response box so user sees the answer, not the chunk list
-        setTimeout(() => {
-          aiResponseRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }, 50);
-      });
-      unlistenToken = await onStreamToken((event) => {
+        requestAnimationFrame(() => {
+          if (isOurs(event.request_id)) aiResponseRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+        });
+      }),
+      onStreamToken((event) => {
         if (!isOurs(event.request_id)) return;
         setAiResponse((prev) => prev + event.token);
-      });
-      unlistenEnd = await onStreamEnd((event) => {
+      }),
+      onStreamEnd((event) => {
         if (!isOurs(event.request_id)) return;
+        activeTest.current = null;
         setIsGenerating(false);
         setAiLatencyMs(event.latency_ms);
         setAiTotalTokens(event.total_tokens);
-      });
-      unlistenError = await onStreamError((event) => {
+      }),
+      onStreamError((event) => {
         if (!isOurs(event.request_id)) return;
+        activeTest.current = null;
         setIsGenerating(false);
         setAiError(event.message);
-      });
-    };
-
-    setup();
+      }),
+    ];
+    const ready = Promise.all(subscriptions);
+    listenersReady.current = ready;
+    void ready.catch(() => {}); // The submit path reports listener registration errors.
 
     return () => {
-      mounted = false;
-      if (unlistenStart) unlistenStart();
-      if (unlistenToken) unlistenToken();
-      if (unlistenEnd) unlistenEnd();
-      if (unlistenError) unlistenError();
+      listenersReady.current = null;
+      cancelTest();
+      for (const subscription of subscriptions) {
+        void subscription.then((unlisten) => unlisten()).catch(() => {});
+      }
     };
-  }, [isGenerating]);
+  }, [cancelTest]);
 
   const handleBackdropClick = useCallback(
     (e: React.MouseEvent) => {
-      if (e.target === backdropRef.current) onClose();
+      if (e.target === backdropRef.current) close();
     },
-    [onClose]
+    [close]
   );
 
   const handleFullTest = useCallback(async (q: string) => {
-    if (!q.trim()) return;
     const trimmed = q.trim();
+    const ready = listenersReady.current;
+    if (!trimmed || activeTest.current || !ready) return;
+    const test = { id: crypto.randomUUID(), answerStarted: false };
+    activeTest.current = test;
     setHasSearched(true);
     setAiResponse("");
     setAiError(null);
@@ -196,18 +197,21 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
     setAiModel("");
     setAiProvider("");
 
-    // Step 1: RAG search for chunks
-    await testSearch(trimmed);
-
-    // Step 2: Call LLM with RAG context (uses streaming events)
-    // Pass the frontend's LLM settings so the backend uses the correct provider/model
-    const requestId = crypto.randomUUID();
-    requestIdRef.current = requestId;
-    setIsGenerating(true);
-    aiStartTime.current = performance.now();
     try {
-      await testRagAnswer(trimmed, llmProvider, llmModel, requestId);
+      const foundChunks = await testSearch(trimmed);
+      if (activeTest.current !== test) return;
+      if (!foundChunks) {
+        activeTest.current = null;
+        return;
+      }
+      setIsGenerating(true);
+      await ready;
+      if (activeTest.current !== test) return;
+      test.answerStarted = true;
+      await testRagAnswer(trimmed, test.id);
     } catch (e) {
+      if (activeTest.current !== test) return;
+      activeTest.current = null;
       setIsGenerating(false);
       setAiError(e instanceof Error ? e.message : String(e));
     }
@@ -219,7 +223,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") handleSearch();
+      if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSearch();
     },
     [handleSearch]
   );
@@ -243,8 +247,6 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
     setCopiedId("ai-response");
     setTimeout(() => setCopiedId(null), 1500);
   }, [aiResponse]);
-
-  if (!isOpen) return null;
 
   const totalResultTokens = testSearchResults.reduce(
     (sum, r) => sum + Math.ceil(r.text.split(/\s+/).length * 1.3),
@@ -279,7 +281,7 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={close}
             className="rounded-lg p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
             title={t("context.testSearch.close.title")}
           >

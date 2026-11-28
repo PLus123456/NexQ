@@ -8,7 +8,12 @@
       "newStartFailed": "开始新会议失败",
       "deleted": "会议已删除",
       "deleteFailed": "删除会议失败",
-      "allDeleted": "所有会议已删除",
+      "recordingCleanupPending": "会议已从历史中移除，录音文件待清理。",
+      "allDeleted": "会议历史已删除",
+      "historyLoadFailed": "加载会议历史失败",
+      "deleteAllFailed": "删除会议历史失败",
+      "deleteAllPartial": "已删除 {{deleted}} 场会议，{{failed}} 场删除失败。",
+      "historyCleanupPending_other": "已删除的会议中有 {{count}} 场的录音文件待清理。",
       "renameFailed": "重命名会议失败"
     },
     "activeMeeting": {
@@ -62,10 +67,10 @@
       "title": "个人资料来源"
     },
     "deleteAll": {
-      "ariaLabel": "删除所有会议",
-      "dialogAriaLabel": "确认删除所有会议",
-      "title": "删除所有会议？",
-      "body": "将永久删除全部 <strong>{{total}}</strong> 场会议及其转写记录。此操作无法撤销。",
+      "ariaLabel": "删除会议历史",
+      "dialogAriaLabel": "确认删除会议历史",
+      "title": "删除会议历史？",
+      "body": "将永久删除会议历史中的 <strong>{{total}}</strong> 场会议，包括相关转写和录音。",
       "confirmButton": "删除全部 {{total}} 场会议",
       "deleting": "正在删除…"
     },

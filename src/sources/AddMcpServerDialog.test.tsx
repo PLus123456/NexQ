@@ -74,6 +74,23 @@ describe("AddMcpServerDialog", () => {
     expect(useSourcesStore.getState().config.mcp_servers).toHaveLength(0);
   });
 
+  it("discards a prepared import when Escape closed the dialog first", async () => {
+    let imported!: (servers: McpServer[]) => void;
+    ipc.importMcpServersJson.mockReturnValue(new Promise<McpServer[]>((resolve) => { imported = resolve; }));
+    const onClose = vi.fn();
+    const onAdded = vi.fn();
+    render(<AddMcpServerDialog onClose={onClose} onAdded={onAdded} />);
+    fireEvent.change(screen.getByLabelText("Server JSON"), { target: { value: "{}" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    imported([server()]);
+    await waitFor(() => expect(ipc.discardPendingMcpServers).toHaveBeenCalledWith(["s1"]));
+    expect(useSourcesStore.getState().config.mcp_servers).toEqual([]);
+    expect(ipc.setPersonalSources).not.toHaveBeenCalled();
+    expect(onAdded).not.toHaveBeenCalled();
+  });
+
   it("the form sends secret values to saveMcpServerForm and never into the store", async () => {
     ipc.saveMcpServerForm.mockResolvedValue(
       server({ env: [{ name: "API_TOKEN", value: null, secret: true }, { name: "REGION", value: "eu", secret: false }] }),

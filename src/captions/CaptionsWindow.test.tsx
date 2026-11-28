@@ -441,6 +441,19 @@ describe("CaptionsWindow", () => {
     expect(screen.queryByTestId("captions-frame")).toBeNull();
   });
 
+  it("clears the frame when a backdrop-slider drag leaves without releasing in the webview", async () => {
+    pointerMock.physicalRect = { x: 512, y: 1280, width: 2000, height: 458 };
+    pointerMock.cursor = { x: 1000, y: 1500 };
+    await open();
+    vi.useFakeTimers();
+    fireEvent.pointerEnter(document.querySelector("[data-captions-root]")!);
+    fireEvent.pointerDown(screen.getByRole("slider"), { button: 0, buttons: 1, pointerId: 1 });
+
+    pointerMock.cursor = { x: 10, y: 10 };
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    expect(screen.queryByTestId("captions-frame")).toBeNull();
+  });
+
   describe("pointer check on screens with different scales (macOS)", () => {
     // Main display a 1x monitor at points (0,0)–(2560,1440); a 2x laptop screen
     // below it. The strip sits on the laptop at points (780,2150), 1000×229.

@@ -5,18 +5,20 @@
 //! `llmProvider` / `llmModel` mirror in `config.json` and the
 //! `llm_config_changed` event.
 //!
-//! Registered with `app.manage` (not part of `AppState`). Locks are held only
-//! to copy data or an `Arc`, never across an `.await`, and the keychain is
-//! never read while one is held.
+//! Registered with `app.manage` (not part of `AppState`). Keychain accesses
+//! share a lock so clients cannot see a partly saved connection. Locks never
+//! span an `.await`.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Semaphore;
@@ -31,6 +33,7 @@ use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo, TokenSink,
 };
 use super::{build_provider, LLMRouter, ProviderConfig, ProviderType};
+use crate::credentials::CredentialManager;
 use crate::llm::cli_agent::manager::ClaudeCliConfig;
 use crate::llm::cli_agent::routing::ClaudeHealth;
 use crate::state::AppState;
@@ -360,6 +363,28 @@ struct CachedProvider {
     provider: Arc<dyn LLMProvider>,
 }
 
+#[derive(Default)]
+struct ProviderCache {
+    generation: u64,
+    entries: HashMap<String, CachedProvider>,
+    /// Secrets handed over by the old `set_llm_provider` (this session only).
+    overrides: HashMap<String, String>,
+}
+
+impl ProviderCache {
+    fn invalidate(&mut self, id: &str) {
+        self.generation += 1;
+        self.entries.remove(id);
+    }
+
+    fn lookup(&self, id: &str, fingerprint: u64) -> Option<Arc<dyn LLMProvider>> {
+        self.entries
+            .get(id)
+            .filter(|cached| cached.fingerprint == fingerprint)
+            .map(|cached| cached.provider.clone())
+    }
+}
+
 struct State {
     config: LlmConfigFile,
     read_only: bool,
@@ -368,10 +393,10 @@ struct State {
 
 struct Inner {
     state: RwLock<State>,
-    providers: Mutex<HashMap<String, CachedProvider>>,
+    providers: Mutex<ProviderCache>,
     semaphores: Mutex<HashMap<String, (usize, Arc<Semaphore>)>>,
-    /// Secrets handed over by the old `set_llm_provider` (this session only).
-    overrides: Mutex<HashMap<String, String>>,
+    credential_access: RwLock<()>,
+    draft_tests: Mutex<VecDeque<DraftTest>>,
     secrets: Arc<dyn SecretStore>,
     path: Option<PathBuf>,
     /// Last `(llmProvider, llmModel)` written to `config.json`.
@@ -393,14 +418,37 @@ struct KeychainPlan {
     write: Vec<(String, String)>,
 }
 
+struct DraftTest {
+    receipt: String,
+    digest: [u8; 32],
+    tested_at: Instant,
+}
+
+#[derive(Deserialize)]
+pub struct QuickSetupSave {
+    expected_default: TaskRoute,
+    test_receipt: Option<String>,
+}
+
+/// The exact draft and credential that were used for the probe.
+pub fn draft_test_digest(input: &Value, secret: Option<&str>) -> [u8; 32] {
+    let payload = serde_json::to_vec(&(input, secret)).expect("JSON values and strings serialize");
+    Sha256::digest(payload).into()
+}
+
+pub fn is_new_connection(input: &Value) -> bool {
+    input.get("id").and_then(Value::as_str).is_none_or(|id| id.trim().is_empty())
+}
+
 impl LlmRegistry {
     pub fn new(loaded: Loaded, path: Option<PathBuf>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 state: RwLock::new(State { config: loaded.config, read_only: loaded.read_only, load_warning: loaded.warning }),
-                providers: Mutex::new(HashMap::new()),
+                providers: Mutex::new(ProviderCache::default()),
                 semaphores: Mutex::new(HashMap::new()),
-                overrides: Mutex::new(HashMap::new()),
+                credential_access: RwLock::new(()),
+                draft_tests: Mutex::new(VecDeque::new()),
                 secrets,
                 path,
                 mirrored: Mutex::new(None),
@@ -458,6 +506,10 @@ impl LlmRegistry {
         let mut state = self.inner.state.write().map_err(|_| "LLM settings lock poisoned".to_string())?;
         let mut next = state.config.clone();
         let out = change(&mut next)?;
+        Ok((out, self.commit_config(&mut state, next)?))
+    }
+
+    fn commit_config(&self, state: &mut State, mut next: LlmConfigFile) -> Result<LlmConfigFile, String> {
         next.revision = state.config.revision + 1;
         if !state.read_only {
             if let Some(path) = &self.inner.path {
@@ -465,7 +517,30 @@ impl LlmRegistry {
             }
         }
         state.config = next.clone();
-        Ok((out, next))
+        Ok(next)
+    }
+
+    fn credential_read(&self) -> Result<RwLockReadGuard<'_, ()>, String> {
+        self.inner.credential_access.read().map_err(|_| "LLM credentials lock poisoned".to_string())
+    }
+
+    fn credential_write(&self) -> Result<RwLockWriteGuard<'_, ()>, String> {
+        self.inner.credential_access.write().map_err(|_| "LLM credentials lock poisoned".to_string())
+    }
+
+    fn check_credential_origin(&self, conn: &LlmConnection) -> Result<(), String> {
+        let state = self.inner.state.read().map_err(|_| "LLM settings lock poisoned")?;
+        if state.config.connection(&conn.id).is_some_and(|saved| {
+            (saved.kind != conn.kind
+                || saved.base_url != conn.base_url
+                || saved.chat_url_override != conn.chat_url_override
+                || saved.models_endpoint != conn.models_endpoint
+                || saved.models_url != conn.models_url)
+                && !connections::secret_stays_valid(saved, conn)
+        }) {
+            return Err(format!("Connection \"{}\" changed. Try again with its current settings.", conn.display_name()));
+        }
+        Ok(())
     }
 
     // ── Clients ──
@@ -473,28 +548,30 @@ impl LlmRegistry {
     /// The shared client of `conn`, built on first use (that is when its
     /// secret is read from the keychain) and rebuilt when it changes.
     pub fn provider_for(&self, conn: &LlmConnection) -> Result<Arc<dyn LLMProvider>, String> {
-        let fingerprint = self.fingerprint(conn);
-        if let Some(cached) = self.inner.providers.lock().ok().and_then(|p| {
-            p.get(&conn.id).filter(|c| c.fingerprint == fingerprint).map(|c| c.provider.clone())
-        }) {
-            return Ok(cached);
-        }
-        let secret = match self.secret_for(conn) {
-            Ok(secret) => secret,
-            Err(e) => {
-                log::warn!("LLM connection {}: could not read its key: {e}", conn.id);
-                None
+        let _credentials = self.credential_read()?;
+        self.check_credential_origin(conn)?;
+        let fingerprint = Self::fingerprint(conn);
+        {
+            let cache = self.inner.providers.lock().map_err(|_| "LLM client cache lock poisoned")?;
+            if let Some(provider) = cache.lookup(&conn.id, fingerprint) {
+                return Ok(provider);
             }
-        };
-        let header_secrets = self.header_secrets(conn);
-        let provider: Arc<dyn LLMProvider> = Arc::from(build_provider(conn, secret.as_deref(), &header_secrets)?);
-        if let Ok(mut providers) = self.inner.providers.lock() {
-            providers.insert(conn.id.clone(), CachedProvider { fingerprint, provider: provider.clone() });
+        }
+        let secret = self.read_connection_secret(conn)?;
+        let header_secrets = self.header_secrets(conn)?;
+        let built = build_provider(conn, secret.as_deref(), &header_secrets)?;
+        let provider: Arc<dyn LLMProvider> = Arc::from(built);
+        {
+            let mut cache = self.inner.providers.lock().map_err(|_| "LLM client cache lock poisoned")?;
+            if let Some(provider) = cache.lookup(&conn.id, fingerprint) {
+                return Ok(provider);
+            }
+            cache.entries.insert(conn.id.clone(), CachedProvider { fingerprint, provider: provider.clone() });
         }
         Ok(provider)
     }
 
-    fn fingerprint(&self, conn: &LlmConnection) -> u64 {
+    fn fingerprint(conn: &LlmConnection) -> u64 {
         let mut client_fields = conn.clone();
         client_fields.model_cache = None;
         client_fields.verified_at_ms = None;
@@ -505,34 +582,68 @@ impl LlmRegistry {
         client_fields.context_windows.clear();
         let mut hasher = DefaultHasher::new();
         serde_json::to_string(&client_fields).unwrap_or_default().hash(&mut hasher);
-        self.inner.overrides.lock().ok().and_then(|o| o.get(&conn.id).cloned()).hash(&mut hasher);
         hasher.finish()
     }
 
-    /// Whether `conn` (a draft) sends exactly the requests its saved
-    /// version sends (same id, same request settings, same server).
-    pub fn matches_saved(&self, conn: &LlmConnection) -> bool {
-        let config = self.config();
-        config
-            .connection(&conn.id)
-            .is_some_and(|saved| self.fingerprint(saved) == self.fingerprint(conn))
+    /// A probe may update saved metadata only if the credentials it tested
+    /// are still current.
+    pub fn credential_generation(&self) -> Result<u64, String> {
+        self.inner.providers.lock()
+            .map(|cache| cache.generation)
+            .map_err(|_| "LLM client cache lock poisoned".to_string())
     }
 
     /// Forget the client of `id` (its secret changed).
     pub fn invalidate(&self, id: &str) {
-        if let Ok(mut providers) = self.inner.providers.lock() {
-            providers.remove(id);
+        if let Ok(mut cache) = self.inner.providers.lock() {
+            cache.invalidate(id);
         }
+    }
+
+    /// Legacy credential commands can write a key shared by multiple
+    /// connections. Discard any temporary key for the affected connections.
+    fn credential_changed(&self, account: &str) {
+        let account = CredentialManager::normalize_provider(account);
+        let legacy_connection_id = legacy_id(&account);
+        let config = self.config();
+        if let Ok(mut cache) = self.inner.providers.lock() {
+            cache.overrides.retain(|id, _| {
+                id != &legacy_connection_id
+                    && !config.connection(id).and_then(|conn| conn.secret_ref.as_deref())
+                        .is_some_and(|slot| CredentialManager::normalize_provider(slot) == account)
+            });
+            // A raw keychain account can also be a secret header. Rebuild
+            // lazily so every user of that account observes the change.
+            cache.generation += 1;
+            cache.entries.clear();
+        }
+    }
+
+    pub fn update_legacy_credential(&self, account: &str, update: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        let _credentials = self.credential_write()?;
+        update()?;
+        self.credential_changed(account);
+        Ok(())
     }
 
     /// The secret of `conn`: one handed over by the old UI this session,
     /// else its keychain slot.
     pub fn secret_for(&self, conn: &LlmConnection) -> Result<Option<String>, String> {
-        if let Some(secret) = self.inner.overrides.lock().ok().and_then(|o| o.get(&conn.id).cloned()) {
+        let _credentials = self.credential_read()?;
+        self.check_credential_origin(conn)?;
+        self.read_connection_secret(conn)
+    }
+
+    fn read_connection_secret(&self, conn: &LlmConnection) -> Result<Option<String>, String> {
+        let supplied_secret = self.inner.providers.lock()
+            .map_err(|_| "LLM client cache lock poisoned")?
+            .overrides.get(&conn.id).cloned();
+        if let Some(secret) = supplied_secret {
             return Ok(Some(secret));
         }
         match conn.secret_ref.as_deref() {
-            Some(account) => self.inner.secrets.get(account),
+            Some(account) => self.inner.secrets.get(account)
+                .map_err(|e| format!("Could not read the API key for \"{}\": {e}", conn.display_name())),
             None => Ok(None),
         }
     }
@@ -540,8 +651,7 @@ impl LlmRegistry {
     /// Auth and custom headers of `conn` with their secrets (for direct HTTP
     /// use by other packages; never log them unmasked).
     pub fn request_headers(&self, conn: &LlmConnection) -> Result<Vec<(String, String)>, String> {
-        let secret = self.secret_for(conn)?;
-        let header_secrets = self.header_secrets(conn);
+        let (secret, header_secrets) = self.connection_secrets(conn, None)?;
         let custom: Vec<crate::net::endpoint::CustomHeader> = conn
             .headers
             .iter()
@@ -557,15 +667,89 @@ impl LlmRegistry {
         crate::net::endpoint::request_headers(&conn.auth, secret.as_deref(), &custom).map_err(|e| e.to_string())
     }
 
-    fn header_secrets(&self, conn: &LlmConnection) -> HashMap<String, String> {
-        conn.headers
-            .iter()
-            .filter(|h| h.secret && h.value_saved)
-            .filter_map(|h| {
-                let value = self.inner.secrets.get(&conn.header_secret_account(&h.name)).ok().flatten()?;
-                Some((h.name.trim().to_ascii_lowercase(), value))
-            })
-            .collect()
+    pub fn connection_secrets(
+        &self,
+        conn: &LlmConnection,
+        candidate: Option<String>,
+    ) -> Result<(Option<String>, HashMap<String, String>), String> {
+        let _credentials = self.credential_read()?;
+        self.check_credential_origin(conn)?;
+        let secret = match candidate {
+            Some(key) => Some(key),
+            None => self.read_connection_secret(conn)?,
+        };
+        Ok((secret, self.header_secrets(conn)?))
+    }
+
+    fn header_secrets(&self, conn: &LlmConnection) -> Result<HashMap<String, String>, String> {
+        let mut secrets = HashMap::new();
+        for header in conn.headers.iter().filter(|h| h.secret && h.value_saved) {
+            if let Some(value) = self.inner.secrets.get(&conn.header_secret_account(&header.name))
+                .map_err(|e| format!("Could not read a saved header for \"{}\": {e}", conn.display_name()))?
+            {
+                secrets.insert(header.name.trim().to_ascii_lowercase(), value);
+            }
+        }
+        Ok(secrets)
+    }
+
+    fn delete_account(&self, account: &str) -> Result<(), String> {
+        self.inner.secrets.delete(account)?;
+        self.credential_changed(account);
+        Ok(())
+    }
+
+    fn write_account(&self, account: &str, value: Option<&str>) -> Result<(), String> {
+        match value {
+            Some(value) => self.inner.secrets.set(account, value),
+            None => self.inner.secrets.delete(account),
+        }
+    }
+
+    /// The caller holds the credential write lock during the keychain
+    /// changes, the config commit, and any recovery.
+    fn commit_with_credentials<T>(
+        &self,
+        plan: KeychainPlan,
+        change: impl FnOnce(&mut LlmConfigFile) -> Result<T, String>,
+    ) -> Result<(T, LlmConfigFile), String> {
+        let updates: BTreeMap<_, _> = plan.delete.into_iter().map(|account| (account, None))
+            .chain(plan.write.into_iter().map(|(account, value)| (account, Some(value))))
+            .collect();
+        let previous = updates.keys().map(|account| self.inner.secrets.get(account))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut written = Vec::new();
+        let result = (|| {
+            for ((account, value), old) in updates.iter().zip(&previous) {
+                if value != old {
+                    self.write_account(account, value.as_deref())?;
+                    written.push((account, old));
+                }
+            }
+            self.mutate(change)
+        })();
+        match result {
+            Ok(result) => {
+                for account in updates.keys() {
+                    self.credential_changed(account);
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                let mut rollback_errors = Vec::new();
+                for (account, old) in written.into_iter().rev() {
+                    if let Err(failure) = self.write_account(account, old.as_deref()) {
+                        rollback_errors.push(failure);
+                        self.credential_changed(account);
+                    }
+                }
+                if rollback_errors.is_empty() {
+                    Err(error)
+                } else {
+                    Err(format!("{error}. Could not restore earlier credentials: {}", rollback_errors.join(", ")))
+                }
+            }
+        }
     }
 
     /// The per-connection limit for background calls.
@@ -587,24 +771,75 @@ impl LlmRegistry {
 
     // ── Changes ──
 
+    pub fn remember_draft_test(&self, digest: [u8; 32]) -> Result<String, String> {
+        const MOST_RECENT_TESTS: usize = 16;
+        let mut tests = self.inner.draft_tests.lock().map_err(|_| "LLM draft tests lock poisoned")?;
+        if tests.len() >= MOST_RECENT_TESTS {
+            tests.pop_front();
+        }
+        let receipt = uuid::Uuid::new_v4().to_string();
+        tests.push_back(DraftTest { receipt: receipt.clone(), digest, tested_at: Instant::now() });
+        Ok(receipt)
+    }
+
+    fn checked_draft(&self, receipt: &str, digest: [u8; 32]) -> Result<(), String> {
+        const TEST_VALIDITY: Duration = Duration::from_secs(120);
+        let tests = self.inner.draft_tests.lock().map_err(|_| "LLM draft tests lock poisoned")?;
+        if tests.iter().any(|test| {
+            test.receipt == receipt && test.digest == digest && test.tested_at.elapsed() < TEST_VALIDITY
+        }) {
+            return Ok(());
+        }
+        Err("The connection draft changed or its test expired. Test again before saving.".to_string())
+    }
+
     /// Saves a connection from the settings page (`llm_upsert_connection`).
     /// Returns its id and the new config.
     pub fn upsert(&self, input: Value, secret: Option<String>) -> Result<(String, LlmConfigFile), String> {
-        let snapshot = self.config();
-        let (mut conn, plan) = prepare_upsert(&snapshot, input, now_ms())?;
-        for account in &plan.delete {
-            if let Err(e) = self.inner.secrets.delete(account) {
-                log::debug!("LLM settings: could not delete keychain item {account}: {e}");
-            }
+        self.upsert_connection(input, secret, None)
+    }
+
+    pub fn save_quick_setup(
+        &self,
+        input: Value,
+        secret: Option<String>,
+        quick_setup: QuickSetupSave,
+    ) -> Result<(String, LlmConfigFile), String> {
+        if !is_new_connection(&input) {
+            return Err("Quick setup only creates a new connection".to_string());
         }
-        for (account, value) in &plan.write {
-            self.inner.secrets.set(account, value)?;
+        if let Some(receipt) = &quick_setup.test_receipt {
+            self.checked_draft(receipt, draft_test_digest(&input, secret.as_deref()))?;
+        }
+        self.upsert_connection(input, secret, Some(quick_setup))
+    }
+
+    fn upsert_connection(
+        &self,
+        input: Value,
+        secret: Option<String>,
+        quick_setup: Option<QuickSetupSave>,
+    ) -> Result<(String, LlmConfigFile), String> {
+        let _credentials = self.credential_write()?;
+        let snapshot = self.config();
+        if quick_setup.as_ref().is_some_and(|setup| setup.expected_default != snapshot.routing.default) {
+            return Err("The default route changed. Review the current model before saving.".to_string());
+        }
+        let (mut conn, mut plan) = prepare_upsert(&snapshot, input, now_ms())?;
+        if quick_setup.as_ref().is_some_and(|setup| setup.test_receipt.is_some()) {
+            conn.verified_at_ms = Some(now_ms());
         }
         if let Some(secret) = secret {
-            self.store_secret(&mut conn, &secret)?;
+            Self::plan_secret(&mut conn, &secret, &mut plan);
         }
         let id = conn.id.clone();
-        let (_, config) = self.mutate(|cfg| {
+        let (_, config) = self.commit_with_credentials(plan, |cfg| {
+            if let Some(quick_setup) = quick_setup {
+                if quick_setup.expected_default != cfg.routing.default {
+                    return Err("The default route changed. Review the current model before saving.".to_string());
+                }
+                cfg.routing.default.target = Some(RouteTarget { connection_id: id.clone(), model: None });
+            }
             match cfg.connection_mut(&conn.id) {
                 Some(existing) => *existing = conn,
                 None => cfg.connections.push(conn),
@@ -612,49 +847,47 @@ impl LlmRegistry {
             Ok(())
         })?;
         self.clear_override(&id);
-        self.invalidate(&id);
         Ok((id, config))
     }
 
-    /// Writes (or with an empty value deletes) `conn`'s secret and updates
+    /// Stages a write (or delete for an empty value) and updates
     /// its `secret_ref` / `secret_hint`.
-    fn store_secret(&self, conn: &mut LlmConnection, secret: &str) -> Result<(), String> {
+    fn plan_secret(conn: &mut LlmConnection, secret: &str, plan: &mut KeychainPlan) {
         let secret = secret.trim();
         let account = conn.secret_ref.clone().unwrap_or_else(|| format!("llm:{}", conn.id));
         if secret.is_empty() {
-            if let Err(e) = self.inner.secrets.delete(&account) {
-                log::debug!("LLM settings: could not delete keychain item {account}: {e}");
-            }
+            plan.delete.push(account);
             conn.secret_hint = None;
         } else {
-            self.inner.secrets.set(&account, secret)?;
+            plan.write.push((account.clone(), secret.to_string()));
             conn.secret_ref = Some(account);
             conn.secret_hint = connections::secret_hint(secret);
         }
-        Ok(())
     }
 
     /// `llm_set_secret`.
     pub fn set_secret(&self, id: &str, secret: Option<&str>) -> Result<(SecretStatus, LlmConfigFile), String> {
+        let _credentials = self.credential_write()?;
         let mut conn = self.config().connection(id).cloned().ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
-        self.store_secret(&mut conn, secret.unwrap_or_default())?;
+        let mut plan = KeychainPlan::default();
+        Self::plan_secret(&mut conn, secret.unwrap_or_default(), &mut plan);
         let status = SecretStatus { present: conn.secret_hint.is_some(), hint: conn.secret_hint.clone() };
-        let (_, config) = self.mutate(|cfg| {
+        let (_, config) = self.commit_with_credentials(plan, |cfg| {
             let existing = cfg.connection_mut(id).ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
             existing.secret_ref = conn.secret_ref.clone();
             existing.secret_hint = conn.secret_hint.clone();
             Ok(())
         })?;
         self.clear_override(id);
-        self.invalidate(id);
         Ok((status, config))
     }
 
     /// `llm_secret_status`: reads the keychain; records the hint when it
     /// was unknown. Returns the new config when that changed it.
     pub fn secret_status(&self, id: &str) -> Result<(SecretStatus, Option<LlmConfigFile>), String> {
+        let _credentials = self.credential_read()?;
         let conn = self.config().connection(id).cloned().ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
-        let secret = self.secret_for(&conn)?;
+        let secret = self.read_connection_secret(&conn)?;
         let hint = secret.as_deref().and_then(connections::secret_hint);
         let status = SecretStatus { present: hint.is_some(), hint: hint.clone() };
         if hint == conn.secret_hint {
@@ -672,6 +905,7 @@ impl LlmRegistry {
     /// `llm_delete_connection`: removes it and the routes to it; returns the
     /// cleared task keys.
     pub fn delete(&self, id: &str) -> Result<(Vec<String>, LlmConfigFile), String> {
+        let _credentials = self.credential_write()?;
         let (removed, cleared, config) = {
             let ((removed, cleared), config) = self.mutate(|cfg| {
                 let index = cfg.connections.iter().position(|c| c.id == id).ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
@@ -684,12 +918,11 @@ impl LlmRegistry {
         let mut accounts: Vec<String> = removed.secret_ref.iter().filter(|a| owned_account(a)).cloned().collect();
         accounts.extend(removed.headers.iter().filter(|h| h.secret).map(|h| removed.header_secret_account(&h.name)));
         for account in accounts {
-            if let Err(e) = self.inner.secrets.delete(&account) {
+            if let Err(e) = self.delete_account(&account) {
                 log::debug!("LLM settings: could not delete keychain item {account}: {e}");
             }
         }
         self.clear_override(id);
-        self.invalidate(id);
         Ok((cleared, config))
     }
 
@@ -746,9 +979,14 @@ impl LlmRegistry {
     }
 
     /// Stores a model list answer (or its failure) on connection `id`.
-    pub fn record_models(&self, id: &str, url: Option<String>, result: Result<Vec<ModelInfo>, String>) -> Result<LlmConfigFile, String> {
-        self.mutate(|cfg| {
-            let conn = cfg.connection_mut(id).ok_or_else(|| format!("Unknown LLM connection \"{id}\""))?;
+    pub fn record_models(
+        &self,
+        tested: &LlmConnection,
+        generation: u64,
+        url: Option<String>,
+        result: Result<Vec<ModelInfo>, String>,
+    ) -> Result<bool, String> {
+        self.update_probed_connection(tested, generation, |conn| {
             let previous = conn.model_cache.take().unwrap_or_default();
             conn.model_cache = Some(match result {
                 Ok(models) => connections::ModelCache {
@@ -759,20 +997,40 @@ impl LlmRegistry {
                 },
                 Err(error) => connections::ModelCache { fetched_at_ms: now_ms(), url, error: Some(error), ..previous },
             });
-            Ok(())
         })
-        .map(|(_, cfg)| cfg)
     }
 
-    /// A successful connection test on `id`.
-    pub fn mark_verified(&self, id: &str) -> Result<LlmConfigFile, String> {
-        self.mutate(|cfg| {
-            if let Some(conn) = cfg.connection_mut(id) {
-                conn.verified_at_ms = Some(now_ms());
-            }
-            Ok(())
+    /// A successful connection test on the settings the request used.
+    pub fn mark_verified(&self, tested: &LlmConnection, generation: u64) -> Result<bool, String> {
+        self.update_probed_connection(tested, generation, |conn| {
+            conn.verified_at_ms = Some(now_ms());
         })
-        .map(|(_, cfg)| cfg)
+    }
+
+    fn update_probed_connection(
+        &self,
+        tested: &LlmConnection,
+        generation: u64,
+        update: impl FnOnce(&mut LlmConnection),
+    ) -> Result<bool, String> {
+        let _credentials = self.credential_read()?;
+        if self.credential_generation()? != generation {
+            return Ok(false);
+        }
+        let mut state = self.inner.state.write().map_err(|_| "LLM settings lock poisoned".to_string())?;
+        let mut next = state.config.clone();
+        let Some(saved) = next.connection_mut(&tested.id) else {
+            return Ok(false);
+        };
+        if Self::fingerprint(saved) != Self::fingerprint(tested)
+            || saved.default_model != tested.default_model
+            || saved.manual_models != tested.manual_models
+        {
+            return Ok(false);
+        }
+        update(saved);
+        self.commit_config(&mut state, next)?;
+        Ok(true)
     }
 
     /// The task's connection kind (no fallback applied), if it resolves.
@@ -784,20 +1042,21 @@ impl LlmRegistry {
     /// `secret` when given, else the saved one when the draft is a saved
     /// connection on the same server (kind and origin unchanged).
     pub fn draft(&self, input: Value, secret: Option<String>) -> Result<(LlmConnection, Option<String>, HashMap<String, String>), String> {
+        let _credentials = self.credential_read()?;
         let snapshot = self.config();
         let (mut conn, plan) = prepare_upsert(&snapshot, input, now_ms())?;
         let saved = snapshot.connection(&conn.id).filter(|prev| connections::secret_stays_valid(prev, &conn)).cloned();
         let secret = match secret.map(|s| s.trim().to_string()) {
             Some(s) => Some(s).filter(|s| !s.is_empty()),
             None => match &saved {
-                Some(prev) => self.secret_for(prev).unwrap_or_else(|e| {
-                    log::warn!("LLM connection {}: could not read its key: {e}", prev.id);
-                    None
-                }),
+                Some(prev) => self.read_connection_secret(prev)?,
                 None => None,
             },
         };
-        let mut header_secrets = saved.as_ref().map(|prev| self.header_secrets(prev)).unwrap_or_default();
+        let mut header_secrets = match saved.as_ref() {
+            Some(prev) => self.header_secrets(prev)?,
+            None => HashMap::new(),
+        };
         // Secret header values typed in the editor (moved into the keychain plan).
         for (account, value) in plan.write {
             if let Some((_, name)) = account.split_once(":h:") {
@@ -815,6 +1074,7 @@ impl LlmRegistry {
     /// `llm_reset_from_legacy`: the file is moved aside and the old
     /// settings are migrated again.
     pub fn reset_from_legacy(&self, legacy: Option<Value>) -> Result<LlmConfigFile, String> {
+        let _credentials = self.credential_write()?;
         if let Some(path) = &self.inner.path {
             if !self.read_only() {
                 persist::disable(path, now_ms()).map_err(|e| format!("Could not move the LLM settings aside: {e}"))?;
@@ -825,11 +1085,10 @@ impl LlmRegistry {
             *cfg = fresh;
             Ok(())
         })?;
-        if let Ok(mut providers) = self.inner.providers.lock() {
-            providers.clear();
-        }
-        if let Ok(mut overrides) = self.inner.overrides.lock() {
-            overrides.clear();
+        if let Ok(mut cache) = self.inner.providers.lock() {
+            cache.generation += 1;
+            cache.entries.clear();
+            cache.overrides.clear();
         }
         Ok(config)
     }
@@ -842,22 +1101,23 @@ impl LlmRegistry {
     /// push never undoes a route chosen in the new settings. A key in the
     /// config is kept in memory for this connection only.
     pub fn apply_legacy_provider(&self, config: &ProviderConfig) -> Result<bool, String> {
+        let _credentials = self.credential_write()?;
         let (pt, mut legacy, secret) = super::legacy_from_config_lenient(config)?;
         let id = legacy.id.clone();
-        if let Some(secret) = secret {
-            self.set_override(&id, secret);
-        }
         let snapshot = self.config();
         if snapshot.default_connection().map(|c| c.legacy_type()) == Some(pt.as_str()) {
+            if let Some(secret) = secret {
+                if snapshot.connection(&id).is_none_or(|saved| connections::secret_stays_valid(&legacy, saved)) {
+                    self.set_override(&id, secret);
+                }
+            }
             return Ok(false);
         }
-        if pt.requires_api_key() && self.inner.overrides.lock().ok().and_then(|o| o.get(&id).cloned()).is_none() {
+        if pt.requires_api_key() {
             // As before: a cloud type can't be activated without its key.
-            let has_key = snapshot
-                .connection(&id)
-                .or(Some(&legacy))
-                .and_then(|c| self.secret_for(c).ok().flatten())
-                .is_some();
+            let has_key = secret.is_some() || self.read_connection_secret(
+                snapshot.connection(&id).unwrap_or(&legacy),
+            )?.is_some();
             if !has_key {
                 return Err(format!("{} API key required", pt.display_name()));
             }
@@ -875,8 +1135,9 @@ impl LlmRegistry {
                 return Err("Custom endpoint base URL required".to_string());
             }
         }
-        let (dropped, _) = self.mutate(|cfg| {
+        let ((dropped, moved), _) = self.mutate(|cfg| {
             let mut dropped: Vec<String> = Vec::new();
+            let mut moved = false;
             match cfg.connection_mut(&id) {
                 Some(existing) => {
                     // The old UI activated this type with these settings.
@@ -884,6 +1145,7 @@ impl LlmRegistry {
                         let before = existing.clone();
                         existing.base_url = legacy.base_url.clone();
                         if !connections::secret_stays_valid(&before, existing) {
+                            moved = true;
                             // A key entered in the new settings was given for the old
                             // server: forget it. The old shared slots (`custom`…) stay
                             // bound — the old settings resend their key with the
@@ -909,12 +1171,17 @@ impl LlmRegistry {
                 None => cfg.connections.push(legacy),
             }
             cfg.routing.default.target = Some(RouteTarget { connection_id: id.clone(), model: None });
-            Ok(dropped)
+            Ok((dropped, moved))
         })?;
         for account in dropped {
-            if let Err(e) = self.inner.secrets.delete(&account) {
+            if let Err(e) = self.delete_account(&account) {
                 log::debug!("LLM settings: could not delete keychain item {account}: {e}");
             }
+        }
+        if let Some(secret) = secret {
+            self.set_override(&id, secret);
+        } else if moved {
+            self.clear_override(&id);
         }
         self.invalidate(&id);
         Ok(true)
@@ -949,16 +1216,18 @@ impl LlmRegistry {
     }
 
     fn set_override(&self, id: &str, secret: String) {
-        if let Ok(mut overrides) = self.inner.overrides.lock() {
-            if overrides.get(id) != Some(&secret) {
-                overrides.insert(id.to_string(), secret);
+        if let Ok(mut cache) = self.inner.providers.lock() {
+            if cache.overrides.get(id) != Some(&secret) {
+                cache.overrides.insert(id.to_string(), secret);
+                cache.invalidate(id);
             }
         }
     }
 
     fn clear_override(&self, id: &str) {
-        if let Ok(mut overrides) = self.inner.overrides.lock() {
-            overrides.remove(id);
+        if let Ok(mut cache) = self.inner.providers.lock() {
+            cache.overrides.remove(id);
+            cache.invalidate(id);
         }
     }
 
@@ -1669,7 +1938,7 @@ mod tests {
         assert_eq!(router.active_model(), "gpt-4o");
         assert_eq!(router.active_provider_type(), Some(&ProviderType::Openai));
         assert!(!router.claude_in_use());
-        assert!(registry.inner.providers.lock().unwrap().is_empty(), "the client is built lazily");
+        assert!(registry.inner.providers.lock().unwrap().entries.is_empty(), "the client is built lazily");
         // Two old-style handles never share a lock.
         let a = router.get_provider().unwrap();
         let b = router.get_provider().unwrap();
@@ -1700,6 +1969,100 @@ mod tests {
         assert!(Arc::ptr_eq(&c, &registry.provider_for(&conn).unwrap()));
     }
 
+    type ReadHook = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+    #[derive(Default)]
+    struct HookedSecrets {
+        values: MemorySecrets,
+        next_read: Mutex<Option<ReadHook>>,
+    }
+
+    impl SecretStore for HookedSecrets {
+        fn get(&self, account: &str) -> Result<Option<String>, String> {
+            let key = self.values.get(account)?;
+            let hook = self.next_read.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook()?;
+            }
+            Ok(key)
+        }
+
+        fn set(&self, account: &str, value: &str) -> Result<(), String> {
+            self.values.set(account, value)
+        }
+
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.values.delete(account)
+        }
+    }
+
+    fn registry_with_hooked_key() -> (LlmRegistry, LlmConnection, Arc<HookedSecrets>) {
+        let mut conn = compat("c_x", "https://h/v1");
+        conn.secret_ref = Some("llm:c_x".into());
+        let secrets = Arc::new(HookedSecrets::default());
+        secrets.set("llm:c_x", "key").unwrap();
+        let config = with_default(vec![conn.clone()], &conn.id);
+        let loaded = Loaded { config, read_only: false, warning: None, needs_save: false };
+        (LlmRegistry::new(loaded, None, secrets.clone()), conn, secrets)
+    }
+
+    #[test]
+    fn transient_keychain_failure_cannot_cache_an_unauthenticated_client() {
+        let (registry, conn, secrets) = registry_with_hooked_key();
+        *secrets.next_read.lock().unwrap() = Some(Box::new(|| Err("Keychain temporarily unavailable".into())));
+        assert!(registry.provider_for(&conn).err().unwrap().contains("Keychain temporarily unavailable"));
+        assert!(registry.inner.providers.lock().unwrap().entries.is_empty());
+        let provider = registry.provider_for(&conn).unwrap();
+        assert!(Arc::ptr_eq(&provider, &registry.provider_for(&conn).unwrap()));
+    }
+
+    #[test]
+    fn an_inflight_key_read_cannot_replace_a_client_after_key_rotation() {
+        let (registry, conn, secrets) = registry_with_hooked_key();
+        let (read, saw_read) = std::sync::mpsc::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        *secrets.next_read.lock().unwrap() = Some(Box::new(move || {
+            read.send(()).unwrap();
+            paused.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            Ok(())
+        }));
+        let reader = {
+            let registry = registry.clone();
+            let conn = conn.clone();
+            std::thread::spawn(move || registry.provider_for(&conn).unwrap())
+        };
+        saw_read.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let writer = {
+            let registry = registry.clone();
+            let id = conn.id.clone();
+            std::thread::spawn(move || registry.set_secret(&id, Some("new-key")).unwrap())
+        };
+        resume.send(()).unwrap();
+        let in_flight = reader.join().unwrap();
+        writer.join().unwrap();
+        let current = registry.provider_for(&conn).unwrap();
+        assert!(!Arc::ptr_eq(&current, &in_flight));
+        assert!(Arc::ptr_eq(&current, &registry.provider_for(&conn).unwrap()));
+        assert_eq!(registry.secret_for(&conn).unwrap().as_deref(), Some("new-key"));
+    }
+
+    #[test]
+    fn shared_legacy_credentials_invalidate_clients_and_session_overrides() {
+        let mut default = legacy_connection(&ProviderType::Openai, None, None, None);
+        default.default_model = Some("model".into());
+        let mut other = default.clone();
+        other.id = "another".into();
+        let (registry, secrets) = registry_with(with_default(vec![default.clone(), other.clone()], &default.id));
+        secrets.set("openai", "original").unwrap();
+        registry.set_override(&default.id, "original".into());
+        let one = registry.provider_for(&default).unwrap();
+        let two = registry.provider_for(&other).unwrap();
+        registry.update_legacy_credential(" OpenAI ", || secrets.set("openai", "replacement")).unwrap();
+        assert_eq!(registry.secret_for(&default).unwrap().as_deref(), Some("replacement"));
+        assert!(!Arc::ptr_eq(&one, &registry.provider_for(&default).unwrap()));
+        assert!(!Arc::ptr_eq(&two, &registry.provider_for(&other).unwrap()));
+    }
+
     #[test]
     fn semaphores_follow_the_limit() {
         let (registry, _) = registry_with(LlmConfigFile::default());
@@ -1711,12 +2074,81 @@ mod tests {
 
     #[test]
     fn model_lists_are_recorded_with_errors_keeping_the_last_list() {
-        let (registry, _) = registry_with(with_default(vec![compat("c_a", "https://a/v1")], "c_a"));
+        let conn = compat("c_a", "https://a/v1");
+        let (registry, _) = registry_with(with_default(vec![conn.clone()], "c_a"));
         let models = vec![ModelInfo { id: "m1".into(), name: "m1".into(), provider: "custom".into(), context_window: None }];
-        registry.record_models("c_a", Some("https://a/v1/models".into()), Ok(models)).unwrap();
-        let cfg = registry.record_models("c_a", None, Err("HTTP 500".into())).unwrap();
+        let generation = registry.credential_generation().unwrap();
+        assert!(registry.record_models(&conn, generation, Some("https://a/v1/models".into()), Ok(models)).unwrap());
+        assert!(registry.record_models(&conn, generation, None, Err("HTTP 500".into())).unwrap());
+        let cfg = registry.config();
         let cache = cfg.connection("c_a").unwrap().model_cache.clone().unwrap();
         assert_eq!((cache.models.len(), cache.error.as_deref()), (1, Some("HTTP 500")));
+    }
+
+    #[test]
+    fn a_failed_config_save_restores_the_old_key_and_secret_headers() {
+        let mut conn = compat("c_a", "https://a/v1");
+        conn.secret_ref = Some("llm:c_a".into());
+        conn.headers.push(LlmHeader {
+            name: "x-auth".into(),
+            value: String::new(),
+            secret: true,
+            value_saved: true,
+        });
+        let config = with_default(vec![conn.clone()], &conn.id);
+        let loaded = Loaded { config, read_only: false, warning: None, needs_save: false };
+        let secrets = Arc::new(MemorySecrets::default());
+        secrets.set("llm:c_a", "old-key").unwrap();
+        secrets.set("llm:c_a:h:x-auth", "old-header").unwrap();
+        let file = std::env::temp_dir().join(format!("nexq-registry-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "not a directory").unwrap();
+        let registry = LlmRegistry::new(loaded, Some(file.join("settings.json")), secrets.clone());
+        let mut moved = conn.clone();
+        moved.base_url = "https://b/v1".into();
+        moved.headers[0].value = "new-header".into();
+        assert!(registry.upsert(serde_json::to_value(&moved).unwrap(), Some("new-key".into())).is_err());
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(registry.config().connection(&conn.id), Some(&conn));
+        assert_eq!(secrets.get("llm:c_a").unwrap().as_deref(), Some("old-key"));
+        assert_eq!(secrets.get("llm:c_a:h:x-auth").unwrap().as_deref(), Some("old-header"));
+    }
+
+    #[test]
+    fn clients_and_probe_results_follow_the_current_connection_credentials() {
+        let (registry, old, _) = registry_with_hooked_key();
+        let tested_generation = registry.credential_generation().unwrap();
+        registry.set_secret(&old.id, Some("replacement")).unwrap();
+        assert!(!registry.mark_verified(&old, tested_generation).unwrap());
+        let tested_generation = registry.credential_generation().unwrap();
+        assert!(registry.mark_verified(&old, tested_generation).unwrap());
+
+        let mut moved = old.clone();
+        moved.base_url = "https://other/v1".to_string();
+        let (_, config) = registry.upsert(serde_json::to_value(moved).unwrap(), Some("new-host-key".into())).unwrap();
+        let current = config.connection(&old.id).unwrap();
+        assert!(registry.secret_for(&old).is_err());
+        assert!(registry.provider_for(&old).is_err());
+        assert_eq!(registry.secret_for(current).unwrap().as_deref(), Some("new-host-key"));
+        assert!(!registry.mark_verified(&old, tested_generation).unwrap());
+        assert!(current.verified_at_ms.is_none());
+    }
+
+    #[test]
+    fn quick_setup_saves_only_the_tested_draft_against_the_expected_default() {
+        let (registry, secrets) = registry_with(LlmConfigFile::default());
+        let expected_default = registry.config().routing.default;
+        let draft = serde_json::to_value(compat("", "https://a/v1")).unwrap();
+        let receipt = registry.remember_draft_test(draft_test_digest(&draft, Some("tested"))).unwrap();
+        let setup = || QuickSetupSave { expected_default: expected_default.clone(), test_receipt: Some(receipt.clone()) };
+        assert!(registry.save_quick_setup(draft.clone(), Some("changed".into()), setup()).is_err());
+        assert!(registry.config().connections.is_empty());
+        assert!(secrets.0.lock().unwrap().is_empty());
+        let (id, config) = registry.save_quick_setup(draft.clone(), Some("tested".into()), setup()).unwrap();
+        assert_eq!(config.routing.default.target.as_ref().unwrap().connection_id, id);
+        assert!(config.connection(&id).unwrap().verified_at_ms.is_some());
+        assert!(registry.save_quick_setup(draft, Some("tested".into()), setup()).is_err());
+        assert_eq!(registry.config().connections.len(), 1);
+        assert_eq!(secrets.0.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -10,6 +10,8 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { useAudioPlayerStore } from "@/stores/audioPlayerStore";
 import { WaveformCanvas } from "@/components/WaveformCanvas";
 import { useT } from "@/i18n";
+import { getRecordingFileUrl } from "@/lib/ipc";
+import { showToast } from "@/stores/toastStore";
 import type { WaveformData, MeetingBookmark, TopicSection } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,7 @@ import type { WaveformData, MeetingBookmark, TopicSection } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 export function formatTime(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "00:00";
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -119,22 +122,29 @@ const NO_TOPIC_SECTIONS: TopicSection[] = [];
 // ---------------------------------------------------------------------------
 
 function AudioPlayerImpl({
+  meetingId,
   meetingStartMs,
   recordingPath,
   recordingSize,
   recordingOffsetMs,
-  durationMs,
+  durationMs: reportedDurationMs,
   waveformData,
   bookmarks = NO_BOOKMARKS,
   topicSections = NO_TOPIC_SECTIONS,
 }: AudioPlayerProps) {
   const { t } = useT("misc");
   const audioRef = useRef<HTMLAudioElement>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const audioGraphRef = useRef<{
+    context: AudioContext;
+    source: MediaElementAudioSourceNode;
+    gain: GainNode;
+  } | null>(null);
+  const reportedDurationRef = useRef(reportedDurationMs);
+  const previousPlaybackRef = useRef<{ meetingId: string; seconds: number; playing: boolean } | null>(null);
 
   const isPlaying = useAudioPlayerStore((s) => s.isPlaying);
   const currentTimeMs = useAudioPlayerStore((s) => s.currentTimeMs);
+  const durationMs = useAudioPlayerStore((s) => s.durationMs);
   const playbackSpeed = useAudioPlayerStore((s) => s.playbackSpeed);
   const volume = useAudioPlayerStore((s) => s.volume);
   const toggle = useAudioPlayerStore((s) => s.toggle);
@@ -156,37 +166,44 @@ function AudioPlayerImpl({
   // Mount: wire up audio element + Web Audio API for volume amplification
   // -------------------------------------------------------------------------
 
-  // Set up Web Audio API GainNode (once per audio element lifetime)
+  // Attach a graph after playback starts. A media element can only be attached
+  // once, so reuse the graph when its recording path changes.
   const ensureGainNode = useCallback((audio: HTMLAudioElement) => {
-    if (sourceNodeRef.current) return; // already connected
+    if (audioGraphRef.current) return audioGraphRef.current.context;
 
+    let context: AudioContext | undefined;
     try {
-      const ctx = audioCtxRef.current ?? new AudioContext();
-      audioCtxRef.current = ctx;
-
-      const source = ctx.createMediaElementSource(audio);
-      sourceNodeRef.current = source;
-
-      const gain = ctx.createGain();
-      gain.gain.value = useAudioPlayerStore.getState().volume;
+      context = new AudioContext();
+      const gain = context.createGain();
+      const source = context.createMediaElementSource(audio);
       source.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(context.destination);
+      audioGraphRef.current = { context, source, gain };
       setGainNode(gain);
-
-      // Keep audio.volume at 1.0 — GainNode handles all volume control
-      audio.volume = 1.0;
+      return context;
     } catch (err) {
+      void context?.close().catch(() => {});
       console.warn("Web Audio API setup failed, falling back to audio.volume:", err);
+      return null;
     }
   }, [setGainNode]);
+
+  useEffect(() => () => {
+    const graph = audioGraphRef.current;
+    audioGraphRef.current = null;
+    if (!graph) return;
+    graph.source.disconnect();
+    graph.gain.disconnect();
+    void graph.context.close().catch((err) => console.warn("Failed to close audio context:", err));
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    const previous = previousPlaybackRef.current;
 
     setAudioElement(audio);
-    setSyncContext(meetingStartMs, recordingOffsetMs);
-    setDuration(durationMs);
+    setGainNode(audioGraphRef.current?.gain ?? null);
 
     // isPlaying follows the element's own events, never the play() call.
     const syncTime = () => {
@@ -206,11 +223,26 @@ function AudioPlayerImpl({
     const handleError = () => {
       console.error("Failed to load audio file:", audio.error);
     };
+    const syncDuration = () => {
+      const reported = reportedDurationRef.current;
+      setDuration(Number.isFinite(reported) && reported > 0 ? reported : audio.duration * 1000);
+    };
 
-    // Resume AudioContext on play (browser requires user gesture)
     const handlePlay = () => {
-      if (audioCtxRef.current?.state === "suspended") {
-        audioCtxRef.current.resume();
+      const context = ensureGainNode(audio);
+      if (context?.state === "suspended") {
+        void context.resume().catch((err) => console.warn("Failed to resume audio context:", err));
+      }
+    };
+    const restorePlayback = () => {
+      if (!previous || previous.meetingId !== meetingId) return;
+      if (Number.isFinite(previous.seconds) && previous.seconds > 0) {
+        const duration = Number.isFinite(audio.duration) ? audio.duration : previous.seconds;
+        audio.currentTime = Math.min(previous.seconds, duration);
+        syncTime();
+      }
+      if (previous.playing) {
+        void audio.play().catch((err) => console.warn("Failed to resume playback:", err));
       }
     };
 
@@ -220,6 +252,8 @@ function AudioPlayerImpl({
     audio.addEventListener("seeked", handleSeeked);
     audio.addEventListener("error", handleError);
     audio.addEventListener("play", handlePlay);
+    audio.addEventListener("durationchange", syncDuration);
+    audio.addEventListener("loadedmetadata", restorePlayback, { once: true });
 
     // Stream via the asset protocol (range requests). The asset response sends
     // CORS headers for the window origin; crossOrigin must be set BEFORE src so
@@ -230,25 +264,33 @@ function AudioPlayerImpl({
     audio.preload = "metadata";
     audio.src = convertFileSrc(recordingPath);
 
-    // Connect GainNode after src is set
-    ensureGainNode(audio);
-
     return () => {
+      const state = useAudioPlayerStore.getState();
+      previousPlaybackRef.current = {
+        meetingId,
+        seconds: audio.currentTime,
+        playing: state.audioElement === audio && state.isPlaying,
+      };
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("seeked", handleSeeked);
       audio.removeEventListener("error", handleError);
       audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("durationchange", syncDuration);
+      audio.removeEventListener("loadedmetadata", restorePlayback);
       audio.pause();
       audio.removeAttribute("src");
       audio.load(); // abort any in-flight range requests
-      setIsPlaying(false);
-      setAudioElement(null);
-      setGainNode(null);
+      if (useAudioPlayerStore.getState().audioElement === audio) {
+        setIsPlaying(false);
+        setAudioElement(null);
+        setGainNode(null);
+        updateCurrentTime(0);
+        setDuration(0);
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordingPath]);
+  }, [meetingId, recordingPath, ensureGainNode, setAudioElement, setGainNode, setDuration, setIsPlaying, updateCurrentTime]);
 
   // Sync context updates (meetingStartMs, recordingOffsetMs, durationMs)
   useEffect(() => {
@@ -256,8 +298,10 @@ function AudioPlayerImpl({
   }, [meetingStartMs, recordingOffsetMs, setSyncContext]);
 
   useEffect(() => {
-    setDuration(durationMs);
-  }, [durationMs, setDuration]);
+    reportedDurationRef.current = reportedDurationMs;
+    const mediaDuration = (audioRef.current?.duration ?? 0) * 1000;
+    setDuration(Number.isFinite(reportedDurationMs) && reportedDurationMs > 0 ? reportedDurationMs : mediaDuration);
+  }, [recordingPath, reportedDurationMs, setDuration]);
 
   // -------------------------------------------------------------------------
   // RAF loop for smooth time tracking while playing
@@ -289,24 +333,29 @@ function AudioPlayerImpl({
 
   const handleDownload = useCallback(async () => {
     try {
-      const ext = recordingPath.endsWith(".ogg") ? "ogg" : "wav";
+      const initialPath = await getRecordingFileUrl(meetingId);
+      const ext = initialPath.endsWith(".ogg") ? "ogg" : "wav";
       const savePath = await save({
         defaultPath: `meeting-recording.${ext}`, // i18n-ignore: 保存对话框里的默认文件名
         filters: [{ name: t("audioPlayer.download.fileType"), extensions: [ext] }],
       });
       if (savePath) {
-        await copyFile(recordingPath, savePath);
+        const currentPath = await getRecordingFileUrl(meetingId);
+        if (currentPath !== initialPath && !currentPath.endsWith(`.${ext}`)) {
+          showToast(t("audioPlayer.download.formatChanged"), "warning");
+          return;
+        }
+        await copyFile(currentPath, savePath);
       }
     } catch (err) {
       console.error("Download failed:", err);
+      showToast(t("audioPlayer.download.failed"), "error");
     }
-  }, [recordingPath, t]);
+  }, [meetingId, t]);
 
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
-
-  const effectiveDuration = durationMs > 0 ? durationMs : 1;
 
   return (
     <div className="border-t border-border/10 bg-card/95 backdrop-blur-xl px-5 py-2.5 flex items-center gap-3 select-none">
@@ -337,7 +386,7 @@ function AudioPlayerImpl({
             currentTimeMs={currentTimeMs}
             liveTimeRef={liveTimeRef}
             isPlaying={isPlaying}
-            durationMs={effectiveDuration}
+            durationMs={durationMs}
             meetingStartMs={meetingStartMs}
             recordingOffsetMs={recordingOffsetMs}
             bookmarks={bookmarks}

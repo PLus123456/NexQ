@@ -276,6 +276,18 @@ pub async fn pump(
     }
     let events = decoder.finish();
     handle_events(events, &mut totals, params, out, url)?;
+    if !totals.saw_content && !totals.done {
+        check_cancelled(params)?;
+        let message = "The model server closed the answer without sending text or a completion event".to_string();
+        out.error(&message);
+        return Err(Failure {
+            kind: FailureKind::Stream,
+            message,
+            url: Some(endpoint::redact_url(url)),
+            status: None,
+            body: None,
+        });
+    }
     Ok(totals)
 }
 
@@ -1432,6 +1444,17 @@ mod tests {
         assert!(failure.message.contains("Provider returned error"));
         assert_eq!(out.text(), "Par");
         assert_eq!(out.errors.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_body_without_text_or_completion_fails_the_stream() {
+        let (base, _) = serve(vec![Canned::json(200, "{}")]).await;
+        let client = HttpLlmClient::new(&compat_conn(&base), None, &HashMap::new()).unwrap();
+        let out = RecordingOutput::default();
+        let failure = client.stream_with(&messages(), "m", &GenerationParams::default(), &out).await.unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Stream);
+        assert!(out.text().is_empty());
+        assert_eq!(out.errors.lock().unwrap().as_slice(), &[failure.message]);
     }
 
     #[tokio::test]

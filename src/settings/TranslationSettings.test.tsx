@@ -69,6 +69,33 @@ describe("TranslationSettings", () => {
     expect(screen.getByRole("button", { name: "Test Connection" })).toBeInTheDocument();
   });
 
+  it("saves Microsoft credentials only after the draft key and region pass together", async () => {
+    let connected = false;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === "get_api_key") return args?.provider === "translation_microsoft" ? "saved-key" : "eastus";
+      if (cmd === "test_translation_connection") return { connected, language_count: 0, response_ms: 5, error: "Rejected" };
+      return respond(cmd);
+    });
+    await renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /Microsoft Translator/ }));
+    await act(async () => {});
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "draft-key" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /region/i }), { target: { value: "westus" } });
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save & Test" })));
+    expect(invoke).toHaveBeenCalledWith("test_translation_connection", expect.objectContaining({
+      provider: "microsoft", apiKey: "draft-key", region: "westus",
+    }));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd.startsWith("store_"))).toEqual([]);
+    expect(screen.getByRole("alert")).toHaveTextContent("Rejected");
+
+    connected = true;
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save & Test" })));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd.startsWith("store_"))).toEqual([
+      ["store_microsoft_translation_credentials", { key: "draft-key", region: "westus" }],
+    ]);
+  });
+
   it("the wait before translating can be typed freely and is saved on blur", async () => {
     useTranslationStore.setState({ liveSettleMs: 1200 });
     await renderPage();

@@ -60,6 +60,32 @@ describe("configStore: active LLM across windows", () => {
     expect(overlay.getState().llmModel).toBe("haiku");
   });
 
+  it("preserves provider verifications made independently in two windows", async () => {
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "mutate_config_list") {
+        const { key, mutation } = args as { key: string; mutation: { item: string } };
+        const values = Array.from(new Set([...(saved.get(key) as string[] | undefined ?? []), mutation.item]));
+        saved.set(key, values);
+        for (const { key: changedKey, cb } of keyListeners) if (key === changedKey) cb([...values]);
+      }
+      return null;
+    });
+    try {
+      const launcher = await openWindow();
+      const overlay = await openWindow();
+      await Promise.all([
+        launcher.getState().setCloudProviderVerified("deepgram", true),
+        overlay.getState().setCloudProviderVerified("openrouter", true),
+      ]);
+      const expected = ["deepgram", "openrouter"];
+      expect(saved.get("verifiedCloudProviders")).toEqual(expected);
+      await vi.waitFor(() => expect(launcher.getState().verifiedCloudProviders).toEqual(expected));
+      await vi.waitFor(() => expect(overlay.getState().verifiedCloudProviders).toEqual(expected));
+    } finally {
+      invoke.mockResolvedValue(null);
+    }
+  });
+
   it("the Claude model catalog fetched by the launcher reaches the overlay and the next start", async () => {
     const launcher = await openWindow();
     const overlay = await openWindow();

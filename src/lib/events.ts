@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { TranslationErrorEvent } from "./translation/types";
 import type {
   AIScenario,
   MeetingPromptInfo,
@@ -29,7 +30,6 @@ import type {
   UpdateInfo,
   UpdateDownloadFailed,
   UpdaterPrefsChangedEvent,
-  WindowMeetingEndedEvent,
   OverlayMeetingReadyEvent,
 } from "./types";
 
@@ -270,14 +270,10 @@ export function onTranslationResult(handler: (result: TranslationResult) => void
   return listen<TranslationResult>("translation_result", (e) => handler(e.payload));
 }
 
-/** `original_text` / `meeting_id`: the line whose translation failed; `consecutive_failures`: repeated selection failures. */
 export function onTranslationError(
-  handler: (error: { segment_id?: string; meeting_id?: string; original_text?: string; error: string; consecutive_failures?: number }) => void,
+  handler: (error: TranslationErrorEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ segment_id?: string; meeting_id?: string; original_text?: string; error: string; consecutive_failures?: number }>(
-    "translation_error",
-    (e) => handler(e.payload),
-  );
+  return listen<TranslationErrorEvent>("translation_error", (e) => handler(e.payload));
 }
 
 export function onBatchTranslationProgress(handler: (progress: BatchTranslationProgress) => void): Promise<UnlistenFn> {
@@ -285,6 +281,12 @@ export function onBatchTranslationProgress(handler: (progress: BatchTranslationP
 }
 
 // == UPDATER EVENTS ==
+
+export function onUpdateDownloadStarted(
+  handler: (info: UpdateInfo) => void
+): Promise<UnlistenFn> {
+  return listen<UpdateInfo>("update_download_started", (e) => handler(e.payload));
+}
 
 export function onUpdateDownloadProgress(
   handler: (event: UpdateDownloadProgress) => void
@@ -323,12 +325,6 @@ export function onUpdaterPrefsChanged(
 
 // == MEETING WINDOW SYNC ==
 
-export function onWindowMeetingEnded(
-  handler: (event: WindowMeetingEndedEvent) => void
-): Promise<UnlistenFn> {
-  return listen<WindowMeetingEndedEvent>("nexq:meeting_ended", (e) => handler(e.payload));
-}
-
 /** Overlay -> launcher: the overlay has the meeting and will persist its data. */
 export function emitOverlayMeetingReady(meetingId: string): Promise<void> {
   const payload: OverlayMeetingReadyEvent = { meetingId };
@@ -341,11 +337,6 @@ export function onOverlayMeetingReady(
   return listen<OverlayMeetingReadyEvent>("nexq:overlay_meeting_ready", (e) =>
     handler(e.payload)
   );
-}
-
-/** Ask every window to end the meeting (same path as the tray's Stop). */
-export function emitStopMeeting(): Promise<void> {
-  return emit("tray_stop_meeting");
 }
 
 // == CLAUDE CLI EVENTS ==

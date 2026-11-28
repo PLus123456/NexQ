@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useConfigStore } from "../stores/configStore";
+import { useLlmConfig } from "../stores/llmConnectionsStore";
 import { useRagStore } from "../stores/ragStore";
 import { useRagEvents } from "../hooks/useRagEvents";
 import type { ContextStrategy } from "../lib/types";
@@ -8,8 +9,11 @@ import {
   createGeminiContextCache,
   deleteGeminiContextCache,
   getGeminiCacheStatus,
+  onGeminiCacheChanged,
   type GeminiCacheInfo,
 } from "../lib/ipc";
+import { modelOptions } from "../lib/llm/connection";
+import { effectiveRoute } from "../lib/llm/tasks";
 import { showToast } from "../stores/toastStore";
 import { formatDate, formatNumber, Trans, useT } from "../i18n";
 import { EmbeddingSection } from "./rag/EmbeddingSection";
@@ -474,7 +478,7 @@ export function ContextStrategySettings() {
         </>
       )}
 
-      <GeminiCachePanel />
+      {contextStrategy === "gemini_cache" && <GeminiCachePanel />}
     </div>
   );
 }
@@ -482,41 +486,75 @@ export function ContextStrategySettings() {
 // ─── Gemini Context Cache Panel ───────────────────────────────────────────────
 function GeminiCachePanel() {
   const { t } = useT(["rag", "common"]);
-  const contextStrategy = useConfigStore((s) => s.contextStrategy);
+  const { view, loadState } = useLlmConfig();
   const [cache, setCache] = useState<GeminiCacheInfo | null>(null);
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState("gemini-2.0-flash-001");
+  const [chosenConnection, setChosenConnection] = useState("");
+  const [chosenModel, setChosenModel] = useState("");
   const [ttl, setTtl] = useState(3600);
+  const latestStatus = useRef(0);
+
+  const configured = view?.connections.filter((c) => c.kind === "gemini") ?? [];
+  const available = configured.filter((c) => c.enabled && c.base_url.trim());
+  const assist = view ? effectiveRoute(view, "assist") : null;
+  const connection = available.find((c) => c.id === chosenConnection)
+    ?? available.find((c) => c.id === assist?.connection_id && !assist.error)
+    ?? available[0];
+  const legacy = loadState === "unavailable" || (loadState === "ready" && configured.length === 0);
+  const defaultOptions = ["gemini-2.0-flash-001", "gemini-1.5-flash-001", "gemini-1.5-pro-001"];
+  const configuredModels = [
+    connection?.id === assist?.connection_id ? assist?.model : null,
+    connection?.default_model,
+    ...modelOptions(connection).map((option) => option.id),
+  ].flatMap((id) => id ? [id.trim().replace(/^models\//, "")] : []);
+  const models = [...new Set(configuredModels.length ? configuredModels : defaultOptions)];
+  const model = models.includes(chosenModel) ? chosenModel : models[0];
+
+  const refreshCache = useCallback(async () => {
+    const request = ++latestStatus.current;
+    try {
+      const info = await getGeminiCacheStatus();
+      if (request === latestStatus.current) setCache(info);
+    } catch {
+      // A failed refresh leaves the last known cache visible.
+    }
+  }, []);
 
   useEffect(() => {
-    if (contextStrategy !== "gemini_cache") return;
-    getGeminiCacheStatus().then(setCache).catch(() => {});
-  }, [contextStrategy]);
-
-  if (contextStrategy !== "gemini_cache") return null;
+    let closed = false;
+    const refresh = () => { if (!closed) void refreshCache(); };
+    const subscription = onGeminiCacheChanged(refresh);
+    void subscription.then(refresh, refresh);
+    return () => {
+      closed = true;
+      latestStatus.current += 1;
+      void subscription.then((unlisten) => unlisten(), () => {});
+    };
+  }, [refreshCache]);
 
   async function handleCreate() {
     setLoading(true);
     try {
-      const info = await createGeminiContextCache(model, ttl);
-      setCache(info);
+      const info = await createGeminiContextCache(model, ttl, undefined, connection?.id);
       showToast(t("gemini.toasts.created", { tokens: formatNumber(info.total_token_count) }), "success");
     } catch (e: any) {
       showToast(String(e), "error");
     } finally {
+      void refreshCache();
       setLoading(false);
     }
   }
 
   async function handleDelete() {
+    if (!cache) return;
     setLoading(true);
     try {
-      await deleteGeminiContextCache();
-      setCache(null);
+      await deleteGeminiContextCache(cache);
       showToast(t("gemini.toasts.cleared"), "success");
     } catch (e: any) {
       showToast(String(e), "error");
     } finally {
+      void refreshCache();
       setLoading(false);
     }
   }
@@ -541,18 +579,35 @@ function GeminiCachePanel() {
 
       {!cache ? (
         <div className="flex flex-col gap-3">
+          {connection && (
+            <div>
+              <label htmlFor="gemini-cache-connection" className="mb-1 block text-xs text-muted-foreground">{t("gemini.connection")}</label>
+              <select
+                id="gemini-cache-connection"
+                value={connection.id}
+                onChange={(e) => {
+                  setChosenConnection(e.target.value);
+                  setChosenModel("");
+                }}
+                className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              >
+                {available.map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}
+              </select>
+            </div>
+          )}
+          {!connection && !legacy && (loadState === "ready" || loadState === "error") && (
+            <p className="text-xs text-muted-foreground">{t("gemini.connectionUnavailable")}</p>
+          )}
           <div className="flex gap-2">
             <div className="flex-1">
               <label htmlFor="gemini-cache-model" className="mb-1 block text-xs text-muted-foreground">{t("gemini.model")}</label>
               <select
                 id="gemini-cache-model"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(e) => setChosenModel(e.target.value)}
                 className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
               >
-                <option value="gemini-2.0-flash-001">gemini-2.0-flash-001</option>
-                <option value="gemini-1.5-flash-001">gemini-1.5-flash-001</option>
-                <option value="gemini-1.5-pro-001">gemini-1.5-pro-001</option>
+                {models.map((id) => <option key={id} value={id}>{id}</option>)}
               </select>
             </div>
             <div className="w-28">
@@ -572,7 +627,7 @@ function GeminiCachePanel() {
           </div>
           <button
             onClick={handleCreate}
-            disabled={loading}
+            disabled={loading || (!connection && !legacy)}
             className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cloud className="h-3.5 w-3.5" />}

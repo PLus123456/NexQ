@@ -27,8 +27,8 @@ export interface BookmarkSuggestionsState {
   suggestions: BookmarkSuggestion[];
   suggest: () => Promise<void>;
   cancel: () => void;
-  acceptSuggestion: (index: number) => void;
-  dismissSuggestion: (index: number) => void;
+  acceptSuggestion: (suggestion: BookmarkSuggestion) => void;
+  dismissSuggestion: (suggestion: BookmarkSuggestion) => void;
   acceptAll: () => void;
   error: string | null;
 }
@@ -159,39 +159,44 @@ export function useBookmarkSuggestions(
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<BookmarkSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const currentSuggestions = useRef<BookmarkSuggestion[]>([]);
+  const saving = useRef(new Set<BookmarkSuggestion>());
+  const meetingVersion = useRef(0);
   const contentRef = useRef("");
   // request_id of the generation this hook started (null when idle/cancelled)
   const requestIdRef = useRef<string | null>(null);
   const unlistenersRef = useRef<(() => void)[]>([]);
 
-  // Reset state when meeting changes
-  useEffect(() => {
-    setError(null);
-    setSuggestions([]);
-    setIsSuggesting(false);
-    contentRef.current = "";
-  }, [meeting?.id]);
+  const replaceSuggestions = useCallback((next: BookmarkSuggestion[]) => {
+    currentSuggestions.current = next;
+    setSuggestions(next);
+  }, []);
+
+  const dismissSuggestion = useCallback((suggestion: BookmarkSuggestion) => {
+    replaceSuggestions(currentSuggestions.current.filter((item) => item !== suggestion));
+  }, [replaceSuggestions]);
 
   // Cancel this view's request when leaving or switching meetings.
   useEffect(() => {
     setIsSuggesting(false);
     setError(null);
+    replaceSuggestions([]);
     contentRef.current = "";
     return () => {
+      ++meetingVersion.current;
       const requestId = requestIdRef.current;
       requestIdRef.current = null;
       if (requestId) invoke("cancel_generation", { requestId }).catch(() => {});
       unlistenersRef.current.forEach((fn) => fn());
       unlistenersRef.current = [];
     };
-  }, [meeting?.id]);
+  }, [meeting?.id, replaceSuggestions]);
 
   const acceptSuggestion = useCallback(
-    async (index: number) => {
-      if (!meeting) return;
-
-      const suggestion = suggestions[index];
-      if (!suggestion) return;
+    async (suggestion: BookmarkSuggestion) => {
+      if (!meeting || !currentSuggestions.current.includes(suggestion) || saving.current.has(suggestion)) return;
+      saving.current.add(suggestion);
+      const version = meetingVersion.current;
 
       const bookmark: MeetingBookmark = {
         id: crypto.randomUUID(),
@@ -213,55 +218,24 @@ export function useBookmarkSuggestions(
           }),
         );
 
-        // Remove accepted suggestion from the list
-        setSuggestions((prev) => prev.filter((_, i) => i !== index));
-        onBookmarkAccepted(bookmark);
+        if (meetingVersion.current === version) {
+          dismissSuggestion(suggestion);
+          onBookmarkAccepted(bookmark);
+        }
       } catch (err) {
         console.error("[bookmarkSuggestions] Failed to save bookmark:", err);
+      } finally {
+        saving.current.delete(suggestion);
       }
     },
-    [meeting, suggestions, onBookmarkAccepted],
+    [meeting, dismissSuggestion, onBookmarkAccepted],
   );
 
-  const dismissSuggestion = useCallback((index: number) => {
-    setSuggestions((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
   const acceptAll = useCallback(async () => {
-    if (!meeting) return;
-
-    // Process all remaining suggestions
-    for (let i = suggestions.length - 1; i >= 0; i--) {
-      const suggestion = suggestions[i];
-      if (!suggestion) continue;
-
-      const bookmark: MeetingBookmark = {
-        id: crypto.randomUUID(),
-        timestamp_ms: suggestion.timestamp_ms,
-        segment_id: suggestion.segment_id,
-        note: suggestion.note,
-        created_at: new Date().toISOString(),
-      };
-
-      try {
-        await addMeetingBookmark(
-          JSON.stringify({
-            id: bookmark.id,
-            meeting_id: meeting.id,
-            timestamp_ms: bookmark.timestamp_ms,
-            segment_id: bookmark.segment_id ?? null,
-            note: bookmark.note ?? null,
-            created_at: bookmark.created_at,
-          }),
-        );
-        onBookmarkAccepted(bookmark);
-      } catch (err) {
-        console.error("[bookmarkSuggestions] Failed to save bookmark:", err);
-      }
+    for (const suggestion of [...currentSuggestions.current].reverse()) {
+      await acceptSuggestion(suggestion);
     }
-
-    setSuggestions([]);
-  }, [meeting, suggestions, onBookmarkAccepted]);
+  }, [acceptSuggestion]);
 
   const suggest = useCallback(async () => {
     if (!meeting || requestIdRef.current || isSuggesting) return;
@@ -305,7 +279,7 @@ export function useBookmarkSuggestions(
               // "info:" marks a message that isn't an error (BookmarksTab strips it).
               setError(`info:${t("llm:bookmarks.info.noNotableMoments")}`);
             } else {
-              setSuggestions(items);
+              replaceSuggestions(items);
             }
           } catch (err) {
             console.error("[bookmarkSuggestions] Parse failed:", err);
@@ -364,7 +338,7 @@ export function useBookmarkSuggestions(
       setError(msg);
       setIsSuggesting(false);
     }
-  }, [meeting, isSuggesting]);
+  }, [meeting, isSuggesting, replaceSuggestions]);
 
   const cancel = useCallback(async () => {
     const requestId = requestIdRef.current;

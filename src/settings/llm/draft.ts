@@ -21,6 +21,8 @@ export interface ConnectionDraft {
   testedAt: number | null;
 }
 
+export type DraftChange = ConnectionDraft | ((current: ConnectionDraft) => ConnectionDraft);
+
 export function draftOf(connection: LlmConnection, isNew = false): ConnectionDraft {
   return {
     connection,

@@ -109,6 +109,8 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
   let state = emptyView(initial);
   const listeners = new Map<string, Set<Listener>>();
   let eventId = 0;
+  let nextTestReceipt = 0;
+  const draftTests = new Map<string, string>();
 
   const backend: MockLlmBackend = {
     secrets: new Map(),
@@ -176,6 +178,16 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
         case "llm_upsert_connection": {
           const input = normalizeConnection(a.connection);
           const isNew = !input.id;
+          const quickSetup = a.quickSetup as { expected_default: TaskRoute; test_receipt: string | null } | undefined;
+          if (quickSetup) {
+            if (JSON.stringify(quickSetup.expected_default) !== JSON.stringify(state.routing.default)) {
+              throw "The default route changed. Review the current model before saving.";
+            }
+            if (quickSetup.test_receipt &&
+              draftTests.get(quickSetup.test_receipt) !== JSON.stringify([a.connection, a.secret])) {
+              throw "The connection draft changed or its test expired. Test again before saving.";
+            }
+          }
           const id = isNew ? newConnectionId() : input.id;
           const existing = state.connections.find((c) => c.id === id);
           const connection: LlmConnection = {
@@ -185,7 +197,7 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
             secret_ref: existing?.secret_ref ?? null,
             secret_hint: existing?.secret_hint ?? null,
             model_cache: existing?.model_cache ?? null,
-            verified_at_ms: existing?.verified_at_ms ?? null,
+            verified_at_ms: quickSetup?.test_receipt ? Date.now() : existing?.verified_at_ms ?? null,
             created_at_ms: existing?.created_at_ms ?? Date.now(),
             legacy_type: existing?.legacy_type ?? null,
           };
@@ -202,6 +214,15 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
             if (moved) writeSecret(id, null);
           }
           if (typeof a.secret === "string") writeSecret(id, a.secret);
+          if (quickSetup) {
+            state = {
+              ...state,
+              routing: {
+                ...state.routing,
+                default: { ...state.routing.default, target: { connection_id: id, model: null } },
+              },
+            };
+          }
           return { id, config: commit() };
         }
 
@@ -306,6 +327,11 @@ export function createMockLlmBackend(initial: MockState = {}): MockLlmBackend {
               connections: state.connections.map((c) => (c.id === a.id ? { ...c, verified_at_ms: Date.now() } : c)),
             };
             commit();
+          }
+          if (result.ok && a.draft && !connection?.id && result.model === connection?.default_model) {
+            const receipt = `test-${++nextTestReceipt}`;
+            draftTests.set(receipt, JSON.stringify([a.draft, a.secret]));
+            result.test_receipt = receipt;
           }
           return result;
         }

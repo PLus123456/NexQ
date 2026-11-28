@@ -49,7 +49,7 @@ export function useWindowResizeDrag(edge: ResizeEdge, min: Size) {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLElement>) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || drag.current) return;
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       const d: Drag = {
@@ -81,29 +81,45 @@ export function useWindowResizeDrag(edge: ResizeEdge, min: Size) {
     [schedule],
   );
 
+  const cancelDrag = useCallback((pointerId: number) => {
+    const d = drag.current;
+    if (!d || pointerId !== d.pointerId) return;
+    if (d.frame) cancelAnimationFrame(d.frame);
+    drag.current = null;
+  }, []);
+
+  const onPointerCancel = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    cancelDrag(e.pointerId);
+  }, [cancelDrag]);
+
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLElement>) => {
       const d = drag.current;
       if (!d || e.pointerId !== d.pointerId) return;
+      if (e.buttons === 0) {
+        cancelDrag(e.pointerId);
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        return;
+      }
       d.lastX = e.screenX;
       d.lastY = e.screenY;
       schedule();
     },
-    [schedule],
+    [schedule, cancelDrag],
   );
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLElement>) => {
       const d = drag.current;
       if (!d || e.pointerId !== d.pointerId) return;
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      }
       if (d.frame) cancelAnimationFrame(d.frame);
       d.lastX = e.screenX;
       d.lastY = e.screenY;
       apply();
       drag.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
     },
     [apply],
   );
@@ -116,5 +132,5 @@ export function useWindowResizeDrag(edge: ResizeEdge, min: Size) {
     [],
   );
 
-  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp };
+  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onLostPointerCapture: onPointerCancel };
 }

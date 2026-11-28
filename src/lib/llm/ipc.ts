@@ -10,6 +10,7 @@ import type {
   FetchModelsResult,
   LlmConfigView,
   LlmConnectionInput,
+  QuickSetupSave,
   ResponseLanguage,
   SecretStatus,
   TaskRoute,
@@ -30,8 +31,16 @@ export function llmGetConfig(): Promise<LlmConfigView> {
  * the stored key when the base URL's origin or the kind changes, so pass the
  * new key in the same call then.
  */
-export function llmUpsertConnection(connection: LlmConnectionInput, secret?: string): Promise<UpsertResult> {
-  return invoke<UpsertResult>("llm_upsert_connection", { connection, secret: secret ?? null });
+export function llmUpsertConnection(
+  connection: LlmConnectionInput,
+  secret?: string,
+  quickSetup?: QuickSetupSave,
+): Promise<UpsertResult> {
+  return invoke<UpsertResult>("llm_upsert_connection", {
+    connection,
+    secret: secret ?? null,
+    ...(quickSetup ? { quickSetup } : {}),
+  });
 }
 
 /** Deletes a connection; routes that pointed at it are cleared (their keys come back). */
@@ -74,7 +83,7 @@ export function llmFetchModels(ref: ConnectionRef): Promise<FetchModelsResult> {
   return invoke<FetchModelsResult>("llm_fetch_models", {
     id: ref.id ?? null,
     draft: ref.draft ?? null,
-    secret: ref.secret || null,
+    secret: ref.secret ?? null,
   });
 }
 
@@ -83,7 +92,7 @@ export function llmTestConnection(ref: ConnectionRef & { model?: string | null; 
   return invoke<TestConnectionResult>("llm_test_connection", {
     id: ref.id ?? null,
     draft: ref.draft ?? null,
-    secret: ref.secret || null,
+    secret: ref.secret ?? null,
     model: ref.model || null,
     mode: ref.mode ?? "chat",
   });

@@ -8,7 +8,7 @@ use crate::translation::{
 };
 use crate::translation::llm_provider::translate_with_llm;
 use crate::translation::options::TranslationOptionsPatch;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -48,19 +48,35 @@ fn parse_provider(provider: &str) -> Result<TranslationProviderType, String> {
 /// settings page) wins over the stored Microsoft region; otherwise the stored
 /// one is used, so restoring the provider at startup keeps the user's region.
 fn read_keys(state: &AppState, region: Option<String>) -> TranslationKeys {
-    let mut keys = TranslationKeys::default();
+    let mut keys = TranslationKeys {
+        microsoft_region: region.filter(|r| !r.trim().is_empty()),
+        ..TranslationKeys::default()
+    };
     if let Some(ref cred_arc) = state.credentials {
         if let Ok(cred) = cred_arc.lock() {
             let read = |slot: &str| cred.get_key(slot).ok().flatten().filter(|v| !v.trim().is_empty());
             keys.microsoft = read("translation_microsoft");
             keys.google = read("translation_google");
             keys.deepl = read("translation_deepl");
-            keys.microsoft_region = region
-                .filter(|r| !r.trim().is_empty())
-                .or_else(|| read("translation_microsoft_region"));
+            if keys.microsoft_region.is_none() {
+                keys.microsoft_region = read("translation_microsoft_region");
+            }
         }
     }
     keys
+}
+
+/// Saves the tested Microsoft Translator key and region under one credential lock.
+#[command]
+pub async fn store_microsoft_translation_credentials(
+    app: AppHandle,
+    key: String,
+    region: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let credentials = state.credentials.as_ref().ok_or("Credential manager not initialized")?;
+    let credentials = credentials.lock().map_err(|_| "Credential manager lock poisoned")?;
+    credentials.store_key_with_region("translation_microsoft", &key, "translation_microsoft_region", &region)
 }
 
 /// "Connection · model" of the LLM routed to `task`, for the result's provider field.
@@ -163,6 +179,7 @@ pub async fn translate_text(
     };
     if let Some(cached) = cached {
         return Ok(TranslationResult {
+            meeting_id: None,
             segment_id: None,
             original_text: text,
             translated_text: cached,
@@ -218,6 +235,7 @@ pub async fn translate_text(
     }
 
     Ok(TranslationResult {
+        meeting_id: None,
         segment_id: None,
         original_text: text,
         translated_text: translated,
@@ -260,7 +278,7 @@ pub async fn translate_segments(
             // Every requested line learns why it stays untranslated.
             let error = e.to_string();
             for (seg_id, text) in segment_ids.iter().zip(texts.iter()) {
-                emit_segment_error(&app, &meeting_id, seg_id, text, &error);
+                emit_segment_error(&app, &meeting_id, &target, seg_id, text, &error);
             }
             return Err(error);
         }
@@ -294,7 +312,7 @@ pub async fn translate_segments(
                 translated
             }
             Err(error) => {
-                emit_segment_error(&app, &meeting_id, seg_id, text, &error);
+                emit_segment_error(&app, &meeting_id, &target, seg_id, text, &error);
                 failures_in_a_row += 1;
                 first_error.get_or_insert(error);
                 continue;
@@ -319,6 +337,7 @@ pub async fn translate_segments(
 
         // Emit result event
         let result = TranslationResult {
+            meeting_id: Some(meeting_id.clone()),
             segment_id: Some(seg_id.clone()),
             original_text: text.clone(),
             translated_text: translated,
@@ -337,11 +356,14 @@ pub async fn translate_segments(
 
 /// `translation_error` for one line; `original_text` lets the frontend ignore
 /// the failure of a request it already replaced with a newer text, and
-/// `meeting_id` tells a past meeting's view the error isn't about its lines.
-fn emit_segment_error(app: &AppHandle, meeting_id: &str, segment_id: &str, original_text: &str, error: &str) {
+/// `meeting_id` and `target_lang` identify the transcript view it belongs to.
+fn emit_segment_error(
+    app: &AppHandle, meeting_id: &str, target_lang: &str, segment_id: &str, original_text: &str, error: &str,
+) {
     let _ = app.emit("translation_error", serde_json::json!({
         "segment_id": segment_id,
         "meeting_id": meeting_id,
+        "target_lang": target_lang,
         "original_text": original_text,
         "error": error,
     }));
@@ -480,7 +502,7 @@ pub async fn translate_batch(
                     translated
                 }
                 Err(error) => {
-                    emit_segment_error(&app, &meeting_id, seg_id, orig_text, error);
+                    emit_segment_error(&app, &meeting_id, &target, seg_id, orig_text, error);
                     failed += 1;
                     failures_in_a_row += 1;
                     first_error.get_or_insert_with(|| error.clone());
@@ -498,6 +520,7 @@ pub async fn translate_batch(
             }
 
             let result = TranslationResult {
+                meeting_id: Some(meeting_id.clone()),
                 segment_id: Some(seg_id.clone()),
                 original_text: orig_text.clone(),
                 translated_text: translated.clone(),
@@ -563,8 +586,8 @@ pub async fn detect_language(
     provider_arc.detect_language(&text).await.map_err(|e| e.to_string())
 }
 
-/// Tests `provider` with the stored keys and the given (possibly unsaved)
-/// region and options, without changing the active provider. LLM translation
+/// Tests `provider` with the given draft key (or stored key), region and
+/// options, without changing credentials or the active provider. LLM translation
 /// translates a real sentence with the model routed to translation.
 #[command]
 pub async fn test_translation_connection(
@@ -572,6 +595,7 @@ pub async fn test_translation_connection(
     provider: String,
     region: Option<String>,
     options: Option<TranslationOptionsPatch>,
+    api_key: Option<String>,
 ) -> Result<ConnectionStatus, String> {
     let state = app.state::<AppState>();
     let provider_type = parse_provider(&provider)?;
@@ -599,7 +623,16 @@ pub async fn test_translation_connection(
         });
     }
 
-    let keys = read_keys(&state, region);
+    let mut keys = read_keys(&state, region);
+    if let Some(api_key) = api_key {
+        let key = Some(api_key.trim().to_string()).filter(|key| !key.is_empty());
+        match provider_type {
+            TranslationProviderType::Microsoft => keys.microsoft = key,
+            TranslationProviderType::Google => keys.google = key,
+            TranslationProviderType::Deepl => keys.deepl = key,
+            _ => {}
+        }
+    }
     let built = {
         let router = trans_arc.lock().map_err(|_| "Lock poisoned")?;
         let options = router.options().with(options);
@@ -653,6 +686,7 @@ pub async fn get_meeting_translations(
     ).map_err(|e| e.to_string())?;
 
     Ok(rows.into_iter().map(|r| TranslationResult {
+        meeting_id: Some(r.meeting_id),
         segment_id: Some(r.segment_id),
         original_text: r.original_text,
         translated_text: r.translated_text,
@@ -676,6 +710,7 @@ pub async fn get_all_meeting_translations(
     ).map_err(|e| e.to_string())?;
 
     Ok(rows.into_iter().map(|r| TranslationResult {
+        meeting_id: Some(r.meeting_id),
         segment_id: Some(r.segment_id),
         original_text: r.original_text,
         translated_text: r.translated_text,
@@ -691,33 +726,73 @@ pub async fn export_translated_transcript(
     meeting_id: String,
     target_lang: String,
     format: String,
+    live_segments: Option<Vec<TranslationExportSegment>>,
 ) -> Result<String, String> {
     let state = app.state::<AppState>();
     let db_arc = state.database.as_ref().ok_or("DB not initialized")?;
     let db = db_arc.lock().map_err(|_| "DB lock poisoned")?;
+    build_translated_transcript_export(
+        db.connection(), &meeting_id, &target_lang, &format, live_segments.unwrap_or_default(),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct TranslationExportSegment {
+    id: String,
+    text: String,
+    speaker: String,
+    timestamp_ms: i64,
+}
+
+fn build_translated_transcript_export(
+    conn: &rusqlite::Connection,
+    meeting_id: &str,
+    target_lang: &str,
+    format: &str,
+    live_segments: Vec<TranslationExportSegment>,
+) -> Result<String, String> {
+    let start_time: String = conn.query_row(
+        "SELECT start_time FROM meetings WHERE id = ?1", [meeting_id], |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    let start_ms = chrono::DateTime::parse_from_rfc3339(&start_time)
+        .map(|time| time.timestamp_millis())
+        .unwrap_or_default();
 
     // Load segments
-    let mut seg_stmt = db.connection().prepare(
+    let mut seg_stmt = conn.prepare(
         "SELECT id, text, speaker, timestamp_ms FROM transcript_segments
          WHERE meeting_id = ?1 AND is_final = 1 ORDER BY timestamp_ms"
     ).map_err(|e| e.to_string())?;
 
-    let segments: Vec<(String, String, String, i64)> = seg_stmt
-        .query_map([&meeting_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
+    let mut segments: Vec<TranslationExportSegment> = seg_stmt
+        .query_map([meeting_id], |row| {
+            Ok(TranslationExportSegment {
+                id: row.get(0)?, text: row.get(1)?, speaker: row.get(2)?, timestamp_ms: row.get(3)?,
+            })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    // The overlay has new and revised final segments between periodic database saves.
+    let mut positions: std::collections::HashMap<_, _> = segments.iter().enumerate()
+        .map(|(index, segment)| (segment.id.clone(), index))
+        .collect();
+    for segment in live_segments {
+        if let Some(index) = positions.get(&segment.id) {
+            segments[*index] = segment;
+        } else {
+            positions.insert(segment.id.clone(), segments.len());
+            segments.push(segment);
+        }
+    }
+    for segment in &mut segments {
+        segment.timestamp_ms = crate::db::meetings::relative_meeting_time_ms(segment.timestamp_ms, start_ms);
+    }
+    segments.sort_by_key(|segment| segment.timestamp_ms);
 
     // Load translations
     let translations = crate::db::translation::get_meeting_translations(
-        db.connection(), &meeting_id, &target_lang
+        conn, meeting_id, target_lang,
     ).map_err(|e| e.to_string())?;
 
     let trans_map: std::collections::HashMap<String, String> = translations
@@ -727,28 +802,28 @@ pub async fn export_translated_transcript(
 
     let mut output = String::new();
 
-    match format.as_str() {
+    match format {
         "translated_txt" => {
-            for (seg_id, _orig, speaker, _ts) in &segments {
-                let translated = trans_map.get(seg_id).cloned().unwrap_or_else(|| "[not translated]".into());
+            for TranslationExportSegment { id, speaker, .. } in &segments {
+                let translated = trans_map.get(id).map(String::as_str).unwrap_or("[not translated]");
                 output.push_str(&format!("{}: {}\n", speaker, translated));
             }
         }
         "bilingual_txt" => {
-            for (seg_id, orig, speaker, _ts) in &segments {
-                let translated = trans_map.get(seg_id).cloned().unwrap_or_else(|| "[not translated]".into());
-                output.push_str(&format!("{}: {}\n", speaker, orig));
+            for TranslationExportSegment { id, text, speaker, .. } in &segments {
+                let translated = trans_map.get(id).map(String::as_str).unwrap_or("[not translated]");
+                output.push_str(&format!("{}: {}\n", speaker, text));
                 output.push_str(&format!("  → {}\n\n", translated));
             }
         }
         "bilingual_md" => {
             output.push_str("# Translated Transcript\n\n");
-            for (seg_id, orig, speaker, ts) in &segments {
-                let minutes = ts / 60000;
-                let seconds = (ts % 60000) / 1000;
-                let translated = trans_map.get(seg_id).cloned().unwrap_or_else(|| "[not translated]".into());
+            for TranslationExportSegment { id, text, speaker, timestamp_ms } in &segments {
+                let minutes = timestamp_ms / 60000;
+                let seconds = (timestamp_ms % 60000) / 1000;
+                let translated = trans_map.get(id).map(String::as_str).unwrap_or("[not translated]");
                 output.push_str(&format!("**{}** _{:02}:{:02}_\n", speaker, minutes, seconds));
-                output.push_str(&format!("> {}\n", orig));
+                output.push_str(&format!("> {}\n", text));
                 output.push_str(&format!("> _{}_\n\n", translated));
             }
         }
@@ -778,6 +853,32 @@ mod tests {
         assert_eq!(test_sentence("zh-CN").1, "en");
         assert_eq!(test_sentence("en").1, "es");
         assert_eq!(test_sentence("en-GB").1, "es");
+    }
+
+    #[test]
+    fn bilingual_markdown_uses_elapsed_time_for_mixed_transcript_timestamps() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&db).unwrap();
+        db.execute_batch(
+            "INSERT INTO meetings (id, title, start_time) VALUES ('m', 'Sync', '2023-11-14T22:13:20Z');
+             INSERT INTO transcript_segments (id, meeting_id, text, speaker, timestamp_ms, is_final, created_at) VALUES
+                ('epoch', 'm', 'Hello', 'Them', 1700000001500, 1, ''),
+                ('offset', 'm', 'Goodbye', 'User', 62000, 1, '');",
+        ).unwrap();
+        crate::db::translation::save_translation(&db, "epoch", "m", "en", "es", "Hello", "Hola", "DeepL").unwrap();
+
+        let markdown = build_translated_transcript_export(&db, "m", "es", "bilingual_md", vec![]).unwrap();
+        assert!(markdown.contains("**Them** _00:01_\n> Hello\n> _Hola_"));
+        assert!(markdown.find("_00:01_").unwrap() < markdown.find("_01:02_").unwrap());
+        let live = vec![
+            TranslationExportSegment { id: "offset".into(), text: "Updated".into(), speaker: "User".into(), timestamp_ms: 62_000 },
+            TranslationExportSegment { id: "new".into(), text: "New line".into(), speaker: "Them".into(), timestamp_ms: 63_000 },
+        ];
+        let text = build_translated_transcript_export(&db, "m", "es", "bilingual_txt", live).unwrap();
+        assert!(text.starts_with("Them: Hello\n  → Hola\n"));
+        assert!(text.contains("User: Updated\n"));
+        assert!(!text.contains("User: Goodbye\n"));
+        assert!(text.contains("Them: New line\n"));
     }
 
     #[test]

@@ -15,7 +15,6 @@ import { useT } from "../../i18n";
 import { useConfigStore } from "../../stores/configStore";
 import { useMeetingStore } from "../../stores/meetingStore";
 import { errorMessage, useTranslationStore } from "../../stores/translationStore";
-import { getApiKey, hasApiKey, storeApiKey } from "../../lib/ipc";
 import { TRANSLATION_COMMON, languageLabel } from "../../lib/languages";
 import { LanguageCombobox } from "../../components/LanguageCombobox";
 import { testTranslationProvider } from "../../lib/translation/ipc";
@@ -25,12 +24,14 @@ import {
   engineSupportsNativeTranslation,
   partyConfig,
   partyTranslationMode,
+  serviceParties,
 } from "../../lib/translation/nativeTranslation";
 import type { PartyTranslationMode, TranslateParties, TranslationParty } from "../../lib/translation/types";
 import type { MeetingAudioConfig, TranslationProviderType } from "../../lib/types";
 import type { QuickSetupProps, QuickSetupStatus } from "../quickSetup";
 import { ProviderEndpointField } from "./ProviderEndpointField";
-import { AZURE_REGIONS, CLOUD_PROVIDERS, MICROSOFT_REGION_KEY, isCloudProvider, providerOption } from "./providers";
+import { AZURE_REGIONS, CLOUD_PROVIDERS, isCloudProvider, providerOption } from "./providers";
+import { saveTestedTranslationCredentials, useTranslationCredentialDraft } from "./credentials";
 import { engineName } from "./PartyTranslationPicker";
 
 type TestState = { state: "idle" } | { state: "testing" } | { state: "ok"; ms: number } | { state: "error"; message: string };
@@ -40,7 +41,7 @@ const QUICK_PROVIDERS: readonly TranslationProviderType[] = ["llm", ...CLOUD_PRO
 const PARTY_KEYS = { you: "common:labels.you", them: "common:labels.them" } as const;
 
 /** The configuration that last passed its test, so going back to the step keeps it done. */
-let passedConfig: string | null = null;
+let passedConfig: { signature: string; keyRequired: boolean } | null = null;
 
 export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupProps) {
   const { t } = useT(["translation", "common"]);
@@ -58,11 +59,10 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   const audio = useConfigStore((s) => s.meetingAudioConfig);
   const setMeetingAudioConfig = useConfigStore((s) => s.setMeetingAudioConfig);
 
-  const [apiKey, setApiKey] = useState("");
-  const [hasStoredKey, setHasStoredKey] = useState(false);
-  const [region, setRegion] = useState("global");
   const [showEndpoint, setShowEndpoint] = useState(false);
-  const [test, setTest] = useState<TestState>({ state: "idle" });
+  const [testResult, setTestResult] = useState<{ signature: string; test: TestState } | null>(null);
+  const testRevision = useRef(0);
+  const previousProvider = useRef(provider);
   const keyId = useId();
   const regionId = useId();
   const targetId = useId();
@@ -78,13 +78,27 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   const needsService = TRANSLATION_PARTIES.some((p) => modes[p] === "service");
   const cloud = isCloudProvider(provider) ? provider : null;
   const option = providerOption(provider);
-  const serviceConfig = `${provider}|${cloud ? endpoints[cloud].trim() : ""}|${option?.needsRegion ? region : ""}`;
-  const testPassed = test.state === "ok" || (test.state === "idle" && passedConfig === serviceConfig);
-  /** The key, address or region changed: an earlier test no longer counts. */
-  const invalidateTest = () => {
-    passedConfig = null;
-    setTest({ state: "idle" });
+  const credentials = useTranslationCredentialDraft(option);
+  const { apiKey, hasStoredKey, keyDirty, region, regionDirty } = credentials;
+  const endpoint = cloud ? endpoints[cloud].trim() : "";
+  const signature = JSON.stringify([provider, endpoint, option?.needsRegion ? region : null, provider === "llm" ? [llm, targetLang] : null]);
+  const test: TestState = testResult?.signature === signature ? testResult.test : { state: "idle" };
+  const testPassed = test.state === "ok" || (test.state === "idle" && credentials.loaded && !keyDirty && !regionDirty
+    && passedConfig?.signature === signature && (!passedConfig.keyRequired || hasStoredKey));
+  const invalidateTest = (forgetPassed = true) => {
+    testRevision.current += 1;
+    if (forgetPassed) passedConfig = null;
+    setTestResult(null);
   };
+
+  useEffect(() => {
+    if (previousProvider.current !== provider) {
+      previousProvider.current = provider;
+      passedConfig = null;
+      setTestResult(null);
+    }
+    return () => { testRevision.current += 1; };
+  }, [provider]);
 
   // ── Applying modes (several parties at once) ──
   const applyModes = (next: Partial<Record<TranslationParty, PartyTranslationMode>>) => {
@@ -111,6 +125,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
 
   const setEnabled = (on: boolean) => {
     if (!on) {
+      invalidateTest(false);
       applyModes({ you: "off", them: "off" });
       setAutoTranslateEnabled(false);
     } else {
@@ -119,65 +134,52 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
   };
 
   const toggleParty = (party: TranslationParty) => {
+    if (test.state === "testing") invalidateTest(false);
     applyModes({ [party]: modes[party] === "off" ? modeWhenOn(party) : "off" });
   };
 
   const setNative = (on: boolean) => {
+    if (test.state === "testing") invalidateTest(false);
     const next: Partial<Record<TranslationParty, PartyTranslationMode>> = {};
     for (const party of checkedNativeCapable) next[party] = on ? "native" : "service";
     applyModes(next);
   };
 
-  // ── Keys of the chosen cloud service ──
-  useEffect(() => {
-    setApiKey("");
-    setHasStoredKey(false);
-    setTest({ state: "idle" });
-    if (!option?.requiresApiKey) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const exists = await hasApiKey(option.credentialKey);
-        if (cancelled) return;
-        setHasStoredKey(exists);
-        if (exists) {
-          const stored = await getApiKey(option.credentialKey);
-          if (!cancelled && stored) setApiKey(stored);
-        }
-        if (option.needsRegion && (await hasApiKey(MICROSOFT_REGION_KEY))) {
-          const stored = await getApiKey(MICROSOFT_REGION_KEY);
-          if (!cancelled && stored) setRegion(stored);
-        }
-      } catch (e) {
-        console.warn("[TranslationQuickSetup] Failed to read the stored key:", e);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [option?.credentialKey, option?.requiresApiKey, option?.needsRegion]);
-
   const runTest = async () => {
-    setTest({ state: "testing" });
+    if (!option || !credentials.loaded) return;
+    const revision = ++testRevision.current;
+    const key = keyDirty ? apiKey.trim() || undefined : undefined;
+    const testRegion = option.needsRegion ? region : undefined;
+    const updateTest = (state: TestState) => setTestResult({ signature, test: state });
+    const isCurrent = () => {
+      const current = useTranslationStore.getState();
+      return revision === testRevision.current && current.provider === provider
+        && (!cloud || current.endpoints[cloud].trim() === endpoint)
+        && (provider !== "llm" || (current.llm === llm && current.targetLang === targetLang))
+        && serviceParties(current.translateParties, useConfigStore.getState().meetingAudioConfig).length > 0;
+    };
+    passedConfig = null;
+    updateTest({ state: "testing" });
     try {
-      if (option?.requiresApiKey && apiKey.trim()) {
-        await storeApiKey(option.credentialKey, apiKey.trim());
-        setHasStoredKey(true);
-      }
-      if (option?.needsRegion) await storeApiKey(MICROSOFT_REGION_KEY, region);
-      const result = await testTranslationProvider(provider, { endpoints, llm }, option?.needsRegion ? region : undefined);
+      const result = await testTranslationProvider(provider, { endpoints, llm }, testRegion, key);
+      if (!isCurrent()) return;
       if (result.connected) {
-        passedConfig = serviceConfig;
-        setTest({ state: "ok", ms: result.response_ms });
-        // The active provider picks up the key just saved.
+        if (key || regionDirty) {
+          await saveTestedTranslationCredentials(option, key, testRegion);
+        }
+        if (!isCurrent()) return;
+        const keySaved = hasStoredKey || Boolean(key);
+        credentials.update({ hasStoredKey: keySaved, keyDirty: false, regionDirty: false });
+        passedConfig = { signature, keyRequired: keySaved };
+        updateTest({ state: "ok", ms: result.response_ms });
         void syncBackend();
         // Set up and working: meetings start with live translation on.
         setAutoTranslateEnabled(true);
       } else {
-        setTest({ state: "error", message: result.error || t("common:errors.unknown") });
+        updateTest({ state: "error", message: result.error || t("common:errors.unknown") });
       }
     } catch (e) {
-      setTest({ state: "error", message: errorMessage(e) });
+      if (isCurrent()) updateTest({ state: "error", message: errorMessage(e) });
     }
   };
 
@@ -213,7 +215,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
     report.current(status, detail);
   }, [status, detail]);
 
-  const canTest = provider === "llm" || (cloud !== null && (apiKey.trim() !== "" || hasStoredKey || endpoints[cloud].trim() !== ""));
+  const canTest = credentials.loaded && (provider === "llm" || (cloud !== null && (apiKey.trim() !== "" || hasStoredKey || endpoint !== "")));
 
   return (
     <div className="space-y-4 rounded-xl border border-border/30 bg-card/50 p-5">
@@ -269,7 +271,10 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
             <label htmlFor={targetId} className="mb-1.5 block text-xs font-medium text-foreground">
               {t("settings.language.target")}
             </label>
-            <LanguageCombobox id={targetId} value={targetLang} onChange={setTargetLang} common={TRANSLATION_COMMON} />
+            <LanguageCombobox id={targetId} value={targetLang} onChange={(lang) => {
+              if (provider === "llm" && lang !== targetLang) invalidateTest();
+              setTargetLang(lang);
+            }} common={TRANSLATION_COMMON} />
           </div>
 
           {/* The STT engine's own translation */}
@@ -306,7 +311,10 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                         role="radio"
                         aria-checked={selected}
                         onClick={() => {
-                          if (!selected) setProvider(value);
+                          if (!selected) {
+                            invalidateTest();
+                            setProvider(value);
+                          }
                         }}
                         className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
                           selected
@@ -335,8 +343,8 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                       type="password"
                       value={apiKey}
                       onChange={(e) => {
-                        setApiKey(e.target.value);
                         invalidateTest();
+                        credentials.update({ apiKey: e.target.value, keyDirty: true });
                       }}
                       placeholder={
                         hasStoredKey
@@ -356,8 +364,8 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                         id={regionId}
                         value={region}
                         onChange={(e) => {
-                          setRegion(e.target.value);
                           invalidateTest();
+                          credentials.update({ region: e.target.value, regionDirty: true });
                         }}
                         className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none cursor-pointer"
                       >
@@ -397,7 +405,7 @@ export function TranslationQuickSetup({ variant, onStatusChange }: QuickSetupPro
                   className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                 >
                   {test.state === "testing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-                  {cloud && apiKey.trim() && !hasStoredKey ? t("settings.apiKey.saveAndTest") : t("common:actions.testConnection")}
+                  {cloud && ((keyDirty && apiKey.trim()) || regionDirty) ? t("settings.apiKey.saveAndTest") : t("common:actions.testConnection")}
                 </button>
                 {test.state === "ok" && (
                   <span className="flex items-center gap-1 text-xs text-success" role="status">

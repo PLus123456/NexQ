@@ -108,6 +108,26 @@ describe("useAskImages", () => {
     expect(result.current.images).toHaveLength(MAX_IMAGES);
   });
 
+  it("ignores image preparation that finishes after resetting the Ask box", async () => {
+    let finishDecode!: (bitmap: { width: number; height: number; close: () => void }) => void;
+    let finishReading!: () => void;
+    const decoded = new Promise<Parameters<typeof finishDecode>[0]>((resolve) => { finishDecode = resolve; });
+    const read = new Promise<void>((resolve) => { finishReading = resolve; });
+    vi.stubGlobal("createImageBitmap", () => decoded);
+    const { result } = renderHook(() => useAskImages());
+
+    act(() => {
+      result.current.attach([png("previous")]);
+      result.current.clear();
+    });
+    await act(async () => {
+      finishDecode({ width: 100, height: 100, close: finishReading });
+      await read;
+    });
+    expect(result.current.images).toHaveLength(0);
+    expect(result.current.announcement).toBe("");
+  });
+
   it("attaches files from the capture shortcut the same way, with the same limit", async () => {
     const { result } = renderHook(() => useAskImages());
     await act(async () => result.current.attach([png("a"), png("b")]));

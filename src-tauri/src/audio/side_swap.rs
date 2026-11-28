@@ -14,9 +14,10 @@
 //! from the new one's, and moves stream-relative timestamps onto the meeting's
 //! time base.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::task::JoinHandle;
@@ -52,8 +53,7 @@ impl Side {
 /// How long the command waits for the audio loop to answer a `Take`.
 const TAKE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long a stopped provider gets to send the results it still has in flight
-/// (the Whisper API and Groq transcribe their last chunk after `stop_stream`).
+/// How long a stopped provider's results may take to cross the adapter.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The sender a provider writes its results to.
@@ -74,9 +74,6 @@ pub type SideTx = mpsc::Sender<Tagged>;
 pub struct SwapSignal {
     generation: AtomicU32,
     flush: Notify,
-    /// The start of the meeting's capture: stream-relative timestamps of a
-    /// replacement provider are offset by the time since it.
-    origin: Instant,
     /// The forwarding task of the newest provider.
     adapter: Mutex<Option<JoinHandle<()>>>,
 }
@@ -86,21 +83,18 @@ impl Default for SwapSignal {
         SwapSignal {
             generation: AtomicU32::new(0),
             flush: Notify::new(),
-            origin: Instant::now(),
             adapter: Mutex::new(None),
         }
     }
 }
 
-/// A timestamp on the meeting's time base. Providers stamp results either with
-/// epoch time (kept as it is) or with the time since their stream started (Groq,
-/// Whisper API, Azure, whisper.cpp, Windows Speech): a replacement stream's
-/// restarts at zero, so it is moved by when the stream began.
-pub fn meeting_timestamp(timestamp_ms: u64, stream_offset_ms: u64) -> u64 {
+/// Use absolute capture time for the transcript. Providers which report a
+/// stream-relative time use that stream's epoch start, including after a swap.
+pub fn meeting_timestamp(timestamp_ms: u64, stream_start_ms: u64) -> u64 {
     if timestamp_ms >= EPOCH_MS_FLOOR {
         timestamp_ms
     } else {
-        timestamp_ms + stream_offset_ms
+        stream_start_ms.saturating_add(timestamp_ms)
     }
 }
 
@@ -122,12 +116,12 @@ impl SwapSignal {
     /// meeting's time base.
     pub fn attach(&self, main: &SideTx) -> ResultTx {
         let generation = self.generation();
-        let offset_ms = if generation == 0 { 0 } else { self.origin.elapsed().as_millis() as u64 };
+        let started_ms = super::recording_mixer::wall_clock_ms();
         let (tx, mut rx) = mpsc::channel::<TranscriptResult>(256);
         let main = main.clone();
         let handle = tokio::spawn(async move {
             while let Some(mut result) = rx.recv().await {
-                result.timestamp_ms = meeting_timestamp(result.timestamp_ms, offset_ms);
+                result.timestamp_ms = meeting_timestamp(result.timestamp_ms, started_ms);
                 if main.send(Tagged { generation, result }).await.is_err() {
                     break;
                 }
@@ -143,8 +137,11 @@ impl SwapSignal {
     /// channel (every sender it had is gone), or `timeout`.
     pub async fn drained(&self, timeout: Duration) {
         let handle = self.adapter.lock().ok().and_then(|mut slot| slot.take());
-        if let Some(handle) = handle {
-            let _ = tokio::time::timeout(timeout, handle).await;
+        if let Some(mut handle) = handle {
+            if tokio::time::timeout(timeout, &mut handle).await.is_err() {
+                handle.abort();
+                let _ = handle.await;
+            }
         }
     }
 }
@@ -211,24 +208,37 @@ pub async fn pump_direct(
 ) {
     let mut current = 0u32;
     let mut open: Option<(u32, TranscriptResult)> = None;
+    let mut finalized = HashSet::new();
     loop {
         tokio::select! {
             biased;
             received = rx.recv() => {
                 let Some(Tagged { generation, result }) = received else { break };
+                if generation < current {
+                    continue;
+                }
                 if generation > current {
                     if let Some((generation, mut line)) = open.take() {
                         line.is_final = true;
                         on_line(generation, line);
                     }
                     current = generation;
+                    finalized.clear();
                 }
                 on_result(&result);
                 if result.is_final {
+                    if let Some(id) = &result.segment_id {
+                        finalized.insert(id.clone());
+                    }
                     if open.as_ref().is_some_and(|(_, line)| line.segment_id == result.segment_id) {
                         open = None;
                     }
-                } else if generation == current {
+                } else {
+                    // A provider can replay an older interim for a committed id.
+                    // It must never become a final when the stream is drained.
+                    if result.segment_id.as_ref().is_some_and(|id| finalized.contains(id)) {
+                        continue;
+                    }
                     open = Some((generation, result.clone()));
                 }
                 on_line(generation, result);
@@ -241,9 +251,14 @@ pub async fn pump_direct(
                         on_line(generation, line);
                     }
                     current = swapped_to;
+                    finalized.clear();
                 }
             }
         }
+    }
+    if let Some((generation, mut line)) = open {
+        line.is_final = true;
+        on_line(generation, line);
     }
 }
 
@@ -670,7 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_straggler_past_the_drain_time_is_tagged_with_its_old_generation() {
+    async fn a_straggler_past_the_drain_time_is_discarded() {
         let log: Log = Default::default();
         let mut fake = FakeLoop::new(None, None);
         let (tx, rx) = mpsc::channel(64);
@@ -687,8 +702,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
 
         let got = fake.received(Side::You);
-        // The pump drops it: its generation (0) is older than the current one (1).
-        assert_eq!(got.iter().map(|(g, t, _)| (*g, t.as_str())).collect::<Vec<_>>(), [(0, "very late")]);
+        assert!(got.is_empty());
         assert_eq!(fake.signals[0].generation(), 1);
     }
 
@@ -696,20 +710,17 @@ mod tests {
 
     #[test]
     fn stream_relative_timestamps_move_by_the_stream_start_and_epoch_ones_stay() {
-        assert_eq!(meeting_timestamp(1_500, 60_000), 61_500);
-        assert_eq!(meeting_timestamp(0, 60_000), 60_000);
         let epoch = 1_800_000_000_000;
-        assert_eq!(meeting_timestamp(epoch, 60_000), epoch);
-        // The first provider starts at the meeting's origin: nothing moves.
-        assert_eq!(meeting_timestamp(1_500, 0), 1_500);
+        assert_eq!(meeting_timestamp(1_500, epoch), epoch + 1_500);
+        assert_eq!(meeting_timestamp(0, epoch), epoch);
+        assert_eq!(meeting_timestamp(epoch, epoch + 60_000), epoch);
     }
 
     #[tokio::test]
     async fn a_replacement_stream_continues_the_meetings_time_base() {
         let log: Log = Default::default();
         let mut fake = FakeLoop::new(Some(Mock::boxed("you_old", &log)), None);
-        // The meeting is 80 ms old when the stream restarts, so zero becomes about 80.
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        let before = crate::audio::recording_mixer::wall_clock_ms();
         let mut new = Mock::new("you_new", &log);
         new.on_start = vec![
             result("relative", true, 10),
@@ -721,7 +732,7 @@ mod tests {
 
         let got = fake.received(Side::You);
         assert_eq!(got.len(), 2);
-        assert!(got[0].2 >= 90 && got[0].2 < 2_000, "relative stamp moved onto the meeting's clock: {}", got[0].2);
+        assert!(got[0].2 >= before + 10 && got[0].2 <= crate::audio::recording_mixer::wall_clock_ms() + 10);
         assert_eq!(got[1].2, 1_800_000_000_000, "epoch stamp unchanged");
     }
 
@@ -898,6 +909,26 @@ mod tests {
 
         let got = lines.lock().unwrap().clone();
         assert_eq!(got, [(0, "good mor".to_string(), false), (0, "good mor".to_string(), true)]);
+    }
+
+    #[tokio::test]
+    async fn a_direct_swap_never_refinalizes_old_interim_or_accepts_older_generations() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let signal = SwapSignal::default();
+        let tagged = |generation, text, is_final| {
+            let mut value = result(text, is_final, 1_000);
+            value.segment_id = Some("line".into());
+            tag(generation, value)
+        };
+        tx.send(tagged(0, "full text", true)).await.unwrap();
+        tx.send(tagged(0, "old interim", false)).await.unwrap();
+        tx.send(tagged(1, "new generation", true)).await.unwrap();
+        tx.send(tagged(0, "too late", true)).await.unwrap();
+        drop(tx);
+
+        let mut lines = Vec::new();
+        pump_direct(&mut rx, &signal, |_| {}, |generation, result| lines.push((generation, result.text, result.is_final))).await;
+        assert_eq!(lines, [(0, "full text".into(), true), (1, "new generation".into(), true)]);
     }
 
     #[test]

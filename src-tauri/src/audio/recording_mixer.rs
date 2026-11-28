@@ -139,6 +139,20 @@ impl RecordingMixer {
         Self::default()
     }
 
+    pub fn starting_at(start_ms: u64) -> Self {
+        Self { start_ms: Some(start_ms), ..Self::default() }
+    }
+
+    /// Resume a recording on the original timeline after a disabled interval.
+    pub fn pad_to(&mut self, now_ms: u64) {
+        if let Some(start_ms) = self.start_ms {
+            let position = now_ms.saturating_sub(start_ms).saturating_mul(SAMPLES_PER_MS);
+            for side in [&mut self.mic, &mut self.sys] {
+                side.pad(position.saturating_sub(side.total));
+            }
+        }
+    }
+
     /// Add a chunk from `side` that was captured up to `end_ms` (the time its
     /// last sample was recorded). Whatever is now ready goes to `sink`.
     pub fn push(

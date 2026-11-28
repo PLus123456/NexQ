@@ -10,7 +10,6 @@ import { useEffect } from "react";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useDevLogStore } from "../stores/devLogStore";
-import { useTranscriptStore } from "../stores/transcriptStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { useCaptureSyncStore } from "../stores/captureSyncStore";
 import { stopCapture, startCapturePerParty, setPartyLanguage, setTranslationLanguages } from "../lib/ipc";
@@ -82,15 +81,17 @@ export function useAudioConfigSync() {
       const { meetingAudioConfig: config, sttLanguage: shared, sonioxConfig } = useConfigStore.getState();
       const { targetLang, sourceLang } = useTranslationStore.getState();
       if (!config) return null;
+      // Recording is toggled directly in Rust. It shares the running capture.
+      const captureConfig = { ...config, recording_enabled: false };
       return {
-        config,
+        config: captureConfig,
         // The shared language decides which sides are on Auto-detect, so it can call for a restart too.
         shared,
         sonioxConfig,
         targetLang,
         sourceLang,
         engineKey: engineSettingsKey(config, targetLang, sonioxConfig),
-        key: captureKey(config, targetLang, sonioxConfig, shared),
+        key: captureKey(captureConfig, targetLang, sonioxConfig, shared),
       };
     };
     type Snapshot = NonNullable<ReturnType<typeof snapshot>>;
@@ -142,7 +143,7 @@ export function useAudioConfigSync() {
             try {
               log("info", "config", `Language change: restarting only the ${side} side's STT...`);
               const sides = captureParties(next.config.you, next.config.them, useMeetingStore.getState().audioMode);
-              swapped = await setPartyLanguage(side, sides[side], { skipYouStt: skipYou });
+              swapped = await setPartyLanguage(side, sides[side], { skipYouStt: skipYou, expectedMeetingId: meetingId });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               // A refusal would be the same for a full swap, and nothing was stopped.
@@ -161,7 +162,6 @@ export function useAudioConfigSync() {
             if (!active()) break;
             // Rust checks the new STT configuration before it replaces the running capture
             // (and stops that one itself), so a refused swap leaves the meeting as it was.
-            useTranscriptStore.getState().finalizeAllInterim();
             log("info", "config", "Hot-swap: starting new capture pipeline...");
             const sides = captureParties(next.config.you, next.config.them, useMeetingStore.getState().audioMode);
             await startCapturePerParty(sides.you, sides.them, {

@@ -80,7 +80,9 @@
     },
     "download": {
       "label": "Download recording",
-      "fileType": "Audio"
+      "fileType": "Audio",
+      "formatChanged": "The recording finished processing. Choose Download again to save the current format.",
+      "failed": "Couldn't save the recording"
     },
     "processing": {
       "label": "Processing audio..."

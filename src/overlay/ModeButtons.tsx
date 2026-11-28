@@ -187,19 +187,20 @@ export function ModeButtons() {
     if (locked) return;
     // A screenshot taken while this request is on its way is not part of it.
     const carried = askSending ? [] : askImages;
+    const sameMeeting = () => (useMeetingStore.getState().activeMeeting?.id ?? "") === meetingId;
     const sent = sendAsk({
       typed: askInputText,
       images: carried,
       fallbackError: t("modes.errors.sendFailed"),
-      onSending: setAskSending,
-      onSent: () => removeSentImages(carried),
+      onSending: (sending) => { if (sameMeeting()) setAskSending(sending); },
+      onSent: () => { if (sameMeeting()) removeSentImages(carried); },
       // A failed send keeps the typed text and the images, to send again.
-      onFailed: (typed) => setAskInputText((current) => current || typed),
+      onFailed: (typed) => { if (sameMeeting()) setAskInputText((current) => current || typed); },
     });
     if (!sent) return;
     setAskInputText("");
     setAskInputVisible(false);
-  }, [askInputText, askImages, askSending, locked, removeSentImages, setAskSending, t]);
+  }, [askInputText, askImages, askSending, locked, meetingId, removeSentImages, setAskSending, t]);
 
   const rowRef = useRef<HTMLDivElement>(null);
   const handleRowWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {

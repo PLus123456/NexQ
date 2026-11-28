@@ -16,53 +16,30 @@ pub fn extract_peaks(wav_path: &Path) -> Result<WaveformData, String> {
         .map_err(|e| format!("Failed to open WAV: {}", e))?;
 
     let spec = reader.spec();
-    let sample_rate = spec.sample_rate;
-    let total_samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .filter_map(|s| s.ok())
-        .collect();
-
-    if total_samples.is_empty() {
-        return Ok(WaveformData {
-            sample_rate: 3000,
-            duration_ms: 0,
-            peaks: vec![],
-        });
+    if spec.sample_rate == 0 || spec.channels == 0 {
+        return Err("WAV has an invalid sample rate or channel count".to_string());
     }
-
-    let duration_ms = (total_samples.len() as u64 * 1000) / sample_rate as u64;
-
-    // ~50 peaks per second = 3000 per minute
-    let peaks_per_second: f64 = 50.0;
-    let samples_per_peak = (sample_rate as f64 / peaks_per_second) as usize;
-    let samples_per_peak = samples_per_peak.max(1);
-
+    let duration_ms = u64::from(reader.duration()) * 1000 / u64::from(spec.sample_rate);
+    let samples_per_peak = ((spec.sample_rate / 50).max(1) as usize) * usize::from(spec.channels);
     let mut peaks = Vec::new();
-    for chunk in total_samples.chunks(samples_per_peak) {
-        // Compute RMS for this chunk (represents perceived loudness)
-        let mut sum_sq: f64 = 0.0;
-        let mut min_val: f32 = 0.0;
-        let mut max_val: f32 = 0.0;
-
-        for &sample in chunk {
-            let normalized = sample as f32 / i16::MAX as f32;
-            sum_sq += (normalized as f64) * (normalized as f64);
-            if normalized < min_val {
-                min_val = normalized;
-            }
-            if normalized > max_val {
-                max_val = normalized;
-            }
+    let mut sum_sq = 0.0;
+    let mut count = 0;
+    let peak = |sum_sq: f64, n: usize| {
+        let magnitude = ((sum_sq / n as f64).sqrt() * 2.5).min(1.0) as f32;
+        [-magnitude, magnitude]
+    };
+    for sample in reader.into_samples::<i16>() {
+        let sample = sample.map_err(|e| format!("Failed to read WAV sample: {e}"))?;
+        sum_sq += (f64::from(sample) / f64::from(i16::MAX)).powi(2);
+        count += 1;
+        if count == samples_per_peak {
+            peaks.push(peak(sum_sq, count));
+            sum_sq = 0.0;
+            count = 0;
         }
-
-        let rms = (sum_sq / chunk.len() as f64).sqrt() as f32;
-
-        // Use RMS as the peak magnitude — gives a smoother, more accurate
-        // representation of loudness than raw min/max which clips with gain.
-        // Scale up by 2.5x so the waveform isn't too small for speech audio.
-        let rms_scaled = (rms * 2.5).min(1.0);
-
-        peaks.push([-rms_scaled, rms_scaled]);
+    }
+    if count > 0 {
+        peaks.push(peak(sum_sq, count));
     }
 
     Ok(WaveformData {
@@ -121,6 +98,26 @@ pub fn write_waveform_json(data: &WaveformData, output_path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waveform_duration_counts_frames_and_rejects_a_zero_sample_rate() {
+        let path = std::env::temp_dir().join(format!("nexq-waveform-{}.wav", uuid::Uuid::new_v4()));
+        let spec = hound::WavSpec { channels: 2, sample_rate: 16_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..32_000 {
+            writer.write_sample(100i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let waveform = extract_peaks(&path).unwrap();
+        assert_eq!(waveform.duration_ms, 1_000);
+        assert_eq!(waveform.peaks.len(), 50);
+
+        let mut bad_header = std::fs::read(&path).unwrap();
+        bad_header[24..28].fill(0);
+        std::fs::write(&path, bad_header).unwrap();
+        assert!(extract_peaks(&path).is_err());
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn downsample_keeps_max_per_bucket() {

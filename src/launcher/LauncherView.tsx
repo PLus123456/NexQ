@@ -6,7 +6,8 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
 import { useContextStore } from "../stores/contextStore";
 import { useRagStore } from "../stores/ragStore";
-import { searchMeetings, deleteMeeting, renameMeeting } from "../lib/ipc";
+import { searchMeetings, deleteMeeting, listMeetingHistoryIds, deleteMeetingHistory, renameMeeting } from "../lib/ipc";
+import { useDemoStore } from "../demo/demoStore";
 import { showToast } from "../stores/toastStore";
 import { RecentMeetings } from "./RecentMeetings";
 import { MeetingDetails } from "./meeting-details";
@@ -90,6 +91,7 @@ export function LauncherView() {
   const loadRecentMeetings = useMeetingStore((s) => s.loadRecentMeetings);
   const startMeetingFlow = useMeetingStore((s) => s.startMeetingFlow);
   const activeMeeting = useMeetingStore((s) => s.activeMeeting);
+  const isDemoActive = useDemoStore((s) => s.isDemoActive);
 
   const resources = useContextStore((s) => s.resources);
   const removeFile = useContextStore((s) => s.removeFile);
@@ -98,13 +100,15 @@ export function LauncherView() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MeetingSummary[] | null>(null);
+  const searchRequest = useRef({ id: 0, query: "" });
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const selectedMeetingId = useMeetingStore((s) => s.selectedMeetingId);
   const setSelectedMeetingId = useMeetingStore((s) => s.setSelectedMeetingId);
   const [filter, setFilter] = useState<MeetingFilter>("all");
   const [showConflictPrompt, setShowConflictPrompt] = useState(false);
-  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
+  const [deleteAllIds, setDeleteAllIds] = useState<string[] | null>(null);
+  const [isLoadingHistoryIds, setIsLoadingHistoryIds] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [ragStatus, setRagStatus] = useState<"idle" | "updating" | "done">("idle");
   const [showTestKB, setShowTestKB] = useState(false);
@@ -191,35 +195,75 @@ export function LauncherView() {
   }, [startMeetingFlow, t]);
 
   const handleSearch = useCallback(async (query: string) => {
+    const id = searchRequest.current.id + 1;
+    searchRequest.current = { id, query };
     setSearchQuery(query);
     if (!query.trim()) { setSearchResults(null); return; }
-    try { setSearchResults(await searchMeetings(query)); } catch { setSearchResults(null); }
+    try {
+      const results = await searchMeetings(query);
+      if (searchRequest.current.id === id) setSearchResults(results);
+    } catch {
+      if (searchRequest.current.id === id) setSearchResults(null);
+    }
   }, []);
 
   const handleDeleteMeeting = useCallback(async (meetingId: string) => {
+    if (useMeetingStore.getState().activeMeeting?.id === meetingId) return;
     try {
-      await deleteMeeting(meetingId);
+      const result = await deleteMeeting(meetingId);
+      setSearchResults((results) => results?.filter((meeting) => meeting.id !== meetingId) ?? null);
+      void handleSearch(searchRequest.current.query);
       await loadRecentMeetings();
-      if (searchResults) setSearchResults((p) => p?.filter((m) => m.id !== meetingId) ?? null);
-      showToast(t("main.toast.deleted"), "info");
-    } catch { showToast(t("main.toast.deleteFailed"), "error"); }
-  }, [loadRecentMeetings, searchResults, t]);
+      if (result.cleanup_pending) showToast(t("main.toast.recordingCleanupPending"), "warning");
+      else showToast(t("main.toast.deleted"), "info");
+    } catch (err) {
+      console.error("[LauncherView] Failed to delete meeting:", err);
+      showToast(t("main.toast.deleteFailed"), "error");
+    }
+  }, [handleSearch, loadRecentMeetings, t]);
 
-  const handleDeleteAll = useCallback(() => {
-    setShowDeleteAllConfirm(true);
-  }, []);
+  const handleDeleteAll = useCallback(async () => {
+    setIsLoadingHistoryIds(true);
+    try {
+      const ids = await listMeetingHistoryIds();
+      if (ids.length > 0) {
+        if (!useDemoStore.getState().isDemoActive) setDeleteAllIds(ids);
+      } else {
+        await loadRecentMeetings();
+      }
+    } catch (err) {
+      console.error("[LauncherView] Failed to load meeting history:", err);
+      showToast(t("main.toast.historyLoadFailed"), "error");
+    } finally {
+      setIsLoadingHistoryIds(false);
+    }
+  }, [loadRecentMeetings, t]);
 
   const handleConfirmDeleteAll = useCallback(async () => {
+    if (!deleteAllIds || isDeletingAll || useDemoStore.getState().isDemoActive) return;
     setIsDeletingAll(true);
     try {
-      for (const m of recentMeetings) { try { await deleteMeeting(m.id); } catch {} }
+      const result = await deleteMeetingHistory(deleteAllIds);
+      const deleted = new Set(result.deleted_ids);
+      setSearchResults((results) => results?.filter((meeting) => !deleted.has(meeting.id)) ?? null);
+      void handleSearch(searchRequest.current.query);
       await loadRecentMeetings();
-      showToast(t("main.toast.allDeleted"), "info");
+      if (result.failed > 0) {
+        showToast(t("main.toast.deleteAllPartial", { deleted: result.deleted_ids.length, failed: result.failed }), "error");
+      } else if (result.cleanup_pending === 0) {
+        showToast(t("main.toast.allDeleted"), "info");
+      }
+      if (result.cleanup_pending > 0) {
+        showToast(t("main.toast.historyCleanupPending", { count: result.cleanup_pending }), "warning");
+      }
+    } catch (err) {
+      console.error("[LauncherView] Failed to delete meeting history:", err);
+      showToast(t("main.toast.deleteAllFailed"), "error");
     } finally {
       setIsDeletingAll(false);
-      setShowDeleteAllConfirm(false);
+      setDeleteAllIds(null);
     }
-  }, [recentMeetings, loadRecentMeetings, t]);
+  }, [deleteAllIds, isDeletingAll, handleSearch, loadRecentMeetings, t]);
 
   const handleRenameMeeting = useCallback(async (meetingId: string, newTitle: string) => {
     try {
@@ -229,8 +273,9 @@ export function LauncherView() {
       return;
     }
     setSearchResults((p) => p?.map((m) => (m.id === meetingId ? { ...m, title: newTitle } : m)) ?? null);
-    try { await loadRecentMeetings(); } catch { /* rename already saved; list refreshes next load */ }
-  }, [loadRecentMeetings, t]);
+    void handleSearch(searchRequest.current.query);
+    await loadRecentMeetings();
+  }, [handleSearch, loadRecentMeetings, t]);
 
   const handleSelectMeeting = useCallback((meetingId: string) => {
     if (activeMeeting?.id === meetingId) {
@@ -365,8 +410,8 @@ export function LauncherView() {
                 </button>
               ))}
             </div>
-            {recentMeetings.length > 0 && (
-              <button onClick={handleDeleteAll} className="rounded p-1 text-muted-foreground/50 transition-all duration-150 hover:text-destructive hover:bg-destructive/10 active:scale-90 cursor-pointer" aria-label={t("main.deleteAll.ariaLabel")}>
+            {!isDemoActive && recentMeetings.some((meeting) => meeting.id !== activeMeeting?.id) && (
+              <button onClick={handleDeleteAll} disabled={isLoadingHistoryIds} className="rounded p-1 text-muted-foreground/50 transition-all duration-150 hover:text-destructive hover:bg-destructive/10 active:scale-90 cursor-pointer disabled:opacity-50" aria-label={t("main.deleteAll.ariaLabel")}>
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
               </button>
             )}
@@ -577,7 +622,7 @@ export function LauncherView() {
       <TestSearchDialog isOpen={showTestKB} onClose={() => setShowTestKB(false)} />
 
       {/* ═══ DELETE ALL CONFIRMATION ═══ */}
-      {showDeleteAllConfirm && (
+      {deleteAllIds && !isDemoActive && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={t("main.deleteAll.dialogAriaLabel")}>
           <div className="w-[380px] rounded-2xl border border-border/40 bg-card p-5 shadow-2xl">
             <div className="mb-1 flex items-center gap-2">
@@ -588,7 +633,7 @@ export function LauncherView() {
               <Trans
                 t={t}
                 i18nKey="main.deleteAll.body"
-                values={{ total: recentMeetings.length }}
+                values={{ total: deleteAllIds.length }}
                 components={{ strong: <span className="font-semibold text-foreground" /> }}
               />
             </p>
@@ -605,11 +650,11 @@ export function LauncherView() {
                     {t("main.deleteAll.deleting")}
                   </span>
                 ) : (
-                  t("main.deleteAll.confirmButton", { total: recentMeetings.length })
+                  t("main.deleteAll.confirmButton", { total: deleteAllIds.length })
                 )}
               </button>
               <button
-                onClick={() => setShowDeleteAllConfirm(false)}
+                onClick={() => setDeleteAllIds(null)}
                 disabled={isDeletingAll}
                 className="w-full rounded-xl border border-border/40 bg-secondary/30 px-4 py-2 text-xs font-medium text-foreground transition-all duration-150 hover:bg-secondary/50 active:scale-[0.98] disabled:opacity-60 cursor-pointer"
               >

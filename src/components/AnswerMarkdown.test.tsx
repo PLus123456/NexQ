@@ -123,6 +123,17 @@ describe("AnswerMarkdown", () => {
     expect(container.textContent).toBe("A plan that costs $5 or $10 a month.");
   });
 
+  it.each([
+    ["Price is $100 and formula ", "."],
+    ["Price is $100.25 and formula (", ")."],
+    ["价格是$100，公式为", "。"],
+  ])("renders an inline formula after a price in the same paragraph (%#)", (prefix, suffix) => {
+    const { container } = render(<AnswerMarkdown content={`${prefix}$x$${suffix}`} />);
+    expect(container.querySelector('p .katex annotation[encoding="application/x-tex"]')?.textContent).toBe("x");
+    expect(container.querySelector("p")?.firstChild?.textContent).toBe(prefix);
+    expect(container.querySelector(".katex-error")).toBeNull();
+  });
+
   it("shows math in code as code", () => {
     const { container } = render(<AnswerMarkdown content={"`\\(x\\)`\n\n```\n\\[ y \\]\n```"} />);
     expect(container.querySelector(".katex")).toBeNull();

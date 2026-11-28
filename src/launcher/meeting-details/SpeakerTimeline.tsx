@@ -2,6 +2,8 @@ import { countWords } from "../../lib/wordCount";
 import { useMemo, useState, useRef, useCallback } from "react";
 import type { TranscriptSegment, SpeakerIdentity } from "../../lib/types";
 import { formatTimestamp } from "../../lib/utils";
+import { speakerKeyOf } from "../../lib/speakerLabels";
+import { toElapsedMs } from "../../lib/bookmarkTarget";
 import { useAudioPlayerStore } from "../../stores/audioPlayerStore";
 
 interface SpeakerTimelineProps {
@@ -56,14 +58,12 @@ export function SpeakerTimeline({
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      // Normalise key to match speaker IDs: "User"→"you", "Them"→"them"
-      const key = seg.speaker_id
-        || (seg.speaker === "User" ? "you" : seg.speaker === "Them" ? "them" : seg.speaker);
+      const key = speakerKeyOf(seg);
 
       if (!map.has(key)) map.set(key, []);
 
       const leftPct =
-        ((seg.timestamp_ms - meetingStartMs) / meetingDurationMs) * 100;
+        (toElapsedMs(seg.timestamp_ms, meetingStartMs) / meetingDurationMs) * 100;
       const wordCount = countWords(seg.text);
       const estimatedMs = wordCount * 200;
       const widthPct = Math.max(
@@ -81,7 +81,7 @@ export function SpeakerTimeline({
         blocks.push({
           segmentIndex: i,
           leftPct: Math.max(0, Math.min(leftPct, 100)),
-          widthPct: Math.min(widthPct, 100 - Math.max(0, leftPct)),
+          widthPct: Math.min(widthPct, Math.max(0, 100 - leftPct)),
           text: seg.text,
           timestampMs: seg.timestamp_ms,
         });
@@ -121,7 +121,7 @@ export function SpeakerTimeline({
     (e: React.MouseEvent, block: SegmentBlock) => {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const elapsedMs = Math.max(0, block.timestampMs - meetingStartMs);
+      const elapsedMs = toElapsedMs(block.timestampMs, meetingStartMs);
       const preview =
         block.text.length > 50 ? block.text.slice(0, 50) + "..." : block.text; // i18n-ignore: truncation mark on transcript text
       setTooltip({

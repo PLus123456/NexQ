@@ -82,17 +82,6 @@ pub(crate) fn show_launcher(app: &tauri::AppHandle) {
     }
 }
 
-/// Show the overlay window and hide the launcher window.
-fn show_overlay(app: &tauri::AppHandle) {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.show();
-        let _ = overlay.set_focus();
-    }
-    if let Some(launcher) = app.get_webview_window("launcher") {
-        let _ = launcher.hide();
-    }
-}
-
 /// Launching NexQ again while it runs: bring up the overlay during a meeting
 /// (hiding it would hide the meeting), else the launcher.
 fn show_for_second_launch(app: &tauri::AppHandle) {
@@ -172,6 +161,7 @@ pub fn run() {
             paths::init(app_data_dir.clone());
             match db::DatabaseManager::new(app_data_dir.clone()) {
                 Ok(db_mgr) => {
+                    recording_commands::recover_recording_file_deletions(db_mgr.connection());
                     app_state.database = Some(Arc::new(Mutex::new(db_mgr)));
                     log::info!("Database initialized successfully");
                 }
@@ -358,20 +348,19 @@ pub fn run() {
                 }
                 match id {
                     "start_meeting" => {
-                        let _ = _app.emit("tray_start_meeting", ());
-                        show_overlay(&app_handle);
+                        let _ = _app.emit_to("launcher", "tray_start_meeting", ());
                     }
                     "stop_meeting" => {
-                        let _ = _app.emit("tray_stop_meeting", ());
+                        let _ = _app.emit_to("launcher", "tray_stop_meeting", ());
                     }
                     "toggle_mic" => {
-                        let _ = _app.emit("tray_toggle_mic", ());
+                        let _ = _app.emit_to("launcher", "tray_toggle_mic", ());
                     }
                     "toggle_system" => {
-                        let _ = _app.emit("tray_toggle_system", ());
+                        let _ = _app.emit_to("launcher", "tray_toggle_system", ());
                     }
                     "toggle_stealth" => {
-                        let _ = _app.emit("tray_toggle_stealth", ());
+                        let _ = _app.emit_to("overlay", "tray_toggle_stealth", ());
                     }
                     "toggle_screen_share_stealth" => {
                         let app = app_handle.clone();
@@ -391,22 +380,16 @@ pub fn run() {
                     "show_overlay" => {
                         // The overlay window switches to the meeting view, then
                         // shows itself (showing it first flashed an empty window).
-                        let _ = _app.emit("tray_show_overlay", ());
+                        let _ = _app.emit_to("overlay", "tray_show_overlay", ());
                     }
-                    "copy_ai_answer" => {
-                        let _ = _app.emit("tray_copy", "ai_answer");
-                    }
-                    "copy_action_items" => {
-                        let _ = _app.emit("tray_copy", "action_items");
-                    }
-                    "copy_summary" => {
-                        let _ = _app.emit("tray_copy", "summary");
-                    }
-                    "copy_transcript" => {
-                        let _ = _app.emit("tray_copy", "transcript");
+                    "copy_ai_answer" | "copy_action_items" | "copy_summary" | "copy_transcript" => {
+                        let kind = id.trim_start_matches("copy_");
+                        let live = _app.state::<AppState>().meeting_active.load(std::sync::atomic::Ordering::SeqCst);
+                        let window = if kind == "action_items" && live { "overlay" } else { "launcher" };
+                        let _ = _app.emit_to(window, "tray_copy", serde_json::json!({ "kind": kind, "window": window }));
                     }
                     "settings" => {
-                        let _ = _app.emit("tray_open_settings", ());
+                        let _ = _app.emit_to("launcher", "tray_open_settings", ());
                         show_launcher(&app_handle);
                     }
                     "quit" => {
@@ -415,7 +398,7 @@ pub fn run() {
                     _ => {
                         // Check for recent meeting clicks (id format: "recent_{id}")
                         if let Some(meeting_id) = id.strip_prefix("recent_") {
-                            let _ = _app.emit("tray_open_meeting", meeting_id.to_string());
+                            let _ = _app.emit_to("launcher", "tray_open_meeting", meeting_id.to_string());
                             show_launcher(&app_handle);
                         }
                     }
@@ -513,6 +496,7 @@ pub fn run() {
             audio_commands::start_device_monitor,
             audio_commands::stop_device_monitor,
             audio_commands::set_source_muted,
+            audio_commands::toggle_source_muted,
             audio_commands::get_mute_status,
             audio_commands::set_echo_cancellation,
             audio_commands::ensure_ipolicy_override,
@@ -578,6 +562,7 @@ pub fn run() {
             context_commands::get_token_budget,
             // == COMMANDS: credentials ==
             credential_commands::store_api_key,
+            credential_commands::store_azure_speech_credentials,
             credential_commands::get_api_key,
             credential_commands::delete_api_key,
             credential_commands::has_api_key,
@@ -588,6 +573,8 @@ pub fn run() {
             meeting_commands::list_meetings,
             meeting_commands::get_meeting,
             meeting_commands::delete_meeting,
+            meeting_commands::list_meeting_history_ids,
+            meeting_commands::delete_meeting_history,
             meeting_commands::search_meetings,
             meeting_commands::append_transcript_segment,
             meeting_commands::save_meeting_ai_interactions,
@@ -611,6 +598,7 @@ pub fn run() {
             // == COMMANDS: settings ==
             settings_commands::get_config,
             settings_commands::set_config,
+            settings_commands::mutate_config_list,
             // == COMMANDS: models ==
             model_commands::list_local_stt_engines,
             model_commands::download_local_stt_model,
@@ -636,6 +624,7 @@ pub fn run() {
             tray_commands::set_tray_tooltip,
             tray_commands::set_meeting_start_time,
             tray_commands::rebuild_tray_menu,
+            tray_commands::write_tray_clipboard,
             // == PLUS COMMANDS: p0-ui ==
             commands::ui_commands::set_ui_language,
             // == PLUS COMMANDS: p5-onboarding ==
@@ -678,6 +667,7 @@ pub fn run() {
             translation_commands::translate_batch,
             translation_commands::detect_language,
             translation_commands::test_translation_connection,
+            translation_commands::store_microsoft_translation_credentials,
             translation_commands::get_translation_languages,
             translation_commands::get_meeting_translations,
             translation_commands::get_all_meeting_translations,
@@ -722,14 +712,13 @@ pub fn run() {
             if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } = &event {
                 log::info!("Window '{label}' closed");
             }
-            // Tray Quit (`app.exit(0)`) and any other exit request: install a
-            // downloaded update first (exits inside the call on success), or
-            // defer the quit while the last recording is still saving.
+            // Flush an active meeting and pending recordings before quitting
+            // or installing a downloaded update.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
                 let meeting_active = app.state::<AppState>().meeting_active.load(std::sync::atomic::Ordering::SeqCst);
                 log::info!("Exit requested (code {code:?}, meeting active: {meeting_active})");
                 if *code != Some(tauri::RESTART_EXIT_CODE) {
-                    updater_commands::on_exit_requested(app, api);
+                    updater_commands::on_exit_requested(app, api, code.unwrap_or(0));
                 }
             }
             // Close Claude CLI sessions (each gets 2 s, in parallel). If the

@@ -2,13 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptSegment } from "../lib/types";
 
 const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => undefined));
-const browserStop = vi.hoisted(() => vi.fn(async (_meetingId: string) => {}));
+const browserStop = vi.hoisted(() => vi.fn(async () => {}));
+const events = vi.hoisted(() => ({
+  emit: vi.fn(async (_name: string, _payload: unknown) => {}),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
+}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: events.emit,
+  listen: async (name: string, callback: (event: { payload: unknown }) => void) => {
+    events.listeners.set(name, callback);
+    return () => { events.listeners.delete(name); };
+  },
+}));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "launcher" }) }));
-vi.mock("../lib/webSpeechLifecycle", () => ({ stopMeetingWebSpeech: browserStop }));
+vi.mock("../lib/webSpeechLifecycle", () => ({ stopWebSpeechRecognition: browserStop }));
 
-import { useMeetingStore } from "./meetingStore";
+import { attachMeetingWindow, useMeetingStore } from "./meetingStore";
 import { useTranscriptStore } from "./transcriptStore";
 import { resetSavedSegments } from "../lib/transcriptPersistence";
 
@@ -27,6 +37,8 @@ beforeEach(() => {
   useMeetingStore.setState({ activeMeeting: { id: "m1" } as never, isRecording: true, isEndingMeeting: false, overlayMeetingId: "m1", lastPersistedIndex: 0 });
   invoke.mockReset().mockImplementation(async (cmd) => cmd === "list_meetings" ? "[]" : undefined);
   browserStop.mockReset().mockResolvedValue(undefined);
+  events.emit.mockClear();
+  events.listeners.clear();
 });
 
 describe("meeting end drains speech before saving", () => {
@@ -57,9 +69,9 @@ describe("meeting end drains speech before saving", () => {
     expect(useMeetingStore.getState().isEndingMeeting).toBe(false);
   });
 
-  it("keeps the transcript and permits retry when the launcher drain is not acknowledged", async () => {
-    browserStop.mockRejectedValueOnce(new Error("launcher did not acknowledge"));
-    await expect(useMeetingStore.getState().endMeetingFlow()).rejects.toThrow("launcher did not acknowledge");
+  it("keeps the transcript and permits retry when the browser drain fails", async () => {
+    browserStop.mockRejectedValueOnce(new Error("browser did not stop"));
+    await expect(useMeetingStore.getState().endMeetingFlow()).rejects.toThrow("browser did not stop");
     expect(useMeetingStore.getState().activeMeeting?.id).toBe("m1");
     expect(useMeetingStore.getState().isEndingMeeting).toBe(false);
     expect(saved()).toEqual([]);
@@ -68,5 +80,30 @@ describe("meeting end drains speech before saving", () => {
     await useMeetingStore.getState().endMeetingFlow();
     expect(saved()).toEqual(["before stop"]);
     expect(useMeetingStore.getState().activeMeeting).toBeNull();
+  });
+
+  it("waits for the overlay's save and applies its speaker merges in one end flow", async () => {
+    const detach = attachMeetingWindow();
+    try {
+      useTranscriptStore.setState({ segments: [{ ...line("speech"), speaker_id: "speaker_1" }] });
+      const ending = useMeetingStore.getState().endMeetingFlow();
+      expect(useMeetingStore.getState().endMeetingFlow()).toBe(ending);
+      const saveRequest = () => events.emit.mock.calls.find(([name]) => name === "nexq:save_overlay_meeting");
+      await vi.waitFor(() => expect(saveRequest()).toBeDefined());
+      const request = saveRequest()![1] as { requestId: string };
+      const reply = events.listeners.get("nexq:overlay_meeting_saved")!;
+      reply({ payload: { ...request, meetingId: "old" } });
+      expect(invoke.mock.calls.some(([name]) => name === "end_meeting")).toBe(false);
+      reply({ payload: { ...request, meetingId: "m1", speakerAliases: [["speaker_1", "speaker_2"]] } });
+      await ending;
+
+      const appended = invoke.mock.calls.find(([name]) => name === "append_transcript_segment");
+      expect(JSON.parse(String(appended?.[1]?.segment))).toMatchObject({ speaker_id: "speaker_2" });
+      expect(invoke.mock.calls.filter(([name]) => name === "stop_capture")).toHaveLength(1);
+      expect(invoke.mock.calls.filter(([name]) => name === "end_meeting")).toHaveLength(1);
+      expect(events.emit).toHaveBeenCalledWith("nexq:meeting_ended", { meetingId: "m1", window: "launcher" });
+    } finally {
+      detach();
+    }
   });
 });

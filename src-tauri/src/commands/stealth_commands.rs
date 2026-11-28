@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{command, AppHandle, Manager, Runtime, Window};
@@ -41,19 +40,11 @@ pub async fn show_captions_window(app: AppHandle) -> Result<(), String> {
     {
         let (send, receive) = tokio::sync::oneshot::channel();
         app.run_on_main_thread(move || {
-            let result = window.ns_window().map_err(|e| e.to_string()).and_then(|ptr| {
-                if ptr.is_null() {
-                    return Err("Captions NSWindow is unavailable".into());
+            let result = with_macos_window(&window.as_ref().window(), |native| unsafe {
+                if stealth_enabled() {
+                    let _: () = objc2::msg_send![native, setSharingType: 0usize];
                 }
-                // SAFETY: this is the live NSWindow on the AppKit thread.
-                let ns_window = unsafe { &*ptr.cast::<objc2::runtime::AnyObject>() };
-                unsafe {
-                    if stealth_enabled() {
-                        let _: () = objc2::msg_send![ns_window, setSharingType: 0usize];
-                    }
-                    let _: () = objc2::msg_send![ns_window, orderFrontRegardless];
-                }
-                Ok(())
+                let _: () = objc2::msg_send![native, orderFrontRegardless];
             });
             let _ = send.send(result);
         }).map_err(|e| e.to_string())?;
@@ -126,9 +117,6 @@ pub fn get_stealth_support() -> StealthSupport {
     support()
 }
 
-/// Serializes stealth transitions (and new windows picking up the setting).
-static TRANSITION: Mutex<()> = Mutex::new(());
-
 /// Turn stealth mode on or off for every NexQ window (and for windows opened
 /// later, see [`apply_to_new_window`]). All or nothing: if a window refuses,
 /// the windows already changed are put back and the setting stays as it was.
@@ -138,40 +126,40 @@ pub async fn set_stealth_mode(app: AppHandle, enabled: bool) -> Result<(), Strin
     if enabled && !support().supported {
         return Err("Hiding from screen share isn't available on this platform".to_string());
     }
-    let result = {
-        let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
-        let windows: Vec<(String, Window)> = app
-            .webview_windows()
-            .into_iter()
-            .map(|(label, w)| (label, w.as_ref().window()))
-            .collect();
-        for (_, window) in &windows {
-            track_visibility(window);
-        }
-        let result = transition(&windows, stealth_enabled(), enabled, apply_setting);
-        if result.is_ok() {
-            STEALTH.store(enabled, Ordering::SeqCst);
-            log::info!(
-                "Stealth mode {}",
-                if enabled { "on: windows hidden from screen capture" } else { "off" }
-            );
-
-            // Overlay + launcher: their Windows taskbar buttons follow
-            // stealth. A failure only warns: the screen-share hiding above
-            // is the main contract.
-            for (_, window) in &windows {
-                sync_taskbar(window);
-            }
-            sync_macos(&app);
-        }
-        result
-    };
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = send.send(apply_to_existing_windows(&handle, enabled));
+    })
+    .map_err(|e| format!("Couldn't reach the main thread: {e}"))?;
+    receive.await.map_err(|e| e.to_string())??;
+    log::info!("Stealth mode {}", if enabled { "on" } else { "off" });
 
     let meeting_active = app.state::<AppState>().meeting_active.load(Ordering::SeqCst);
     if let Err(e) = crate::commands::tray_commands::rebuild_tray_menu(app.clone(), meeting_active).await {
         log::warn!("Failed to refresh the tray menu after a stealth change: {e}");
     }
-    result
+    Ok(())
+}
+
+/// Run on the main thread so the platform changes, rollback, and final
+/// setting are serialized with windows created during a transition.
+fn apply_to_existing_windows(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let windows: Vec<(String, Window)> = app
+        .webview_windows()
+        .into_iter()
+        .map(|(label, w)| (label, w.as_ref().window()))
+        .collect();
+    for (_, window) in &windows {
+        track_visibility(window);
+    }
+    transition(&windows, stealth_enabled(), enabled, apply_setting)?;
+    STEALTH.store(enabled, Ordering::SeqCst);
+    for (_, window) in &windows {
+        sync_taskbar(window);
+    }
+    sync_macos(app);
+    Ok(())
 }
 
 /// Apply `enabled` to every window; on the first failure, restore `previous`
@@ -206,15 +194,18 @@ fn transition<W>(
 /// Apply the current stealth setting to a window that was just created
 /// (e.g. the dev log window), so it is never captured before it is hidden.
 pub fn apply_to_new_window<R: Runtime>(window: &Window<R>) {
-    let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
-    track_visibility(window);
-    if stealth_enabled() {
-        if let Err(e) = apply_setting(window, true) {
-            log::warn!("Stealth mode: couldn't hide window '{}': {e}", window.label());
+    let target = window.clone();
+    if let Err(e) = window.run_on_main_thread(move || {
+        track_visibility(&target);
+        if stealth_enabled() {
+            if let Err(e) = apply_setting(&target, true) {
+                log::warn!("Stealth mode: couldn't hide window '{}': {e}", target.label());
+            }
+            // A window that's already visible at page load had no show event.
+            sync_taskbar(&target);
         }
-        // A window that's already on screen when its page loads (the
-        // launcher at startup) gets no show event: sync its button now.
-        sync_taskbar(window);
+    }) {
+        log::warn!("Stealth mode: couldn't reach the main thread for '{}': {e}", window.label());
     }
 }
 
@@ -701,29 +692,9 @@ pub fn restore_on_startup(app: &AppHandle) {
     if !saved_on || !support().supported {
         return;
     }
-    let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
-    let windows: Vec<(String, Window)> = app
-        .webview_windows()
-        .into_iter()
-        .map(|(label, w)| (label, w.as_ref().window()))
-        .collect();
-    // Stealth is on from here, so windows shown later are hidden from capture.
-    STEALTH.store(true, Ordering::SeqCst);
-    for (_, window) in &windows {
-        track_visibility(window);
-    }
-    match transition(&windows, false, true, apply_setting) {
-        Ok(()) => {
-            log::info!("Stealth mode restored at startup");
-            for (_, window) in &windows {
-                sync_taskbar(window);
-            }
-            sync_macos(app);
-        }
-        Err(e) => {
-            STEALTH.store(false, Ordering::SeqCst);
-            log::warn!("Stealth mode: couldn't restore at startup: {e}");
-        }
+    match apply_to_existing_windows(app, true) {
+        Ok(()) => log::info!("Stealth mode restored at startup"),
+        Err(e) => log::warn!("Stealth mode: couldn't restore at startup: {e}"),
     }
 }
 
@@ -748,24 +719,28 @@ fn set_capture_excluded<R: Runtime>(window: &Window<R>, excluded: bool) -> Resul
 
 #[cfg(target_os = "macos")]
 fn set_capture_excluded<R: Runtime>(window: &Window<R>, excluded: bool) -> Result<(), String> {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-
     // NSWindowSharingType: 0 = None (left out of capture), 1 = ReadOnly (default).
     let sharing_type: usize = if excluded { 0 } else { 1 };
-    let target = window.clone();
-    // AppKit must only be touched from the main thread.
-    window
-        .run_on_main_thread(move || match target.ns_window() {
-            Ok(ptr) if !ptr.is_null() => {
-                // SAFETY: `ptr` is the live NSWindow backing this Tauri window.
-                let ns_window: &AnyObject = unsafe { &*(ptr as *const AnyObject) };
-                let _: () = unsafe { msg_send![ns_window, setSharingType: sharing_type] };
-            }
-            Ok(_) => log::warn!("Stealth mode: NSWindow pointer was null for '{}'", target.label()),
-            Err(e) => log::warn!("Stealth mode: no NSWindow for '{}': {e}", target.label()),
-        })
-        .map_err(|e| format!("couldn't reach the main thread: {e}"))
+    with_macos_window(window, |native| unsafe {
+        let _: () = objc2::msg_send![native, setSharingType: sharing_type];
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn with_macos_window<R: Runtime>(
+    window: &Window<R>,
+    apply: impl FnOnce(&objc2::runtime::AnyObject),
+) -> Result<(), String> {
+    use objc2::runtime::AnyObject;
+
+    let view = window.ns_view().map_err(|e| format!("no NSView: {e}"))?;
+    // SAFETY: AppKit operations run on the main thread. Tauri keeps the view
+    // alive for this call, and AppKit can return nil for a detached view.
+    let view = unsafe { view.cast::<AnyObject>().as_ref() }.ok_or("NSView is unavailable")?;
+    let native: *mut AnyObject = unsafe { objc2::msg_send![view, window] };
+    let native = unsafe { native.as_ref() }.ok_or("NSWindow is unavailable")?;
+    apply(native);
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

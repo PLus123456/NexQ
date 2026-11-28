@@ -790,7 +790,7 @@ fn gemini_cache_for(app: &AppHandle, state: &AppState, resolved: &ResolvedLlm) -
     if resolved.kind != LlmKind::Gemini {
         return None;
     }
-    let cache = state.gemini_cache.lock().ok()?.clone()?;
+    let cache = state.gemini_cache.status().ok()??;
     let same_connection = match &cache.connection_id {
         Some(id) => *id == resolved.connection_id,
         None => app.try_state::<LlmRegistry>().is_some_and(|registry| {
@@ -1528,9 +1528,16 @@ pub async fn push_transcript(
     speaker: String,
     timestamp_ms: u64,
     is_final: bool,
+    meeting_id: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _meeting = state.meeting_lifecycle.lock().await;
+    let current = state.live_meeting.lock().map_err(|_| "Live meeting lock poisoned")?
+        .as_ref().map(|meeting| meeting.id.clone());
+    if !current.as_ref().is_some_and(|id| meeting_id.as_ref().is_none_or(|expected| expected == id)) {
+        return Ok(());
+    }
     let text_clone = text.clone();
     let speaker_clone = speaker.clone();
     crate::intelligence::ingest_transcript(&app_handle, text, speaker, timestamp_ms, is_final);

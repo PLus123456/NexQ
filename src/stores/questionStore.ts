@@ -100,7 +100,7 @@ interface QuestionState {
   /** Shows `question` as the line's question, answered (a new card if the line has none). */
   answerLine: (question: DetectedQuestion, segmentId: string) => void;
   /** The question stays a card to click; Auto-Answer leaves it alone. */
-  holdBack: (segmentId: string | undefined, text: string) => void;
+  holdBack: (segmentId: string | undefined, text: string, exceptId?: string) => void;
   markTurnLine: (segmentId: string) => void;
   isTurnLine: (segmentId: string | undefined) => boolean;
 }
@@ -184,10 +184,10 @@ export const useQuestionStore = create<QuestionState>((set) => ({
       };
     }),
 
-  holdBack: (segmentId, text) =>
+  holdBack: (segmentId, text, exceptId) =>
     set((state) => ({
       questions: state.questions.map((q) =>
-        (segmentId !== undefined ? q.segmentId === segmentId : q.text === text)
+        q.id !== exceptId && (segmentId !== undefined ? q.segmentId === segmentId : q.text === text)
           ? { ...q, assisted: false, heldBack: true }
           : q),
     })),

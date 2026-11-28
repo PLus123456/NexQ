@@ -21,11 +21,8 @@ function run(cmd, args, opts = {}) {
     console.log("  [dry-run] skipped");
     return "";
   }
-  // On Windows, npx/git are .cmd files that need shell resolution
-  const resolvedCmd = isWin && !cmd.includes("/") && !cmd.includes("\\")
-    ? cmd  // shell: true handles .cmd resolution
-    : cmd;
-  return execFileSync(resolvedCmd, args, {
+  // Windows command shims are resolved by the shell.
+  return execFileSync(cmd, args, {
     cwd: root,
     encoding: "utf8",
     shell: isWin,
@@ -106,7 +103,8 @@ run("node", ["scripts/sync-version.js"]);
 // 6. Git add + commit
 console.log("\nCommitting release...");
 run("git", ["add", "-A"]);
-run("git", ["commit", "-m", `"chore: release v${newVersion}"`]);
+const commitMessage = `chore: release v${newVersion}`;
+run("git", ["commit", "-m", isWin ? `"${commitMessage}"` : commitMessage]);
 
 // 7. Tag
 console.log("\nTagging...");

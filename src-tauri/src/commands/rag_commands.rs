@@ -1,5 +1,5 @@
 use tauri::{command, AppHandle, State};
-use crate::intelligence::IntelligenceEngine;
+use crate::intelligence::{GenerationLane, IntelligenceEngine};
 use crate::llm::api::{self, LlmTask};
 use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder, engine::{RagEngine, SearchParams}, indexer::JobKind};
 use crate::state::AppState;
@@ -204,6 +204,14 @@ pub async fn test_rag_answer(
 ) -> Result<(), String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     log::debug!("Test KB: caller asked for {:?} / {:?}; using the routed model", llm_provider, llm_model);
+    let generation = {
+        let intelligence = state.intelligence.as_ref()
+            .ok_or_else(|| "Intelligence engine not initialized".to_string())?;
+        let engine = intelligence.lock().map_err(|e| e.to_string())?;
+        engine.begin_generation(&request_id, GenerationLane::RagTest(request_id.clone()))
+            .ok_or_else(|| "Generation already in progress".to_string())?
+    };
+    let cancel_token = generation.cancel_token();
 
     // 1. Search RAG for relevant chunks
     let rag_arc = state.rag.as_ref()
@@ -216,7 +224,10 @@ pub async fn test_rag_answer(
         (mgr.config().clone(), mgr.embedder_url(), mgr.embedding_model())
     };
 
-    let chunks = RagManager::search_async(db_arc, &query, &config, &embedder_url, &emb_model).await?;
+    let chunks = tokio::select! {
+        _ = cancel_token.cancelled() => return Ok(()),
+        result = RagManager::search_async(db_arc, &query, &config, &embedder_url, &emb_model) => result?,
+    };
 
     if chunks.is_empty() {
         return Err("No relevant chunks found in the knowledge base".to_string());
@@ -230,17 +241,17 @@ pub async fn test_rag_answer(
     let context = rag::prompt_builder::build_rag_context(&chunks, &custom_instr);
 
     // 3. The model for knowledge base answers
-    let resolved = api::resolve_for_task(&app_handle, &LlmTask::RagAnswer)
-        .await
-        .map_err(String::from)?;
+    let resolved = tokio::select! {
+        _ = cancel_token.cancelled() => return Ok(()),
+        result = api::resolve_for_task(&app_handle, &LlmTask::RagAnswer) => result.map_err(String::from)?,
+    };
     let provider_arc = api::legacy_handle(&resolved);
 
     // 4. Call LLM with streaming (reuses existing llm_stream_* events)
-    let cancel_flag = Arc::new(crate::llm::provider::CancelToken::new());
     let system_prompt = crate::intelligence::prompt_templates::get_system_prompt("AskQuestion");
     IntelligenceEngine::generate_assist(
         system_prompt,
-        "AskQuestion",
+        "RagTest",
         Some(&query),
         String::new(),  // no transcript for test
         None,           // no detected question
@@ -268,6 +279,6 @@ pub async fn test_rag_answer(
         0,                          // transcript_segments_total
         None,                       // scope_label
         app_handle,
-        cancel_flag,
+        cancel_token,
     ).await
 }

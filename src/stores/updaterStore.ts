@@ -45,7 +45,7 @@ interface UpdaterState {
    */
   finishCheck: (update: UpdateInfo | null, opts?: { manual?: boolean }) => UpdateInfo | null;
   failCheck: (error: string) => void;
-  startDownload: () => void;
+  startDownload: (update?: UpdateInfo) => void;
   addProgress: (chunkLength: number, contentLength: number | null) => void;
   /**
    * Mark a downloaded update ready. A skipped version is ignored unless the
@@ -97,8 +97,13 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
 
   failCheck: (error) => set({ phase: "error", error, version: undefined, notes: undefined }),
 
-  startDownload: () =>
-    set({ phase: "downloading", error: undefined, progress: { received: 0, total: null } }),
+  startDownload: (update) => set((s) => ({
+    phase: "downloading",
+    version: update?.version ?? s.version,
+    notes: update ? (update.body ?? undefined) : s.notes,
+    error: undefined,
+    progress: { received: 0, total: null },
+  })),
 
   addProgress: (chunkLength, contentLength) =>
     set((s) => ({

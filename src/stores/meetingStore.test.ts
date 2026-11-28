@@ -9,9 +9,14 @@ vi.mock("@tauri-apps/plugin-store", () => ({
     set: async () => {},
   }),
 }));
+vi.mock("../lib/meetingWindowEvents", async (original) => {
+  const events = await original<typeof import("../lib/meetingWindowEvents")>();
+  return { ...events, startOverlayMeeting: vi.fn(events.startOverlayMeeting) };
+});
 
 import { BUILT_IN_SCENARIOS } from "../lib/scenarios";
-import { useMeetingStore } from "./meetingStore";
+import { attachMeetingWindow, useMeetingStore } from "./meetingStore";
+import { startOverlayMeeting } from "../lib/meetingWindowEvents";
 import { useScenarioStore } from "./scenarioStore";
 import { useConfigStore } from "./configStore";
 import type { MeetingAudioConfig } from "../lib/types";
@@ -112,5 +117,28 @@ describe("startMeetingFlow's audio", () => {
     const mutes = muteCalls();
     expect(mutes[mutes.length - 1]).toMatchObject({ source: "you", muted: true });
     expect(useConfigStore.getState().mutedYou).toBe(true);
+  });
+
+  it("starts capture once after both windows can receive its first events", async () => {
+    const detach = attachMeetingWindow();
+    let overlayReady!: (ready: boolean) => void;
+    vi.mocked(startOverlayMeeting).mockImplementationOnce(() => new Promise((resolve) => { overlayReady = resolve; }));
+    try {
+      const meeting = useMeetingStore.getState().startMeetingFlow("Workshop", "online");
+      expect(useMeetingStore.getState().startMeetingFlow()).toBe(meeting);
+      await vi.waitFor(() => expect(overlayReady).toBeDefined());
+      expect(calls.has("start_capture_per_party")).toBe(false);
+      useMeetingStore.getState().setMeetingListenersReady("a-previous-meeting");
+      overlayReady(true);
+      await Promise.resolve();
+      expect(calls.has("start_capture_per_party")).toBe(false);
+      useMeetingStore.getState().setMeetingListenersReady("meeting-1");
+      await meeting;
+      expect(log.filter(([command]) => command === "start_meeting")).toHaveLength(1);
+      expect(log.filter(([command]) => command === "start_capture_per_party")).toHaveLength(1);
+      expect(useMeetingStore.getState().overlayMeetingId).toBe("meeting-1");
+    } finally {
+      detach();
+    }
   });
 });

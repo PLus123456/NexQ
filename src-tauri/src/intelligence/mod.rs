@@ -36,6 +36,7 @@ pub struct QuestionDetectedPayload {
 pub enum GenerationLane {
     LiveAnswer,
     MeetingTask(SessionScope, String),
+    RagTest(String),
 }
 
 impl GenerationLane {
@@ -392,7 +393,7 @@ impl IntelligenceEngine {
     pub fn clear_session(&mut self) {
         self.transcript_buffer.clear();
         self.reset_detected_question();
-        log::info!("[intelligence] session cleared for new meeting");
+        log::info!("[intelligence] meeting session cleared");
     }
 }
 
@@ -421,15 +422,16 @@ pub fn ingest_transcript(
     is_final: bool,
 ) {
     let state = app.state::<crate::state::AppState>();
+    if !state.meeting_active.load(Ordering::SeqCst) {
+        return;
+    }
     if let Some(intel) = &state.intelligence {
         if let Ok(mut engine) = intel.lock() {
             engine.push_transcript(text.clone(), speaker.clone(), timestamp_ms, is_final);
         }
     }
-    if state.meeting_active.load(Ordering::SeqCst) {
-        app.state::<question_prediction::QuestionPredictionService>()
-            .observe(app, &text, &speaker, timestamp_ms, is_final);
-    }
+    app.state::<question_prediction::QuestionPredictionService>()
+        .observe(app, &text, &speaker, timestamp_ms, is_final);
 }
 
 #[cfg(test)]
@@ -684,6 +686,19 @@ mod tests {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
+
+    #[test]
+    fn knowledge_base_test_cancels_independently_of_live_answer() {
+        let engine = IntelligenceEngine::new();
+        let live = engine.begin_generation("live", GenerationLane::LiveAnswer).unwrap();
+        let test = engine.begin_generation("test", GenerationLane::RagTest("test".into())).unwrap();
+        assert_eq!(engine.cancel(Some("test")), Some("test".into()));
+        assert!(test.cancel_token().is_cancelled());
+        assert!(!live.cancel_token().is_cancelled());
+        let next = engine.begin_generation("next", GenerationLane::RagTest("next".into())).unwrap();
+        assert_eq!(engine.cancel(None), Some("live".into()));
+        assert!(!next.cancel_token().is_cancelled());
+    }
 
     #[test]
     fn independent_views_run_and_cancel_without_affecting_each_other() {

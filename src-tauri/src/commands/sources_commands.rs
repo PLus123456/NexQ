@@ -26,9 +26,13 @@ use crate::sources::mcp_json::{
 use crate::sources::notes::{inspect_folder, NotesFolderInfo};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 use tauri::{command, AppHandle, State};
+use tauri_plugin_store::StoreExt;
 
 // ── Secret storage ──────────────────────────────────────────────────────────
 
@@ -72,31 +76,39 @@ pub(crate) fn saved_secret(id: &str) -> Option<String> {
 
 /// A new server starts with no secrets: whatever an earlier server of the same
 /// key left under these ids goes before the new values are stored.
+#[cfg(test)]
 fn forget_leftovers(store: &dyn SecretStore, secrets: &[SecretValue]) {
     for secret in secrets {
         store.delete(&secret.credential_id);
     }
 }
 
-/// Store every secret, or none: a failure puts back what this call changed.
-fn store_secrets(store: &dyn SecretStore, secrets: &[SecretValue]) -> Result<(), String> {
-    let mut done: Vec<(&str, Option<String>)> = Vec::new();
+/// Store every secret, or none. When the settings write fails after storing
+/// these credentials, the caller restores the returned previous values.
+fn store_secrets<'a>(store: &dyn SecretStore, secrets: &'a [SecretValue]) -> Result<Vec<(&'a str, Option<String>)>, String> {
+    let mut written = Vec::new();
     for secret in secrets {
         let previous = store.get(&secret.credential_id);
         if let Err(e) = store.set(&secret.credential_id, &secret.value) {
-            for (id, previous) in done.into_iter().rev() {
-                match previous {
-                    Some(value) => {
-                        let _ = store.set(id, &value);
-                    }
-                    None => store.delete(id),
-                }
-            }
+            restore_secrets(store, written);
             return Err(crate::i18n::messages::credential_save_failed(crate::i18n::current_ui_language(), e));
         }
-        done.push((&secret.credential_id, previous));
+        written.push((secret.credential_id.as_str(), previous));
     }
-    Ok(())
+    Ok(written)
+}
+
+fn restore_secrets(store: &dyn SecretStore, written: Vec<(&str, Option<String>)>) {
+    for (id, previous) in written.into_iter().rev() {
+        match previous {
+            Some(value) => {
+                if let Err(e) = store.set(id, &value) {
+                    log::warn!("could not restore a saved server secret ({id}): {e}");
+                }
+            }
+            None => store.delete(id),
+        }
+    }
 }
 
 /// Credential ids of every secret `server` keeps: its secret env vars and each
@@ -168,50 +180,63 @@ fn target_changed(old: &McpServer, new_transport: &McpTransport, new_env: &[EnvV
 /// Shown when an edit moved a server and its secrets must be typed again.
 const SECRETS_RESET: &str = "Enter the secrets again: the server's command, URL, environment or secret names changed";
 
-/// Most servers kept in `AppState::pending_servers`.
+static SOURCE_WRITES: Mutex<()> = Mutex::new(());
+
+fn source_write() -> Result<MutexGuard<'static, ()>, String> {
+    SOURCE_WRITES.lock().map_err(|_| "Couldn't save your sources".to_string())
+}
+
 const PENDING_SERVERS_MAX: usize = 32;
-/// How long a server the webview has not saved yet keeps its key reserved.
-const PENDING_KEY_HOLD: std::time::Duration = std::time::Duration::from_secs(60);
+const PENDING_KEY_HOLD: Duration = Duration::from_secs(60);
 
-/// The saved server with this id (backend state, never the frontend's copy):
-/// one the webview has saved, else one it was just handed and has not saved yet.
+pub(crate) struct PendingMcpServer {
+    server: McpServer,
+    secrets: Vec<SecretValue>,
+    previous: Option<McpServer>,
+    reserved_at: Instant,
+}
+
+impl PendingMcpServer {
+    fn new(server: McpServer, secrets: Vec<SecretValue>, previous: Option<McpServer>) -> Self {
+        Self { server, secrets, previous, reserved_at: Instant::now() }
+    }
+
+    fn is_current(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.reserved_at) < PENDING_KEY_HOLD
+    }
+}
+
 fn saved_server(state: &AppState, id: &str) -> Option<McpServer> {
-    let saved = state.personal_sources.read().ok()?.mcp_servers.iter().find(|s| s.id == id).cloned();
-    saved.or_else(|| state.pending_servers.lock().ok()?.iter().find(|(s, _)| s.id == id).map(|(s, _)| s.clone()))
+    state.personal_sources.read().ok()?.mcp_servers.iter().find(|s| s.id == id).cloned()
 }
 
-/// Make `server` known to backend state before the webview saves its config,
-/// so a Check or an edit finds it. A server already saved is replaced there; a
-/// new one waits in `pending_servers`, and reserves its key for a short while.
-fn upsert_saved(state: &AppState, server: &McpServer) {
-    if let Ok(mut cfg) = state.personal_sources.write() {
-        if let Some(slot) = cfg.mcp_servers.iter_mut().find(|s| s.id == server.id) {
-            *slot = server.clone();
-            return;
-        }
+/// Call under `source_write` after choosing the keys. The credential manager
+/// stays untouched until the owning webview commits the staged servers.
+fn reserve_servers(state: &AppState, drafts: Vec<PendingMcpServer>) -> Result<Vec<McpServer>, String> {
+    let mut pending = state.pending_servers.lock().map_err(|_| "Couldn't reserve your MCP servers")?;
+    let now = Instant::now();
+    pending.retain(|draft| draft.is_current(now));
+    if pending.len() + drafts.len() > PENDING_SERVERS_MAX {
+        return Err("Too many MCP servers are waiting to be saved".into());
     }
-    if let Ok(mut pending) = state.pending_servers.lock() {
-        pending.retain(|(s, _)| s.id != server.id);
-        pending.push((server.clone(), std::time::Instant::now()));
-        let excess = pending.len().saturating_sub(PENDING_SERVERS_MAX);
-        pending.drain(..excess);
+    if drafts.iter().any(|draft| pending.iter().any(|entry| entry.server.id == draft.server.id)) {
+        return Err("This MCP server is already being saved".into());
     }
+    let servers = drafts.iter().map(|draft| draft.server.clone()).collect();
+    pending.extend(drafts);
+    Ok(servers)
 }
 
-/// The webview dropped these servers without saving them: forget them and free
-/// their keys.
+/// Drop an abandoned draft and release its reserved key.
 #[command]
 pub fn discard_pending_mcp_servers(ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut pending) = state.pending_servers.lock() {
-        pending.retain(|(s, _)| !ids.contains(&s.id));
-    }
+    let _write = source_write()?;
+    let mut pending = state.pending_servers.lock().map_err(|_| "Couldn't discard MCP servers")?;
+    pending.retain(|draft| !ids.contains(&draft.server.id));
     Ok(())
 }
 
-/// Keys a new server must not take: the saved servers' keys, and those of
-/// servers handed to the webview within the last [`PENDING_KEY_HOLD`] (several
-/// added together, before any is saved).
-fn taken_keys_at(state: &AppState, now: std::time::Instant) -> Vec<String> {
+fn taken_keys_at(state: &AppState, now: Instant) -> Vec<String> {
     let mut keys: Vec<String> = state
         .personal_sources
         .read()
@@ -219,17 +244,16 @@ fn taken_keys_at(state: &AppState, now: std::time::Instant) -> Vec<String> {
         .unwrap_or_default();
     if let Ok(pending) = state.pending_servers.lock() {
         keys.extend(
-            pending
-                .iter()
-                .filter(|(_, at)| now.saturating_duration_since(*at) < PENDING_KEY_HOLD)
-                .map(|(s, _)| s.key.clone()),
+            pending.iter()
+                .filter(|draft| draft.previous.is_none() && draft.is_current(now))
+                .map(|draft| draft.server.key.clone()),
         );
     }
     keys
 }
 
 fn saved_keys(state: &AppState) -> Vec<String> {
-    taken_keys_at(state, std::time::Instant::now())
+    taken_keys_at(state, Instant::now())
 }
 
 // ── Notes folders ───────────────────────────────────────────────────────────
@@ -316,39 +340,35 @@ pub fn classify_secret_names(names: Vec<String>) -> Vec<bool> {
 
 // ── MCP servers: import ─────────────────────────────────────────────────────
 
-/// Servers added from raw entries: unique keys (also among the servers added
-/// in this call), secrets split out and stored.
-fn add_servers(
-    store: &dyn SecretStore,
-    entries: Vec<(String, RawServer)>,
-    taken_keys: &[String],
-) -> Result<Vec<McpServer>, String> {
-    let mut taken = taken_keys.to_vec();
-    let mut servers = Vec::new();
-    let mut secrets: Vec<SecretValue> = Vec::new();
-    for (name, raw) in entries {
-        let (server, server_secrets) = into_server(&name, raw, &taken);
+fn prepare_servers(entries: Vec<(String, RawServer)>, mut taken: Vec<String>) -> Vec<PendingMcpServer> {
+    entries.into_iter().map(|(name, raw)| {
+        let (server, secrets) = into_server(&name, raw, &taken);
         taken.push(server.key.clone());
-        secrets.extend(server_secrets);
-        servers.push(server);
-    }
+        PendingMcpServer::new(server, secrets, None)
+    }).collect()
+}
+
+#[cfg(test)]
+fn store_imported_servers(store: &dyn SecretStore, drafts: Vec<PendingMcpServer>) -> Result<Vec<McpServer>, String> {
+    let (servers, secrets): (Vec<_>, Vec<_>) = drafts.into_iter().map(|draft| (draft.server, draft.secrets)).unzip();
+    let secrets: Vec<_> = secrets.into_iter().flatten().collect();
     forget_leftovers(store, &secrets);
     store_secrets(store, &secrets)?;
     Ok(servers)
 }
 
+#[cfg(test)]
 fn import_json(store: &dyn SecretStore, json: &str, taken_keys: &[String]) -> Result<Vec<McpServer>, String> {
-    add_servers(store, parse_mcp_json(json)?, taken_keys)
+    store_imported_servers(store, prepare_servers(parse_mcp_json(json)?, taken_keys.to_vec()))
 }
 
-/// Add the servers in pasted `mcpServers` JSON. Secret values are stored in
-/// Credential Manager and are not in the returned servers. New keys avoid the
-/// keys NexQ has saved (not a list the webview sends).
+/// Parse imported settings and reserve their keys. Credential values stay in
+/// the pending draft until the frontend saves the configuration.
 #[command]
 pub fn import_mcp_servers_json(json: String, state: State<'_, AppState>) -> Result<Vec<McpServer>, String> {
-    let servers = import_json(&SystemSecrets::new(), &json, &saved_keys(&state))?;
-    servers.iter().for_each(|s| upsert_saved(&state, s));
-    Ok(servers)
+    let entries = parse_mcp_json(&json)?;
+    let _write = source_write()?;
+    reserve_servers(&state, prepare_servers(entries, saved_keys(&state)))
 }
 
 /// A server in Claude Code's own config, for the import picker.
@@ -401,22 +421,28 @@ fn list_claude_code(claude_json: &str) -> Result<Vec<ClaudeCodeMcpServer>, Strin
         .collect())
 }
 
-fn import_claude_code(
-    store: &dyn SecretStore,
-    claude_json: &str,
-    names: &[String],
-    taken_keys: &[String],
-) -> Result<Vec<McpServer>, String> {
+fn selected_claude_entries(claude_json: &str, names: &[String]) -> Result<Vec<(String, RawServer)>, String> {
     let all = read_claude_code_entries(claude_json)?;
     let mut picked = Vec::new();
     for name in names {
         match all.iter().find(|(n, _)| n == name) {
             Some((n, Ok(raw))) => picked.push((n.clone(), raw.clone())),
             Some((_, Err(reason))) => return Err(reason.clone()),
-            None => return Err(crate::i18n::messages::claude_code_no_server(crate::i18n::current_ui_language(), &name)),
+            None => return Err(crate::i18n::messages::claude_code_no_server(crate::i18n::current_ui_language(), name)),
         }
     }
-    add_servers(store, picked, taken_keys)
+    Ok(picked)
+}
+
+#[cfg(test)]
+fn import_claude_code(
+    store: &dyn SecretStore,
+    claude_json: &str,
+    names: &[String],
+    taken_keys: &[String],
+) -> Result<Vec<McpServer>, String> {
+    let picked = selected_claude_entries(claude_json, names)?;
+    store_imported_servers(store, prepare_servers(picked, taken_keys.to_vec()))
 }
 
 /// `%USERPROFILE%\.claude.json`, read only when asked.
@@ -451,9 +477,9 @@ pub fn import_claude_code_mcp_servers(
     state: State<'_, AppState>,
 ) -> Result<Vec<McpServer>, String> {
     let text = read_claude_json()?.ok_or_else(|| crate::i18n::messages::claude_code_config_missing(crate::i18n::current_ui_language()))?;
-    let servers = import_claude_code(&SystemSecrets::new(), &text, &names, &saved_keys(&state))?;
-    servers.iter().for_each(|s| upsert_saved(&state, s));
-    Ok(servers)
+    let entries = selected_claude_entries(&text, &names)?;
+    let _write = source_write()?;
+    reserve_servers(&state, prepare_servers(entries, saved_keys(&state)))
 }
 
 // ── MCP servers: the add/edit form ──────────────────────────────────────────
@@ -640,6 +666,7 @@ fn build_form_server(
 /// Save a form against the saved server `old` (backend state): store what was
 /// typed, then forget the secrets the edit no longer keeps. On any error
 /// nothing is changed.
+#[cfg(test)]
 fn save_form(
     store: &dyn SecretStore,
     form: &McpServerForm,
@@ -661,31 +688,24 @@ fn save_form(
     Ok(build.server)
 }
 
-/// Save the add/edit form: builds the server, stores its secrets in
-/// Credential Manager and drops the ones an edit removed. The returned server
-/// holds names only. An edit (`form.id`) must name a server NexQ has saved: its
-/// key, tool switches and on/off state come from that server. If the edit
-/// changes the command, arguments, URL or plain environment, the stored
-/// secrets are not kept and must be typed in the form again (the error says
-/// so). A new server's key avoids the saved servers' keys.
+/// Prepare the add/edit form and reserve the server until the settings write
+/// succeeds. The returned settings hold credential names only.
 #[command]
 pub fn save_mcp_server_form(
     form: McpServerForm,
     state: State<'_, AppState>,
 ) -> Result<McpServer, String> {
+    let _write = source_write()?;
     let old = match &form.id {
         Some(id) => Some(
             saved_server(&state, id).ok_or_else(|| crate::i18n::messages::server_not_saved_edit(crate::i18n::current_ui_language()))?,
         ),
         None => None,
     };
-    let server = save_form(&SystemSecrets::new(), &form, &saved_keys(&state), old.as_ref())?;
-    upsert_saved(&state, &server);
-    // Saved secrets of a server that can run changed: its session must restart.
-    if server.enabled && !server.needs_sign_in {
-        state.sources_secrets_rev.fetch_add(1, Ordering::SeqCst);
-    }
-    Ok(server)
+    let store = SystemSecrets::new();
+    let build = build_form_server(&form, &saved_keys(&state), old.as_ref(), &|id| store.get(id).is_some())?;
+    let draft = PendingMcpServer::new(build.server, build.secrets, old);
+    reserve_servers(&state, vec![draft]).map(|mut servers| servers.remove(0))
 }
 
 // ── MCP servers: check, forget ──────────────────────────────────────────────
@@ -779,13 +799,21 @@ pub async fn check_mcp_server(
     draft: Option<McpServerForm>,
     state: State<'_, AppState>,
 ) -> Result<McpServer, String> {
-    let saved = match &server_id {
-        Some(id) => Some(saved_server(&state, id).ok_or_else(|| crate::i18n::messages::server_not_saved(crate::i18n::current_ui_language()))?),
-        None => None,
+    let (plan, secrets) = {
+        let _read = source_write()?;
+        let saved = match &server_id {
+            Some(id) => Some(saved_server(&state, id).ok_or_else(|| crate::i18n::messages::server_not_saved(crate::i18n::current_ui_language()))?),
+            None => None,
+        };
+        let store = SystemSecrets::new();
+        let plan = plan_check(saved.as_ref(), draft.as_ref(), &saved_keys(&state), &|id| store.get(id).is_some())?;
+        let secrets: std::collections::HashMap<_, _> = secret_ids(&plan.server)
+            .into_iter()
+            .filter_map(|id| check_secret(&plan, &store, &id).map(|value| (id, value)))
+            .collect();
+        (plan, secrets)
     };
-    let store = SystemSecrets::new();
-    let plan = plan_check(saved.as_ref(), draft.as_ref(), &saved_keys(&state), &|id| store.get(id).is_some())?;
-    let secret = |id: &str| check_secret(&plan, &store, id);
+    let secret = |id: &str| secrets.get(id).cloned();
     let found = list_server_tools(&plan.server, &secret).await;
     Ok(apply_check(&plan.server, found, now_ms()))
 }
@@ -795,6 +823,7 @@ pub async fn check_mcp_server(
 /// saved with `set_personal_sources`.
 #[command]
 pub fn delete_mcp_secrets(server_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let _write = source_write()?;
     let store = SystemSecrets::new();
     if let Some(server) = saved_server(&state, &server_id) {
         for id in secret_ids(&server) {
@@ -802,7 +831,7 @@ pub fn delete_mcp_secrets(server_id: String, state: State<'_, AppState>) -> Resu
         }
     }
     if let Ok(mut pending) = state.pending_servers.lock() {
-        pending.retain(|(s, _)| s.id != server_id);
+        pending.retain(|draft| draft.server.id != server_id);
     }
     Ok(())
 }
@@ -819,16 +848,13 @@ pub fn needs_sources_restart(applied: &PersonalSourcesConfig, new: &PersonalSour
 }
 
 /// The saved secrets of servers that lost them: one missing from `new`, and
-/// one that now starts somewhere else than the saved server with its key did
-/// (the secrets were saved for the old target only). A server in `pending`
-/// (just handed to the webview) is never dropped for being missing: an older
-/// config can arrive after it was imported. A change made through
-/// `save_mcp_server_form` is already in `old`, so it does not count here.
-fn secrets_to_drop(old: &PersonalSourcesConfig, new: &PersonalSourcesConfig, pending: &[McpServer]) -> Vec<String> {
+/// one that now starts somewhere else than the saved server did. Successful
+/// form edits already have their new metadata in `old` here.
+fn secrets_to_drop(old: &PersonalSourcesConfig, new: &PersonalSourcesConfig) -> Vec<String> {
     let mut ids = Vec::new();
     for old_server in &old.mcp_servers {
-        let lost = match new.mcp_servers.iter().find(|s| s.key == old_server.key) {
-            None => !pending.iter().any(|p| p.id == old_server.id),
+        let lost = match new.mcp_servers.iter().find(|s| s.id == old_server.id && s.key == old_server.key) {
+            None => true,
             Some(kept) => target_changed(old_server, &kept.transport, &kept.env),
         };
         if lost {
@@ -860,44 +886,119 @@ fn validate_sources(cfg: &PersonalSourcesConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Give the backend the sources the user set up. Call it at startup and after
-/// every change (the webview owns the saved copy). It becomes the saved
-/// config every other command looks servers up in. Saved secrets of a server
-/// that was removed, or that now starts something else, are forgotten. When
-/// something that goes into a with-sources session changed (or a secret of an
-/// enabled server did), the with-sources sessions close, and the live meeting's
-/// Fast one starts again in the background; the plain sessions are untouched.
+const SOURCES_CONFIG_KEY: &str = "personalSources";
+const WRITE_CONFLICT: &str = "SOURCE_CONFIG_CHANGED";
+
+#[derive(Deserialize)]
+pub struct SourceConfigWrite {
+    expected: Value,
+    durable: bool,
+}
+
+/// Settings IPC can arrive after a different window persisted a newer value.
+fn current_sources(saved: Option<Value>, submitted: PersonalSourcesConfig) -> PersonalSourcesConfig {
+    let saved = saved.and_then(|config| serde_json::from_value::<PersonalSourcesConfig>(config).ok());
+    saved.filter(|config| {
+        config.notes_folders.iter().all(|folder| !folder.id.is_empty() && !folder.path.is_empty() && !folder.label.is_empty())
+            && config.mcp_servers.iter().all(|server| {
+                !server.id.is_empty() && !server.label.is_empty() && server.env.iter().all(|item| !item.secret || item.value.is_none())
+            })
+    }).unwrap_or(submitted)
+}
+
+/// Apply the persisted sources and any reservations committed by this write.
+/// Older settings pushes cannot commit a different window's credentials.
 #[command]
 pub fn set_personal_sources(
     config: PersonalSourcesConfig,
+    pending_ids: Option<Vec<String>>,
+    write: Option<SourceConfigWrite>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    validate_sources(&config)?;
-    let old = {
-        let mut slot = state
-            .personal_sources
-            .write()
-            .map_err(|_| "Couldn't save your sources".to_string())?;
-        std::mem::replace(&mut *slot, config.clone())
+    let _write_lock = source_write()?;
+    let settings = app.store("config.json").map_err(|e| format!("Couldn't open your source settings: {e}"))?;
+    let existing = settings.get(SOURCES_CONFIG_KEY);
+    let config = match &write {
+        Some(write) if existing.as_ref().unwrap_or(&Value::Null) != &write.expected => return Err(WRITE_CONFLICT.into()),
+        Some(_) => config,
+        None => current_sources(existing.clone(), config),
     };
-    let store = SystemSecrets::new();
-    let pending: Vec<McpServer> = state
-        .pending_servers
-        .lock()
-        .map(|p| p.iter().map(|(s, _)| s.clone()).collect())
-        .unwrap_or_default();
-    for id in secrets_to_drop(&old, &config, &pending) {
-        store.delete(&id);
+    let pending_ids = pending_ids.unwrap_or_default();
+    if !pending_ids.is_empty() && write.is_none() {
+        return Err("MCP server credentials require a settings write".into());
+    }
+    let now = Instant::now();
+    let mut saved = state.personal_sources.write().map_err(|_| "Couldn't save your sources")?;
+    let mut pending = state.pending_servers.lock().map_err(|_| "Couldn't save your sources")?;
+    let mut applied = state.sources_applied.lock().map_err(|_| "Couldn't save your sources")?;
+
+    let mut updated = saved.clone();
+    let mut secrets = Vec::new();
+    let mut stale = Vec::new();
+    let mut update_revision = false;
+    for id in &pending_ids {
+        let draft = pending.iter().find(|draft| draft.server.id == *id && draft.is_current(now))
+            .ok_or("The pending MCP server expired. Open the form and save it again.")?;
+        let requested = config.mcp_servers.iter().find(|server| server.id == *id)
+            .ok_or("The source settings changed in another window. Open the form and save it again.")?;
+        if draft.server.key != requested.key || target_changed(&draft.server, &requested.transport, &requested.env) {
+            return Err("The source settings changed in another window. Open the form and save it again.".into());
+        }
+        if let Some(previous) = &draft.previous {
+            let slot = updated.mcp_servers.iter_mut().find(|server| server.id == *id)
+                .ok_or("The MCP server was removed while you edited it")?;
+            if previous.key != slot.key || target_changed(previous, &slot.transport, &slot.env) {
+                return Err("The MCP server changed while you edited it".into());
+            }
+            stale.extend(stale_credential_ids(slot, requested));
+            *slot = requested.clone();
+        }
+        secrets.extend(draft.secrets.iter().cloned());
+        update_revision |= requested.enabled && !requested.needs_sign_in;
     }
 
-    let restart = {
-        let rev = state.sources_secrets_rev.load(Ordering::SeqCst);
-        let mut applied = state.sources_applied.lock().map_err(|_| "Couldn't save your sources".to_string())?;
-        let restart = needs_sources_restart(&applied.0, &config) || (applied.1 != rev && config.has_enabled());
-        *applied = (config, rev);
-        restart
+    if pending.iter().any(|draft| draft.previous.is_none() && !pending_ids.contains(&draft.server.id)
+        && config.mcp_servers.iter().any(|server| server.id == draft.server.id))
+    {
+        return Err("The pending MCP server must be saved from its form".into());
+    }
+    validate_sources(&config)?;
+
+    let payload = write.as_ref()
+        .map(|_| serde_json::to_value(&config))
+        .transpose()
+        .map_err(|e| format!("Couldn't encode your source settings: {e}"))?;
+    let store = SystemSecrets::new();
+    let written = store_secrets(&store, &secrets)?;
+    if let (Some(write), Some(payload)) = (write, payload) {
+        settings.set(SOURCES_CONFIG_KEY, payload);
+        if write.durable || !pending_ids.is_empty() {
+            if let Err(e) = settings.save() {
+                if let Some(previous) = existing {
+                    settings.set(SOURCES_CONFIG_KEY, previous);
+                } else {
+                    settings.delete(SOURCES_CONFIG_KEY);
+                }
+                restore_secrets(&store, written);
+                return Err(format!("Couldn't write your source settings: {e}"));
+            }
+        }
+    }
+    stale.extend(secrets_to_drop(&updated, &config));
+    for id in stale {
+        store.delete(&id);
+    }
+    let rev = if update_revision {
+        state.sources_secrets_rev.fetch_add(1, Ordering::SeqCst) + 1
+    } else {
+        state.sources_secrets_rev.load(Ordering::SeqCst)
     };
+    let restart = needs_sources_restart(&applied.0, &config) || (applied.1 != rev && config.has_enabled());
+    *saved = config.clone();
+    *applied = (config, rev);
+    pending.retain(|draft| !pending_ids.contains(&draft.server.id) && draft.is_current(now));
+    drop((saved, pending, applied));
     if restart {
         crate::commands::meeting_commands::restart_sources_sessions(&app);
     }
@@ -1459,18 +1560,16 @@ mod tests {
         // Same server (label and tools may change): nothing dropped.
         let mut same = old.clone();
         same.mcp_servers[0].label = "Mira 2".into();
-        assert!(secrets_to_drop(&old, &same, &[]).is_empty());
+        assert!(secrets_to_drop(&old, &same).is_empty());
         // Removed: its secrets go.
         assert_eq!(
-            secrets_to_drop(&old, &PersonalSourcesConfig::default(), &[]),
+            secrets_to_drop(&old, &PersonalSourcesConfig::default()),
             vec!["mcp:mira:API_KEY".to_string()]
         );
-        // Missing from an older push while it is a just-imported (pending) server: they stay.
-        assert!(secrets_to_drop(&old, &PersonalSourcesConfig::default(), &[saved_mira()]).is_empty());
         // Pointed somewhere else behind the form's back: its secrets go.
         let mut moved = old.clone();
         moved.mcp_servers[0].transport = McpTransport::Stdio { command: "evil.exe".into(), args: vec![] };
-        assert_eq!(secrets_to_drop(&old, &moved, &[]), vec!["mcp:mira:API_KEY".to_string()]);
+        assert_eq!(secrets_to_drop(&old, &moved), vec!["mcp:mira:API_KEY".to_string()]);
     }
 
     #[test]
@@ -1508,26 +1607,24 @@ mod tests {
     }
 
     #[test]
-    fn two_pending_servers_never_share_a_key_and_a_discarded_one_frees_its_key() {
+    fn pending_additions_reserve_keys_and_pending_edits_keep_the_saved_config() {
         let state = AppState::new();
         let server = saved_mira();
-        upsert_saved(&state, &server);
-        assert_eq!(saved_server(&state, "id1").unwrap().label, "Mira");
-        // Reserved against the next server added before this one is saved.
+        reserve_servers(&state, vec![PendingMcpServer::new(server.clone(), Vec::new(), None)]).unwrap();
+        assert!(saved_server(&state, "id1").is_none());
         assert_eq!(saved_keys(&state), vec!["mira".to_string()]);
         assert_eq!(unique_key("Mira", &saved_keys(&state)), "mira-2");
-        // One the webview never saved stops reserving its key after a while.
-        let later = std::time::Instant::now() + PENDING_KEY_HOLD + std::time::Duration::from_secs(1);
+        let later = Instant::now() + PENDING_KEY_HOLD + Duration::from_secs(1);
         assert!(taken_keys_at(&state, later).is_empty());
-        // The webview saves it: now its key is taken for good, and the saved copy is the one used.
+
+        state.pending_servers.lock().unwrap().clear();
+        assert!(saved_keys(&state).is_empty());
         state.personal_sources.write().unwrap().mcp_servers.push(server.clone());
-        assert_eq!(taken_keys_at(&state, later), vec!["mira".to_string()]);
         let mut renamed = server.clone();
         renamed.label = "Mira 2".into();
-        upsert_saved(&state, &renamed);
-        assert_eq!(state.personal_sources.read().unwrap().mcp_servers.len(), 1);
-        assert_eq!(saved_server(&state, "id1").unwrap().label, "Mira 2");
-        assert!(saved_server(&state, "nope").is_none());
+        reserve_servers(&state, vec![PendingMcpServer::new(renamed, Vec::new(), Some(server.clone()))]).unwrap();
+        assert_eq!(saved_keys(&state), vec!["mira".to_string()]);
+        assert_eq!(saved_server(&state, "id1"), Some(server));
     }
 
     #[test]
@@ -1552,12 +1649,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_servers_are_capped() {
+    fn pending_servers_are_capped_without_evicting_a_valid_reservation() {
         let state = AppState::new();
-        for i in 0..(PENDING_SERVERS_MAX + 5) {
-            upsert_saved(&state, &McpServer { id: format!("p{i}"), key: format!("k{i}"), ..Default::default() });
-        }
-        assert!(saved_server(&state, "p0").is_none());
-        assert!(saved_server(&state, &format!("p{}", PENDING_SERVERS_MAX + 4)).is_some());
+        let draft = |i: usize| PendingMcpServer::new(
+            McpServer { id: format!("p{i}"), key: format!("k{i}"), ..Default::default() },
+            Vec::new(),
+            None,
+        );
+        let reserved = reserve_servers(&state, (0..PENDING_SERVERS_MAX).map(draft).collect()).unwrap();
+        assert_eq!(reserved.len(), PENDING_SERVERS_MAX);
+        assert!(reserve_servers(&state, vec![draft(PENDING_SERVERS_MAX)]).is_err());
+        assert!(saved_keys(&state).contains(&"k0".into()));
+        assert!(!saved_keys(&state).contains(&format!("k{}", PENDING_SERVERS_MAX)));
     }
 }

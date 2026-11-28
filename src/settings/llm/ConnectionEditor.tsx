@@ -26,6 +26,7 @@ import {
   needsSecretReentry,
   secretToSave,
   type ConnectionDraft,
+  type DraftChange,
   type DraftProblem,
 } from "./draft";
 import { ModelSection } from "./ModelSection";
@@ -55,7 +56,7 @@ interface ConnectionEditorProps {
   /** The saved connection; null while a new one hasn't been saved. */
   saved: LlmConnection | null;
   draft: ConnectionDraft;
-  onDraftChange: (next: ConnectionDraft) => void;
+  onDraftChange: (next: DraftChange) => void;
   /** Saved under `id` (new connections get theirs from Rust): the draft can be dropped. */
   onSaved: (id: string) => void;
   onDiscard: () => void;
@@ -119,8 +120,13 @@ export function ConnectionEditor({ view, saved, draft, onDraftChange, onSaved, o
       ? { saved: false }
       : { saved: secretSaved, hint: bareHint(secret?.hint ?? savedHint) };
   const handleSecret = (value: string | null) => {
-    if (value === null) onDraftChange({ ...draft, pendingSecret: null, clearSecret: draft.pendingSecret === null && secretSaved });
-    else onDraftChange({ ...draft, pendingSecret: value, clearSecret: false });
+    onDraftChange((current) => ({
+      ...current,
+      pendingSecret: value,
+      clearSecret: value === null && current.pendingSecret === null && secretSaved,
+      testedFingerprint: null,
+      testedAt: null,
+    }));
   };
 
   const revertAddress = () => {
@@ -327,7 +333,7 @@ export function ConnectionEditor({ view, saved, draft, onDraftChange, onSaved, o
                   </button>
                   <button
                     type="button"
-                    onClick={() => onDraftChange({ ...draft, clearSecret: true, pendingSecret: null })}
+                    onClick={() => onDraftChange({ ...draft, clearSecret: true, pendingSecret: null, testedFingerprint: null, testedAt: null })}
                     className={BUTTON}
                   >
                     {t("editor.secret.clear")}

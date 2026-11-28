@@ -25,6 +25,9 @@ export async function resetMeetingScopedStores(): Promise<void> {
     { useTranslationStore },
     { useAudioPlayerStore },
     { useQuestionStore },
+    { useStreamTimingStore },
+    { useSttRegionStore },
+    { resetQuestionFlowForMeeting },
   ] = await Promise.all([
     import("./transcriptStore"),
     import("./streamStore"),
@@ -37,11 +40,16 @@ export async function resetMeetingScopedStores(): Promise<void> {
     import("./translationStore"),
     import("./audioPlayerStore"),
     import("./questionStore"),
+    import("./streamTimingStore"),
+    import("./sttRegionStore"),
+    import("../overlay/questionFlow"),
   ]);
 
   // Transcript + live streaming AI response
   useTranscriptStore.getState().clearSegments();
   useStreamStore.getState().resetForMeeting();
+  useStreamTimingStore.getState().reset();
+  useSttRegionStore.getState().clear();
 
   // Meeting artifacts / panels
   useDevLogStore.getState().clear();
@@ -51,6 +59,7 @@ export async function resetMeetingScopedStores(): Promise<void> {
   useActionItemStore.getState().clearItems();
   useTopicSectionStore.getState().clearSections();
   useQuestionStore.getState().clear();
+  resetQuestionFlowForMeeting();
 
   // Speaker identity + stats
   useSpeakerStore.getState().reset();

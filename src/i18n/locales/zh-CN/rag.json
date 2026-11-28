@@ -117,6 +117,8 @@
     "title": "Gemini 上下文缓存",
     "active": "已启用 · {{time}} 过期",
     "description": "把上下文文档一次性上传到 Gemini 的服务器，之后每次提问都不用本地向量化，在只有 CPU 的电脑上<strong>每次回答大约快 3–5 秒</strong>。",
+    "connection": "Gemini 连接",
+    "connectionUnavailable": "请在 AI 模型设置中启用一个 Gemini 连接以创建缓存。",
     "model": "模型",
     "ttl": "有效期",
     "ttlOptions": {

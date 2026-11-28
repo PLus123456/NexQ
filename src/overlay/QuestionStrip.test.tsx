@@ -222,6 +222,15 @@ describe("QuestionStrip", () => {
     expect(screen.queryByRole("dialog", { name: "Full question" })).toBeNull();
   });
 
+  it("disables the popover's re-answer action during an answer", () => {
+    show(question("Why did you pick Kafka?", "answering"));
+    fireEvent.click(screen.getByRole("button", { name: /Why did you pick Kafka/ }));
+    const button = within(screen.getByRole("dialog", { name: "Full question" })).getByRole("button", { name: "Re-answer" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(flow.answer).not.toHaveBeenCalled();
+  });
+
   it("follows the flow: an answered question updates its status and a closed one disappears", () => {
     const first = question("What would you do first?");
     const view = show(first);

@@ -792,6 +792,7 @@
     "delete": "Delete model",
     "download": "Download",
     "extracting": "Extracting...",
+    "cancelling": "Cancelling…",
     "verifying": "Verifying...",
     "toasts": {
       "autoActivated": "Model \"{{model}}\" activated for {{engine}}",

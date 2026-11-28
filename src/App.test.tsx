@@ -127,6 +127,27 @@ describe("the overlay's scenario chip", () => {
   });
 });
 
+it("clears the overlay's timer only when its own meeting finishes", async () => {
+  await launchOverlayOn("team_meeting");
+  await launcherStartsMeeting("team_meeting");
+  await vi.waitFor(() => expect(useMeetingStore.getState()._timerInterval).not.toBeNull());
+  const end = (meetingId: string) => act(async () => {
+    await listeners.get("nexq:meeting_ended")?.({ payload: { meetingId, window: "launcher" } });
+  });
+
+  await end("a-previous-meeting");
+  expect(useMeetingStore.getState().activeMeeting?.id).toBe("meeting-1");
+  expect(useMeetingStore.getState()._timerInterval).not.toBeNull();
+  await end("meeting-1");
+  expect(useMeetingStore.getState()).toMatchObject({ activeMeeting: null, _timerInterval: null, elapsedMs: 0 });
+});
+
+it("does not handle the launcher's tray start or Settings actions in the overlay", async () => {
+  await launchOverlayOn("team_meeting");
+  expect(listeners.has("tray_start_meeting")).toBe(false);
+  expect(listeners.has("tray_open_settings")).toBe(false);
+});
+
 describe("a capture side reconnecting mid-meeting", () => {
   it("toasts a switch to another device and a lost side, nothing while reconnecting", async () => {
     await launchOverlayOn("team_meeting");
