@@ -1,2 +1,5 @@
 # Shell scripts run on macOS/Linux: always LF.
 *.sh text eol=lf
+
+# Vite's SSR transform expects the release script's shebang to end in LF.
+scripts/release-plus.mjs text eol=lf
