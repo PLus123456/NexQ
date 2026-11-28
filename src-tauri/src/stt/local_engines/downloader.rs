@@ -223,41 +223,63 @@ world 1
 
     #[tokio::test]
     async fn cancellation_wakes_a_download_waiting_for_the_body() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
 
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/model", server.local_addr().unwrap());
+        let (release_response, hold_response) = oneshot::channel();
         let hold_body = tokio::spawn(async move {
             let (mut connection, _) = server.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(connection.read_buf(&mut request).await.unwrap() > 0);
+            }
+            assert!(request.starts_with(b"GET /model HTTP/1.1\r\n"));
             connection
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n")
                 .await
                 .unwrap();
-            std::future::pending::<()>().await;
+            let _ = hold_response.await;
+            drop(connection);
         });
         let dir = std::env::temp_dir().join(format!("nexq-model-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let (cancel, mut cancellation) = watch::channel(false);
+        let (report_headers, headers_received) = oneshot::channel();
+        let mut report_headers = Some(report_headers);
+        let destination = dir.join("model");
+        let download = download_file(
+            &url,
+            &destination,
+            "",
+            &mut cancellation,
+            move |status, downloaded, total| {
+                if let Some(report) = report_headers.take() {
+                    report.send((status, downloaded, total)).unwrap();
+                }
+            },
+        );
+        let cancel_after_headers = async {
+            assert_eq!(
+                headers_received.await.expect("the response headers must arrive"),
+                (DownloadStatus::Downloading, 0, 12)
+            );
+            cancel.send_replace(true);
+        };
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            download_file(
-                &url,
-                &dir.join("model"),
-                "",
-                &mut cancellation,
-                |_, _, _| {
-                    // Headers arrived and the download is waiting for body bytes.
-                    cancel.send_replace(true);
-                },
-            ),
-        )
+        // Poll the downloader first so it reaches the pending body read
+        // before the second branch signals cancellation.
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(biased; download, cancel_after_headers)
+        })
         .await
         .expect("cancellation should wake the downloader");
-        assert_eq!(result.unwrap_err(), "Download cancelled");
-        hold_body.abort();
+        release_response.send(()).unwrap();
+        hold_body.await.unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(result.unwrap_err(), "Download cancelled");
     }
 
     #[test]
